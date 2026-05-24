@@ -1,7 +1,6 @@
 #include "BHJumpscareMonster.h"
 #include "BHAmbientEmitter.h"
 #include "BHCharacter.h"
-#include "Animation/AnimationAsset.h"
 #include "Components/PointLightComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -59,7 +58,7 @@ ABHJumpscareMonster::ABHJumpscareMonster()
 	VisualRoot = CreateDefaultSubobject<USceneComponent>(TEXT("VisualRoot"));
 	VisualRoot->SetupAttachment(Root);
 
-	MonsterMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("SCP096Mesh"));
+	MonsterMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("PrototypeMonsterMesh"));
 	MonsterMesh->SetupAttachment(VisualRoot);
 	MonsterMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	MonsterMesh->SetCastShadow(true);
@@ -67,7 +66,7 @@ ABHJumpscareMonster::ABHJumpscareMonster()
 	MonsterMesh->SetHiddenInGame(true);
 	MonsterMesh->SetVisibility(false, true);
 
-	SkeletalMonsterMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("SCP096SkeletalMesh"));
+	SkeletalMonsterMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("PrototypeMonsterSkeletalMesh"));
 	SkeletalMonsterMesh->SetupAttachment(VisualRoot);
 	SkeletalMonsterMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	SkeletalMonsterMesh->SetCastShadow(true);
@@ -130,51 +129,10 @@ ABHJumpscareMonster::ABHJumpscareMonster()
 		Mouth->SetMaterial(0, ShapeMaterial.Object);
 	}
 
-	IdleAnimation = nullptr;
-	RunAnimation = nullptr;
-	bUsingScpMesh = false;
-	bUsingSkeletalMesh = false;
-	if (USkeletalMesh* ScpSkeletalMesh = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/BlackoutHunt/Art/SCP096/Skeletal/SK_SCP096.SK_SCP096")))
-	{
-		SkeletalMonsterMesh->SetSkeletalMeshAsset(ScpSkeletalMesh);
-		SkeletalMonsterMesh->SetRelativeLocation(FVector(0.0f, 0.0f, 0.0f));
-		SkeletalMonsterMesh->SetRelativeRotation(FRotator(0.0f, -90.0f, 0.0f));
-		SkeletalMonsterMesh->SetRelativeScale3D(FVector(58.0f, 320.0f, 72.0f));
-		SkeletalMonsterMesh->SetHiddenInGame(false);
-		SkeletalMonsterMesh->SetVisibility(true, true);
-		SkeletalMonsterMesh->SetAnimationMode(EAnimationMode::AnimationSingleNode);
-		if (UMaterialInterface* ScpMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/BlackoutHunt/Art/SCP096/M_SCP096.M_SCP096")))
-		{
-			SkeletalMonsterMesh->SetMaterial(0, ScpMaterial);
-		}
-		IdleAnimation = LoadObject<UAnimationAsset>(nullptr, TEXT("/Game/BlackoutHunt/Art/SCP096/Skeletal/SK_SCP096C_096_AIdle_F.SK_SCP096C_096_AIdle_F"));
-		if (!IdleAnimation)
-		{
-			IdleAnimation = LoadObject<UAnimationAsset>(nullptr, TEXT("/Game/BlackoutHunt/Art/SCP096/Skeletal/A_SCP096_Run.A_SCP096_Run"));
-		}
-		RunAnimation = LoadObject<UAnimationAsset>(nullptr, TEXT("/Game/BlackoutHunt/Art/SCP096/Skeletal/SK_SCP096C_096_ARun_F_-_Forward.SK_SCP096C_096_ARun_F_-_Forward"));
-		bUsingScpMesh = true;
-		bUsingSkeletalMesh = true;
-	}
-	else if (UStaticMesh* ScpMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Game/BlackoutHunt/Art/SCP096/SM_SCP096.SM_SCP096")))
-	{
-		MonsterMesh->SetStaticMesh(ScpMesh);
-		MonsterMesh->SetRelativeLocation(FVector(0.0f, 0.0f, 0.0f));
-		MonsterMesh->SetRelativeRotation(FRotator(0.0f, -90.0f, 0.0f));
-		MonsterMesh->SetRelativeScale3D(FVector(58.0f, 320.0f, 72.0f));
-		MonsterMesh->SetHiddenInGame(false);
-		MonsterMesh->SetVisibility(true, true);
-		if (UMaterialInterface* ScpMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/BlackoutHunt/Art/SCP096/M_SCP096.M_SCP096")))
-		{
-			MonsterMesh->SetMaterial(0, ScpMaterial);
-		}
-		bUsingScpMesh = true;
-	}
-
-	MonsterMesh->SetHiddenInGame(bUsingSkeletalMesh || !bUsingScpMesh);
-	MonsterMesh->SetVisibility(!bUsingSkeletalMesh && bUsingScpMesh, true);
-	SkeletalMonsterMesh->SetHiddenInGame(!bUsingSkeletalMesh);
-	SkeletalMonsterMesh->SetVisibility(bUsingSkeletalMesh, true);
+	MonsterMesh->SetHiddenInGame(true);
+	MonsterMesh->SetVisibility(false, true);
+	SkeletalMonsterMesh->SetHiddenInGame(true);
+	SkeletalMonsterMesh->SetVisibility(false, true);
 
 	UStaticMeshComponent* ProxyParts[] = {
 		Body,
@@ -192,22 +150,22 @@ ABHJumpscareMonster::ABHJumpscareMonster()
 	{
 		if (Part)
 		{
-			Part->SetHiddenInGame(bUsingScpMesh);
-			Part->SetVisibility(!bUsingScpMesh, true);
+			Part->SetHiddenInGame(false);
+			Part->SetVisibility(true, true);
 		}
 	}
 
-	EyeLight->SetRelativeLocation(bUsingScpMesh ? FVector(92.0f, 0.0f, 188.0f) : FVector(92.0f, 0.0f, 375.0f));
-	EyeLight->SetLightColor(bUsingScpMesh ? FLinearColor(0.38f, 0.32f, 0.24f) : FLinearColor(1.0f, 0.02f, 0.0f));
-	EyeLight->SetIntensity(bUsingScpMesh ? 220.0f : 18000.0f);
-	EyeLight->SetAttenuationRadius(bUsingScpMesh ? 680.0f : 1650.0f);
+	EyeLight->SetRelativeLocation(FVector(92.0f, 0.0f, 375.0f));
+	EyeLight->SetLightColor(FLinearColor(1.0f, 0.02f, 0.0f));
+	EyeLight->SetIntensity(18000.0f);
+	EyeLight->SetAttenuationRadius(1650.0f);
 	EyeLight->SetCastShadows(false);
 	EyeLight->SetMobility(EComponentMobility::Movable);
 
-	CoreLight->SetRelativeLocation(bUsingScpMesh ? FVector(56.0f, 0.0f, 112.0f) : FVector(82.0f, 0.0f, 218.0f));
-	CoreLight->SetLightColor(bUsingScpMesh ? FLinearColor(0.22f, 0.18f, 0.14f) : FLinearColor(1.0f, 0.02f, 0.0f));
-	CoreLight->SetIntensity(bUsingScpMesh ? 520.0f : 9000.0f);
-	CoreLight->SetAttenuationRadius(bUsingScpMesh ? 760.0f : 1300.0f);
+	CoreLight->SetRelativeLocation(FVector(82.0f, 0.0f, 218.0f));
+	CoreLight->SetLightColor(FLinearColor(1.0f, 0.02f, 0.0f));
+	CoreLight->SetIntensity(9000.0f);
+	CoreLight->SetAttenuationRadius(1300.0f);
 	CoreLight->SetCastShadows(false);
 	CoreLight->SetMobility(EComponentMobility::Movable);
 
@@ -216,7 +174,7 @@ ABHJumpscareMonster::ABHJumpscareMonster()
 	HoldSeconds = 0.0f;
 	SpawnTime = -1.0f;
 	bChargeStarted = false;
-	SetActorScale3D(bUsingScpMesh ? FVector(1.0f, 1.0f, 1.0f) : FVector(1.7f, 1.7f, 1.7f));
+	SetActorScale3D(FVector(1.7f, 1.7f, 1.7f));
 }
 
 void ABHJumpscareMonster::BeginPlay()
@@ -226,11 +184,6 @@ void ABHJumpscareMonster::BeginPlay()
 	SetLifeSpan(MaxLifetime + 0.35f);
 	SetActorHiddenInGame(false);
 	ApplyVisuals();
-	if (bUsingSkeletalMesh && SkeletalMonsterMesh && IdleAnimation)
-	{
-		SkeletalMonsterMesh->PlayAnimation(IdleAnimation, true);
-		SkeletalMonsterMesh->SetPlayRate(0.0f);
-	}
 }
 
 void ABHJumpscareMonster::Tick(float DeltaSeconds)
@@ -258,29 +211,11 @@ void ABHJumpscareMonster::Tick(float DeltaSeconds)
 		}
 		if (EyeLight)
 		{
-			if (bUsingScpMesh)
-			{
-				EyeLight->SetLightColor(bHolding ? FLinearColor(0.40f, 0.32f, 0.24f) : FLinearColor(1.0f, 0.0f, 0.0f));
-				EyeLight->SetIntensity(bHolding ? 230.0f + 110.0f * Pulse : 19000.0f + 11000.0f * Pulse);
-				EyeLight->SetAttenuationRadius(bHolding ? 820.0f : 2150.0f);
-			}
-			else
-			{
-				EyeLight->SetIntensity((15000.0f + 11000.0f * Pulse) * (bHolding ? 1.25f : 1.0f));
-			}
+			EyeLight->SetIntensity((15000.0f + 11000.0f * Pulse) * (bHolding ? 1.25f : 1.0f));
 		}
 		if (CoreLight)
 		{
-			if (bUsingScpMesh)
-			{
-				CoreLight->SetLightColor(bHolding ? FLinearColor(0.22f, 0.18f, 0.14f) : FLinearColor(1.0f, 0.02f, 0.0f));
-				CoreLight->SetIntensity(bHolding ? 560.0f + 210.0f * Pulse : 11000.0f + 6500.0f * Pulse);
-				CoreLight->SetAttenuationRadius(bHolding ? 920.0f : 1850.0f);
-			}
-			else
-			{
-				CoreLight->SetIntensity((6500.0f + 7000.0f * Pulse) * (bHolding ? 1.2f : 1.0f));
-			}
+			CoreLight->SetIntensity((6500.0f + 7000.0f * Pulse) * (bHolding ? 1.2f : 1.0f));
 		}
 	}
 
@@ -331,12 +266,6 @@ void ABHJumpscareMonster::Tick(float DeltaSeconds)
 void ABHJumpscareMonster::StartChargeEffects()
 {
 	bChargeStarted = true;
-
-	if (bUsingSkeletalMesh && SkeletalMonsterMesh && RunAnimation)
-	{
-		SkeletalMonsterMesh->PlayAnimation(RunAnimation, true);
-		SkeletalMonsterMesh->SetPlayRate(2.4f);
-	}
 
 	if (HasAuthority())
 	{

@@ -9,7 +9,6 @@ class UPointLightComponent;
 class USceneComponent;
 class USkeletalMeshComponent;
 class UStaticMeshComponent;
-class UAnimationAsset;
 
 UCLASS()
 class BLACKOUTHUNT_API ABHJumpscareMonster : public AActor
@@ -76,12 +75,6 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPointLightComponent> CoreLight;
 
-	UPROPERTY()
-	TObjectPtr<UAnimationAsset> IdleAnimation;
-
-	UPROPERTY()
-	TObjectPtr<UAnimationAsset> RunAnimation;
-
 	void StartChargeEffects();
 	void SpawnLaunchScream();
 
@@ -90,7 +83,5 @@ protected:
 	float MaxLifetime;
 	float HoldSeconds;
 	float SpawnTime;
-	bool bUsingScpMesh;
-	bool bUsingSkeletalMesh;
 	bool bChargeStarted;
 };
