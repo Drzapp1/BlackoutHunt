@@ -11,7 +11,7 @@ namespace
 {
 	const FName BHOnlineLevelSetting(TEXT("BHLEVEL"));
 	const FName BHOnlineBuildSetting(TEXT("BHBUILD"));
-	const FString BHOnlineBuildId(TEXT("BlackoutHunt-0.1.0"));
+	const FString BHOnlineBuildId(TEXT("BlackoutHunt-0.2.0-beta.1"));
 	constexpr int32 BHOnlineMaxSearchResults = 25;
 
 	FString NormalizeRuntimeLevelName(FString LevelName)

@@ -10,8 +10,9 @@ This guide is for live classroom use where one teacher machine hosts Blackout Hu
 - Network hosting, direct-IP join, Playit tunnel, and Windows hotspot helpers remain available.
 - Session/admin controls are host-machine-only. Students can still play the in-game Teacher role when assigned, but that role does not grant admin controls.
 - Host force-start is disabled for classroom releases. Keep `bAllowHostForceStart=False` for live classes.
-- The Live Classroom menu button hosts Facility with the current Physics Classroom defaults: 10 minutes, adaptive questions, all topics, and scare intensity 2.
+- The Live Classroom menu button hosts Facility with the current Physics Classroom defaults: 10 minutes, adaptive questions, all topics, and Horror scare intensity.
 - The host can adjust Physics question focus, complexity mix, class/individual mastery targets, and scare intensity from the Classroom tab after Live Classroom starts.
+- Scare intensity levels are `Off`, `Low`, `Horror`, and `Chaos`. `Horror` is the default live-classroom level and is tuned for frequent automatic scares.
 - Every connected player must ready up before a normal live round starts. The listen-server host can soft-kick stuck or misjoined human players from the lobby roster; kicked students return to the main menu and may rejoin.
 - The host can open a projector-friendly classroom board from the Classroom tab or `B`. It shows phase, timer, join address, readiness, role mix, objective progress, and revision mastery without showing student locations or answer keys.
 

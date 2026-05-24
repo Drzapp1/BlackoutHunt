@@ -393,6 +393,22 @@ namespace
 		}
 	}
 
+	FString MenuRevisionScareIntensityText(int32 ScareIntensity)
+	{
+		switch (FMath::Clamp(ScareIntensity, 0, 3))
+		{
+		case 0:
+			return TEXT("Off");
+		case 1:
+			return TEXT("Low");
+		case 3:
+			return TEXT("Chaos");
+		case 2:
+		default:
+			return TEXT("Horror");
+		}
+	}
+
 	FString MenuRevisionTopicMaskText(int32 TopicMask)
 	{
 		const int32 ForcesBit = FBHRevisionQuestionBank::TopicMaskBit(EBHPhysicsTopic::ForcesAndMotion);
@@ -4869,12 +4885,12 @@ TSharedRef<SWidget> SBHMainMenu::BuildRevisionControlsPanel()
 	const bool bCanEditRevision = PC && World && PC->IsLocalController() && World->GetNetMode() == NM_ListenServer && bRevisionSession;
 
 	const FString Summary = bRevisionSession
-		? FString::Printf(TEXT("Focus %s | Complexity %s | Targets %.0f/%.0f | Scare %d"),
+		? FString::Printf(TEXT("Focus %s | Complexity %s | Targets %.0f/%.0f | Scare %s"),
 			*MenuRevisionTopicMaskText(CurrentTopicMask),
 			*MenuRevisionDifficultyMixText(CurrentDifficultyMix),
 			CurrentClassThreshold,
 			CurrentIndividualThreshold,
-			CurrentScareIntensity)
+			*MenuRevisionScareIntensityText(CurrentScareIntensity))
 		: FString(TEXT("Host Live Classroom to enable question controls."));
 
 	auto AddOptionButton = [this, bCanEditRevision](const TSharedRef<SHorizontalBox>& Row, const FString& Label, bool bSelected, const FOnClicked& OnClicked)
@@ -4917,10 +4933,10 @@ TSharedRef<SWidget> SBHMainMenu::BuildRevisionControlsPanel()
 	AddOptionButton(ThresholdRow, TEXT("Stretch 80/60"), RoundedClassThreshold == 80 && RoundedIndividualThreshold == 60, FOnClicked::CreateSP(this, &SBHMainMenu::OnRevisionThresholdClicked, 80, 60));
 
 	TSharedRef<SHorizontalBox> ScareRow = SNew(SHorizontalBox);
-	AddOptionButton(ScareRow, TEXT("None"), CurrentScareIntensity == 0, FOnClicked::CreateSP(this, &SBHMainMenu::OnRevisionScareIntensityClicked, 0));
-	AddOptionButton(ScareRow, TEXT("1"), CurrentScareIntensity == 1, FOnClicked::CreateSP(this, &SBHMainMenu::OnRevisionScareIntensityClicked, 1));
-	AddOptionButton(ScareRow, TEXT("2"), CurrentScareIntensity == 2, FOnClicked::CreateSP(this, &SBHMainMenu::OnRevisionScareIntensityClicked, 2));
-	AddOptionButton(ScareRow, TEXT("3"), CurrentScareIntensity == 3, FOnClicked::CreateSP(this, &SBHMainMenu::OnRevisionScareIntensityClicked, 3));
+	AddOptionButton(ScareRow, TEXT("Off"), CurrentScareIntensity == 0, FOnClicked::CreateSP(this, &SBHMainMenu::OnRevisionScareIntensityClicked, 0));
+	AddOptionButton(ScareRow, TEXT("Low"), CurrentScareIntensity == 1, FOnClicked::CreateSP(this, &SBHMainMenu::OnRevisionScareIntensityClicked, 1));
+	AddOptionButton(ScareRow, TEXT("Horror"), CurrentScareIntensity == 2, FOnClicked::CreateSP(this, &SBHMainMenu::OnRevisionScareIntensityClicked, 2));
+	AddOptionButton(ScareRow, TEXT("Chaos"), CurrentScareIntensity == 3, FOnClicked::CreateSP(this, &SBHMainMenu::OnRevisionScareIntensityClicked, 3));
 
 	TSharedRef<SHorizontalBox> AdminRow = SNew(SHorizontalBox);
 	AddOptionButton(AdminRow, TEXT("Show Status"), false, FOnClicked::CreateSP(this, &SBHMainMenu::OnRevisionStatusClicked));

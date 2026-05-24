@@ -525,7 +525,7 @@ ABHCharacter::ABHCharacter()
 
 	WalkSpeed = 360.0f;
 	SprintSpeed = 900.0f;
-	MaxStamina = 200.0f;
+	MaxStamina = 100.0f;
 	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
 	InteractDistance = FMath::Max(150.0f, Settings->InteractDistance);
 	CaptureDistance = FMath::Max(100.0f, Settings->CaptureDistance);
@@ -582,10 +582,11 @@ ABHCharacter::ABHCharacter()
 	GetCharacterMovement()->BrakingDecelerationWalking = 3200.0f;
 	GetCharacterMovement()->BrakingFrictionFactor = 0.75f;
 	GetCharacterMovement()->GroundFriction = 7.25f;
-	GetCharacterMovement()->JumpZVelocity = 520.0f;
-	GetCharacterMovement()->AirControl = 0.58f;
-	GetCharacterMovement()->BrakingDecelerationFalling = 192.0f;
-	GetCharacterMovement()->FallingLateralFriction = 0.05f;
+	JumpMaxHoldTime = 0.0f;
+	GetCharacterMovement()->JumpZVelocity = 395.0f;
+	GetCharacterMovement()->AirControl = 0.16f;
+	GetCharacterMovement()->BrakingDecelerationFalling = 80.0f;
+	GetCharacterMovement()->FallingLateralFriction = 0.12f;
 	GetCharacterMovement()->SetCrouchedHalfHeight(62.0f);
 	GetCharacterMovement()->NavAgentProps.bCanCrouch = true;
 }

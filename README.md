@@ -4,6 +4,10 @@ Blackout Hunt is a direct-IP multiplayer horror hunt prototype for Unreal Engine
 
 One player hosts a listen server and friends join with `host-ip-or-domain:7777`. Players can connect across LAN, a game-created hotspot, or the internet when the host is reachable on UDP port `7777`. The current implementation generates its levels at runtime and uses imported CC0 PBR materials for the main environment surfaces and set dressing.
 
+## Beta Release
+
+Current beta target: `0.2.0-beta.1` Windows classroom/LAN build. See `D:\MainGame\Docs\BETA_RELEASE_NOTES_0.2.0-beta.1.md` for tester scope, known limits, and validation notes.
+
 ## Current Gameplay
 
 - 2-12 players.
@@ -104,7 +108,7 @@ Account progress is saved locally under `D:\MainGame\Saved\Account` and can sync
 
 The project defaults to a classroom-safe profile: local username/password profiles are enabled, external account login/backend sync are disabled, and session/admin controls are restricted to the listen-server host machine. Students can still play the in-game Teacher role when the host assigns it, but that role does not grant host/admin controls.
 
-Use `LIVE CLASSROOM` from the Play menu for the LAN-first Physics Classroom flow: Facility, 10 minutes, adaptive questions, all topics, scare intensity 2, classroom board, join address, and host roster. The host can adjust question focus, complexity, mastery targets, and scare intensity from the Classroom tab. Force-start stays disabled; the host removes blockers with the roster Kick button.
+Use `LIVE CLASSROOM` from the Play menu for the LAN-first Physics Classroom flow: Facility, 10 minutes, adaptive questions, all topics, Horror scare intensity, classroom board, join address, and host roster. The host can adjust question focus, complexity, mastery targets, and scare intensity from the Classroom tab. Force-start stays disabled; the host removes blockers with the roster Kick button.
 
 For live classroom packaging and operation, see `D:\MainGame\Docs\CLASSROOM_DEPLOYMENT.md`. The primary release command is:
 

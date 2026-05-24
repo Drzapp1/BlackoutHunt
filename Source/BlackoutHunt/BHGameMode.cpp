@@ -6,6 +6,7 @@
 #include "BHBotPolicySubsystem.h"
 #include "BHBreaker.h"
 #include "BHCharacter.h"
+#include "BHCrawlSpaceVolume.h"
 #include "BHDoor.h"
 #include "BHExitGate.h"
 #include "BHFlickerLight.h"
@@ -23,6 +24,7 @@
 #include "BHRevisionQuestionBank.h"
 #include "BHSecurityShutter.h"
 #include "BHSecurityTerminal.h"
+#include "BHSlidingGate.h"
 #include "Components/BoxComponent.h"
 #include "Components/BrushComponent.h"
 #include "Components/DirectionalLightComponent.h"
@@ -3082,14 +3084,50 @@ void ABHGameMode::BuildFoggroundsLevel()
 		SpawnBlock(LocalPoint(Origin, Rotation, FVector(292.0f, 74.0f, 72.0f)), FVector(0.045f, 0.22f, 1.08f), MouthShadow, Rotation, false, EBHBlockMaterial::PaintedMetal);
 		SpawnBlock(LocalPoint(Origin, Rotation, FVector(-240.0f, 0.0f, 136.0f)), FVector(0.08f, 1.72f, 0.08f), Warning, Rotation, false, EBHBlockMaterial::WarningSign);
 		SpawnBlock(LocalPoint(Origin, Rotation, FVector(240.0f, 0.0f, 136.0f)), FVector(0.08f, 1.72f, 0.08f), Warning, Rotation, false, EBHBlockMaterial::WarningSign);
+		if (ABHCrawlSpaceVolume* CrawlVolume = GetWorld()->SpawnActor<ABHCrawlSpaceVolume>(LocalPoint(Origin, Rotation, FVector(0.0f, 0.0f, 82.0f)), Rotation))
+		{
+			CrawlVolume->Configure(FVector(RunScaleX * 50.0f + 45.0f, 118.0f, 118.0f));
+		}
 	};
-	const auto SpawnDoorGateFrame = [&](const FVector& Origin, const FRotator& Rotation)
+	const auto SpawnDoorGateFrame = [&](const FVector& Origin, const FRotator& Rotation, bool bLiftGate)
 	{
-		const FVector PostScale(0.18f, 0.12f, 2.68f);
+		const FVector PostScale(0.18f, 0.12f, bLiftGate ? 3.18f : 2.58f);
 		SpawnBlock(LocalPoint(Origin, Rotation, FVector(0.0f, -98.0f, CenterZForBlockBottom(0.0f, PostScale.Z))), PostScale, WetMetal, Rotation, true, EBHBlockMaterial::PaintedMetal);
 		SpawnBlock(LocalPoint(Origin, Rotation, FVector(0.0f, 98.0f, CenterZForBlockBottom(0.0f, PostScale.Z))), PostScale, WetMetal, Rotation, true, EBHBlockMaterial::PaintedMetal);
-		SpawnBlock(LocalPoint(Origin, Rotation, FVector(0.0f, 0.0f, 272.0f)), FVector(0.20f, 2.35f, 0.14f), Warning, Rotation, false, EBHBlockMaterial::WarningSign);
+		SpawnBlock(LocalPoint(Origin, Rotation, FVector(0.0f, 0.0f, bLiftGate ? 325.0f : 264.0f)), FVector(0.20f, 2.35f, 0.14f), Warning, Rotation, false, EBHBlockMaterial::WarningSign);
+		if (bLiftGate)
+		{
+			SpawnBlock(LocalPoint(Origin, Rotation, FVector(18.0f, 0.0f, 282.0f)), FVector(0.08f, 2.15f, 0.08f), WetMetal, Rotation, true, EBHBlockMaterial::RustedMetal);
+		}
 		SpawnBlock(LocalPoint(Origin, Rotation, FVector(0.0f, 0.0f, CenterZForBlockBottom(0.50f, 0.035f))), FVector(0.32f, 2.15f, 0.035f), Road, Rotation, false, EBHBlockMaterial::DiamondPlate);
+	};
+	const auto SpawnHiderCulvert = [&](const FVector& Origin, const FRotator& Rotation, float LengthScale)
+	{
+		const float HalfLength = LengthScale * 50.0f;
+		SpawnBlock(LocalPoint(Origin, Rotation, FVector(0.0f, 0.0f, CenterZForBlockBottom(0.52f, 0.035f))), FVector(LengthScale, 1.70f, 0.035f), Road, Rotation, false, EBHBlockMaterial::DiamondPlate);
+		SpawnBlock(LocalPoint(Origin, Rotation, FVector(0.0f, -86.0f, CenterZForBlockBottom(0.0f, 1.10f))), FVector(LengthScale, 0.12f, 1.10f), WetMetal, Rotation, true, EBHBlockMaterial::RustedMetal);
+		SpawnBlock(LocalPoint(Origin, Rotation, FVector(0.0f, 86.0f, CenterZForBlockBottom(0.0f, 1.10f))), FVector(LengthScale, 0.12f, 1.10f), WetMetal, Rotation, true, EBHBlockMaterial::RustedMetal);
+		SpawnBlock(LocalPoint(Origin, Rotation, FVector(0.0f, 0.0f, CenterZForBlockBottom(142.0f, 0.22f))), FVector(LengthScale, 1.95f, 0.22f), Shed, Rotation, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(LocalPoint(Origin, Rotation, FVector(-HalfLength * 0.22f, 0.0f, 176.0f)), FVector(LengthScale * 0.34f, 2.25f, 0.24f), Ground, Rotation, true, EBHBlockMaterial::Concrete);
+		SpawnBlock(LocalPoint(Origin, Rotation, FVector(HalfLength * 0.28f, 0.0f, 182.0f)), FVector(LengthScale * 0.30f, 2.10f, 0.22f), Ground, Rotation, true, EBHBlockMaterial::Concrete);
+		if (ABHCrawlSpaceVolume* CrawlVolume = GetWorld()->SpawnActor<ABHCrawlSpaceVolume>(LocalPoint(Origin, Rotation, FVector(0.0f, 0.0f, 80.0f)), Rotation))
+		{
+			CrawlVolume->Configure(FVector(HalfLength + 45.0f, 108.0f, 116.0f));
+		}
+	};
+	const auto SpawnSecretRoom = [&](const FVector& Origin, const FRotator& Rotation)
+	{
+		const FLinearColor RoomWall(0.060f, 0.082f, 0.078f, 1.0f);
+		SpawnBlock(LocalPoint(Origin, Rotation, FVector(0.0f, 0.0f, CenterZForBlockBottom(0.58f, 0.040f))), FVector(6.5f, 5.1f, 0.040f), Road, Rotation, false, EBHBlockMaterial::DiamondPlate);
+		SpawnBlock(LocalPoint(Origin, Rotation, FVector(325.0f, 0.0f, CenterZForBlockBottom(0.0f, 2.75f))), FVector(0.20f, 5.1f, 2.75f), RoomWall, Rotation, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(LocalPoint(Origin, Rotation, FVector(0.0f, -255.0f, CenterZForBlockBottom(0.0f, 2.75f))), FVector(6.7f, 0.20f, 2.75f), RoomWall, Rotation, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(LocalPoint(Origin, Rotation, FVector(0.0f, 255.0f, CenterZForBlockBottom(0.0f, 2.75f))), FVector(6.7f, 0.20f, 2.75f), RoomWall, Rotation, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(LocalPoint(Origin, Rotation, FVector(-325.0f, -190.0f, CenterZForBlockBottom(0.0f, 2.75f))), FVector(0.20f, 1.3f, 2.75f), RoomWall, Rotation, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(LocalPoint(Origin, Rotation, FVector(-325.0f, 190.0f, CenterZForBlockBottom(0.0f, 2.75f))), FVector(0.20f, 1.3f, 2.75f), RoomWall, Rotation, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(LocalPoint(Origin, Rotation, FVector(-325.0f, 0.0f, CenterZForBlockBottom(148.0f, 1.27f))), FVector(0.20f, 2.25f, 1.27f), RoomWall, Rotation, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(LocalPoint(Origin, Rotation, FVector(0.0f, 0.0f, CenterZForBlockBottom(276.0f, 0.18f))), FVector(6.9f, 5.3f, 0.18f), Roof, Rotation, true, EBHBlockMaterial::RustedMetal);
+		SpawnBlock(LocalPoint(Origin, Rotation, FVector(140.0f, -120.0f, 62.0f)), FVector(1.6f, 0.50f, 1.00f), WetMetal, Rotation, true, EBHBlockMaterial::RustedMetal);
+		SpawnBlock(LocalPoint(Origin, Rotation, FVector(95.0f, 135.0f, 52.0f)), FVector(1.0f, 0.85f, 0.80f), Warning, Rotation, false, EBHBlockMaterial::WarningSign);
 	};
 
 	SpawnBlock(FVector(0.0f, 0.0f, CenterZForBlockTop(0.0f, 0.28f)), FVector(158.0f, 124.0f, 0.28f), Ground, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
@@ -3131,7 +3169,11 @@ void ABHGameMode::BuildFoggroundsLevel()
 		{FVector(-3100.0f, -5200.0f, 190.0f), FVector(0.28f, 20.0f, 3.55f)}, {FVector(-3100.0f, 900.0f, 190.0f), FVector(0.28f, 42.0f, 3.55f)},
 		{FVector(300.0f, -2400.0f, 190.0f), FVector(0.28f, 32.0f, 3.55f)}, {FVector(300.0f, 3300.0f, 190.0f), FVector(0.28f, 28.0f, 3.55f)},
 		{FVector(3500.0f, -5200.0f, 190.0f), FVector(0.28f, 22.0f, 3.55f)}, {FVector(3500.0f, -200.0f, 190.0f), FVector(0.28f, 38.0f, 3.55f)},
-		{FVector(6200.0f, -2500.0f, 190.0f), FVector(0.28f, 34.0f, 3.55f)}, {FVector(6200.0f, 2850.0f, 190.0f), FVector(0.28f, 32.0f, 3.55f)}
+		{FVector(6200.0f, -2500.0f, 190.0f), FVector(0.28f, 34.0f, 3.55f)}, {FVector(6200.0f, 2850.0f, 190.0f), FVector(0.28f, 32.0f, 3.55f)},
+		{FVector(-7100.0f, -650.0f, 190.0f), FVector(0.28f, 19.0f, 3.30f)}, {FVector(-4850.0f, 650.0f, 190.0f), FVector(25.0f, 0.28f, 3.25f)},
+		{FVector(-2350.0f, -2450.0f, 190.0f), FVector(0.28f, 18.0f, 3.25f)}, {FVector(-1400.0f, -2750.0f, 190.0f), FVector(24.0f, 0.28f, 3.25f)},
+		{FVector(1900.0f, 2400.0f, 190.0f), FVector(0.28f, 22.0f, 3.25f)}, {FVector(2950.0f, 2500.0f, 190.0f), FVector(23.0f, 0.28f, 3.25f)},
+		{FVector(5150.0f, -4550.0f, 190.0f), FVector(0.28f, 14.0f, 3.15f)}, {FVector(6650.0f, 2050.0f, 190.0f), FVector(18.0f, 0.28f, 3.20f)}
 	};
 	for (const TPair<FVector, FVector>& WallSpec : MazeWalls)
 	{
@@ -3162,6 +3204,8 @@ void ABHGameMode::BuildFoggroundsLevel()
 			{FVector(-6100.0f, -2300.0f, 190.0f), 1200.0f, 118.0f, false},
 			{FVector(-700.0f, -1200.0f, 190.0f), 1000.0f, 118.0f, false},
 			{FVector(2500.0f, -3600.0f, 190.0f), 1000.0f, 118.0f, false},
+			{FVector(300.0f, -2400.0f, 190.0f), 1200.0f, 118.0f, false},
+			{FVector(6200.0f, -2500.0f, 190.0f), 1800.0f, 118.0f, false},
 			{FVector(-3100.0f, 900.0f, 190.0f), 1000.0f, 118.0f, false},
 			{FVector(900.0f, 1450.0f, 190.0f), -600.0f, 118.0f, false},
 			{FVector(-6100.0f, 2600.0f, 190.0f), 1625.0f, 118.0f, false},
@@ -3256,6 +3300,17 @@ void ABHGameMode::BuildFoggroundsLevel()
 		SpawnFenceSpan(SpanCursor, HalfSpan);
 	}
 
+	const auto SpawnSecretRoomWithCulvert = [&](const FVector& Origin, const FRotator& Rotation)
+	{
+		SpawnSecretRoom(Origin, Rotation);
+		SpawnHiderCulvert(LocalPoint(Origin, Rotation, FVector(-650.0f, 0.0f, 0.0f)), Rotation, 6.5f);
+	};
+	SpawnSecretRoomWithCulvert(FVector(-6900.0f, -1700.0f, 0.0f), FRotator::ZeroRotator);
+	SpawnSecretRoomWithCulvert(FVector(5450.0f, 4750.0f, 0.0f), FRotator(0.0f, 180.0f, 0.0f));
+	SpawnSecretRoomWithCulvert(FVector(-1250.0f, 5250.0f, 0.0f), FRotator(0.0f, 90.0f, 0.0f));
+	SpawnHiderCulvert(FVector(4700.0f, -4100.0f, 0.0f), FRotator(0.0f, 90.0f, 0.0f), 7.2f);
+	SpawnHiderCulvert(FVector(-3300.0f, 3250.0f, 0.0f), FRotator(0.0f, -12.0f, 0.0f), 6.4f);
+
 	struct FFoggroundsScreenSpec
 	{
 		FVector Location;
@@ -3292,17 +3347,34 @@ void ABHGameMode::BuildFoggroundsLevel()
 		SpawnBlock(Screen.Location, Screen.Scale, Screen.Tint, Screen.Rotation, true, Screen.Material);
 	}
 
-	const TArray<TPair<FVector, FRotator>> DoorSpecs = {
-		{FVector(-6100.0f, -1100.0f, 120.0f), FRotator::ZeroRotator}, {FVector(-3100.0f, -3600.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)},
-		{FVector(300.0f, -1200.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)}, {FVector(3500.0f, -3600.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)},
-		{FVector(6200.0f, -700.0f, 120.0f), FRotator::ZeroRotator}, {FVector(-3100.0f, 1900.0f, 120.0f), FRotator::ZeroRotator},
-		{FVector(300.0f, 1450.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)}, {FVector(3500.0f, 1450.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)},
-		{FVector(-6100.0f, 4230.0f, 120.0f), FRotator::ZeroRotator}, {FVector(6200.0f, 4280.0f, 120.0f), FRotator::ZeroRotator}
-	};
-	for (const TPair<FVector, FRotator>& DoorSpec : DoorSpecs)
+	struct FFoggroundsGateSpec
 	{
-		SpawnDoorGateFrame(DoorSpec.Key, DoorSpec.Value);
-		if (ABHDoor* Door = GetWorld()->SpawnActor<ABHDoor>(DoorSpec.Key, DoorSpec.Value))
+		FVector Location;
+		FRotator Rotation;
+		bool bLiftGate;
+	};
+	const FFoggroundsGateSpec DoorSpecs[] = {
+		{FVector(-6100.0f, -1100.0f, 120.0f), FRotator::ZeroRotator, false},
+		{FVector(-3100.0f, -3600.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f), true},
+		{FVector(300.0f, -1200.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f), false},
+		{FVector(3500.0f, -3600.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f), true},
+		{FVector(6200.0f, -700.0f, 120.0f), FRotator::ZeroRotator, false},
+		{FVector(-3100.0f, 1900.0f, 120.0f), FRotator::ZeroRotator, true},
+		{FVector(300.0f, 1450.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f), false},
+		{FVector(3500.0f, 1450.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f), true},
+		{FVector(-6100.0f, 4230.0f, 120.0f), FRotator::ZeroRotator, false},
+		{FVector(6200.0f, 4280.0f, 120.0f), FRotator::ZeroRotator, true}
+	};
+	for (const FFoggroundsGateSpec& DoorSpec : DoorSpecs)
+	{
+		SpawnDoorGateFrame(DoorSpec.Location, DoorSpec.Rotation, DoorSpec.bLiftGate);
+		if (DoorSpec.bLiftGate)
+		{
+			GetWorld()->SpawnActor<ABHSlidingGate>(DoorSpec.Location, DoorSpec.Rotation);
+			continue;
+		}
+
+		if (ABHDoor* Door = GetWorld()->SpawnActor<ABHDoor>(DoorSpec.Location, DoorSpec.Rotation))
 		{
 			DoorActors.Add(Door);
 		}
@@ -4485,7 +4557,14 @@ void ABHGameMode::PrepareRoundDirector()
 void ABHGameMode::StartDirectorTimer()
 {
 	GetWorldTimerManager().ClearTimer(DirectorTimerHandle);
-	GetWorldTimerManager().SetTimer(DirectorTimerHandle, this, &ABHGameMode::TickDirector, 7.0f, true, 5.0f);
+	float DirectorInterval = 7.0f;
+	float FirstDirectorTickDelay = 5.0f;
+	if (bRevisionMode)
+	{
+		DirectorInterval = RevisionScareIntensity >= 3 ? 4.0f : (RevisionScareIntensity >= 2 ? 5.0f : 6.0f);
+		FirstDirectorTickDelay = RevisionScareIntensity >= 2 ? 3.0f : 5.0f;
+	}
+	GetWorldTimerManager().SetTimer(DirectorTimerHandle, this, &ABHGameMode::TickDirector, DirectorInterval, true, FirstDirectorTickDelay);
 }
 
 void ABHGameMode::TickDirector()
@@ -4500,7 +4579,7 @@ void ABHGameMode::TickDirector()
 
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	const bool bPanicRound = BHGS->RoundModifier == EBHRoundModifier::PanicSurge;
-	const float RevisionScareScale = bRevisionMode ? (RevisionScareIntensity <= 0 ? 0.0f : (0.45f + 0.28f * RevisionScareIntensity)) : 1.0f;
+	const int32 ClampedRevisionScareIntensity = FMath::Clamp(RevisionScareIntensity, 0, 3);
 	const float PresenceAlpha = FMath::Clamp(BHGS->PresenceLevel / 100.0f, 0.0f, 1.0f);
 	const float TimePressureAlpha = BHGS->RemainingTime > 0 && HuntSeconds > 0
 		? 1.0f - FMath::Clamp(static_cast<float>(BHGS->RemainingTime) / static_cast<float>(HuntSeconds), 0.0f, 1.0f)
@@ -4508,8 +4587,21 @@ void ABHGameMode::TickDirector()
 	const float ObjectiveTotal = FMath::Max(1.0f, static_cast<float>(BHGS->BreakersRequired + BHGS->SideObjectivesRequired));
 	const float ObjectiveAlpha = FMath::Clamp(static_cast<float>(BHGS->BreakersCompleted + BHGS->SideObjectivesCompleted) / ObjectiveTotal, 0.0f, 1.0f);
 	const float DirectorPressure = FMath::Clamp(PresenceAlpha * 0.62f + TimePressureAlpha * 0.24f + ObjectiveAlpha * 0.28f, 0.0f, 1.0f);
-	const float ScareCooldown = (bPartyPace || bPanicRound ? 11.0f : 24.0f) / FMath::Max(0.65f, RevisionScareScale);
-	const float ScareChance = (bPartyPace || bPanicRound ? 0.58f : 0.24f) * FMath::Lerp(0.52f, 1.24f, DirectorPressure) * RevisionScareScale;
+	float ScareCooldown = bPartyPace || bPanicRound ? 11.0f : 24.0f;
+	float ScareChance = (bPartyPace || bPanicRound ? 0.58f : 0.24f) * FMath::Lerp(0.52f, 1.24f, DirectorPressure);
+	if (bRevisionMode)
+	{
+		static const float RevisionScareCooldowns[] = { 9999.0f, 20.0f, 14.0f, 9.0f };
+		static const float RevisionScareBaseChances[] = { 0.0f, 0.24f, 0.46f, 0.64f };
+		ScareCooldown = RevisionScareCooldowns[ClampedRevisionScareIntensity];
+		ScareChance = RevisionScareBaseChances[ClampedRevisionScareIntensity] * FMath::Lerp(0.58f, 1.26f, DirectorPressure);
+		if (bPartyPace || bPanicRound)
+		{
+			ScareCooldown *= 0.72f;
+			ScareChance += 0.16f;
+		}
+	}
+	ScareChance = FMath::Clamp(ScareChance, 0.0f, 0.95f);
 	const bool bScareWindow = Now - LastPresenceSpikeTime >= 3.5f || DirectorPressure >= 0.72f;
 	if (bScareWindow && Now - LastDirectorScareTime >= ScareCooldown && FMath::FRand() < ScareChance)
 	{
@@ -4517,10 +4609,25 @@ void ABHGameMode::TickDirector()
 	}
 
 	const bool bColdCallWindow = DirectorPressure >= 0.38f || ObjectiveAlpha >= 0.34f || TimePressureAlpha >= 0.52f;
-	const float ColdCallCooldown = (bPartyPace || bPanicRound ? 16.0f : 30.0f) / FMath::Max(0.75f, RevisionScareScale);
-	const float ColdCallChance = bColdCallWindow
-		? ((bPartyPace || bPanicRound ? 0.18f : 0.055f) + PresenceAlpha * 0.24f + ObjectiveAlpha * 0.10f) * RevisionScareScale
+	float ColdCallCooldown = bPartyPace || bPanicRound ? 16.0f : 30.0f;
+	float ColdCallChance = bColdCallWindow
+		? ((bPartyPace || bPanicRound ? 0.18f : 0.055f) + PresenceAlpha * 0.24f + ObjectiveAlpha * 0.10f)
 		: 0.0f;
+	if (bRevisionMode)
+	{
+		static const float RevisionColdCallCooldowns[] = { 9999.0f, 28.0f, 20.0f, 14.0f };
+		static const float RevisionColdCallBaseChances[] = { 0.0f, 0.08f, 0.14f, 0.21f };
+		ColdCallCooldown = RevisionColdCallCooldowns[ClampedRevisionScareIntensity];
+		ColdCallChance = bColdCallWindow
+			? RevisionColdCallBaseChances[ClampedRevisionScareIntensity] + PresenceAlpha * 0.32f + ObjectiveAlpha * 0.14f + TimePressureAlpha * 0.10f
+			: 0.0f;
+		if (bPartyPace || bPanicRound)
+		{
+			ColdCallCooldown *= 0.72f;
+			ColdCallChance += 0.12f;
+		}
+	}
+	ColdCallChance = FMath::Clamp(ColdCallChance, 0.0f, 0.90f);
 	if (Now - LastColdCallTime >= ColdCallCooldown && FMath::FRand() < ColdCallChance)
 	{
 		TriggerColdCallEvent();
@@ -4798,6 +4905,11 @@ void ABHGameMode::ApplyPresenceSpike(const FVector& SourceLocation, float SpikeL
 
 void ABHGameMode::TriggerScareEvent()
 {
+	if (bRevisionMode && RevisionScareIntensity <= 0)
+	{
+		return;
+	}
+
 	TArray<ABHCharacter*> Candidates;
 	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
 	{
@@ -4870,8 +4982,22 @@ void ABHGameMode::TriggerScareEvent()
 		}
 	}
 
-	const float MonsterCooldown = bPartyPace ? 24.0f : 38.0f;
-	if (GetWorld() && GetWorld()->GetTimeSeconds() - LastMonsterChargeTime >= MonsterCooldown && FMath::FRand() < (bPartyPace ? 0.45f : 0.30f))
+	float MonsterCooldown = bPartyPace ? 24.0f : 38.0f;
+	float MonsterChance = bPartyPace ? 0.45f : 0.30f;
+	if (bRevisionMode)
+	{
+		const int32 ClampedRevisionScareIntensity = FMath::Clamp(RevisionScareIntensity, 0, 3);
+		static const float RevisionMonsterCooldowns[] = { 9999.0f, 34.0f, 22.0f, 14.0f };
+		static const float RevisionMonsterChances[] = { 0.0f, 0.36f, 0.62f, 0.78f };
+		MonsterCooldown = RevisionMonsterCooldowns[ClampedRevisionScareIntensity];
+		MonsterChance = RevisionMonsterChances[ClampedRevisionScareIntensity];
+		if (bPartyPace)
+		{
+			MonsterCooldown *= 0.75f;
+			MonsterChance = FMath::Min(0.90f, MonsterChance + 0.10f);
+		}
+	}
+	if (GetWorld() && GetWorld()->GetTimeSeconds() - LastMonsterChargeTime >= MonsterCooldown && FMath::FRand() < MonsterChance)
 	{
 		TriggerMonsterChargeJumpscare(Target);
 		LastDirectorScareTime = GetWorld()->GetTimeSeconds();
