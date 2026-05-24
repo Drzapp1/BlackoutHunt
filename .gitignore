@@ -1,0 +1,27 @@
+Binaries/
+Build/
+Builds/
+DerivedDataCache/
+Intermediate/
+Saved/
+.vs/
+**/.git/
+**/__pycache__/
+*.py[cod]
+*.bak-*
+*.log
+*.VC.db
+*.opensdf
+*.opendb
+*.sdf
+*.sln
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Local credentials and runtime state
+.env
+*.env
+!*.env.example
+Tools/AccountBackend/data/
