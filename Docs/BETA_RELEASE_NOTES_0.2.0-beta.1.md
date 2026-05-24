@@ -28,6 +28,7 @@ Linux packaging and native Linux validation are deferred.
 - Online session Host/Find/Join is for local/development validation only until EOS or Steam is configured.
 - Internet play without router setup depends on the external Playit tunnel helper.
 - The current maps are runtime-generated prototype levels rather than authored production maps.
+- The classroom beta excludes unaudited prototype character/jumpscare source assets and uses procedural or CC0 fallback visuals where needed.
 - Multiplayer validation still needs to be completed on separate physical machines before broad distribution.
 
 ## Required Beta Validation

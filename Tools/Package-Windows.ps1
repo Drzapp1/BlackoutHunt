@@ -57,6 +57,7 @@ try {
     if ($Classroom) {
         $uatArgs += "-distribution"
         $uatArgs += "-nodebuginfo"
+        $uatArgs += "-clean"
     }
 
     & $unreal.RunUAT @uatArgs
