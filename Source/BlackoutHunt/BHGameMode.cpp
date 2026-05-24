@@ -3119,7 +3119,7 @@ void ABHGameMode::BuildFoggroundsLevel()
 	SpawnBlock(FVector(-5200.0f, -4580.0f, 78.0f), FVector(3.5f, 1.25f, 1.25f), WetMetal, FRotator::ZeroRotator, true, EBHBlockMaterial::RustedMetal);
 	SpawnBlock(FVector(-4820.0f, -4580.0f, 78.0f), FVector(2.5f, 1.05f, 1.05f), WetMetal, FRotator::ZeroRotator, true, EBHBlockMaterial::RustedMetal);
 	SpawnBlock(FVector(-4430.0f, -4580.0f, 120.0f), FVector(0.26f, 2.8f, 1.65f), Warning, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
-	SpawnBlock(FVector(7250.0f, -3150.0f, 125.0f), FVector(0.05f, 2.4f, 0.78f), FLinearColor::White, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
+	SpawnBlock(FVector(7250.0f, -3150.0f, 125.0f), FVector(0.05f, 2.4f, 0.78f), Warning, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
 	SpawnBlock(FVector(-7300.0f, 4700.0f, 125.0f), FVector(0.05f, 2.4f, 0.78f), Warning, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
 
 	const TArray<TPair<FVector, FVector>> MazeWalls = {
@@ -3487,7 +3487,7 @@ void ABHGameMode::AddFoggroundsLightingPass()
 {
 	const bool bExtremeFog = RuntimeFogPreset == EBHFogPreset::Extreme;
 	const bool bHeavyFog = RuntimeFogPreset == EBHFogPreset::Heavy;
-	const float SkyBrightness = bExtremeFog ? 0.48f : (bHeavyFog ? 0.38f : 0.32f);
+	const float SkyBrightness = bExtremeFog ? 0.43f : (bHeavyFog ? 0.34f : 0.29f);
 	const FLinearColor MoonTint(0.36f, 0.48f, 0.72f, 1.0f);
 	const FLinearColor SkyTint(0.10f, 0.16f, 0.27f, 1.0f);
 
@@ -3515,9 +3515,9 @@ void ABHGameMode::AddFoggroundsLightingPass()
 		MoonLight->SetMobility(EComponentMobility::Movable);
 		if (UDirectionalLightComponent* LightComponent = Cast<UDirectionalLightComponent>(MoonLight->GetLightComponent()))
 		{
-			LightComponent->SetIntensity(bExtremeFog ? 0.75f : (bHeavyFog ? 0.62f : 0.48f));
+			LightComponent->SetIntensity(bExtremeFog ? 0.68f : (bHeavyFog ? 0.56f : 0.43f));
 			LightComponent->SetLightColor(MoonTint);
-			LightComponent->SetIndirectLightingIntensity(bExtremeFog ? 0.55f : (bHeavyFog ? 0.45f : 0.35f));
+			LightComponent->SetIndirectLightingIntensity(bExtremeFog ? 0.50f : (bHeavyFog ? 0.40f : 0.32f));
 			LightComponent->SetVolumetricScatteringIntensity(0.10f);
 			LightComponent->SetCastShadows(false);
 			LightComponent->SetAtmosphereSunLight(true);
@@ -3535,7 +3535,7 @@ void ABHGameMode::AddFoggroundsLightingPass()
 		{
 			SkyLightComponent->SetMobility(EComponentMobility::Movable);
 			SkyLightComponent->SourceType = SLS_CapturedScene;
-			SkyLightComponent->SetIntensity(bExtremeFog ? 0.35f : (bHeavyFog ? 0.28f : 0.20f));
+			SkyLightComponent->SetIntensity(bExtremeFog ? 0.30f : (bHeavyFog ? 0.24f : 0.18f));
 			SkyLightComponent->SetLightColor(SkyTint);
 			SkyLightComponent->SetLowerHemisphereColor(FLinearColor(0.018f, 0.026f, 0.032f, 1.0f));
 			SkyLightComponent->SetVolumetricScatteringIntensity(0.12f);
@@ -3582,13 +3582,13 @@ void ABHGameMode::AddFoggroundsModeledFog()
 
 	const bool bExtremeFog = RuntimeFogPreset == EBHFogPreset::Extreme;
 	const bool bDenseFog = RuntimeFogPreset == EBHFogPreset::Heavy || RuntimeFogPreset == EBHFogPreset::Extreme;
-	const float SheetMinAlpha = bExtremeFog ? 0.025f : 0.08f;
-	const float SheetMaxAlpha = bExtremeFog ? 0.36f : 0.85f;
-	const auto SpawnFogSheet = [this, FogTint, SheetMinAlpha, SheetMaxAlpha](const FVector& Location, const FVector& Scale, const FRotator& Rotation, float AlphaScale)
+	const auto SpawnFogSheet = [](const FVector& Location, const FVector& Scale, const FRotator& Rotation, float AlphaScale)
 	{
-		FLinearColor SheetTint = FogTint;
-		SheetTint.A = FMath::Clamp(FogTint.A * AlphaScale, SheetMinAlpha, SheetMaxAlpha);
-		SpawnBlock(Location, Scale, SheetTint, Rotation, false, EBHBlockMaterial::FogSheet);
+		// Fog cards read as visible rectangular planes in cooked builds. Local fog volumes below keep the modeled fog without geometry artifacts.
+		(void)Location;
+		(void)Scale;
+		(void)Rotation;
+		(void)AlphaScale;
 	};
 
 	struct FFogSheetSpec
@@ -4218,13 +4218,13 @@ void ABHGameMode::AddMoodPass(const FLinearColor& FogColor, float FogDensity, fl
 		if (bFoggrounds)
 		{
 			PostProcess->Settings.bOverride_AutoExposureBias = true;
-			PostProcess->Settings.AutoExposureBias = bExtremeFog ? -0.25f : (bHeavyFog ? -0.18f : -0.10f);
+			PostProcess->Settings.AutoExposureBias = bExtremeFog ? -0.32f : (bHeavyFog ? -0.24f : -0.14f);
 			PostProcess->Settings.bOverride_SceneColorTint = true;
 			PostProcess->Settings.SceneColorTint = bExtremeFog ? FLinearColor(0.94f, 0.99f, 1.04f, 1.0f) : FLinearColor(0.92f, 0.96f, 1.02f, 1.0f);
 			PostProcess->Settings.bOverride_IndirectLightingColor = true;
 			PostProcess->Settings.IndirectLightingColor = FLinearColor(0.12f, 0.18f, 0.28f, 1.0f);
 			PostProcess->Settings.bOverride_IndirectLightingIntensity = true;
-			PostProcess->Settings.IndirectLightingIntensity = bExtremeFog ? 0.55f : (bHeavyFog ? 0.45f : 0.35f);
+			PostProcess->Settings.IndirectLightingIntensity = bExtremeFog ? 0.48f : (bHeavyFog ? 0.38f : 0.30f);
 		}
 	}
 

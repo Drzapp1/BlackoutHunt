@@ -475,8 +475,8 @@ ABHCharacter::ABHCharacter()
 
 	Flashlight = CreateDefaultSubobject<USpotLightComponent>(TEXT("Flashlight"));
 	Flashlight->SetupAttachment(Camera);
-	Flashlight->SetIntensity(6000.0f);
-	Flashlight->SetAttenuationRadius(1700.0f);
+	Flashlight->SetIntensity(9000.0f);
+	Flashlight->SetAttenuationRadius(2200.0f);
 	Flashlight->SetInnerConeAngle(18.0f);
 	Flashlight->SetOuterConeAngle(34.0f);
 	Flashlight->SetVolumetricScatteringIntensity(5.0f);
@@ -2052,25 +2052,25 @@ void ABHCharacter::UpdateFlashlightFeel(float DeltaSeconds)
 		+ FMath::Sin(FlashlightPulseTime * FMath::Lerp(5.8f, 13.0f, LowBatteryAlpha)) * (0.018f + LowBatteryAlpha * 0.045f)
 		+ FMath::Sin(FlashlightPulseTime * 23.0f) * (HorrorAlpha * 0.018f);
 	const float Cutout = 1.0f - LowBatteryAlpha * (0.09f + 0.12f * FMath::Square(FMath::Max(0.0f, FMath::Sin(FlashlightPulseTime * 37.0f))));
-	const float NormalIntensity = FMath::Clamp(6200.0f * FMath::Lerp(0.42f, 1.0f, BatteryAlpha) * UnevenPulse * Cutout, 850.0f, 7600.0f);
-	const float NormalRadius = FMath::Lerp(1050.0f, 1850.0f, BatteryAlpha) * FMath::Lerp(1.0f, 0.92f, HorrorAlpha);
+	const float NormalIntensity = FMath::Clamp(9200.0f * FMath::Lerp(0.52f, 1.0f, BatteryAlpha) * UnevenPulse * Cutout, 1800.0f, 11500.0f);
+	const float NormalRadius = FMath::Lerp(1300.0f, 2200.0f, BatteryAlpha) * FMath::Lerp(1.0f, 0.94f, HorrorAlpha);
 
-	const float EffectiveIntensity = bExtremeFog ? FMath::Min(NormalIntensity, 5400.0f) : (bHeavyFog ? FMath::Min(NormalIntensity, 2100.0f) : NormalIntensity);
-	const float EffectiveRadius = bExtremeFog ? FMath::Min(NormalRadius, 440.0f) : (bHeavyFog ? FMath::Min(NormalRadius, 235.0f) : NormalRadius);
-	const float EffectiveInnerConeAngle = bExtremeFog ? 15.0f : (bHeavyFog ? 11.0f : 18.0f);
-	const float EffectiveOuterConeAngle = bExtremeFog ? 32.0f : (bHeavyFog ? 22.0f : (34.0f + LowBatteryAlpha * 2.5f + HorrorAlpha * 1.8f));
+	const float EffectiveIntensity = bExtremeFog ? FMath::Min(NormalIntensity, 9500.0f) : (bHeavyFog ? FMath::Min(NormalIntensity, 8600.0f) : NormalIntensity);
+	const float EffectiveRadius = bExtremeFog ? FMath::Min(NormalRadius, 650.0f) : (bHeavyFog ? FMath::Min(NormalRadius, 950.0f) : NormalRadius);
+	const float EffectiveInnerConeAngle = bExtremeFog ? 16.0f : (bHeavyFog ? 16.0f : 18.0f);
+	const float EffectiveOuterConeAngle = bExtremeFog ? 30.0f : (bHeavyFog ? 32.0f : (34.0f + LowBatteryAlpha * 2.5f + HorrorAlpha * 1.8f));
 
 	Flashlight->SetIntensity(EffectiveIntensity);
 	Flashlight->SetAttenuationRadius(EffectiveRadius);
 	Flashlight->SetInnerConeAngle(EffectiveInnerConeAngle);
 	Flashlight->SetOuterConeAngle(EffectiveOuterConeAngle);
-	Flashlight->SetVolumetricScatteringIntensity(bExtremeFog ? 16.0f : (bHeavyFog ? 38.0f : 8.0f));
+	Flashlight->SetVolumetricScatteringIntensity(bExtremeFog ? 20.0f : (bHeavyFog ? 18.0f : 8.0f));
 
 	const float FogScatterAlpha =
-		ActiveFogPreset == EBHFogPreset::Extreme ? 0.45f :
-		ActiveFogPreset == EBHFogPreset::Heavy ? 1.0f :
+		ActiveFogPreset == EBHFogPreset::Extreme ? 0.80f :
+		ActiveFogPreset == EBHFogPreset::Heavy ? 0.72f :
 		0.42f;
-	const float BeamLength = bExtremeFog ? 420.0f : (bHeavyFog ? 235.0f : FMath::Clamp(EffectiveRadius * 0.74f, 760.0f, 1380.0f));
+	const float BeamLength = bExtremeFog ? 620.0f : (bHeavyFog ? 850.0f : FMath::Clamp(EffectiveRadius * 0.74f, 760.0f, 1380.0f));
 	const float BeamPulse = FMath::Clamp(UnevenPulse * Cutout, 0.55f, 1.28f);
 	const FLinearColor BeamTint(0.76f, 0.86f, 0.80f, 1.0f);
 
@@ -2108,10 +2108,10 @@ void ABHCharacter::UpdateFlashlightFeel(float DeltaSeconds)
 		}
 	};
 
-	const float OuterOpacity = FMath::Clamp((0.010f + FogScatterAlpha * 0.022f + LowBatteryAlpha * 0.006f) * BeamPulse, 0.010f, bExtremeFog ? 0.042f : 0.105f);
-	const float CoreOpacity = FMath::Clamp((0.008f + FogScatterAlpha * 0.016f) * BeamPulse, 0.008f, bExtremeFog ? 0.030f : 0.072f);
-	ConfigureBeam(FlashlightBeamOuter, FlashlightBeamOuterMaterial, BeamLength, EffectiveOuterConeAngle, 1.0f, OuterOpacity, bExtremeFog ? 0.86f : (bHeavyFog ? 1.10f : 0.75f));
-	ConfigureBeam(FlashlightBeamCore, FlashlightBeamCoreMaterial, BeamLength * 0.82f, EffectiveInnerConeAngle, 0.54f, CoreOpacity, bExtremeFog ? 1.08f : (bHeavyFog ? 1.40f : 1.00f));
+	const float OuterOpacity = FMath::Clamp((0.014f + FogScatterAlpha * 0.032f + LowBatteryAlpha * 0.006f) * BeamPulse, 0.012f, bExtremeFog ? 0.060f : (bHeavyFog ? 0.065f : 0.105f));
+	const float CoreOpacity = FMath::Clamp((0.010f + FogScatterAlpha * 0.021f) * BeamPulse, 0.009f, bExtremeFog ? 0.040f : (bHeavyFog ? 0.048f : 0.072f));
+	ConfigureBeam(FlashlightBeamOuter, FlashlightBeamOuterMaterial, BeamLength, EffectiveOuterConeAngle, 1.0f, OuterOpacity, bExtremeFog ? 1.20f : (bHeavyFog ? 1.25f : 0.75f));
+	ConfigureBeam(FlashlightBeamCore, FlashlightBeamCoreMaterial, BeamLength * 0.82f, EffectiveInnerConeAngle, 0.50f, CoreOpacity, bExtremeFog ? 1.45f : (bHeavyFog ? 1.55f : 1.00f));
 }
 
 void ABHCharacter::ApplyFlashlightState()
