@@ -22,6 +22,8 @@ namespace
 {
 	constexpr int32 BHMinLocalUsernameChars = 3;
 	constexpr int32 BHMaxLocalUsernameChars = 32;
+	constexpr int32 BHMinDisplayNameChars = 2;
+	constexpr int32 BHMaxDisplayNameChars = 24;
 	constexpr int32 BHMinLocalPasswordChars = 8;
 	constexpr int32 BHMaxLocalPasswordChars = 128;
 
@@ -206,6 +208,35 @@ namespace
 		}
 
 		return Sanitized.Left(BHMaxLocalUsernameChars);
+	}
+
+	FString SanitizeDisplayName(FString DisplayName)
+	{
+		DisplayName.TrimStartAndEndInline();
+
+		FString Sanitized;
+		bool bLastWasSpace = false;
+		for (const TCHAR Character : DisplayName)
+		{
+			if (FChar::IsAlnum(Character) || Character == TEXT('_') || Character == TEXT('-') || Character == TEXT('.'))
+			{
+				Sanitized.AppendChar(Character);
+				bLastWasSpace = false;
+			}
+			else if (FChar::IsWhitespace(Character) && !bLastWasSpace && !Sanitized.IsEmpty())
+			{
+				Sanitized.AppendChar(TEXT(' '));
+				bLastWasSpace = true;
+			}
+
+			if (Sanitized.Len() >= BHMaxDisplayNameChars)
+			{
+				break;
+			}
+		}
+
+		Sanitized.TrimStartAndEndInline();
+		return Sanitized;
 	}
 
 	FString MakePasswordSalt()
@@ -830,6 +861,42 @@ bool UBHAccountSubsystem::ResetLocalClassroomData(FString& OutMessage)
 	ContinueAsGuest(GuestMessage);
 
 	OutMessage = TEXT("Local classroom account data reset on this machine.");
+	SetLastAccountMessage(OutMessage);
+	return true;
+}
+
+bool UBHAccountSubsystem::SetLocalDisplayName(const FString& DisplayName, FString& OutMessage)
+{
+	const FString CleanDisplayName = SanitizeDisplayName(DisplayName);
+	if (CleanDisplayName.Len() < BHMinDisplayNameChars)
+	{
+		OutMessage = FString::Printf(TEXT("Name must be at least %d visible characters."), BHMinDisplayNameChars);
+		SetLastAccountMessage(OutMessage);
+		return false;
+	}
+
+	EnsureDeviceId();
+	if (Profile.PlayerId.IsEmpty())
+	{
+		Profile.PlayerId = FString::Printf(TEXT("guest_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+		Profile.Provider = TEXT("guest");
+		Profile.ProviderSubject.Reset();
+		Profile.Email.Reset();
+		Profile.AvatarUrl.Reset();
+		Profile.SessionToken.Reset();
+		Profile.bGuest = true;
+		Profile.LastLoginUtc = UtcNowString();
+	}
+
+	Profile.DisplayName = CleanDisplayName;
+	if (Profile.Provider.IsEmpty())
+	{
+		Profile.Provider = TEXT("guest");
+		Profile.bGuest = true;
+	}
+	SaveProfile();
+
+	OutMessage = FString::Printf(TEXT("Name set to %s."), *Profile.DisplayName);
 	SetLastAccountMessage(OutMessage);
 	return true;
 }

@@ -77,7 +77,7 @@ try {
         "-map=/Engine/Maps/Entry",
         "-build",
         "-noxge",
-        "-ubtargs=-WaitMutex -NoXGE -MaxParallelActions=2",
+        "-ubtargs=-WaitMutex -NoXGE -NoUBA -MaxParallelActions=1",
         "-stage",
         "-pak",
         "-archive",

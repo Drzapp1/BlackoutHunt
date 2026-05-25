@@ -86,7 +86,9 @@ private:
 	FReply OnStopInternetTunnelClicked();
 	FReply OnCopyJoinInviteClicked();
 	FReply OnJoinClicked();
+	FReply OnJoinSavedEndpointClicked(FString Endpoint);
 	FReply OnJoinLocalClicked();
+	FReply OnReadyClicked();
 	FReply OnResumeClicked();
 	FReply OnForceStartClicked();
 	FReply OnNextFacilityClicked();
@@ -137,6 +139,8 @@ private:
 	FText GetAccountText() const;
 	FText GetLocalCredentialStatusText() const;
 	FText GetSuggestedAddressText() const;
+	FText GetDefaultJoinNameText() const;
+	FText GetReadyButtonText() const;
 	FText GetPlayerIdentityText() const;
 	FText GetRoundDirectorText() const;
 	FText GetOnlineSessionBrowserText() const;
@@ -166,9 +170,13 @@ private:
 	bool IsTestMode() const;
 	bool CanEditRoles() const;
 	bool CanOpenClassroomBoard() const;
+	bool CanReadyFromMenu() const;
 	FString GetEnteredAddress() const;
 	FString GetEnteredHost() const;
 	int32 GetEnteredPort() const;
+	bool EnsureJoinDisplayName();
+	void SetJoinAddressFields(const FString& Address);
+	FString ResolvePreferredAddress() const;
 	void EnsureAvatarPreviewScene();
 	void UpdateAvatarPreviewMesh();
 	void DestroyAvatarPreviewScene();
@@ -176,6 +184,7 @@ private:
 	TSharedRef<SWidget> BuildStartScreen();
 	void BuildPlayActionList(TSharedRef<SVerticalBox> ActionList, bool bInGame, bool bPracticeMode, bool bTestMode);
 	TSharedRef<SWidget> BuildPlayJoinAddressPanel();
+	TSharedRef<SWidget> BuildClassroomJoinListPanel();
 	TSharedRef<SWidget> BuildAccountPanel();
 	TSharedRef<SWidget> BuildLocalCredentialPanel(bool bForStartScreen);
 	TSharedRef<SWidget> BuildNetworkPanel();
@@ -198,6 +207,7 @@ private:
 	TSharedPtr<SEditableTextBox> AddressTextBox;
 	TSharedPtr<SEditableTextBox> JoinHostTextBox;
 	TSharedPtr<SEditableTextBox> JoinPortTextBox;
+	TSharedPtr<SEditableTextBox> JoinNameTextBox;
 	TSharedPtr<SEditableTextBox> StartLocalUsernameTextBox;
 	TSharedPtr<SEditableTextBox> StartLocalPasswordTextBox;
 	TSharedPtr<SEditableTextBox> LocalUsernameTextBox;

@@ -79,6 +79,43 @@ FString BHRevisionDifficultyMixToString(EBHRevisionDifficultyMix DifficultyMix)
 	}
 }
 
+FString BHSanitizeDisplayName(FString DisplayName)
+{
+	DisplayName.TrimStartAndEndInline();
+
+	FString Sanitized;
+	bool bLastWasSpace = false;
+	for (const TCHAR Character : DisplayName)
+	{
+		if (FChar::IsAlnum(Character) || Character == TEXT('_') || Character == TEXT('-') || Character == TEXT('.'))
+		{
+			Sanitized.AppendChar(Character);
+			bLastWasSpace = false;
+		}
+		else if (FChar::IsWhitespace(Character) && !bLastWasSpace && !Sanitized.IsEmpty())
+		{
+			Sanitized.AppendChar(TEXT(' '));
+			bLastWasSpace = true;
+		}
+
+		if (Sanitized.Len() >= 24)
+		{
+			break;
+		}
+	}
+
+	Sanitized.TrimStartAndEndInline();
+	return Sanitized;
+}
+
+bool BHIsUsefulDisplayName(const FString& DisplayName)
+{
+	const FString CleanDisplayName = BHSanitizeDisplayName(DisplayName);
+	return CleanDisplayName.Len() >= 2
+		&& !CleanDisplayName.Equals(TEXT("Guest"), ESearchCase::IgnoreCase)
+		&& !CleanDisplayName.Equals(TEXT("Player"), ESearchCase::IgnoreCase);
+}
+
 EBHBotDifficulty BHParseBotDifficulty(const FString& Difficulty)
 {
 	if (Difficulty.Equals(TEXT("Easy"), ESearchCase::IgnoreCase))
@@ -267,6 +304,7 @@ void ABHPlayerController::BeginPlay()
 			ApplyGameplayInputMode();
 		}
 		UpdateAmbientMusic();
+		GetWorldTimerManager().SetTimer(DisplayNameSyncTimerHandle, this, &ABHPlayerController::PushLocalDisplayNameToServer, 1.0f, false);
 		if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
 		{
 			if (BHGI->IsAutomationEnabled())
@@ -293,6 +331,7 @@ void ABHPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		World->GetTimerManager().ClearTimer(AutomationQuitTimerHandle);
 		World->GetTimerManager().ClearTimer(ClassroomPreflightTimerHandle);
 		World->GetTimerManager().ClearTimer(ClassroomFallbackTimerHandle);
+		World->GetTimerManager().ClearTimer(DisplayNameSyncTimerHandle);
 	}
 
 	HideClassroomBoard();
@@ -960,6 +999,10 @@ bool ABHPlayerController::ContinueAsGuestForMenu(FString& OutMessage)
 	}
 
 	const bool bSuccess = AccountSubsystem->ContinueAsGuest(OutMessage);
+	if (bSuccess)
+	{
+		PushLocalDisplayNameToServer();
+	}
 	ShowLocalStatusMessage(OutMessage, bSuccess ? 5.0f : 6.0f);
 	return bSuccess;
 }
@@ -1035,6 +1078,10 @@ bool ABHPlayerController::CreateOrUpdateLocalCredentialForMenu(const FString& Us
 	}
 
 	const bool bSuccess = AccountSubsystem->CreateOrUpdateLocalCredential(Username, Password, OutMessage);
+	if (bSuccess)
+	{
+		PushLocalDisplayNameToServer();
+	}
 	ShowLocalStatusMessage(OutMessage, bSuccess ? 5.0f : 6.0f);
 	return bSuccess;
 }
@@ -1050,6 +1097,10 @@ bool ABHPlayerController::LoginLocalCredentialForMenu(const FString& Username, c
 	}
 
 	const bool bSuccess = AccountSubsystem->LoginLocalCredential(Username, Password, OutMessage);
+	if (bSuccess)
+	{
+		PushLocalDisplayNameToServer();
+	}
 	ShowLocalStatusMessage(OutMessage, bSuccess ? 5.0f : 6.0f);
 	return bSuccess;
 }
@@ -1554,6 +1605,12 @@ bool ABHPlayerController::RevisionStatusForMenu(FString& OutMessage)
 
 bool ABHPlayerController::ApplyGraphicsPresetForMenu(int32 Quality, FString& OutMessage)
 {
+	if (!IsLocalController())
+	{
+		OutMessage = TEXT("Display settings can only be changed on the local machine.");
+		return false;
+	}
+
 	const int32 ClampedQuality = FMath::Clamp(Quality, 0, 3);
 
 	BHApplyScalabilityGroups(this, ClampedQuality);
@@ -1688,28 +1745,122 @@ bool ABHPlayerController::ApplyGraphicsPresetForMenu(int32 Quality, FString& Out
 	}
 
 	static const TCHAR* Labels[] = { TEXT("Low 4GB"), TEXT("Medium"), TEXT("High 16GB"), TEXT("Ultra") };
-	OutMessage = FString::Printf(TEXT("Graphics preset applied: %s."), Labels[ClampedQuality]);
+	OutMessage = FString::Printf(TEXT("Local graphics preset applied: %s."), Labels[ClampedQuality]);
 	ShowLocalStatusMessage(OutMessage, 3.0f);
 	return true;
 }
 
 bool ABHPlayerController::ApplyResolutionForMenu(int32 Width, int32 Height, bool bFullscreen, FString& OutMessage)
 {
+	if (!IsLocalController())
+	{
+		OutMessage = TEXT("Display settings can only be changed on the local machine.");
+		return false;
+	}
+
 	const int32 SafeWidth = FMath::Clamp(Width, 960, 7680);
 	const int32 SafeHeight = FMath::Clamp(Height, 540, 4320);
 	ConsoleCommand(FString::Printf(TEXT("r.SetRes %dx%d%s"), SafeWidth, SafeHeight, bFullscreen ? TEXT("f") : TEXT("w")));
-	OutMessage = FString::Printf(TEXT("Resolution applied: %dx%d %s."), SafeWidth, SafeHeight, bFullscreen ? TEXT("Fullscreen") : TEXT("Windowed"));
+	OutMessage = FString::Printf(TEXT("Local resolution applied: %dx%d %s."), SafeWidth, SafeHeight, bFullscreen ? TEXT("Fullscreen") : TEXT("Windowed"));
 	ShowLocalStatusMessage(OutMessage, 3.0f);
 	return true;
 }
 
 bool ABHPlayerController::ApplyFrameRateLimitForMenu(int32 FrameRateLimit, FString& OutMessage)
 {
+	if (!IsLocalController())
+	{
+		OutMessage = TEXT("Display settings can only be changed on the local machine.");
+		return false;
+	}
+
 	const int32 SafeLimit = FrameRateLimit <= 0 ? 0 : FMath::Clamp(FrameRateLimit, 30, 360);
 	ConsoleCommand(FString::Printf(TEXT("t.MaxFPS %d"), SafeLimit));
-	OutMessage = SafeLimit == 0 ? TEXT("Frame cap removed.") : FString::Printf(TEXT("Frame cap set to %d FPS."), SafeLimit);
+	OutMessage = SafeLimit == 0 ? TEXT("Local frame cap removed.") : FString::Printf(TEXT("Local frame cap set to %d FPS."), SafeLimit);
 	ShowLocalStatusMessage(OutMessage, 3.0f);
 	return true;
+}
+
+bool ABHPlayerController::ToggleReadyForMenu(FString& OutMessage)
+{
+	if (!IsLocalController())
+	{
+		OutMessage = TEXT("Ready can only be changed by the local player.");
+		return false;
+	}
+
+	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	if (!BHGS || !BHPS)
+	{
+		OutMessage = TEXT("Join or host a classroom lobby before readying.");
+		ShowLocalStatusMessage(OutMessage, 3.0f);
+		return false;
+	}
+
+	if (BHGS->RoundPhase != EBHRoundPhase::Lobby)
+	{
+		OutMessage = TEXT("Round already started. Late joiners observe as survivor spectators until the next lobby.");
+		ShowLocalStatusMessage(OutMessage, 4.0f);
+		return false;
+	}
+
+	const bool bNewReady = !BHPS->bReady;
+	ServerSetReady(bNewReady);
+	OutMessage = bNewReady ? TEXT("Ready set. Waiting for the classroom roster.") : TEXT("Ready cancelled.");
+	ShowLocalStatusMessage(OutMessage, 3.0f);
+	return true;
+}
+
+bool ABHPlayerController::SetLocalDisplayNameForMenu(const FString& DisplayName, FString& OutMessage)
+{
+	UBHAccountSubsystem* AccountSubsystem = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr;
+	if (!AccountSubsystem)
+	{
+		OutMessage = TEXT("No account subsystem was available.");
+		ShowLocalStatusMessage(OutMessage, 4.0f);
+		return false;
+	}
+
+	const bool bSuccess = AccountSubsystem->SetLocalDisplayName(DisplayName, OutMessage);
+	if (bSuccess)
+	{
+		PushLocalDisplayNameToServer();
+	}
+	ShowLocalStatusMessage(OutMessage, bSuccess ? 3.0f : 5.0f);
+	return bSuccess;
+}
+
+FString ABHPlayerController::GetLocalDisplayNameForMenu() const
+{
+	const UBHAccountSubsystem* AccountSubsystem = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr;
+	if (!AccountSubsystem)
+	{
+		return FString();
+	}
+
+	return BHSanitizeDisplayName(AccountSubsystem->GetProfile().DisplayName);
+}
+
+bool ABHPlayerController::HasUsefulLocalDisplayNameForMenu() const
+{
+	return BHIsUsefulDisplayName(GetLocalDisplayNameForMenu());
+}
+
+void ABHPlayerController::PushLocalDisplayNameToServer()
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	const FString DisplayName = GetLocalDisplayNameForMenu();
+	if (!BHIsUsefulDisplayName(DisplayName))
+	{
+		return;
+	}
+
+	ServerSetPlayerDisplayName(DisplayName);
 }
 
 void ABHPlayerController::SetDesiredRole(APlayerState* TargetPlayerState, EBHPlayerRole DesiredRole)
@@ -2331,9 +2482,10 @@ void ABHPlayerController::RunClassroomNetworkPreflight()
 	}
 
 	bClassroomPreflightReported = true;
-	const FString JoinAddress = FBHNetworkSupport::ResolveLocalJoinAddress(7777);
+	const UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>();
+	const FString JoinAddress = BHGI ? BHGI->GetPreferredJoinAddress(7777) : FBHNetworkSupport::ResolveLocalJoinAddress(7777);
 	const FString Status = FString::Printf(
-		TEXT("LAN ready: students join %s on UDP 7777. If nobody connects, tunnel fallback starts automatically."),
+		TEXT("Classroom join address: %s. Direct LAN uses UDP 7777; if nobody connects, tunnel fallback starts automatically."),
 		*JoinAddress);
 	ShowLocalStatusMessage(Status, 12.0f);
 	UE_LOG(LogTemp, Display, TEXT("%s"), *Status);
@@ -2362,6 +2514,10 @@ void ABHPlayerController::RunClassroomFallbackCheck()
 	FString Status;
 	if (TunnelStatus.bTunnelReady)
 	{
+		if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
+		{
+			BHGI->SetPublicJoinAddress(TunnelStatus.TunnelAddress);
+		}
 		Status = FString::Printf(TEXT("LAN blocked, tunnel ready: students join %s. %s"), *TunnelStatus.TunnelAddress, *TunnelStatus.Message);
 	}
 	else if (bTunnelStarted)
@@ -2409,6 +2565,20 @@ void ABHPlayerController::ServerSetReady_Implementation(bool bReady)
 	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
 	{
 		BHGM->SetPlayerReady(this, bReady);
+	}
+}
+
+void ABHPlayerController::ServerSetPlayerDisplayName_Implementation(const FString& DisplayName)
+{
+	const FString CleanDisplayName = BHSanitizeDisplayName(DisplayName);
+	if (!BHIsUsefulDisplayName(CleanDisplayName))
+	{
+		return;
+	}
+
+	if (APlayerState* BasePlayerState = GetPlayerState<APlayerState>())
+	{
+		BasePlayerState->SetPlayerName(CleanDisplayName);
 	}
 }
 

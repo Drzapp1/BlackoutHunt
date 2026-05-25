@@ -75,6 +75,9 @@ public:
 	UFUNCTION(Exec)
 	void OpenInternetTunnelSetup(int32 LocalPort = 7777);
 
+	UFUNCTION(Exec)
+	void SetClassroomJoinAddress(const FString& Address);
+
 	bool TryHostOnlineGame(const FString& LevelName, FString& OutMessage);
 	bool TryFindOnlineGames(FString& OutMessage);
 	bool TryJoinOnlineGame(int32 SessionIndex, FString& OutMessage);
@@ -90,6 +93,9 @@ public:
 	const FString& GetGameHotspotSsid() const;
 	const FString& GetGameHotspotPassphrase() const;
 	const FString& GetLastNetworkMessage() const;
+	const FString& GetPublicJoinAddress() const;
+	FString GetPreferredJoinAddress(int32 LocalPort = 7777) const;
+	void SetPublicJoinAddress(const FString& Address);
 	const FBHAutomationConfig& GetAutomationConfig() const;
 	bool IsAutomationEnabled() const;
 	bool ShouldUseVirtualBoxSafeMode() const;
@@ -129,6 +135,7 @@ private:
 	FString GameHotspotSsid;
 	FString GameHotspotPassphrase;
 	FString LastNetworkMessage;
+	FString PublicJoinAddress;
 	FBHAutomationConfig AutomationConfig;
 	bool bAutomationHostConsumed = false;
 	bool bAutomationJoinConsumed = false;

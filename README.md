@@ -6,7 +6,7 @@ One player hosts a listen server and friends join with `host-ip-or-domain:7777`.
 
 ## Beta Release
 
-Current beta target: `0.2.0-beta.1` Windows classroom/LAN build. See `D:\MainGame\Docs\BETA_RELEASE_NOTES_0.2.0-beta.1.md` for tester scope, known limits, and validation notes.
+Current beta target: `0.2.0-beta.3` Windows classroom build. See `D:\MainGame\Docs\BETA_RELEASE_NOTES_0.2.0-beta.3.md` for tester scope, known limits, and validation notes.
 
 ## Current Gameplay
 
@@ -25,8 +25,8 @@ Current beta target: `0.2.0-beta.1` Windows classroom/LAN build. See `D:\MainGam
 
 ## Menu
 
-The game now opens on a native menu with account login, direct-IP Host/Join, separate host/port joining, Live Classroom, online lobby Host/Find/Join, an internet tunnel helper, local loopback test, game hotspot control, Quit, and Escape-menu support while in a match. The menu also includes a host-only Classroom tab with a live roster/progress board, Physics question focus/complexity controls, and a separate projector window. The console commands remain available as a fallback.
-While a hosted game is still in the lobby, the listen-server host can open Escape and queue each connected player as Teacher, Survivor, Hall Monitor, or Auto before starting. Every connected player must ready up for live classroom play; the host can soft-kick stuck or misjoined human players from the roster. The same menu has map voting, round options, graphics presets, resolution buttons, and FPS caps.
+The game now opens on a native menu with account login, direct-IP Host/Join, separate host/port joining, a saved classroom join list, Live Classroom, online lobby Host/Find/Join, an internet tunnel helper, local loopback test, game hotspot control, Quit, and Escape-menu support while in a match. The menu also includes a host-only Classroom tab with a live roster/progress board, Physics question focus/complexity controls, and a separate projector window. The console commands remain available as a fallback.
+While a hosted game is still in the lobby, the listen-server host can open Escape and queue each connected player as Teacher, Survivor, Hall Monitor, or Auto before starting. Students are prompted for an in-game lobby name before joining if no useful local profile name exists, and that name appears in the host roster. Every connected player must ready up for live classroom play; the host can soft-kick stuck or misjoined human players from the roster. Students see local display/audio/profile controls only; host-only session, classroom, role, tunnel, and admin controls stay on the host machine.
 
 ## Performance Modes
 

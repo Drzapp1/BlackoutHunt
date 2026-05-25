@@ -16,7 +16,7 @@ namespace
 {
 	const FName BHOnlineLevelSetting(TEXT("BHLEVEL"));
 	const FName BHOnlineBuildSetting(TEXT("BHBUILD"));
-	const FString BHOnlineBuildId(TEXT("BlackoutHunt-0.2.0-beta.2"));
+	const FString BHOnlineBuildId(TEXT("BlackoutHunt-0.2.0-beta.3"));
 	constexpr int32 BHOnlineMaxSearchResults = 25;
 
 	FString NormalizeRuntimeLevelName(FString LevelName)
@@ -169,6 +169,18 @@ void UBHGameInstance::OpenInternetTunnelSetup(int32 LocalPort)
 {
 	FString Message;
 	TryOpenInternetTunnelSetup(Message, LocalPort);
+}
+
+void UBHGameInstance::SetClassroomJoinAddress(const FString& Address)
+{
+	SetPublicJoinAddress(Address);
+	if (PublicJoinAddress.IsEmpty())
+	{
+		SetLastNetworkMessage(TEXT("Usage: SetClassroomJoinAddress <host-or-domain>:7777"));
+		return;
+	}
+
+	SetLastNetworkMessage(FString::Printf(TEXT("Classroom join address set to %s."), *PublicJoinAddress));
 }
 
 bool UBHGameInstance::TryHostOnlineGame(const FString& LevelName, FString& OutMessage)
@@ -434,6 +446,10 @@ bool UBHGameInstance::TryStartInternetTunnel(FString& OutMessage, int32 LocalPor
 	}
 
 	const FBHInternetTunnelResult Result = FBHNetworkSupport::StartInternetTunnel(LocalPort);
+	if (!Result.TunnelAddress.IsEmpty())
+	{
+		SetPublicJoinAddress(Result.TunnelAddress);
+	}
 	SetLastNetworkMessage(Result.Message);
 	OutMessage = LastNetworkMessage;
 	return Result.bSuccess;
@@ -508,6 +524,38 @@ const FString& UBHGameInstance::GetGameHotspotPassphrase() const
 const FString& UBHGameInstance::GetLastNetworkMessage() const
 {
 	return LastNetworkMessage;
+}
+
+const FString& UBHGameInstance::GetPublicJoinAddress() const
+{
+	return PublicJoinAddress;
+}
+
+FString UBHGameInstance::GetPreferredJoinAddress(int32 LocalPort) const
+{
+	if (!PublicJoinAddress.IsEmpty())
+	{
+		return PublicJoinAddress;
+	}
+
+	if (const UBHGameSettings* Settings = GetDefault<UBHGameSettings>())
+	{
+		for (const FString& Endpoint : Settings->ClassroomJoinEndpoints)
+		{
+			const FString NormalizedEndpoint = FBHNetworkSupport::NormalizeJoinAddress(Endpoint, LocalPort);
+			if (!NormalizedEndpoint.IsEmpty())
+			{
+				return NormalizedEndpoint;
+			}
+		}
+	}
+
+	return FBHNetworkSupport::ResolveLocalJoinAddress(LocalPort);
+}
+
+void UBHGameInstance::SetPublicJoinAddress(const FString& Address)
+{
+	PublicJoinAddress = FBHNetworkSupport::NormalizeJoinAddress(Address);
 }
 
 const FBHAutomationConfig& UBHGameInstance::GetAutomationConfig() const

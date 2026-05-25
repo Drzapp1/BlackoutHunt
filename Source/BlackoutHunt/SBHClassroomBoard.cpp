@@ -1,13 +1,12 @@
 #include "SBHClassroomBoard.h"
 
+#include "BHGameInstance.h"
 #include "BHGameState.h"
 #include "BHPlayerController.h"
 #include "BHPlayerState.h"
 #include "BHRevisionQuestionBank.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerState.h"
-#include "IPAddress.h"
-#include "SocketSubsystem.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
@@ -155,24 +154,6 @@ namespace
 			PlayerName += TEXT(" [BOT]");
 		}
 		return PlayerName;
-	}
-
-	FString BoardResolveLocalAddress()
-	{
-		ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
-		if (!SocketSubsystem)
-		{
-			return TEXT("127.0.0.1:7777");
-		}
-
-		bool bCanBindAll = false;
-		const TSharedRef<FInternetAddr> LocalAddress = SocketSubsystem->GetLocalHostAddr(*GLog, bCanBindAll);
-		if (!LocalAddress->IsValid())
-		{
-			return TEXT("127.0.0.1:7777");
-		}
-
-		return FString::Printf(TEXT("%s:7777"), *LocalAddress->ToString(false));
 	}
 
 	FString BoardProgressText(const ABHGameState* GameState, const ABHPlayerState* PlayerState)
@@ -761,5 +742,7 @@ FText SBHClassroomBoard::GetJoinText() const
 		return FText::FromString(TEXT("CLIENT VIEW"));
 	}
 
-	return FText::FromString(FString::Printf(TEXT("JOIN %s"), *BoardResolveLocalAddress()));
+	const UBHGameInstance* BHGI = World ? World->GetGameInstance<UBHGameInstance>() : nullptr;
+	const FString JoinAddress = BHGI ? BHGI->GetPreferredJoinAddress(7777) : FString(TEXT("127.0.0.1:7777"));
+	return FText::FromString(FString::Printf(TEXT("JOIN %s"), *JoinAddress));
 }

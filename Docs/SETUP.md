@@ -22,7 +22,8 @@ Client machine:
 
 1. Connect to the same LAN, game hotspot, or reachable network.
 2. Launch the game/editor.
-3. Open the console and run `JoinGame 192.168.x.x:7777`, replacing the IP with the host's local IP.
+3. Enter an in-game lobby name if prompted.
+4. Use the menu's saved classroom endpoint, type `blackouthunt.playit.plus:24761`, or open the console and run `JoinGame 192.168.x.x:7777`, replacing the IP with the host's local IP.
 
 Internet/direct-IP play:
 
@@ -35,8 +36,9 @@ Internet tunnel play, no router setup:
 1. On the host, click `START INTERNET TUNNEL` in the menu or run `StartInternetTunnel`.
 2. The bundled Playit agent starts on Windows only after the game verifies the packaged `playit.exe` hash, then opens the tunnel setup page. Claim the agent if prompted, then create or select a Custom UDP tunnel with local address `127.0.0.1` and local port `7777`.
 3. Host `Facility`, `Substation`, or `Foggrounds` normally.
-4. Put the tunnel allocation host and port into the menu's `HOST / IP / CODE` and `PORT` fields, then click `COPY JOIN CODE`.
-5. Send that `BH1:...` code to players. They paste it into `HOST / IP / CODE` and click `JOIN GAME`. The console also accepts `JoinGame BH1:...`.
+4. For the owned classroom beta tunnel, students can join `blackouthunt.playit.plus:24761` from the saved join list.
+5. For a different tunnel allocation, put the tunnel allocation host and port into the menu's `HOST / IP / CODE` and `PORT` fields, then click `COPY JOIN CODE`.
+6. Send that `BH1:...` code to players. They paste it into `HOST / IP / CODE` and click `JOIN GAME`. The console also accepts `JoinGame BH1:...`.
 6. Use `STOP INTERNET TUNNEL` or `StopInternetTunnel` when finished if the game launched the agent.
 
 Online lobby play:
@@ -57,7 +59,7 @@ Gameplay actions are role/phase gated:
 
 - In lobby, press `Enter` on every connected player to assign roles and start prep.
 - The listen-server host can open Escape in the lobby and queue players as Hunter, Survivor, Fake, or Auto before the round starts.
-- The Escape menu also lets players cycle avatar shape/color, vote or set the next level, vote Foggrounds fog intensity, let the host override fog presets for the next round, change Hunter count, objective intensity, infection mode, slow/party pacing, graphics preset, resolution, and FPS cap.
+- The Escape menu lets students cycle avatar shape/color, vote maps, ready up, and change local graphics/resolution/FPS/audio only on their own machine. Host-only session, classroom, role, tunnel, and admin controls stay on the host machine.
 - Survivors can hide during prep after roles are assigned.
 - Breaker repair, side-objective stations, panic alarms, hunter heartbeat scan, hunter blackout, fake seeker traps/hints, hunter capture, and exit gameplay unlock when Hunt begins.
 - Each round now randomizes the active breaker route, some starting door states, and some powered light circuits. The HUD and Escape menu show the round seed and current objective text.

@@ -17,6 +17,10 @@ bool FBHNetworkSupportNormalizeJoinAddressTest::RunTest(const FString& Parameter
 		FBHNetworkSupport::NormalizeJoinAddress(TEXT("classroom-host.local:7788")),
 		FString(TEXT("classroom-host.local:7788")));
 
+	TestEqual(TEXT("Owned Playit classroom endpoint is preserved"),
+		FBHNetworkSupport::NormalizeJoinAddress(TEXT("blackouthunt.playit.plus:24761")),
+		FString(TEXT("blackouthunt.playit.plus:24761")));
+
 	TestEqual(TEXT("Bracketed IPv6 and port are preserved"),
 		FBHNetworkSupport::NormalizeJoinAddress(TEXT("[2001:db8::1]:7777")),
 		FString(TEXT("[2001:db8::1]:7777")));

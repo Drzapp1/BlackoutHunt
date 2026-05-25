@@ -463,8 +463,9 @@ void ABHGameMode::PostLogin(APlayerController* NewPlayer)
 		{
 			RequestedRole = EBHPlayerRole::FakeHunter;
 		}
+		const bool bLateJoinSpectator = !bPracticeMode && !bTestMode && !bCanJoinRound;
 		BHPS->SetReady(bPracticeMode || bTestMode);
-		BHPS->SetDesiredRole(bTestMode ? EBHPlayerRole::Tester : (bPracticeMode ? EBHPlayerRole::Survivor : RequestedRole));
+		BHPS->SetDesiredRole(bTestMode ? EBHPlayerRole::Tester : (bPracticeMode || bLateJoinSpectator ? EBHPlayerRole::Survivor : RequestedRole));
 		BHPS->SetRole(bTestMode ? EBHPlayerRole::Tester : (bPracticeMode ? EBHPlayerRole::Survivor : (bCanJoinRound ? EBHPlayerRole::Unassigned : EBHPlayerRole::Spectator)));
 		BHPS->SetLifeState(bCanJoinRound ? EBHPlayerLifeState::Alive : EBHPlayerLifeState::Captured);
 		BHPS->SetHiddenInLocker(false);
@@ -502,6 +503,14 @@ void ABHGameMode::PostLogin(APlayerController* NewPlayer)
 	else if (bBotMode)
 	{
 		RefreshBotRoster(Cast<ABHPlayerController>(NewPlayer));
+	}
+
+	if (!bCanJoinRound)
+	{
+		if (ABHPlayerController* BHPC = Cast<ABHPlayerController>(NewPlayer))
+		{
+			BHPC->ClientShowStatusMessage(TEXT("Round already started. You joined as a survivor spectator until the next lobby."), 6.0f);
+		}
 	}
 }
 

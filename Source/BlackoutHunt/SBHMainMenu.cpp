@@ -1,6 +1,7 @@
 #include "SBHMainMenu.h"
 #include "Animation/AnimSequence.h"
 #include "BHAccountSubsystem.h"
+#include "BHGameSettings.h"
 #include "BHGameInstance.h"
 #include "BHGameState.h"
 #include "BHNetworkSupport.h"
@@ -18,17 +19,16 @@
 #include "Engine/Texture2D.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/World.h"
+#include "Framework/Application/SlateApplication.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/InputSettings.h"
 #include "GameFramework/PlayerState.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "ImageUtils.h"
 #include "InputCoreTypes.h"
-#include "IPAddress.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Misc/Paths.h"
-#include "SocketSubsystem.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SEditableTextBox.h"
@@ -908,7 +908,7 @@ void SBHMainMenu::Tick(const FGeometry& AllottedGeometry, const double InCurrent
 void SBHMainMenu::Construct(const FArguments& InArgs)
 {
 	PlayerController = InArgs._PlayerController;
-	SuggestedAddress = ResolveLocalAddress();
+	SuggestedAddress = ResolvePreferredAddress();
 	StatusText = FText::FromString(TEXT("Choose a map, join a host, or browse online lobbies."));
 
 	const bool bInGame = IsInNetworkedGame();
@@ -1728,6 +1728,30 @@ TSharedRef<SWidget> SBHMainMenu::BuildPlayJoinAddressPanel()
 		.AutoHeight()
 		.Padding(0.0f, 0.0f, 0.0f, 8.0f)
 		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(STextBlock)
+				.Font(MenuFont(10, FName(TEXT("Bold"))))
+				.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.72f, 1.0f))
+				.Text(FText::FromString(TEXT("YOUR LOBBY NAME")))
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 3.0f, 0.0f, 0.0f)
+			[
+				SAssignNew(JoinNameTextBox, SEditableTextBox)
+				.Text(GetDefaultJoinNameText())
+				.HintText(FText::FromString(TEXT("Enter your name before joining")))
+				.SelectAllTextWhenFocused(true)
+			]
+		];
+
+	Panel->AddSlot()
+		.AutoHeight()
+		.Padding(0.0f, 0.0f, 0.0f, 8.0f)
+		[
 			SNew(SHorizontalBox)
 			+ SHorizontalBox::Slot()
 			.FillWidth(1.0f)
@@ -1782,6 +1806,13 @@ TSharedRef<SWidget> SBHMainMenu::BuildPlayJoinAddressPanel()
 			]
 		];
 
+	Panel->AddSlot()
+		.AutoHeight()
+		.Padding(0.0f, 0.0f, 0.0f, 8.0f)
+		[
+			BuildClassroomJoinListPanel()
+		];
+
 	auto AddAction = [](const TSharedRef<SVerticalBox>& Group, const TSharedRef<SWidget>& Action)
 	{
 		Group->AddSlot()
@@ -1811,6 +1842,62 @@ TSharedRef<SWidget> SBHMainMenu::BuildPlayJoinAddressPanel()
 	return Panel;
 }
 
+TSharedRef<SWidget> SBHMainMenu::BuildClassroomJoinListPanel()
+{
+	TSharedRef<SVerticalBox> List = SNew(SVerticalBox);
+
+	List->AddSlot()
+		.AutoHeight()
+		.Padding(0.0f, 0.0f, 0.0f, 5.0f)
+		[
+			SNew(STextBlock)
+			.Font(MenuFont(10, FName(TEXT("Bold"))))
+			.ColorAndOpacity(FLinearColor(0.70f, 0.82f, 0.80f, 1.0f))
+			.Text(FText::FromString(TEXT("CLASSROOM JOIN LIST")))
+		];
+
+	TArray<FString> Endpoints;
+	if (const UBHGameSettings* Settings = GetDefault<UBHGameSettings>())
+	{
+		Endpoints = Settings->ClassroomJoinEndpoints;
+	}
+	if (Endpoints.IsEmpty())
+	{
+		List->AddSlot()
+			.AutoHeight()
+			[
+				SNew(STextBlock)
+				.AutoWrapText(true)
+				.Font(MenuFont(10))
+				.ColorAndOpacity(FLinearColor(0.58f, 0.66f, 0.67f, 1.0f))
+				.Text(FText::FromString(TEXT("No saved classroom endpoints are configured.")))
+			];
+		return List;
+	}
+
+	for (const FString& Endpoint : Endpoints)
+	{
+		const FString NormalizedEndpoint = FBHNetworkSupport::NormalizeJoinAddress(Endpoint);
+		if (NormalizedEndpoint.IsEmpty())
+		{
+			continue;
+		}
+
+		List->AddSlot()
+			.AutoHeight()
+			.Padding(0.0f, 0.0f, 0.0f, 6.0f)
+			[
+				MenuPlayActionButton(
+					FText::FromString(NormalizedEndpoint),
+					FText::FromString(TEXT("One-click join for the shipped classroom tunnel.")),
+					FLinearColor(0.20f, 0.34f, 0.32f, 1.0f),
+					FOnClicked::CreateSP(this, &SBHMainMenu::OnJoinSavedEndpointClicked, NormalizedEndpoint))
+			];
+	}
+
+	return List;
+}
+
 void SBHMainMenu::BuildPlayActionList(TSharedRef<SVerticalBox> ActionList, bool bInGame, bool bPracticeMode, bool bTestMode)
 {
 	auto AddAction = [](const TSharedRef<SVerticalBox>& Group, const TSharedRef<SWidget>& Action)
@@ -1825,24 +1912,38 @@ void SBHMainMenu::BuildPlayActionList(TSharedRef<SVerticalBox> ActionList, bool 
 
 	if (bInGame)
 	{
+		const bool bHostAdmin = CanEditRoles() || bPracticeMode || bTestMode;
 		TSharedRef<SVerticalBox> SessionActions = SNew(SVerticalBox);
 		AddAction(SessionActions, MenuPlayActionButton(
 			FText::FromString(TEXT("RESUME GAME")),
 			FText::FromString(TEXT("Return to the active round.")),
 			FLinearColor(0.12f, 0.38f, 0.34f, 1.0f),
 			FOnClicked::CreateSP(this, &SBHMainMenu::OnResumeClicked)));
-		AddAction(SessionActions, MenuPlayActionButton(
-			FText::FromString(TEXT("OPEN CLASSROOM BOARD")),
-			FText::FromString(TEXT("Shows the projector-ready classroom view.")),
-			FLinearColor(0.18f, 0.36f, 0.34f, 1.0f),
-			FOnClicked::CreateSP(this, &SBHMainMenu::OnOpenClassroomBoardClicked),
-			TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &SBHMainMenu::CanOpenClassroomBoard))));
-		AddAction(SessionActions, MenuPlayActionButton(
-			bPracticeMode ? FText::FromString(TEXT("REFRESH PRACTICE ROUND")) : (bTestMode ? FText::FromString(TEXT("REFRESH TEST ROUND")) : FText::FromString(TEXT("ALL PLAYERS MUST READY"))),
-			bPracticeMode || bTestMode ? FText::FromString(TEXT("Resets the current practice or test round.")) : FText::FromString(TEXT("Every player must ready; kick blockers from the roster.")),
-			(bPracticeMode || bTestMode) ? FLinearColor(0.22f, 0.34f, 0.18f, 1.0f) : FLinearColor(0.32f, 0.28f, 0.12f, 1.0f),
-			(bPracticeMode || bTestMode) ? FOnClicked::CreateSP(this, &SBHMainMenu::OnPracticeRefreshClicked) : FOnClicked::CreateSP(this, &SBHMainMenu::OnForceStartClicked),
-			TAttribute<bool>(bPracticeMode || bTestMode)));
+		if (!bPracticeMode && !bTestMode)
+		{
+			AddAction(SessionActions, MenuPlayActionButton(
+				GetReadyButtonText(),
+				FText::FromString(TEXT("Press this when your name appears in the lobby roster.")),
+				FLinearColor(0.32f, 0.28f, 0.12f, 1.0f),
+				FOnClicked::CreateSP(this, &SBHMainMenu::OnReadyClicked),
+				TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &SBHMainMenu::CanReadyFromMenu))));
+		}
+		if (CanOpenClassroomBoard())
+		{
+			AddAction(SessionActions, MenuPlayActionButton(
+				FText::FromString(TEXT("OPEN CLASSROOM BOARD")),
+				FText::FromString(TEXT("Shows the projector-ready classroom view.")),
+				FLinearColor(0.18f, 0.36f, 0.34f, 1.0f),
+				FOnClicked::CreateSP(this, &SBHMainMenu::OnOpenClassroomBoardClicked)));
+		}
+		if (bPracticeMode || bTestMode)
+		{
+			AddAction(SessionActions, MenuPlayActionButton(
+				bPracticeMode ? FText::FromString(TEXT("REFRESH PRACTICE ROUND")) : FText::FromString(TEXT("REFRESH TEST ROUND")),
+				FText::FromString(TEXT("Resets the current practice or test round.")),
+				FLinearColor(0.22f, 0.34f, 0.18f, 1.0f),
+				FOnClicked::CreateSP(this, &SBHMainMenu::OnPracticeRefreshClicked)));
+		}
 		AddAction(SessionActions, MenuPlayActionButton(
 			FText::FromString(TEXT("LEAVE TO MAIN MENU")),
 			FText::FromString(TEXT("Disconnects from the current session.")),
@@ -1855,56 +1956,59 @@ void SBHMainMenu::BuildPlayActionList(TSharedRef<SVerticalBox> ActionList, bool 
 			FLinearColor(0.12f, 0.38f, 0.34f, 1.0f),
 			SessionActions);
 
-		TSharedRef<SVerticalBox> LevelActions = SNew(SVerticalBox);
-		AddAction(LevelActions, MenuPlayActionButton(
-			FText::FromString(TEXT("RESTART PHYSICS CLASSROOM")),
-			FText::FromString(TEXT("Restarts the 10-minute revision escape round.")),
-			FLinearColor(0.30f, 0.25f, 0.42f, 1.0f),
-			FOnClicked::CreateSP(this, &SBHMainMenu::OnHostPhysicsClassroomClicked)));
-		AddAction(LevelActions, MenuPlayActionButton(
-			FText::FromString(TEXT("NEXT LEVEL: FACILITY")),
-			FText::FromString(TEXT("Queues Facility as the next map.")),
-			FLinearColor(0.18f, 0.28f, 0.36f, 1.0f),
-			FOnClicked::CreateSP(this, &SBHMainMenu::OnNextFacilityClicked)));
-		AddAction(LevelActions, MenuPlayActionButton(
-			FText::FromString(TEXT("NEXT LEVEL: SUBSTATION")),
-			FText::FromString(TEXT("Queues Substation as the next map.")),
-			FLinearColor(0.14f, 0.25f, 0.39f, 1.0f),
-			FOnClicked::CreateSP(this, &SBHMainMenu::OnNextSubstationClicked)));
-		AddAction(LevelActions, MenuPlayActionButton(
-			FText::FromString(TEXT("NEXT LEVEL: FOGGROUNDS")),
-			FText::FromString(TEXT("Queues Foggrounds as the next map.")),
-			FLinearColor(0.13f, 0.28f, 0.24f, 1.0f),
-			FOnClicked::CreateSP(this, &SBHMainMenu::OnNextFoggroundsClicked)));
-		MenuAddPlayDropdownSection(
-			ActionList,
-			FText::FromString(TEXT("Level Select")),
-			FText::FromString(TEXT("Classroom and next-map controls.")),
-			FLinearColor(0.18f, 0.28f, 0.36f, 1.0f),
-			LevelActions);
+		if (bHostAdmin)
+		{
+			TSharedRef<SVerticalBox> LevelActions = SNew(SVerticalBox);
+			AddAction(LevelActions, MenuPlayActionButton(
+				FText::FromString(TEXT("RESTART PHYSICS CLASSROOM")),
+				FText::FromString(TEXT("Restarts the 10-minute revision escape round.")),
+				FLinearColor(0.30f, 0.25f, 0.42f, 1.0f),
+				FOnClicked::CreateSP(this, &SBHMainMenu::OnHostPhysicsClassroomClicked)));
+			AddAction(LevelActions, MenuPlayActionButton(
+				FText::FromString(TEXT("NEXT LEVEL: FACILITY")),
+				FText::FromString(TEXT("Queues Facility as the next map.")),
+				FLinearColor(0.18f, 0.28f, 0.36f, 1.0f),
+				FOnClicked::CreateSP(this, &SBHMainMenu::OnNextFacilityClicked)));
+			AddAction(LevelActions, MenuPlayActionButton(
+				FText::FromString(TEXT("NEXT LEVEL: SUBSTATION")),
+				FText::FromString(TEXT("Queues Substation as the next map.")),
+				FLinearColor(0.14f, 0.25f, 0.39f, 1.0f),
+				FOnClicked::CreateSP(this, &SBHMainMenu::OnNextSubstationClicked)));
+			AddAction(LevelActions, MenuPlayActionButton(
+				FText::FromString(TEXT("NEXT LEVEL: FOGGROUNDS")),
+				FText::FromString(TEXT("Queues Foggrounds as the next map.")),
+				FLinearColor(0.13f, 0.28f, 0.24f, 1.0f),
+				FOnClicked::CreateSP(this, &SBHMainMenu::OnNextFoggroundsClicked)));
+			MenuAddPlayDropdownSection(
+				ActionList,
+				FText::FromString(TEXT("Level Select")),
+				FText::FromString(TEXT("Classroom and next-map controls.")),
+				FLinearColor(0.18f, 0.28f, 0.36f, 1.0f),
+				LevelActions);
 
-		TSharedRef<SVerticalBox> TestActions = SNew(SVerticalBox);
-		AddAction(TestActions, MenuPlayActionButton(
-			FText::FromString(TEXT("TEST ROUND")),
-			FText::FromString(TEXT("Tester role, all mechanics, no timer.")),
-			FLinearColor(0.18f, 0.34f, 0.38f, 1.0f),
-			FOnClicked::CreateSP(this, &SBHMainMenu::OnHostTestRoundClicked)));
-		AddAction(TestActions, MenuPlayActionButton(
-			FText::FromString(TEXT("TEST SUBSTATION")),
-			FText::FromString(TEXT("Runs the test mode on Substation.")),
-			FLinearColor(0.15f, 0.27f, 0.40f, 1.0f),
-			FOnClicked::CreateSP(this, &SBHMainMenu::OnHostSubstationTestRoundClicked)));
-		AddAction(TestActions, MenuPlayActionButton(
-			FText::FromString(TEXT("TEST FOGGROUNDS")),
-			FText::FromString(TEXT("Runs the test mode on Foggrounds.")),
-			FLinearColor(0.16f, 0.31f, 0.24f, 1.0f),
-			FOnClicked::CreateSP(this, &SBHMainMenu::OnHostFoggroundsTestRoundClicked)));
-		MenuAddPlayDropdownSection(
-			ActionList,
-			FText::FromString(TEXT("Testing")),
-			FText::FromString(TEXT("Fast test rounds by map.")),
-			FLinearColor(0.18f, 0.34f, 0.38f, 1.0f),
-			TestActions);
+			TSharedRef<SVerticalBox> TestActions = SNew(SVerticalBox);
+			AddAction(TestActions, MenuPlayActionButton(
+				FText::FromString(TEXT("TEST ROUND")),
+				FText::FromString(TEXT("Tester role, all mechanics, no timer.")),
+				FLinearColor(0.18f, 0.34f, 0.38f, 1.0f),
+				FOnClicked::CreateSP(this, &SBHMainMenu::OnHostTestRoundClicked)));
+			AddAction(TestActions, MenuPlayActionButton(
+				FText::FromString(TEXT("TEST SUBSTATION")),
+				FText::FromString(TEXT("Runs the test mode on Substation.")),
+				FLinearColor(0.15f, 0.27f, 0.40f, 1.0f),
+				FOnClicked::CreateSP(this, &SBHMainMenu::OnHostSubstationTestRoundClicked)));
+			AddAction(TestActions, MenuPlayActionButton(
+				FText::FromString(TEXT("TEST FOGGROUNDS")),
+				FText::FromString(TEXT("Runs the test mode on Foggrounds.")),
+				FLinearColor(0.16f, 0.31f, 0.24f, 1.0f),
+				FOnClicked::CreateSP(this, &SBHMainMenu::OnHostFoggroundsTestRoundClicked)));
+			MenuAddPlayDropdownSection(
+				ActionList,
+				FText::FromString(TEXT("Testing")),
+				FText::FromString(TEXT("Fast test rounds by map.")),
+				FLinearColor(0.18f, 0.34f, 0.38f, 1.0f),
+				TestActions);
+		}
 
 		TSharedRef<SVerticalBox> ProfileActions = SNew(SVerticalBox);
 		AddAction(ProfileActions, MenuPlayActionButton(
@@ -2556,6 +2660,7 @@ FReply SBHMainMenu::OnStartInternetTunnelClicked()
 		FString Message;
 		PC->StartInternetTunnelForMenu(Message, GetEnteredPort());
 		StatusText = FText::FromString(Message);
+		SetJoinAddressFields(ResolvePreferredAddress());
 		return FReply::Handled();
 	}
 
@@ -2593,7 +2698,8 @@ FReply SBHMainMenu::OnStopInternetTunnelClicked()
 
 FReply SBHMainMenu::OnCopyJoinInviteClicked()
 {
-	const FString Address = GetEnteredAddress();
+	const FString EnteredAddress = GetEnteredAddress();
+	const FString Address = EnteredAddress.IsEmpty() ? ResolvePreferredAddress() : EnteredAddress;
 	const FString NormalizedAddress = FBHNetworkSupport::NormalizeJoinAddress(Address);
 	const FString InviteCode = FBHNetworkSupport::MakeJoinInviteCode(NormalizedAddress);
 	if (InviteCode.IsEmpty() || NormalizedAddress.IsEmpty())
@@ -2611,6 +2717,11 @@ FReply SBHMainMenu::OnCopyJoinInviteClicked()
 
 FReply SBHMainMenu::OnJoinClicked()
 {
+	if (!EnsureJoinDisplayName())
+	{
+		return FReply::Handled();
+	}
+
 	if (JoinHostTextBox.IsValid() && JoinPortTextBox.IsValid())
 	{
 		const bool bHostIncludesPort = MenuEntryHasExplicitPort(JoinHostTextBox->GetText().ToString());
@@ -2640,8 +2751,19 @@ FReply SBHMainMenu::OnJoinClicked()
 	return FReply::Handled();
 }
 
+FReply SBHMainMenu::OnJoinSavedEndpointClicked(FString Endpoint)
+{
+	SetJoinAddressFields(Endpoint);
+	return OnJoinClicked();
+}
+
 FReply SBHMainMenu::OnJoinLocalClicked()
 {
+	if (!EnsureJoinDisplayName())
+	{
+		return FReply::Handled();
+	}
+
 	if (AddressTextBox.IsValid())
 	{
 		AddressTextBox->SetText(FText::FromString(TEXT("127.0.0.1:7777")));
@@ -2658,6 +2780,20 @@ FReply SBHMainMenu::OnJoinLocalClicked()
 	}
 
 	return OnJoinClicked();
+}
+
+FReply SBHMainMenu::OnReadyClicked()
+{
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		FString Message;
+		PC->ToggleReadyForMenu(Message);
+		StatusText = FText::FromString(Message);
+		return FReply::Handled();
+	}
+
+	StatusText = FText::FromString(TEXT("No local player controller was available."));
+	return FReply::Handled();
 }
 
 FReply SBHMainMenu::OnResumeClicked()
@@ -3247,7 +3383,25 @@ FText SBHMainMenu::GetLocalCredentialStatusText() const
 
 FText SBHMainMenu::GetSuggestedAddressText() const
 {
-	return FText::FromString(FString::Printf(TEXT("Suggested host address: %s"), *SuggestedAddress));
+	return FText::FromString(FString::Printf(TEXT("Suggested host address: %s"), *ResolvePreferredAddress()));
+}
+
+FText SBHMainMenu::GetDefaultJoinNameText() const
+{
+	const ABHPlayerController* PC = PlayerController.Get();
+	if (!PC || !PC->HasUsefulLocalDisplayNameForMenu())
+	{
+		return FText::GetEmpty();
+	}
+
+	return FText::FromString(PC->GetLocalDisplayNameForMenu());
+}
+
+FText SBHMainMenu::GetReadyButtonText() const
+{
+	const ABHPlayerController* PC = PlayerController.Get();
+	const ABHPlayerState* BHPS = PC ? PC->GetPlayerState<ABHPlayerState>() : nullptr;
+	return FText::FromString(BHPS && BHPS->bReady ? TEXT("CANCEL READY") : TEXT("READY FOR ROUND"));
 }
 
 FText SBHMainMenu::GetPlayerIdentityText() const
@@ -3602,6 +3756,14 @@ bool SBHMainMenu::CanOpenClassroomBoard() const
 	return NetMode == NM_ListenServer || NetMode == NM_Standalone;
 }
 
+bool SBHMainMenu::CanReadyFromMenu() const
+{
+	const ABHPlayerController* PC = PlayerController.Get();
+	const UWorld* World = PC ? PC->GetWorld() : nullptr;
+	const ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
+	return PC && PC->IsLocalController() && BHGS && BHGS->RoundPhase == EBHRoundPhase::Lobby && IsInNetworkedGame() && !IsPracticeMode() && !IsTestMode();
+}
+
 FString SBHMainMenu::GetEnteredAddress() const
 {
 	if (JoinHostTextBox.IsValid())
@@ -3664,6 +3826,73 @@ int32 SBHMainMenu::GetEnteredPort() const
 	}
 
 	return MenuDefaultGamePort;
+}
+
+bool SBHMainMenu::EnsureJoinDisplayName()
+{
+	ABHPlayerController* PC = PlayerController.Get();
+	if (!PC)
+	{
+		StatusText = FText::FromString(TEXT("No local player controller was available."));
+		return false;
+	}
+
+	if (PC->HasUsefulLocalDisplayNameForMenu())
+	{
+		PC->PushLocalDisplayNameToServer();
+		return true;
+	}
+
+	const FString CandidateName = JoinNameTextBox.IsValid() ? JoinNameTextBox->GetText().ToString() : FString();
+	FString Message;
+	if (!PC->SetLocalDisplayNameForMenu(CandidateName, Message))
+	{
+		StatusText = FText::FromString(TEXT("Enter your in-game name before joining so the host can see who you are."));
+		if (JoinNameTextBox.IsValid())
+		{
+			FSlateApplication::Get().SetKeyboardFocus(JoinNameTextBox);
+		}
+		return false;
+	}
+
+	StatusText = FText::FromString(Message);
+	return true;
+}
+
+void SBHMainMenu::SetJoinAddressFields(const FString& Address)
+{
+	const FString NormalizedAddress = FBHNetworkSupport::NormalizeJoinAddress(Address);
+	if (NormalizedAddress.IsEmpty())
+	{
+		return;
+	}
+
+	SuggestedAddress = NormalizedAddress;
+	if (AddressTextBox.IsValid())
+	{
+		AddressTextBox->SetText(FText::FromString(NormalizedAddress));
+	}
+	if (JoinHostTextBox.IsValid())
+	{
+		JoinHostTextBox->SetText(FText::FromString(MenuExtractHost(NormalizedAddress)));
+	}
+	if (JoinPortTextBox.IsValid())
+	{
+		JoinPortTextBox->SetText(FText::AsNumber(MenuExtractPort(NormalizedAddress)));
+	}
+}
+
+FString SBHMainMenu::ResolvePreferredAddress() const
+{
+	const ABHPlayerController* PC = PlayerController.Get();
+	const UWorld* World = PC ? PC->GetWorld() : nullptr;
+	const UBHGameInstance* BHGI = World ? World->GetGameInstance<UBHGameInstance>() : nullptr;
+	if (BHGI)
+	{
+		return BHGI->GetPreferredJoinAddress(MenuDefaultGamePort);
+	}
+
+	return ResolveLocalAddress();
 }
 
 void SBHMainMenu::EnsureAvatarPreviewScene()
@@ -4537,6 +4766,75 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoundOptionsPanel()
 			BHGS->SideObjectivesRequired)
 		: FString(TEXT("Round options are available after hosting or joining."));
 
+	if (!bCanEditHost)
+	{
+		return SNew(SBorder)
+			.BorderImage(WhiteBrush())
+			.BorderBackgroundColor(FLinearColor(0.035f, 0.043f, 0.050f, 0.95f))
+			.Padding(10.0f)
+			[
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					SNew(STextBlock)
+					.Font(MenuFont(13, FName(TEXT("Bold"))))
+					.ColorAndOpacity(FLinearColor(0.84f, 0.92f, 0.89f, 1.0f))
+					.Text(FText::FromString(TEXT("Round Status")))
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.0f, 5.0f, 0.0f, 8.0f)
+				[
+					SNew(STextBlock)
+					.AutoWrapText(true)
+					.Font(MenuFont(10))
+					.ColorAndOpacity(FLinearColor(0.66f, 0.74f, 0.75f, 1.0f))
+					.Text(FText::FromString(OptionsText))
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.Padding(0.0f, 0.0f, 6.0f, 0.0f)
+					[
+						SNew(SButton)
+						.IsEnabled(bCanVote)
+						.ContentPadding(FMargin(7.0f, 4.0f))
+						.OnClicked(this, &SBHMainMenu::OnVoteFacilityClicked)
+						[
+							SNew(STextBlock).Font(MenuFont(10, FName(TEXT("Bold")))).Text(FText::FromString(TEXT("Facility")))
+						]
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.Padding(0.0f, 0.0f, 6.0f, 0.0f)
+					[
+						SNew(SButton)
+						.IsEnabled(bCanVote)
+						.ContentPadding(FMargin(7.0f, 4.0f))
+						.OnClicked(this, &SBHMainMenu::OnVoteSubstationClicked)
+						[
+							SNew(STextBlock).Font(MenuFont(10, FName(TEXT("Bold")))).Text(FText::FromString(TEXT("Substation")))
+						]
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					[
+						SNew(SButton)
+						.IsEnabled(bCanVote)
+						.ContentPadding(FMargin(7.0f, 4.0f))
+						.OnClicked(this, &SBHMainMenu::OnVoteFoggroundsClicked)
+						[
+							SNew(STextBlock).Font(MenuFont(10, FName(TEXT("Bold")))).Text(FText::FromString(TEXT("Foggrounds")))
+						]
+					]
+				]
+			];
+	}
+
 	return SNew(SBorder)
 		.BorderImage(WhiteBrush())
 		.BorderBackgroundColor(FLinearColor(0.035f, 0.043f, 0.050f, 0.95f))
@@ -5028,7 +5326,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomPanel()
 	UWorld* World = PC ? PC->GetWorld() : nullptr;
 	ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
 	const bool bShowLobbyRoster = IsInNetworkedGame() && !IsPracticeMode() && !IsTestMode();
-	const bool bShowRevisionControls = BHGS && BHGS->bRevisionMode;
+	const bool bShowRevisionControls = BHGS && BHGS->bRevisionMode && CanEditRoles();
 
 	return SNew(SVerticalBox)
 		+ SVerticalBox::Slot()
@@ -5373,7 +5671,17 @@ TSharedRef<SWidget> SBHMainMenu::BuildGraphicsPanel()
 				SNew(STextBlock)
 				.Font(MenuFont(13, FName(TEXT("Bold"))))
 				.ColorAndOpacity(FLinearColor(0.84f, 0.92f, 0.89f, 1.0f))
-				.Text(FText::FromString(TEXT("Display")))
+				.Text(FText::FromString(TEXT("Local Display")))
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 4.0f, 0.0f, 0.0f)
+			[
+				SNew(STextBlock)
+				.AutoWrapText(true)
+				.Font(MenuFont(10))
+				.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.70f, 1.0f))
+				.Text(FText::FromString(TEXT("These buttons only change this machine.")))
 			]
 			+ SVerticalBox::Slot()
 			.AutoHeight()
@@ -5691,7 +5999,10 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoleAssignmentPanel()
 						.AutoHeight()
 						.Padding(0.0f, 6.0f, 0.0f, 0.0f)
 						[
-							SNew(SHorizontalBox)
+							SNew(SBox)
+							.Visibility((bCanEditRoles || bCanTargetScare) ? EVisibility::Visible : EVisibility::Collapsed)
+							[
+								SNew(SHorizontalBox)
 							+ SHorizontalBox::Slot()
 							.AutoWidth()
 							.Padding(0.0f, 0.0f, 6.0f, 0.0f)
@@ -5777,6 +6088,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoleAssignmentPanel()
 									.Text(FText::FromString(TEXT("Scare")))
 								]
 							]
+							]
 						]
 					]
 				];
@@ -5819,20 +6131,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoleAssignmentPanel()
 
 FString SBHMainMenu::ResolveLocalAddress()
 {
-	ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
-	if (!SocketSubsystem)
-	{
-		return TEXT("127.0.0.1:7777");
-	}
-
-	bool bCanBindAll = false;
-	const TSharedRef<FInternetAddr> LocalAddress = SocketSubsystem->GetLocalHostAddr(*GLog, bCanBindAll);
-	if (!LocalAddress->IsValid())
-	{
-		return TEXT("127.0.0.1:7777");
-	}
-
-	return FString::Printf(TEXT("%s:7777"), *LocalAddress->ToString(false));
+	return FBHNetworkSupport::ResolveLocalJoinAddress(MenuDefaultGamePort);
 }
 
 FString SBHMainMenu::NormalizeAddress(FString Address)

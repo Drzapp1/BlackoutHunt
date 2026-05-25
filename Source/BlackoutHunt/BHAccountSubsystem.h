@@ -119,6 +119,7 @@ public:
 	bool LoginLocalCredential(const FString& Username, const FString& Password, FString& OutMessage);
 	bool ForgetLocalCredential(FString& OutMessage);
 	bool ResetLocalClassroomData(FString& OutMessage);
+	bool SetLocalDisplayName(const FString& DisplayName, FString& OutMessage);
 	void RecordRoundResult(EBHPlayerRole Role, EBHPlayerLifeState LifeState, EBHRoundPhase ResultPhase);
 
 	const FBHAccountProfile& GetProfile() const;

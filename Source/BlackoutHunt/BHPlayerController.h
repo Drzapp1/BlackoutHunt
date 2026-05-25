@@ -291,6 +291,11 @@ public:
 	bool ApplyGraphicsPresetForMenu(int32 Quality, FString& OutMessage);
 	bool ApplyResolutionForMenu(int32 Width, int32 Height, bool bFullscreen, FString& OutMessage);
 	bool ApplyFrameRateLimitForMenu(int32 FrameRateLimit, FString& OutMessage);
+	bool ToggleReadyForMenu(FString& OutMessage);
+	bool SetLocalDisplayNameForMenu(const FString& DisplayName, FString& OutMessage);
+	FString GetLocalDisplayNameForMenu() const;
+	bool HasUsefulLocalDisplayNameForMenu() const;
+	void PushLocalDisplayNameToServer();
 	void SetDesiredRole(APlayerState* TargetPlayerState, EBHPlayerRole DesiredRole);
 	bool KickPlayerForMenu(APlayerState* TargetPlayerState, FString& OutMessage);
 	void ShowLocalStatusMessage(const FString& Message, float DurationSeconds = 3.0f);
@@ -309,6 +314,9 @@ public:
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetReady(bool bReady);
+
+	UFUNCTION(Server, Reliable)
+	void ServerSetPlayerDisplayName(const FString& DisplayName);
 
 	UFUNCTION(Server, Reliable)
 	void ServerForceStartRound();
@@ -485,4 +493,5 @@ private:
 	FTimerHandle AutomationQuitTimerHandle;
 	FTimerHandle ClassroomPreflightTimerHandle;
 	FTimerHandle ClassroomFallbackTimerHandle;
+	FTimerHandle DisplayNameSyncTimerHandle;
 };

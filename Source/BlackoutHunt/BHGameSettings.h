@@ -43,6 +43,9 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Classroom")
 	bool bAllowHotspotHelper;
 
+	UPROPERTY(Config, EditAnywhere, Category = "Classroom")
+	TArray<FString> ClassroomJoinEndpoints;
+
 	UPROPERTY(Config, EditAnywhere, Category = "Interaction")
 	float InteractDistance;
 
