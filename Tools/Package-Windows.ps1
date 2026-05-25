@@ -10,6 +10,31 @@ $projectRoot = Resolve-Path "$PSScriptRoot\.."
 $project = Resolve-Path "$projectRoot\BlackoutHunt.uproject"
 $archive = Join-Path $projectRoot "Builds\Windows"
 $unreal = & "$PSScriptRoot\Find-Unreal.ps1"
+$appLocalDependencies = Join-Path $unreal.Root "Engine\Binaries\ThirdParty\AppLocalDependencies"
+$appLocalDependenciesX64 = Join-Path $appLocalDependencies "Win64\x64"
+
+function Copy-AppLocalDependenciesToPackageRoot {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourceRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$PackageRoot
+    )
+
+    $rootLauncher = Join-Path $PackageRoot "BlackoutHunt.exe"
+    if (-not (Test-Path -LiteralPath $rootLauncher)) {
+        throw "Missing packaged root launcher: $rootLauncher"
+    }
+
+    $runtimeDlls = Get-ChildItem -LiteralPath $SourceRoot -Recurse -File -Filter "*.dll" -Force
+    if (-not $runtimeDlls) {
+        throw "No app-local runtime DLLs found under: $SourceRoot"
+    }
+
+    foreach ($runtimeDll in $runtimeDlls) {
+        Copy-Item -LiteralPath $runtimeDll.FullName -Destination (Join-Path $PackageRoot $runtimeDll.Name) -Force
+    }
+}
 
 if (-not $Configuration) {
     if ($Classroom) {
@@ -21,6 +46,10 @@ if (-not $Configuration) {
 }
 
 if ($Classroom) {
+    if (-not (Test-Path -LiteralPath $appLocalDependenciesX64)) {
+        throw "Missing Unreal app-local dependency set: $appLocalDependenciesX64"
+    }
+
     $resolvedRoot = [System.IO.Path]::GetFullPath($projectRoot)
     $resolvedArchive = [System.IO.Path]::GetFullPath($archive)
     if (-not $resolvedArchive.StartsWith($resolvedRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -58,6 +87,7 @@ try {
         $uatArgs += "-distribution"
         $uatArgs += "-nodebuginfo"
         $uatArgs += "-clean"
+        $uatArgs += "-applocaldirectory=$appLocalDependencies"
     }
 
     & $unreal.RunUAT @uatArgs
@@ -68,5 +98,6 @@ finally {
 }
 
 if ($Classroom) {
-    & "$PSScriptRoot\Verify-ClassroomPackage.ps1" -PackageRoot $archive
+    Copy-AppLocalDependenciesToPackageRoot -SourceRoot $appLocalDependenciesX64 -PackageRoot $archive
+    & "$PSScriptRoot\Verify-ClassroomPackage.ps1" -PackageRoot $archive -ExpectedAppLocalDependencyRoot $appLocalDependenciesX64
 }

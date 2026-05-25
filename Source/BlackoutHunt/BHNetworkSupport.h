@@ -13,9 +13,11 @@ struct FBHHotspotLaunchResult
 struct FBHInternetTunnelResult
 {
 	bool bSuccess = false;
+	bool bTunnelReady = false;
 	int32 LocalPort = 7777;
 	FString AgentPath;
 	FString LogPath;
+	FString TunnelAddress;
 	FString Message;
 };
 
@@ -27,8 +29,10 @@ public:
 	static FBHInternetTunnelResult StartInternetTunnel(int32 LocalPort = 7777);
 	static FBHInternetTunnelResult StopInternetTunnel();
 	static FBHInternetTunnelResult OpenInternetTunnelSetup(int32 LocalPort = 7777);
+	static FBHInternetTunnelResult GetInternetTunnelStatus(int32 LocalPort = 7777);
 	static FString NormalizeJoinAddress(const FString& Address, int32 DefaultPort = 7777);
 	static FString MakeJoinInviteCode(const FString& Address, int32 DefaultPort = 7777);
+	static FString ResolveLocalJoinAddress(int32 LocalPort = 7777);
 	static FString MakeDefaultGameSsid();
 	static FString MakeDefaultPassphrase();
 	static bool IsGameHotspotSsid(const FString& Ssid);

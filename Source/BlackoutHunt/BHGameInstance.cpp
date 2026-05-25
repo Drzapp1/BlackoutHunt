@@ -3,7 +3,12 @@
 #include "BHNetworkSupport.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
+#include "HAL/FileManager.h"
+#include "HAL/PlatformMisc.h"
 #include "Kismet/GameplayStatics.h"
+#include "Misc/CommandLine.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 #include "Online/OnlineSessionNames.h"
 #include "OnlineSubsystem.h"
 
@@ -11,7 +16,7 @@ namespace
 {
 	const FName BHOnlineLevelSetting(TEXT("BHLEVEL"));
 	const FName BHOnlineBuildSetting(TEXT("BHBUILD"));
-	const FString BHOnlineBuildId(TEXT("BlackoutHunt-0.2.0-beta.1"));
+	const FString BHOnlineBuildId(TEXT("BlackoutHunt-0.2.0-beta.2"));
 	constexpr int32 BHOnlineMaxSearchResults = 25;
 
 	FString NormalizeRuntimeLevelName(FString LevelName)
@@ -27,6 +32,30 @@ namespace
 	FString MakeListenOptions(const FString& LevelName)
 	{
 		return FString::Printf(TEXT("listen?BHLevel=%s?BHFogPreset=Heavy"), *NormalizeRuntimeLevelName(LevelName));
+	}
+}
+
+void UBHGameInstance::Init()
+{
+	Super::Init();
+
+	AutomationConfig = FBHAutomationSupport::ParseCommandLine(FCommandLine::Get());
+
+	const FString GpuBrand = FPlatformMisc::GetPrimaryGPUBrand();
+	if (GpuBrand.Contains(TEXT("VirtualBox"), ESearchCase::IgnoreCase))
+	{
+		AutomationConfig.bVirtualBoxSafeDetected = true;
+		UE_LOG(LogTemp, Display, TEXT("BlackoutHunt VirtualBox-safe graphics detected from GPU: %s"), *GpuBrand);
+	}
+
+	if (AutomationConfig.ShouldUseVirtualBoxSafeMode())
+	{
+		UE_LOG(LogTemp, Display, TEXT("BlackoutHunt VM-safe graphics mode requested."));
+	}
+
+	if (AutomationConfig.bEnabled)
+	{
+		LogAutomationMarker(TEXT("BH_AUTOMATION_BOOT"));
 	}
 }
 
@@ -479,6 +508,104 @@ const FString& UBHGameInstance::GetGameHotspotPassphrase() const
 const FString& UBHGameInstance::GetLastNetworkMessage() const
 {
 	return LastNetworkMessage;
+}
+
+const FBHAutomationConfig& UBHGameInstance::GetAutomationConfig() const
+{
+	return AutomationConfig;
+}
+
+bool UBHGameInstance::IsAutomationEnabled() const
+{
+	return AutomationConfig.bEnabled;
+}
+
+bool UBHGameInstance::ShouldUseVirtualBoxSafeMode() const
+{
+	return AutomationConfig.ShouldUseVirtualBoxSafeMode();
+}
+
+bool UBHGameInstance::ConsumeAutomationHost(FString& OutHostMode)
+{
+	if (bAutomationHostConsumed || !AutomationConfig.HasAutoHost())
+	{
+		return false;
+	}
+
+	bAutomationHostConsumed = true;
+	OutHostMode = AutomationConfig.AutoHost;
+	return true;
+}
+
+bool UBHGameInstance::ConsumeAutomationJoin(FString& OutAddress)
+{
+	if (bAutomationJoinConsumed || !AutomationConfig.HasAutoJoin())
+	{
+		return false;
+	}
+
+	bAutomationJoinConsumed = true;
+	OutAddress = AutomationConfig.AutoJoin;
+	return true;
+}
+
+bool UBHGameInstance::ShouldAutoReady() const
+{
+	return AutomationConfig.ShouldAutoReady();
+}
+
+float UBHGameInstance::GetAutomationQuitSeconds() const
+{
+	return AutomationConfig.ShouldAutoQuit() ? AutomationConfig.AutoQuitSeconds : 0.0f;
+}
+
+void UBHGameInstance::LogAutomationMarker(const FString& Marker) const
+{
+	if (!AutomationConfig.bEnabled || Marker.IsEmpty())
+	{
+		return;
+	}
+
+	const FString MarkerLine = FBHAutomationSupport::MakeMarkerLine(AutomationConfig, Marker);
+	UE_LOG(LogTemp, Display, TEXT("%s"), *MarkerLine);
+
+	const FString LogDir = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Logs")));
+	IFileManager::Get().MakeDirectory(*LogDir, true);
+	const FString MarkerLogPath = FPaths::Combine(LogDir, TEXT("BlackoutHuntAutomation.log"));
+	FFileHelper::SaveStringToFile(
+		MarkerLine + LINE_TERMINATOR,
+		*MarkerLogPath,
+		FFileHelper::EEncodingOptions::AutoDetect,
+		&IFileManager::Get(),
+		FILEWRITE_Append);
+}
+
+bool UBHGameInstance::LogAutomationMarkerOnce(const FString& Marker)
+{
+	if (!AutomationConfig.bEnabled || Marker.IsEmpty() || AutomationMarkersLogged.Contains(Marker))
+	{
+		return false;
+	}
+
+	AutomationMarkersLogged.Add(Marker);
+	LogAutomationMarker(Marker);
+	return true;
+}
+
+void UBHGameInstance::RequestCleanExit(const FString& Reason)
+{
+	LogAutomationMarkerOnce(TEXT("CLEAN_QUIT"));
+
+	if (!GameHotspotSsid.IsEmpty())
+	{
+		FBHNetworkSupport::StopGameHotspot(GameHotspotSsid);
+		GameHotspotSsid.Reset();
+		GameHotspotPassphrase.Reset();
+	}
+
+	FBHNetworkSupport::StopInternetTunnel();
+	UE_LOG(LogTemp, Display, TEXT("BlackoutHunt clean exit requested: %s"), *Reason);
+	FPlatformMisc::RequestExit(false);
 }
 
 IOnlineSessionPtr UBHGameInstance::GetOnlineSessionInterface(FString& OutMessage) const

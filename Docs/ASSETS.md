@@ -27,7 +27,7 @@ Project attribution text:
 - `Tiles078`: tiled facility floor patches
 - `Sign009`: warning placards near exits and hazard routes
 
-## 0.2.0-beta.1 Package Policy
+## 0.2.0-beta.2 Package Policy
 
 The Windows classroom beta cooks only documented package-safe content paths: ambientCG materials/textures, in-house/generated audio, UI background media, and the Quaternius/KayKit CC0 character sets used by the current avatar path.
 

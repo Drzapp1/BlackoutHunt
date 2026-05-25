@@ -10,7 +10,7 @@ Linux packaging and native Linux validation are deferred.
 
 ## Tester Entry Points
 
-- Start the packaged Windows executable.
+- Extract the packaged Windows classroom zip and start `BlackoutHunt.exe`. The package is built with app-local Windows runtime DLLs so classroom testers should not need administrator rights or a separate VC++ Redistributable install for normal launch.
 - Use `LIVE CLASSROOM` for the classroom flow.
 - Use direct host/join for normal LAN sessions.
 - Use Playit only as a host-side tunnel fallback when LAN/direct IP is blocked.
@@ -27,6 +27,7 @@ Linux packaging and native Linux validation are deferred.
 
 - Online session Host/Find/Join is for local/development validation only until EOS or Steam is configured.
 - Internet play without router setup depends on the external Playit tunnel helper.
+- Windows hotspot creation can still require administrator rights because that is a Windows networking permission, separate from launching the game.
 - The current maps are runtime-generated prototype levels rather than authored production maps.
 - The classroom beta excludes unaudited prototype character/jumpscare source assets and uses procedural or CC0 fallback visuals where needed.
 - Multiplayer validation still needs to be completed on separate physical machines before broad distribution.
@@ -35,7 +36,8 @@ Linux packaging and native Linux validation are deferred.
 
 - Build editor target.
 - Package the Shipping classroom build.
-- Confirm package verification passes.
+- Confirm package verification passes, including the app-local runtime DLL check.
+- Confirm a clean Windows standard user can extract and launch the package without a VC++ installer step.
 - Run the join-address automation test.
 - Validate a host plus at least two clients on separate machines.
 - Complete full rounds on Facility, Substation, and Foggrounds.

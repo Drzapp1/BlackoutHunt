@@ -4,7 +4,7 @@ Blackout Hunt now has two network paths:
 
 - Direct IP: `HostGame` / `JoinGame host:7777`. This still needs UDP `7777` to reach the host.
 - Online sessions: `HostOnlineGame`, `HostOnlineSubstationGame`, `FindOnlineGames`, and `JoinOnlineGame <index>`. This uses Unreal's configured OnlineSubsystem.
-- Internet tunnel fallback: `StartInternetTunnel` launches the bundled Playit agent on Windows and opens tunnel setup. Create a Custom UDP tunnel to `127.0.0.1:7777`, then copy a `BH1:...` join code from the menu or let clients join the allocation address through the normal direct-IP path.
+- Internet tunnel fallback: `StartInternetTunnel` verifies and launches the bundled Playit agent on Windows, writes the agent log path, and opens tunnel setup. Create a Custom UDP tunnel to `127.0.0.1:7777`, then copy a `BH1:...` join code from the menu or let clients join the allocation address through the normal direct-IP path.
 
 The checked-in default is:
 
@@ -17,9 +17,9 @@ DefaultPlatformService=Null
 
 The tunnel fallback exists for ad-hoc play when EOS or Steam is not configured yet. It avoids router forwarding and CGNAT problems, but it is an external tunnel service rather than a native game lobby provider. The menu's `COPY JOIN CODE` button wraps the normalized allocation address into a bounded `BH1:...` code so players can paste one value instead of splitting host and port. For a shipped build, EOS or Steam remains the cleaner default because players can use the normal lobby browser instead of sharing tunnel addresses.
 
-In classroom mode, tunnel and hotspot helpers are host-machine-only. Remote student clients can join sessions, but they cannot start/stop helper processes, create hotspots, destroy online sessions, or run host/admin network setup.
+In classroom mode, tunnel helpers are host-machine-only. Remote student clients can join sessions, but they cannot start/stop helper processes, destroy online sessions, or run host/admin network setup. The Windows hotspot helper is disabled by default for the classroom beta because it can require administrator networking permission.
 
-The Windows tunnel helper only launches the bundled `playit.exe` from the packaged output or `ThirdParty/Playit`, never an arbitrary executable from `PATH`. Before launch, the game checks the helper size and SHA-256 hash listed in `ThirdParty/Playit/README.md`. The agent is started with a local log path under `Saved/Logs/BlackoutHuntPlayit.log`; do not post that log publicly if it contains account or agent setup details.
+The Windows tunnel helper only launches the bundled `playit.exe` from the packaged output or `ThirdParty/Playit`, never an arbitrary executable from `PATH`. Before launch, the game checks the helper size and SHA-256 hash listed in `ThirdParty/Playit/README.md`. The agent is started with a local log path under `Saved/Logs/BlackoutHuntPlayit.log`; the classroom preflight reads that log for a usable tunnel allocation and reports either `LAN blocked, tunnel ready` or `network setup required`. Do not post that log publicly if it contains account or agent setup details.
 
 Join input is intentionally strict. The game accepts direct hosts, `host:port`, bracketed IPv6, `BH1:...` codes, and `blackouthunt://join/...` invite links. Malformed ports, unsupported URI schemes, path/query fragments, and unsafe host characters are rejected before `ClientTravel`.
 

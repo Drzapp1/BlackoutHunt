@@ -7,6 +7,8 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
 #include "Misc/Paths.h"
+#include "IPAddress.h"
+#include "SocketSubsystem.h"
 
 namespace
 {
@@ -376,6 +378,7 @@ namespace
 
 #if PLATFORM_WINDOWS
 	FProcHandle PlayitAgentProcess;
+	FString PlayitAgentPath;
 
 	FString GetPlayitLogPath()
 	{
@@ -459,7 +462,73 @@ namespace
 		{
 			FPlatformProcess::CloseProc(PlayitAgentProcess);
 			PlayitAgentProcess.Reset();
+			PlayitAgentPath.Reset();
 		}
+	}
+
+	bool IsLocalTunnelAddress(const FString& Address)
+	{
+		return Address.StartsWith(TEXT("127."), ESearchCase::IgnoreCase)
+			|| Address.StartsWith(TEXT("localhost"), ESearchCase::IgnoreCase)
+			|| Address.StartsWith(TEXT("0.0.0.0"), ESearchCase::IgnoreCase)
+			|| Address.StartsWith(TEXT("[::1]"), ESearchCase::IgnoreCase);
+	}
+
+	FString StripLogTokenDelimiters(FString Token)
+	{
+		Token.TrimStartAndEndInline();
+		while (!Token.IsEmpty())
+		{
+			const TCHAR Last = Token[Token.Len() - 1];
+			if (Last != TEXT('"') && Last != TEXT('\'') && Last != TEXT(',') && Last != TEXT(')') && Last != TEXT(']') && Last != TEXT('}'))
+			{
+				break;
+			}
+			Token.LeftChopInline(1);
+		}
+		while (!Token.IsEmpty())
+		{
+			const TCHAR First = Token[0];
+			if (First != TEXT('"') && First != TEXT('\'') && First != TEXT('(') && First != TEXT('[') && First != TEXT('{'))
+			{
+				break;
+			}
+			Token.RightChopInline(1);
+		}
+		return Token;
+	}
+
+	bool TryExtractTunnelAddressFromLog(const FString& TunnelLogPath, int32 LocalPort, FString& OutAddress)
+	{
+		FString LogText;
+		if (TunnelLogPath.IsEmpty() || !FFileHelper::LoadFileToString(LogText, *TunnelLogPath))
+		{
+			return false;
+		}
+
+		LogText.ReplaceInline(TEXT("\r"), TEXT(" "));
+		LogText.ReplaceInline(TEXT("\n"), TEXT(" "));
+
+		TArray<FString> Tokens;
+		LogText.ParseIntoArrayWS(Tokens);
+		for (FString Token : Tokens)
+		{
+			Token = StripLogTokenDelimiters(Token);
+
+			if (!Token.Contains(TEXT(":")) || Token.Contains(TEXT("://")))
+			{
+				continue;
+			}
+
+			const FString Candidate = FBHNetworkSupport::NormalizeJoinAddress(Token, LocalPort);
+			if (!Candidate.IsEmpty() && !IsLocalTunnelAddress(Candidate))
+			{
+				OutAddress = Candidate;
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 #endif
@@ -636,6 +705,24 @@ FString FBHNetworkSupport::MakeJoinInviteCode(const FString& Address, int32 Defa
 	return FString(JoinInvitePrefix()) + Payload;
 }
 
+FString FBHNetworkSupport::ResolveLocalJoinAddress(int32 LocalPort)
+{
+	ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+	if (!SocketSubsystem)
+	{
+		return BuildJoinAddress(TEXT("127.0.0.1"), NormalizePort(LocalPort));
+	}
+
+	bool bCanBindAll = false;
+	const TSharedRef<FInternetAddr> LocalAddress = SocketSubsystem->GetLocalHostAddr(*GLog, bCanBindAll);
+	if (!LocalAddress->IsValid())
+	{
+		return BuildJoinAddress(TEXT("127.0.0.1"), NormalizePort(LocalPort));
+	}
+
+	return BuildJoinAddress(LocalAddress->ToString(false), NormalizePort(LocalPort));
+}
+
 FBHInternetTunnelResult FBHNetworkSupport::StartInternetTunnel(int32 LocalPort)
 {
 	FBHInternetTunnelResult Result;
@@ -648,9 +735,22 @@ FBHInternetTunnelResult FBHNetworkSupport::StartInternetTunnel(int32 LocalPort)
 	if (PlayitAgentProcess.IsValid())
 	{
 		Result.bSuccess = true;
+		Result.AgentPath = PlayitAgentPath;
+		if (TryExtractTunnelAddressFromLog(Result.LogPath, Result.LocalPort, Result.TunnelAddress))
+		{
+			Result.bTunnelReady = true;
+			Result.Message = FString::Printf(
+				TEXT("Tunnel ready: %s. Agent path: %s. Agent log: %s"),
+				*Result.TunnelAddress,
+				Result.AgentPath.IsEmpty() ? TEXT("already running") : *Result.AgentPath,
+				*Result.LogPath);
+			return Result;
+		}
+
 		Result.Message = FString::Printf(
-			TEXT("Internet tunnel agent is already running. Create or select a Custom UDP tunnel to local 127.0.0.1:%d, then copy a join code from the menu. Agent log: %s"),
+			TEXT("Internet tunnel agent is already running. Create or select a Custom UDP tunnel to local 127.0.0.1:%d, then copy a join code from the menu. Agent path: %s. Agent log: %s"),
 			Result.LocalPort,
+			Result.AgentPath.IsEmpty() ? TEXT("already running") : *Result.AgentPath,
 			*Result.LogPath);
 		OpenExternalUrl(PlayitTunnelSetupUrl());
 		return Result;
@@ -684,17 +784,23 @@ FBHInternetTunnelResult FBHNetworkSupport::StartInternetTunnel(int32 LocalPort)
 	{
 		OpenExternalUrl(PlayitDownloadUrl());
 		Result.Message = FString::Printf(
-			TEXT("Could not start the playit tunnel agent at %s. Opened the official download page. Create a Custom UDP tunnel to local 127.0.0.1:%d."),
+			TEXT("Could not start the playit tunnel agent at %s. Opened the official download page. Create a Custom UDP tunnel to local 127.0.0.1:%d. Agent log: %s"),
 			*Result.AgentPath,
-			Result.LocalPort);
+			Result.LocalPort,
+			*Result.LogPath);
 		return Result;
 	}
 
+	PlayitAgentPath = Result.AgentPath;
 	Result.bSuccess = true;
+	UE_LOG(LogTemp, Display, TEXT("BlackoutHunt tunnel agent path: %s"), *Result.AgentPath);
+	UE_LOG(LogTemp, Display, TEXT("BlackoutHunt tunnel agent log path: %s"), *Result.LogPath);
+	UE_LOG(LogTemp, Display, TEXT("BlackoutHunt tunnel startup result: started"));
 	OpenExternalUrl(PlayitTunnelSetupUrl());
 	Result.Message = FString::Printf(
-		TEXT("Internet tunnel agent started. In the browser, create a Custom UDP tunnel to local 127.0.0.1:%d. Put the allocation host/port in the menu, then copy a join code. Agent log: %s"),
+		TEXT("Internet tunnel agent started. In the browser, create a Custom UDP tunnel to local 127.0.0.1:%d. Put the allocation host/port in the menu, then copy a join code. Agent path: %s. Agent log: %s"),
 		Result.LocalPort,
+		*Result.AgentPath,
 		*Result.LogPath);
 #else
 	OpenExternalUrl(PlayitDownloadUrl());
@@ -721,11 +827,47 @@ FBHInternetTunnelResult FBHNetworkSupport::StopInternetTunnel()
 	FPlatformProcess::TerminateProc(PlayitAgentProcess, true);
 	FPlatformProcess::CloseProc(PlayitAgentProcess);
 	PlayitAgentProcess.Reset();
+	PlayitAgentPath.Reset();
 
 	Result.bSuccess = true;
 	Result.Message = TEXT("Game-launched internet tunnel agent stopped.");
 #else
 	Result.Message = TEXT("Internet tunnel helper is currently wired for Windows builds only.");
+#endif
+
+	return Result;
+}
+
+FBHInternetTunnelResult FBHNetworkSupport::GetInternetTunnelStatus(int32 LocalPort)
+{
+	FBHInternetTunnelResult Result;
+	Result.LocalPort = NormalizePort(LocalPort);
+
+#if PLATFORM_WINDOWS
+	Result.LogPath = GetPlayitLogPath();
+	ClearFinishedPlayitProcess();
+	Result.bSuccess = PlayitAgentProcess.IsValid();
+	Result.AgentPath = PlayitAgentPath;
+	if (TryExtractTunnelAddressFromLog(Result.LogPath, Result.LocalPort, Result.TunnelAddress))
+	{
+		Result.bTunnelReady = true;
+		Result.bSuccess = true;
+		Result.Message = FString::Printf(
+			TEXT("Tunnel ready: %s. Agent path: %s. Agent log: %s"),
+			*Result.TunnelAddress,
+			Result.AgentPath.IsEmpty() ? TEXT("unknown") : *Result.AgentPath,
+			*Result.LogPath);
+		return Result;
+	}
+
+	Result.Message = Result.bSuccess
+		? FString::Printf(TEXT("Tunnel agent running, but no usable allocation address was found yet. Create/select a Custom UDP tunnel to local 127.0.0.1:%d. Agent path: %s. Agent log: %s"),
+			Result.LocalPort,
+			Result.AgentPath.IsEmpty() ? TEXT("unknown") : *Result.AgentPath,
+			*Result.LogPath)
+		: FString::Printf(TEXT("Tunnel agent is not running. Agent log path: %s"), *Result.LogPath);
+#else
+	Result.Message = TEXT("Internet tunnel status is currently wired for Windows builds only.");
 #endif
 
 	return Result;

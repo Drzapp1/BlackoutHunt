@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "BHAutomationSupport.h"
 #include "Engine/GameInstance.h"
 #include "Interfaces/OnlineSessionInterface.h"
 #include "OnlineSessionSettings.h"
@@ -26,6 +27,7 @@ class BLACKOUTHUNT_API UBHGameInstance : public UGameInstance
 	GENERATED_BODY()
 
 public:
+	virtual void Init() override;
 	virtual void Shutdown() override;
 
 	UFUNCTION(Exec)
@@ -88,6 +90,16 @@ public:
 	const FString& GetGameHotspotSsid() const;
 	const FString& GetGameHotspotPassphrase() const;
 	const FString& GetLastNetworkMessage() const;
+	const FBHAutomationConfig& GetAutomationConfig() const;
+	bool IsAutomationEnabled() const;
+	bool ShouldUseVirtualBoxSafeMode() const;
+	bool ConsumeAutomationHost(FString& OutHostMode);
+	bool ConsumeAutomationJoin(FString& OutAddress);
+	bool ShouldAutoReady() const;
+	float GetAutomationQuitSeconds() const;
+	void LogAutomationMarker(const FString& Marker) const;
+	bool LogAutomationMarkerOnce(const FString& Marker);
+	void RequestCleanExit(const FString& Reason);
 
 private:
 	IOnlineSessionPtr GetOnlineSessionInterface(FString& OutMessage) const;
@@ -117,4 +129,8 @@ private:
 	FString GameHotspotSsid;
 	FString GameHotspotPassphrase;
 	FString LastNetworkMessage;
+	FBHAutomationConfig AutomationConfig;
+	bool bAutomationHostConsumed = false;
+	bool bAutomationJoinConsumed = false;
+	TSet<FString> AutomationMarkersLogged;
 };

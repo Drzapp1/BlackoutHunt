@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "BHTypes.h"
 #include "GameFramework/PlayerController.h"
+#include "TimerManager.h"
 #include "BHPlayerController.generated.h"
 
 class APlayerState;
@@ -439,6 +440,15 @@ private:
 	bool RequireLocalHostAdmin(FString& OutMessage, const TCHAR* ActionDescription);
 	bool TryOpenClassroomBoardWindow(FString& OutMessage);
 	void OnClassroomBoardWindowClosed(const TSharedRef<SWindow>& ClosedWindow);
+	void BindGameWindowCloseOverride();
+	void OnGameWindowCloseRequested(const TSharedRef<SWindow>& Window);
+	void ApplyVirtualBoxSafeModeIfNeeded();
+	void ScheduleAutomation();
+	void RunAutomationStartup();
+	void TickAutomation();
+	void RunClassroomNetworkPreflight();
+	void RunClassroomFallbackCheck();
+	void RequestCleanQuit(FString Reason);
 
 	TSharedPtr<SWidget> MainMenuWidget;
 	TSharedPtr<SWindow> ClassroomBoardWindow;
@@ -460,4 +470,19 @@ private:
 	int32 CrosshairStyle = 0;
 	bool bAmbientMusicStarted = false;
 	bool bAudioPreferencesLoaded = false;
+	bool bVirtualBoxSafeApplied = false;
+	bool bAutomationStartupRan = false;
+	bool bAutomationJoinAttempted = false;
+	bool bAutomationJoinedLogged = false;
+	bool bAutomationReadyLogged = false;
+	bool bAutomationRoundStartedLogged = false;
+	bool bClassroomPreflightReported = false;
+	bool bClassroomFallbackStarted = false;
+	bool bGameWindowCloseOverrideBound = false;
+	bool bCleanQuitRequested = false;
+	float AutomationJoinAttemptTime = -1.0f;
+	FTimerHandle AutomationStartupTimerHandle;
+	FTimerHandle AutomationQuitTimerHandle;
+	FTimerHandle ClassroomPreflightTimerHandle;
+	FTimerHandle ClassroomFallbackTimerHandle;
 };

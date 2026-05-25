@@ -1,6 +1,7 @@
 param(
     [string]$PackageRoot = "$PSScriptRoot\..\Builds\Windows",
-    [string]$ExpectedPlayitSha256 = "88000d40af7a8e5a0548d27d71c0cad7d5f4b91fd85f6e9297237ac8b57fbdc9"
+    [string]$ExpectedPlayitSha256 = "88000d40af7a8e5a0548d27d71c0cad7d5f4b91fd85f6e9297237ac8b57fbdc9",
+    [string]$ExpectedAppLocalDependencyRoot
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,6 +12,13 @@ $projectRoot = [System.IO.Path]::GetFullPath((Resolve-Path "$PSScriptRoot\.."))
 if (-not $resolvedPackageRoot.StartsWith($projectRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing to verify package outside project root: $resolvedPackageRoot"
 }
+
+if (-not $ExpectedAppLocalDependencyRoot) {
+    $unreal = & "$PSScriptRoot\Find-Unreal.ps1"
+    $ExpectedAppLocalDependencyRoot = Join-Path $unreal.Root "Engine\Binaries\ThirdParty\AppLocalDependencies\Win64\x64"
+}
+
+$resolvedAppLocalDependencyRoot = [System.IO.Path]::GetFullPath((Resolve-Path $ExpectedAppLocalDependencyRoot))
 
 $forbidden = @(
     @{ Name = "debug symbols"; Pattern = '\.pdb$' },
@@ -28,6 +36,51 @@ $forbidden = @(
 
 $allFiles = Get-ChildItem -LiteralPath $resolvedPackageRoot -Recurse -File -Force
 $failures = New-Object System.Collections.Generic.List[string]
+
+$expectedAppLocalDlls = @(
+    Get-ChildItem -LiteralPath $resolvedAppLocalDependencyRoot -Recurse -File -Filter "*.dll" -Force |
+        ForEach-Object { $_.Name.ToLowerInvariant() } |
+        Sort-Object -Unique
+)
+
+$requiredAppLocalDlls = @(
+    "msvcp140.dll",
+    "vcruntime140.dll",
+    "vcruntime140_1.dll",
+    "ucrtbase.dll"
+)
+
+if ($expectedAppLocalDlls.Count -eq 0) {
+    $failures.Add("app-local runtime dependencies: no DLLs found under $resolvedAppLocalDependencyRoot")
+}
+
+foreach ($requiredDll in $requiredAppLocalDlls) {
+    if ($expectedAppLocalDlls -notcontains $requiredDll) {
+        $failures.Add("app-local runtime source is missing required DLL: $requiredDll")
+    }
+}
+
+$rootLaunchers = @(
+    Get-ChildItem -LiteralPath $resolvedPackageRoot -File -Filter "*.exe" -Force |
+        Where-Object { $_.Name -ine "vc_redist.x64.exe" -and $_.Name -ine "vc_redist.arm64.exe" }
+)
+
+if ($rootLaunchers.Count -eq 0) {
+    $failures.Add("app-local runtime dependencies: no root package launcher executable found")
+}
+else {
+    $rootDlls = @(
+        Get-ChildItem -LiteralPath $resolvedPackageRoot -File -Filter "*.dll" -Force |
+            ForEach-Object { $_.Name.ToLowerInvariant() } |
+            Sort-Object -Unique
+    )
+
+    foreach ($expectedDll in $expectedAppLocalDlls) {
+        if ($rootDlls -notcontains $expectedDll) {
+            $failures.Add("missing app-local runtime DLL beside root launcher: $expectedDll")
+        }
+    }
+}
 
 foreach ($file in $allFiles) {
     $relative = $file.FullName.Substring($resolvedPackageRoot.Length).TrimStart('\', '/')
@@ -48,6 +101,34 @@ else {
         if ($hash -ne $ExpectedPlayitSha256.ToLowerInvariant()) {
             $relative = $playit.FullName.Substring($resolvedPackageRoot.Length).TrimStart('\', '/')
             $failures.Add("playit.exe hash mismatch: $relative has $hash")
+        }
+    }
+}
+
+$shippingExecutables = @(
+    $allFiles | Where-Object {
+        $_.Name -imatch '-Win64-Shipping\.exe$' -and
+        $_.FullName -match '[\\/]Binaries[\\/]Win64[\\/]'
+    }
+)
+
+if ($shippingExecutables.Count -eq 0) {
+    $failures.Add("app-local runtime dependencies: no Win64 Shipping executable found under Binaries\Win64")
+}
+else {
+    foreach ($shippingExecutable in $shippingExecutables) {
+        $binaryDir = Split-Path -Parent $shippingExecutable.FullName
+        $relativeBinaryDir = $binaryDir.Substring($resolvedPackageRoot.Length).TrimStart('\', '/')
+        $packagedDlls = @(
+            Get-ChildItem -LiteralPath $binaryDir -File -Force |
+                ForEach-Object { $_.Name.ToLowerInvariant() } |
+                Sort-Object -Unique
+        )
+
+        foreach ($expectedDll in $expectedAppLocalDlls) {
+            if ($packagedDlls -notcontains $expectedDll) {
+                $failures.Add("missing app-local runtime DLL in ${relativeBinaryDir}: $expectedDll")
+            }
         }
     }
 }

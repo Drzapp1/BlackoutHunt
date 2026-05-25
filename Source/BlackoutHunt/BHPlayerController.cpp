@@ -1,5 +1,6 @@
 #include "BHPlayerController.h"
 #include "BHAccountSubsystem.h"
+#include "BHAutomationSupport.h"
 #include "BHCharacter.h"
 #include "BHGameInstance.h"
 #include "BHGameMode.h"
@@ -11,6 +12,7 @@
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 #include "GameFramework/InputSettings.h"
+#include "HAL/PlatformMisc.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/ConfigCacheIni.h"
 #include "SBHClassroomBoard.h"
@@ -238,6 +240,8 @@ void ABHPlayerController::BeginPlay()
 	if (IsLocalController())
 	{
 		EnsureAudioPreferencesLoaded();
+		ApplyVirtualBoxSafeModeIfNeeded();
+		BindGameWindowCloseOverride();
 		ShowLocalStatusMessage(TEXT("Escape opens menu. Enter readies up. F flashlight, E interact, 1-4 answer."), 5.0f);
 		UWorld* World = GetWorld();
 		const bool bRemovedByHost = BHIsUrlOptionEnabled(World, TEXT("BHRemovedByHost="));
@@ -250,6 +254,8 @@ void ABHPlayerController::BeginPlay()
 				FString BoardMessage;
 				OpenClassroomBoardForMenu(BoardMessage);
 				ShowLocalStatusMessage(TEXT("Live Classroom hosted. Share the JOIN address, assign roles, and kick blockers from the roster."), 8.0f);
+				GetWorldTimerManager().SetTimer(ClassroomPreflightTimerHandle, this, &ABHPlayerController::RunClassroomNetworkPreflight, 4.0f, false);
+				GetWorldTimerManager().SetTimer(ClassroomFallbackTimerHandle, this, &ABHPlayerController::RunClassroomFallbackCheck, 40.0f, false);
 			}
 			else if (bRemovedByHost)
 			{
@@ -261,6 +267,14 @@ void ABHPlayerController::BeginPlay()
 			ApplyGameplayInputMode();
 		}
 		UpdateAmbientMusic();
+		if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
+		{
+			if (BHGI->IsAutomationEnabled())
+			{
+				BHGI->LogAutomationMarkerOnce(TEXT("MENU_READY"));
+			}
+		}
+		ScheduleAutomation();
 	}
 }
 
@@ -268,10 +282,19 @@ void ABHPlayerController::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 	UpdateAmbientMusic();
+	TickAutomation();
 }
 
 void ABHPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(AutomationStartupTimerHandle);
+		World->GetTimerManager().ClearTimer(AutomationQuitTimerHandle);
+		World->GetTimerManager().ClearTimer(ClassroomPreflightTimerHandle);
+		World->GetTimerManager().ClearTimer(ClassroomFallbackTimerHandle);
+	}
+
 	HideClassroomBoard();
 
 	if (AmbientMusicComponent)
@@ -799,7 +822,7 @@ void ABHPlayerController::ReturnToMainMenu()
 
 void ABHPlayerController::QuitGame()
 {
-	ConsoleCommand(TEXT("quit"));
+	RequestCleanQuit(TEXT("menu"));
 }
 
 bool ABHPlayerController::HostOnlineGameForMenu(const FString& LevelName, FString& OutMessage)
@@ -2086,6 +2109,299 @@ void ABHPlayerController::OnClassroomBoardWindowClosed(const TSharedRef<SWindow>
 {
 	(void)ClosedWindow;
 	ClassroomBoardWindow.Reset();
+}
+
+void ABHPlayerController::BindGameWindowCloseOverride()
+{
+	if (bGameWindowCloseOverrideBound || !IsLocalController() || !GEngine || !GEngine->GameViewport)
+	{
+		return;
+	}
+
+	const TSharedPtr<SWindow> GameWindow = GEngine->GameViewport->GetWindow();
+	if (!GameWindow.IsValid())
+	{
+		return;
+	}
+
+	GameWindow->SetRequestDestroyWindowOverride(FRequestDestroyWindowOverride::CreateUObject(this, &ABHPlayerController::OnGameWindowCloseRequested));
+	bGameWindowCloseOverrideBound = true;
+}
+
+void ABHPlayerController::OnGameWindowCloseRequested(const TSharedRef<SWindow>& Window)
+{
+	(void)Window;
+	RequestCleanQuit(TEXT("window-close"));
+}
+
+void ABHPlayerController::ApplyVirtualBoxSafeModeIfNeeded()
+{
+	if (bVirtualBoxSafeApplied || !IsLocalController())
+	{
+		return;
+	}
+
+	const UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>();
+	if (!BHGI || !BHGI->ShouldUseVirtualBoxSafeMode())
+	{
+		return;
+	}
+
+	bVirtualBoxSafeApplied = true;
+
+	FString Message;
+	ApplyGraphicsPresetForMenu(0, Message);
+	ApplyResolutionForMenu(1280, 720, false, Message);
+
+	static const FBHConsoleVariableSetting VirtualBoxSafeSettings[] = {
+		{ TEXT("r.MotionBlurQuality"), TEXT("0") },
+		{ TEXT("r.GPUCrashDebugging"), TEXT("0") },
+		{ TEXT("r.D3D12.GPUTimeout"), TEXT("0") },
+		{ TEXT("r.RHICmdBypass"), TEXT("0") },
+		{ TEXT("r.DynamicRes.OperationMode"), TEXT("0") },
+		{ TEXT("r.ScreenPercentage"), TEXT("60") },
+		{ TEXT("r.VolumetricFog"), TEXT("0") },
+		{ TEXT("r.Nanite"), TEXT("0") },
+		{ TEXT("r.RayTracing.ForceAllRayTracingEffects"), TEXT("0") },
+		{ TEXT("t.MaxFPS"), TEXT("30") }
+	};
+	BHApplyConsoleVariables(this, VirtualBoxSafeSettings);
+
+	ShowLocalStatusMessage(TEXT("VirtualBox-safe graphics applied: 1280x720 windowed low."), 4.0f);
+	UE_LOG(LogTemp, Display, TEXT("BlackoutHunt VirtualBox-safe graphics applied."));
+}
+
+void ABHPlayerController::ScheduleAutomation()
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>();
+	if (!BHGI || !BHGI->IsAutomationEnabled())
+	{
+		return;
+	}
+
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().SetTimer(AutomationStartupTimerHandle, this, &ABHPlayerController::RunAutomationStartup, 1.0f, false);
+
+		const float QuitSeconds = BHGI->GetAutomationQuitSeconds();
+		if (QuitSeconds > 0.0f)
+		{
+			FTimerDelegate QuitDelegate;
+			QuitDelegate.BindUObject(this, &ABHPlayerController::RequestCleanQuit, FString(TEXT("automation")));
+			World->GetTimerManager().SetTimer(AutomationQuitTimerHandle, QuitDelegate, QuitSeconds, false);
+		}
+	}
+}
+
+void ABHPlayerController::RunAutomationStartup()
+{
+	if (bAutomationStartupRan || !IsLocalController())
+	{
+		return;
+	}
+	bAutomationStartupRan = true;
+
+	UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>();
+	if (!BHGI || !BHGI->IsAutomationEnabled())
+	{
+		return;
+	}
+
+	FString HostMode;
+	if (BHGI->ConsumeAutomationHost(HostMode))
+	{
+		if (!FBHAutomationSupport::IsKnownHostMode(HostMode))
+		{
+			BHGI->LogAutomationMarker(FString::Printf(TEXT("FAIL:unknown host mode %s"), *HostMode));
+			ShowLocalStatusMessage(FString::Printf(TEXT("Automation host failed: unknown mode %s."), *HostMode), 5.0f);
+			return;
+		}
+
+		if (GetNetMode() != NM_Standalone)
+		{
+			BHGI->LogAutomationMarker(TEXT("FAIL:auto host requires standalone menu"));
+			return;
+		}
+
+		FString Message;
+		if (HostMode.Equals(TEXT("LiveClassroom"), ESearchCase::CaseSensitive))
+		{
+			HostLiveClassroomForMenu(Message);
+		}
+		else if (HostMode.Equals(TEXT("Substation"), ESearchCase::CaseSensitive))
+		{
+			HostSubstationGame();
+		}
+		else if (HostMode.Equals(TEXT("Foggrounds"), ESearchCase::CaseSensitive))
+		{
+			HostFoggroundsGame();
+		}
+		else
+		{
+			HostGame();
+		}
+		return;
+	}
+
+	FString JoinAddress;
+	if (BHGI->ConsumeAutomationJoin(JoinAddress))
+	{
+		const FString NormalizedAddress = FBHNetworkSupport::NormalizeJoinAddress(JoinAddress);
+		if (NormalizedAddress.IsEmpty())
+		{
+			BHGI->LogAutomationMarker(TEXT("FAIL:invalid join address"));
+			ShowLocalStatusMessage(TEXT("Automation join failed: invalid host address."), 5.0f);
+			return;
+		}
+
+		BHGI->LogAutomationMarkerOnce(TEXT("JOIN_ATTEMPT"));
+		bAutomationJoinAttempted = true;
+		AutomationJoinAttemptTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+		JoinGame(NormalizedAddress);
+	}
+}
+
+void ABHPlayerController::TickAutomation()
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>();
+	if (!BHGI || !BHGI->IsAutomationEnabled())
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	const ENetMode NetMode = World->GetNetMode();
+	if (NetMode == NM_ListenServer)
+	{
+		BHGI->LogAutomationMarkerOnce(TEXT("HOST_LISTENING"));
+	}
+
+	if (!bAutomationJoinedLogged && NetMode == NM_Client && PlayerState)
+	{
+		bAutomationJoinedLogged = true;
+		BHGI->LogAutomationMarkerOnce(TEXT("JOINED"));
+	}
+
+	if (bAutomationJoinAttempted && !bAutomationJoinedLogged && AutomationJoinAttemptTime >= 0.0f)
+	{
+		const float SecondsSinceAttempt = World->GetTimeSeconds() - AutomationJoinAttemptTime;
+		if (SecondsSinceAttempt > 30.0f && NetMode != NM_Client)
+		{
+			bAutomationJoinedLogged = true;
+			BHGI->LogAutomationMarkerOnce(TEXT("FAIL:join timeout"));
+		}
+	}
+
+	ABHGameState* BHGS = World->GetGameState<ABHGameState>();
+	ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	if (BHGI->ShouldAutoReady() && BHGS && BHPS && BHGS->RoundPhase == EBHRoundPhase::Lobby && !BHPS->bReady)
+	{
+		ServerSetReady(true);
+		bAutomationReadyLogged = true;
+		BHGI->LogAutomationMarkerOnce(TEXT("READY_SET"));
+	}
+
+	if (!bAutomationRoundStartedLogged && BHGS && BHGS->RoundPhase != EBHRoundPhase::Lobby)
+	{
+		bAutomationRoundStartedLogged = true;
+		BHGI->LogAutomationMarkerOnce(TEXT("ROUND_STARTED"));
+	}
+}
+
+void ABHPlayerController::RunClassroomNetworkPreflight()
+{
+	if (bClassroomPreflightReported || !IsLocalController() || GetNetMode() != NM_ListenServer)
+	{
+		return;
+	}
+
+	bClassroomPreflightReported = true;
+	const FString JoinAddress = FBHNetworkSupport::ResolveLocalJoinAddress(7777);
+	const FString Status = FString::Printf(
+		TEXT("LAN ready: students join %s on UDP 7777. If nobody connects, tunnel fallback starts automatically."),
+		*JoinAddress);
+	ShowLocalStatusMessage(Status, 12.0f);
+	UE_LOG(LogTemp, Display, TEXT("%s"), *Status);
+}
+
+void ABHPlayerController::RunClassroomFallbackCheck()
+{
+	if (bClassroomFallbackStarted || !IsLocalController() || GetNetMode() != NM_ListenServer)
+	{
+		return;
+	}
+
+	const AGameStateBase* BaseGameState = GetWorld() ? GetWorld()->GetGameState() : nullptr;
+	const int32 ConnectedPlayers = BaseGameState ? BaseGameState->PlayerArray.Num() : 1;
+	if (ConnectedPlayers > 1)
+	{
+		ShowLocalStatusMessage(TEXT("LAN ready: student client reached the host."), 6.0f);
+		UE_LOG(LogTemp, Display, TEXT("LAN ready: student client reached the host."));
+		return;
+	}
+
+	bClassroomFallbackStarted = true;
+	FString TunnelMessage;
+	const bool bTunnelStarted = StartInternetTunnelForMenu(TunnelMessage, 7777);
+	const FBHInternetTunnelResult TunnelStatus = FBHNetworkSupport::GetInternetTunnelStatus(7777);
+	FString Status;
+	if (TunnelStatus.bTunnelReady)
+	{
+		Status = FString::Printf(TEXT("LAN blocked, tunnel ready: students join %s. %s"), *TunnelStatus.TunnelAddress, *TunnelStatus.Message);
+	}
+	else if (bTunnelStarted)
+	{
+		Status = FString::Printf(TEXT("network setup required: %s"), *TunnelStatus.Message);
+	}
+	else
+	{
+		Status = FString::Printf(TEXT("network setup required: %s"), *TunnelMessage);
+	}
+
+	ShowLocalStatusMessage(Status, bTunnelStarted ? 15.0f : 12.0f);
+	UE_LOG(LogTemp, Display, TEXT("%s"), *Status);
+}
+
+void ABHPlayerController::RequestCleanQuit(FString Reason)
+{
+	if (bCleanQuitRequested)
+	{
+		return;
+	}
+	bCleanQuitRequested = true;
+
+	HideClassroomBoard();
+
+	if (AmbientMusicComponent)
+	{
+		AmbientMusicComponent->Stop();
+		AmbientMusicComponent->DestroyComponent();
+		AmbientMusicComponent = nullptr;
+		bAmbientMusicStarted = false;
+	}
+
+	if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
+	{
+		BHGI->RequestCleanExit(Reason);
+		return;
+	}
+
+	FPlatformMisc::RequestExit(false);
 }
 
 void ABHPlayerController::ServerSetReady_Implementation(bool bReady)

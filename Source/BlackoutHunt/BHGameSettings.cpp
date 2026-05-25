@@ -11,7 +11,7 @@ UBHGameSettings::UBHGameSettings()
 	bClassroomMode = true;
 	bAllowStudentTeacherAdminControls = false;
 	bAllowTunnelHelper = true;
-	bAllowHotspotHelper = true;
+	bAllowHotspotHelper = false;
 
 	InteractDistance = 550.0f;
 	CaptureDistance = 220.0f;

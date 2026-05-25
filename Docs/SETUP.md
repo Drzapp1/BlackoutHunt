@@ -15,8 +15,8 @@ For the current `D:\UE_5.7` install, command-line builds use `-notinstalledengin
 Host machine:
 
 1. Launch the game/editor.
-2. Use the menu to host `Facility`, `Substation`, or `Foggrounds`. Console fallback: `HostGame`, `HostSubstationGame`, or `HostFoggroundsGame`.
-3. Allow Windows Firewall inbound access if prompted.
+2. Use the menu to host `LIVE CLASSROOM`, `Facility`, `Substation`, or `Foggrounds`. Console fallback: `HostGame`, `HostSubstationGame`, or `HostFoggroundsGame`.
+3. For classroom beta use, do not rely on creating firewall rules from the game. If direct LAN is blocked, use the Playit fallback.
 
 Client machine:
 
@@ -33,7 +33,7 @@ Internet/direct-IP play:
 Internet tunnel play, no router setup:
 
 1. On the host, click `START INTERNET TUNNEL` in the menu or run `StartInternetTunnel`.
-2. The bundled Playit agent starts on Windows and opens the tunnel setup page. Claim the agent if prompted, then create or select a Custom UDP tunnel with local address `127.0.0.1` and local port `7777`.
+2. The bundled Playit agent starts on Windows only after the game verifies the packaged `playit.exe` hash, then opens the tunnel setup page. Claim the agent if prompted, then create or select a Custom UDP tunnel with local address `127.0.0.1` and local port `7777`.
 3. Host `Facility`, `Substation`, or `Foggrounds` normally.
 4. Put the tunnel allocation host and port into the menu's `HOST / IP / CODE` and `PORT` fields, then click `COPY JOIN CODE`.
 5. Send that `BH1:...` code to players. They paste it into `HOST / IP / CODE` and click `JOIN GAME`. The console also accepts `JoinGame BH1:...`.
@@ -47,10 +47,7 @@ Online lobby play:
 
 Game hotspot fallback:
 
-1. If a LAN or public Wi-Fi blocks peer-to-peer traffic between clients, click `CREATE GAME HOTSPOT` in the menu or run `CreateGameHotspot`.
-2. Windows creates a dedicated `BlackoutHunt-*` SSID with a generated passphrase when the Wi-Fi adapter and permissions allow it. Running as administrator may be required.
-3. Other players connect to that SSID, then join the host address shown in the menu on port `7777`.
-4. Use `STOP GAME HOTSPOT` or `StopGameHotspot` when finished.
+The classroom beta disables the Windows hotspot helper by default because it can require administrator networking permission. Prefer normal LAN/Wi-Fi or the Playit tunnel fallback.
 
 The runtime currently generates three large procedural levels in the default engine entry map, so no hand-authored `.umap` is required for the first compile.
 
@@ -71,6 +68,10 @@ Gameplay actions are role/phase gated:
 Packaged executable:
 
 `D:\MainGame\Builds\Windows\BlackoutHunt.exe`
+
+Classroom Windows packages include app-local runtime DLLs beside the root launcher and Shipping executable. A clean standard Windows user should be able to extract the zip and launch the game without administrator rights or a separate VC++ Redistributable install.
+
+Validation automation flags are hidden and inert unless `-BHAutomation=1` is present. Supported flags are `-BHAutoHost=LiveClassroom|Facility|Substation|Foggrounds`, `-BHAutoJoin=<host:port-or-code>`, `-BHAutoReady=1`, `-BHAutoQuitSeconds=<seconds>`, `-BHAutomationTag=<id>`, and `-BHVirtualBoxSafe`. Packaged Shipping writes markers to `Saved\Logs\BlackoutHuntAutomation.log`.
 
 ## Next Editor Pass
 
