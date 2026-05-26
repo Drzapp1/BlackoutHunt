@@ -242,6 +242,7 @@ public:
 	bool HostTestRoundForMenu(const FString& LevelName, FString& OutMessage);
 	bool HostPhysicsClassroomForMenu(FString& OutMessage);
 	bool HostLiveClassroomForMenu(FString& OutMessage);
+	bool HostLiveClassroomForMenu(const FString& LevelName, FString& OutMessage);
 	bool HostBotGameForMenu(const FString& LevelName, FString& OutMessage);
 	bool FindOnlineGamesForMenu(FString& OutMessage);
 	bool JoinOnlineGameForMenu(int32 SessionIndex, FString& OutMessage);

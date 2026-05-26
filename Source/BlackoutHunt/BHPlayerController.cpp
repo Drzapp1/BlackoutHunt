@@ -915,10 +915,17 @@ bool ABHPlayerController::HostPhysicsClassroomForMenu(FString& OutMessage)
 
 bool ABHPlayerController::HostLiveClassroomForMenu(FString& OutMessage)
 {
-	OutMessage = TEXT("Starting Live Classroom.");
+	return HostLiveClassroomForMenu(TEXT("Facility"), OutMessage);
+}
+
+bool ABHPlayerController::HostLiveClassroomForMenu(const FString& LevelName, FString& OutMessage)
+{
+	const FString NormalizedLevel = BHNormalizeRuntimeLevelName(LevelName);
+	const FString Options = BHMakeListenOptions(NormalizedLevel, TEXT("?BHRevisionMode=1?BHRevisionTopics=All?BHRevisionDifficultyMix=Adaptive?BHHuntSeconds=600?BHScareIntensity=2?BHLiveClassroom=1"));
+	OutMessage = FString::Printf(TEXT("Starting Live Classroom on %s."), *NormalizedLevel);
 	ShowLocalStatusMessage(OutMessage, 2.5f);
 	HideMainMenu();
-	UGameplayStatics::OpenLevel(this, FName(TEXT("/Engine/Maps/Entry")), true, TEXT("listen?BHLevel=Facility?BHRevisionMode=1?BHRevisionTopics=All?BHRevisionDifficultyMix=Adaptive?BHHuntSeconds=600?BHScareIntensity=2?BHLiveClassroom=1"));
+	UGameplayStatics::OpenLevel(this, FName(TEXT("/Engine/Maps/Entry")), true, Options);
 	return true;
 }
 

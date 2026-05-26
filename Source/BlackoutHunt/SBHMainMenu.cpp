@@ -2050,10 +2050,20 @@ void SBHMainMenu::BuildPlayActionList(TSharedRef<SVerticalBox> ActionList, bool 
 	else
 	{
 		AddAction(ActionList, MenuPlayActionButton(
-			FText::FromString(TEXT("LIVE CLASSROOM")),
+			FText::FromString(TEXT("LIVE CLASSROOM: FACILITY")),
 			FText::FromString(TEXT("LAN host, projector board, all-ready roster, Physics defaults.")),
 			FLinearColor(0.16f, 0.42f, 0.37f, 1.0f),
-			FOnClicked::CreateSP(this, &SBHMainMenu::OnHostLiveClassroomClicked)));
+			FOnClicked::CreateSP(this, &SBHMainMenu::OnHostLiveClassroomMapClicked, FString(TEXT("Facility")))));
+		AddAction(ActionList, MenuPlayActionButton(
+			FText::FromString(TEXT("LIVE CLASSROOM: SUBSTATION")),
+			FText::FromString(TEXT("LAN classroom on the Substation map.")),
+			FLinearColor(0.14f, 0.28f, 0.42f, 1.0f),
+			FOnClicked::CreateSP(this, &SBHMainMenu::OnHostLiveClassroomMapClicked, FString(TEXT("Substation")))));
+		AddAction(ActionList, MenuPlayActionButton(
+			FText::FromString(TEXT("LIVE CLASSROOM: FOGGROUNDS")),
+			FText::FromString(TEXT("LAN classroom on the larger fog map.")),
+			FLinearColor(0.14f, 0.36f, 0.27f, 1.0f),
+			FOnClicked::CreateSP(this, &SBHMainMenu::OnHostLiveClassroomMapClicked, FString(TEXT("Foggrounds")))));
 
 		TSharedRef<SVerticalBox> QuickStartActions = SNew(SVerticalBox);
 		AddAction(QuickStartActions, MenuPlayActionButton(
@@ -2334,10 +2344,15 @@ FReply SBHMainMenu::OnHostPhysicsClassroomClicked()
 
 FReply SBHMainMenu::OnHostLiveClassroomClicked()
 {
+	return OnHostLiveClassroomMapClicked(TEXT("Facility"));
+}
+
+FReply SBHMainMenu::OnHostLiveClassroomMapClicked(FString LevelName)
+{
 	if (ABHPlayerController* PC = PlayerController.Get())
 	{
 		FString Message;
-		PC->HostLiveClassroomForMenu(Message);
+		PC->HostLiveClassroomForMenu(LevelName, Message);
 		StatusText = FText::FromString(Message);
 		return FReply::Handled();
 	}

@@ -29,11 +29,11 @@ Project attribution text:
 
 ## 0.2.0-beta.4 Package Policy
 
-The Windows classroom beta cooks only documented package-safe content paths: ambientCG materials/textures, in-house/generated audio, UI background media, and the Quaternius/KayKit CC0 character sets used by the current avatar path.
+The Windows classroom beta cooks the documented package-safe content paths plus the restored SCP096 prototype jumpscare visual requested for beta. Package-safe paths include ambientCG materials/textures, in-house/generated audio, UI background media, and the Quaternius/KayKit CC0 character sets used by the current avatar path.
 
-The repository also contains prototype/import source assets that are not part of the beta package unless separately audited:
+The repository also contains prototype/import source assets that need explicit package decisions:
 
-- SCP096 prototype meshes and textures: excluded from beta package because no local distributable license evidence is present.
+- SCP096 prototype meshes and textures: included only for beta classroom testing; complete source-license evidence is still required before broader distribution.
 - Low-poly hider source mesh: excluded from beta package because no local distributable license evidence is present.
 - FNaTI Hunter source mesh: excluded from beta package for classroom beta. Local source license states CC-BY-4.0 and requires attribution if it is included in a future package.
 

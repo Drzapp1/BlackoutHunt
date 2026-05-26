@@ -2775,7 +2775,22 @@ void ABHGameMode::BuildRuntimeFacility()
 		{FVector(850.0f, -720.0f, 95.0f), EBHObjectiveStationType::Valve},
 		{FVector(850.0f, 720.0f, 95.0f), EBHObjectiveStationType::Terminal},
 		{FVector(2300.0f, -720.0f, 95.0f), EBHObjectiveStationType::Antenna},
-		{FVector(2300.0f, 720.0f, 95.0f), EBHObjectiveStationType::Evidence}
+		{FVector(2300.0f, 720.0f, 95.0f), EBHObjectiveStationType::Evidence},
+		{FVector(-4700.0f, -2850.0f, 95.0f), EBHObjectiveStationType::Terminal},
+		{FVector(4700.0f, 2850.0f, 95.0f), EBHObjectiveStationType::Valve},
+		{FVector(-3800.0f, 2300.0f, 95.0f), EBHObjectiveStationType::Antenna},
+		{FVector(3800.0f, -2300.0f, 95.0f), EBHObjectiveStationType::Evidence},
+		{FVector(-100.0f, 3050.0f, 95.0f), EBHObjectiveStationType::Valve},
+		{FVector(1200.0f, 3050.0f, 95.0f), EBHObjectiveStationType::Terminal},
+		{FVector(-3500.0f, -3050.0f, 95.0f), EBHObjectiveStationType::Evidence},
+		{FVector(3500.0f, 3050.0f, 95.0f), EBHObjectiveStationType::Antenna},
+		{FVector(500.0f, -50.0f, 95.0f), EBHObjectiveStationType::Valve},
+		{FVector(-5200.0f, -2200.0f, 95.0f), EBHObjectiveStationType::Terminal},
+		{FVector(5200.0f, 2200.0f, 95.0f), EBHObjectiveStationType::Evidence},
+		{FVector(-900.0f, -2300.0f, 95.0f), EBHObjectiveStationType::Antenna},
+		{FVector(1850.0f, -2300.0f, 95.0f), EBHObjectiveStationType::Valve},
+		{FVector(-3000.0f, 100.0f, 95.0f), EBHObjectiveStationType::Evidence},
+		{FVector(3050.0f, 100.0f, 95.0f), EBHObjectiveStationType::Terminal}
 	};
 	for (const TPair<FVector, EBHObjectiveStationType>& Spec : ObjectiveStationSpecs)
 	{
@@ -3410,7 +3425,22 @@ void ABHGameMode::BuildFoggroundsLevel()
 		{FVector(5200.0f, -2500.0f, 95.0f), EBHObjectiveStationType::Terminal}, {FVector(7050.0f, 800.0f, 95.0f), EBHObjectiveStationType::Antenna},
 		{FVector(4550.0f, 5200.0f, 95.0f), EBHObjectiveStationType::Valve}, {FVector(0.0f, 0.0f, 95.0f), EBHObjectiveStationType::Terminal},
 		{FVector(-7050.0f, -4100.0f, 95.0f), EBHObjectiveStationType::Antenna}, {FVector(6900.0f, -3500.0f, 95.0f), EBHObjectiveStationType::Evidence},
-		{FVector(-3300.0f, 4550.0f, 95.0f), EBHObjectiveStationType::Terminal}, {FVector(6550.0f, 4250.0f, 95.0f), EBHObjectiveStationType::Valve}
+		{FVector(-3300.0f, 4550.0f, 95.0f), EBHObjectiveStationType::Terminal}, {FVector(6550.0f, 4250.0f, 95.0f), EBHObjectiveStationType::Valve},
+		{FVector(-7350.0f, -5400.0f, 95.0f), EBHObjectiveStationType::Terminal}, {FVector(-6000.0f, -5400.0f, 95.0f), EBHObjectiveStationType::Valve},
+		{FVector(-3600.0f, -5200.0f, 95.0f), EBHObjectiveStationType::Evidence}, {FVector(-900.0f, -5200.0f, 95.0f), EBHObjectiveStationType::Antenna},
+		{FVector(1800.0f, -5200.0f, 95.0f), EBHObjectiveStationType::Valve}, {FVector(4500.0f, -5200.0f, 95.0f), EBHObjectiveStationType::Terminal},
+		{FVector(7200.0f, -5200.0f, 95.0f), EBHObjectiveStationType::Evidence}, {FVector(-7350.0f, -2600.0f, 95.0f), EBHObjectiveStationType::Antenna},
+		{FVector(-5200.0f, -2400.0f, 95.0f), EBHObjectiveStationType::Terminal}, {FVector(-3300.0f, -1000.0f, 95.0f), EBHObjectiveStationType::Valve},
+		{FVector(-900.0f, -1000.0f, 95.0f), EBHObjectiveStationType::Evidence}, {FVector(1600.0f, -1000.0f, 95.0f), EBHObjectiveStationType::Antenna},
+		{FVector(4300.0f, -900.0f, 95.0f), EBHObjectiveStationType::Valve}, {FVector(7200.0f, -1700.0f, 95.0f), EBHObjectiveStationType::Terminal},
+		{FVector(-7350.0f, 1700.0f, 95.0f), EBHObjectiveStationType::Evidence}, {FVector(-5200.0f, 2700.0f, 95.0f), EBHObjectiveStationType::Antenna},
+		{FVector(-2500.0f, 1300.0f, 95.0f), EBHObjectiveStationType::Terminal}, {FVector(-800.0f, 5200.0f, 95.0f), EBHObjectiveStationType::Valve},
+		{FVector(1600.0f, 5200.0f, 95.0f), EBHObjectiveStationType::Evidence}, {FVector(3300.0f, 1300.0f, 95.0f), EBHObjectiveStationType::Terminal},
+		{FVector(5200.0f, 250.0f, 95.0f), EBHObjectiveStationType::Antenna}, {FVector(7200.0f, 5200.0f, 95.0f), EBHObjectiveStationType::Valve},
+		{FVector(-7350.0f, 5200.0f, 95.0f), EBHObjectiveStationType::Terminal}, {FVector(-3600.0f, 5200.0f, 95.0f), EBHObjectiveStationType::Valve},
+		{FVector(7200.0f, 2600.0f, 95.0f), EBHObjectiveStationType::Antenna}, {FVector(5200.0f, -5200.0f, 95.0f), EBHObjectiveStationType::Evidence},
+		{FVector(0.0f, -3600.0f, 95.0f), EBHObjectiveStationType::Terminal}, {FVector(0.0f, 3600.0f, 95.0f), EBHObjectiveStationType::Evidence},
+		{FVector(3000.0f, -3600.0f, 95.0f), EBHObjectiveStationType::Antenna}, {FVector(-3000.0f, 3000.0f, 95.0f), EBHObjectiveStationType::Valve}
 	};
 	for (const TPair<FVector, EBHObjectiveStationType>& Spec : ObjectiveStationSpecs)
 	{
@@ -3872,7 +3902,21 @@ void ABHGameMode::BuildSubstationLevel()
 		{FVector(1450.0f, -1250.0f, 95.0f), EBHObjectiveStationType::Antenna},
 		{FVector(1450.0f, 1250.0f, 95.0f), EBHObjectiveStationType::Evidence},
 		{FVector(3700.0f, -1250.0f, 95.0f), EBHObjectiveStationType::Valve},
-		{FVector(3700.0f, 1250.0f, 95.0f), EBHObjectiveStationType::Terminal}
+		{FVector(3700.0f, 1250.0f, 95.0f), EBHObjectiveStationType::Terminal},
+		{FVector(-5550.0f, -3650.0f, 95.0f), EBHObjectiveStationType::Valve},
+		{FVector(-5400.0f, 3650.0f, 95.0f), EBHObjectiveStationType::Evidence},
+		{FVector(-2500.0f, -3650.0f, 95.0f), EBHObjectiveStationType::Terminal},
+		{FVector(-2500.0f, 3650.0f, 95.0f), EBHObjectiveStationType::Antenna},
+		{FVector(-500.0f, -3650.0f, 95.0f), EBHObjectiveStationType::Evidence},
+		{FVector(-500.0f, 3650.0f, 95.0f), EBHObjectiveStationType::Valve},
+		{FVector(1800.0f, -3650.0f, 95.0f), EBHObjectiveStationType::Terminal},
+		{FVector(1800.0f, 3650.0f, 95.0f), EBHObjectiveStationType::Antenna},
+		{FVector(5350.0f, 350.0f, 95.0f), EBHObjectiveStationType::Evidence},
+		{FVector(3900.0f, 3650.0f, 95.0f), EBHObjectiveStationType::Valve},
+		{FVector(3900.0f, -3650.0f, 95.0f), EBHObjectiveStationType::Terminal},
+		{FVector(5450.0f, -3300.0f, 95.0f), EBHObjectiveStationType::Antenna},
+		{FVector(-5850.0f, 0.0f, 95.0f), EBHObjectiveStationType::Valve},
+		{FVector(5350.0f, 3900.0f, 95.0f), EBHObjectiveStationType::Evidence}
 	};
 	for (const TPair<FVector, EBHObjectiveStationType>& Spec : ObjectiveStationSpecs)
 	{
@@ -4402,7 +4446,7 @@ void ABHGameMode::PrepareRoundDirector()
 		{
 			StudentCount = CountActiveRevisionStudents(GameState, false);
 		}
-		const int32 RevisionNodeTarget = StudentCount >= 10 ? 10 : (StudentCount >= 6 ? 8 : 6);
+		const int32 RevisionNodeTarget = StudentCount >= 10 ? 12 : (StudentCount >= 6 ? 10 : 8);
 		ActiveSideObjectiveCount = FMath::Min(RevisionNodeTarget, ObjectiveStations.Num());
 	}
 	else if (bPartyPace && ObjectiveIntensity > 0)
@@ -4457,12 +4501,47 @@ void ABHGameMode::PrepareRoundDirector()
 			}
 		}
 
-		if (ActiveStationIndexes.Num() < ActiveSideObjectiveCount)
+		auto FillRevisionStations = [&](bool bSelectedTopicsOnly)
 		{
-			for (int32 StationIndex = ObjectiveStations.Num() - 1; StationIndex >= 0 && ActiveStationIndexes.Num() < ActiveSideObjectiveCount; --StationIndex)
+			TArray<int32> StationOrder;
+			for (int32 StationIndex = 0; StationIndex < ObjectiveStations.Num(); ++StationIndex)
+			{
+				ABHObjectiveStation* Station = ObjectiveStations[StationIndex];
+				if (!Station || ActiveStationIndexes.Contains(StationIndex))
+				{
+					continue;
+				}
+				if (bSelectedTopicsOnly)
+				{
+					const EBHPhysicsTopic StationTopic = FBHRevisionQuestionBank::TopicForStationType(Station->GetStationType());
+					if ((RevisionTopicMask & FBHRevisionQuestionBank::TopicMaskBit(StationTopic)) == 0)
+					{
+						continue;
+					}
+				}
+				StationOrder.Add(StationIndex);
+			}
+			for (int32 Index = StationOrder.Num() - 1; Index > 0; --Index)
+			{
+				StationOrder.Swap(Index, Stream.RandRange(0, Index));
+			}
+			for (const int32 StationIndex : StationOrder)
 			{
 				ActiveStationIndexes.Add(StationIndex);
+				if (ActiveStationIndexes.Num() >= ActiveSideObjectiveCount)
+				{
+					break;
+				}
 			}
+		};
+
+		if (ActiveStationIndexes.Num() < ActiveSideObjectiveCount)
+		{
+			FillRevisionStations(true);
+		}
+		if (ActiveStationIndexes.Num() < ActiveSideObjectiveCount)
+		{
+			FillRevisionStations(false);
 		}
 		ActiveSideObjectiveCount = ActiveStationIndexes.Num();
 	}

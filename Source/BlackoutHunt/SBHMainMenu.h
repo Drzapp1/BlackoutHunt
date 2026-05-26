@@ -61,6 +61,7 @@ private:
 	FReply OnHostFoggroundsTestRoundClicked();
 	FReply OnHostPhysicsClassroomClicked();
 	FReply OnHostLiveClassroomClicked();
+	FReply OnHostLiveClassroomMapClicked(FString LevelName);
 	FReply OnHostBotClicked();
 	FReply OnHostBotSubstationClicked();
 	FReply OnHostBotFoggroundsClicked();

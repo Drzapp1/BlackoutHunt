@@ -15,7 +15,7 @@ Fedora/Wine and native Linux are secondary compatibility tracks and do not gate 
 ## Tester Entry Points
 
 - Extract the packaged Windows classroom zip and start `BlackoutHunt.exe`. The package includes app-local Windows runtime DLLs, so classroom testers should not need administrator rights or a separate VC++ Redistributable install.
-- The teacher uses `LIVE CLASSROOM`.
+- The teacher uses a `LIVE CLASSROOM` map button for Facility, Substation, or Foggrounds.
 - Students enter an in-game lobby name when prompted, then use the saved classroom join list or type `blackouthunt.playit.plus:24761`.
 - Direct LAN still works when the teacher IP and UDP `7777` are reachable.
 - If a teacher-created Playit tunnel is unavailable, the host preflight reports `network setup required` and points to the agent/setup state.
@@ -29,7 +29,11 @@ Fedora/Wine and native Linux are secondary compatibility tracks and do not gate 
 - Logs the classroom preflight join address for automation and tester diagnostics.
 - Routes packaged-build Derived Data Cache output to `Builds/DerivedDataCache` and uses the installed local fallback DDC profile.
 - Keeps Playit download/setup pages user-driven instead of opening them automatically from the game.
-- Updates Physics classroom question wording toward IGCSE skill and exam-method prompts.
+- Doubles the Physics classroom question bank to 320 IGCSE-style revision prompts with balanced topic, difficulty, and question-type coverage.
+- Lets teachers pick Facility, Substation, or Foggrounds directly from the Live Classroom menu flow.
+- Restores the SCP096 prototype visual for the jumpscare actor, with procedural fallback pieces still available when the asset is missing.
+- Restores explicit survivor HUD readouts for flashlight battery and teacher proximity.
+- Adds many more revision objective modules on every runtime map, with the densest coverage pass on Foggrounds, and randomizes revision node fill across the map.
 - Fixes menu tab widget index mapping for the native menu.
 
 ## Classroom Defaults
@@ -46,7 +50,7 @@ Fedora/Wine and native Linux are secondary compatibility tracks and do not gate 
 - The Playit endpoint depends on the teacher-owned tunnel/agent staying configured and online.
 - Online session Host/Find/Join is for local/development validation only until EOS or Steam is configured.
 - The current maps are runtime-generated prototype levels rather than authored production maps.
-- The classroom beta excludes unaudited prototype character/jumpscare source assets and uses procedural or CC0 fallback visuals where needed.
+- The SCP096 prototype jumpscare visual is included for beta classroom testing; broader distribution still needs a final source-asset audit.
 - Broad physical-device validation remains a follow-up after VM classroom validation.
 
 ## Required Beta Validation

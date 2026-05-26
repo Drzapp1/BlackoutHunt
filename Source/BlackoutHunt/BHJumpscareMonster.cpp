@@ -1,10 +1,13 @@
 #include "BHJumpscareMonster.h"
 #include "BHAmbientEmitter.h"
 #include "BHCharacter.h"
+#include "Animation/AnimSequence.h"
 #include "Components/PointLightComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
+#include "Engine/StaticMesh.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 #include "UObject/ConstructorHelpers.h"
@@ -174,7 +177,79 @@ ABHJumpscareMonster::ABHJumpscareMonster()
 	HoldSeconds = 0.0f;
 	SpawnTime = -1.0f;
 	bChargeStarted = false;
+	bUsingScpVisual = false;
 	SetActorScale3D(FVector(1.7f, 1.7f, 1.7f));
+
+	static ConstructorHelpers::FObjectFinder<USkeletalMesh> ScpSkeletalMesh(TEXT("/Game/BlackoutHunt/Art/SCP096/Skeletal/SK_SCP096.SK_SCP096"));
+	static ConstructorHelpers::FObjectFinder<UAnimSequence> ScpRunAnim(TEXT("/Game/BlackoutHunt/Art/SCP096/Skeletal/A_SCP096_Run.A_SCP096_Run"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> ScpMaterial(TEXT("/Game/BlackoutHunt/Art/SCP096/M_SCP096.M_SCP096"));
+	if (ScpSkeletalMesh.Succeeded() && SkeletalMonsterMesh)
+	{
+		SkeletalMonsterMesh->SetSkeletalMesh(ScpSkeletalMesh.Object);
+		if (ScpMaterial.Succeeded())
+		{
+			SkeletalMonsterMesh->SetMaterial(0, ScpMaterial.Object);
+		}
+		if (ScpRunAnim.Succeeded())
+		{
+			SkeletalMonsterMesh->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+			SkeletalMonsterMesh->SetAnimation(ScpRunAnim.Object);
+			SkeletalMonsterMesh->Play(true);
+		}
+		SkeletalMonsterMesh->SetRelativeLocation(FVector(-20.0f, 0.0f, -88.0f));
+		SkeletalMonsterMesh->SetRelativeRotation(FRotator(0.0f, -90.0f, 0.0f));
+		SkeletalMonsterMesh->SetRelativeScale3D(FVector(1.32f));
+		SkeletalMonsterMesh->SetHiddenInGame(false);
+		SkeletalMonsterMesh->SetVisibility(true, true);
+		bUsingScpVisual = true;
+	}
+	else
+	{
+		static ConstructorHelpers::FObjectFinder<UStaticMesh> ScpStaticMesh(TEXT("/Game/BlackoutHunt/Art/SCP096/SM_SCP096.SM_SCP096"));
+		if (ScpStaticMesh.Succeeded() && MonsterMesh)
+		{
+			MonsterMesh->SetStaticMesh(ScpStaticMesh.Object);
+			if (ScpMaterial.Succeeded())
+			{
+				MonsterMesh->SetMaterial(0, ScpMaterial.Object);
+			}
+			MonsterMesh->SetRelativeLocation(FVector(-20.0f, 0.0f, -88.0f));
+			MonsterMesh->SetRelativeRotation(FRotator(0.0f, -90.0f, 0.0f));
+			MonsterMesh->SetRelativeScale3D(FVector(1.32f));
+			MonsterMesh->SetHiddenInGame(false);
+			MonsterMesh->SetVisibility(true, true);
+			bUsingScpVisual = true;
+		}
+	}
+
+	if (bUsingScpVisual)
+	{
+		MonsterMesh->SetHiddenInGame(MonsterMesh->GetStaticMesh() == nullptr);
+		MonsterMesh->SetVisibility(MonsterMesh->GetStaticMesh() != nullptr, true);
+		SkeletalMonsterMesh->SetHiddenInGame(SkeletalMonsterMesh->GetSkeletalMeshAsset() == nullptr);
+		SkeletalMonsterMesh->SetVisibility(SkeletalMonsterMesh->GetSkeletalMeshAsset() != nullptr, true);
+
+		UStaticMeshComponent* ProxyParts[] = {
+			Body,
+			Chest,
+			Head,
+			LeftArm,
+			RightArm,
+			LeftLeg,
+			RightLeg,
+			LeftEye,
+			RightEye,
+			Mouth
+		};
+		for (UStaticMeshComponent* Part : ProxyParts)
+		{
+			if (Part)
+			{
+				Part->SetHiddenInGame(true);
+				Part->SetVisibility(false, true);
+			}
+		}
+	}
 }
 
 void ABHJumpscareMonster::BeginPlay()

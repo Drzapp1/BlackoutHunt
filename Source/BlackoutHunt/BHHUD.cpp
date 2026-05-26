@@ -133,6 +133,81 @@ namespace
 		}
 		return bFoundThreat;
 	}
+
+	struct FBHTeacherProximityReadout
+	{
+		bool bFound = false;
+		bool bLineOfSight = false;
+		float DistanceCm = 0.0f;
+		float ProximityPercent = 0.0f;
+	};
+
+	FBHTeacherProximityReadout FindTeacherProximity(UWorld* World, const ABHCharacter* Character)
+	{
+		FBHTeacherProximityReadout Readout;
+		if (!World || !Character)
+		{
+			return Readout;
+		}
+
+		const ABHPlayerState* LocalPS = Character->GetBHPlayerState();
+		if (!LocalPS || !LocalPS->IsAliveSurvivor())
+		{
+			return Readout;
+		}
+
+		FVector ViewLocation = Character->GetActorLocation() + FVector(0.0f, 0.0f, 72.0f);
+		FRotator ViewRotation = Character->GetActorRotation();
+		Character->GetActorEyesViewPoint(ViewLocation, ViewRotation);
+
+		const FVector CharacterLocation = Character->GetActorLocation();
+		constexpr float TeacherSignalRange = 6000.0f;
+		float BestDistance = TeacherSignalRange;
+		bool bBestLineOfSight = false;
+
+		auto HasLineOfSightTo = [&](const ABHCharacter* OtherCharacter)
+		{
+			if (!OtherCharacter)
+			{
+				return false;
+			}
+
+			const FVector ThreatLocation = OtherCharacter->GetActorLocation() + FVector(0.0f, 0.0f, 72.0f);
+			FCollisionQueryParams Params(SCENE_QUERY_STAT(BHHUDTeacherProximityLOS), false);
+			Params.AddIgnoredActor(Character);
+			Params.AddIgnoredActor(OtherCharacter);
+
+			FHitResult Hit;
+			return !World->LineTraceSingleByChannel(Hit, ViewLocation, ThreatLocation, ECC_Visibility, Params);
+		};
+
+		for (TActorIterator<ABHCharacter> It(World); It; ++It)
+		{
+			const ABHCharacter* OtherCharacter = *It;
+			const ABHPlayerState* OtherPS = OtherCharacter ? OtherCharacter->GetBHPlayerState() : nullptr;
+			if (!OtherCharacter || OtherCharacter == Character || !IsAlivePathThreat(OtherPS))
+			{
+				continue;
+			}
+
+			const float Distance = FVector::Dist2D(OtherCharacter->GetActorLocation(), CharacterLocation);
+			if (Distance <= BestDistance)
+			{
+				BestDistance = Distance;
+				bBestLineOfSight = HasLineOfSightTo(OtherCharacter);
+				Readout.bFound = true;
+			}
+		}
+
+		if (Readout.bFound)
+		{
+			const float BaseSignal = 1.0f - FMath::Clamp(BestDistance / TeacherSignalRange, 0.0f, 1.0f);
+			Readout.bLineOfSight = bBestLineOfSight;
+			Readout.DistanceCm = BestDistance;
+			Readout.ProximityPercent = FMath::Clamp((BaseSignal + (bBestLineOfSight ? 0.12f : 0.0f)) * 100.0f, 4.0f, 100.0f);
+		}
+		return Readout;
+	}
 }
 
 ABHHUD::ABHHUD()
@@ -241,15 +316,21 @@ void ABHHUD::DrawHUD()
 	if (Character)
 	{
 		const float MeterW = FMath::Clamp(Canvas->ClipX * 0.22f, 210.0f, 310.0f);
-		const float VitalsY = Canvas->ClipY - SafePad - 94.0f;
+		const float VitalsY = Canvas->ClipY - SafePad - 132.0f;
 		const FString VitalsTitle = Character->IsDetentionMarked()
 			? FString::Printf(TEXT("MARKED %.0fs"), Character->GetDetentionMarkRemaining())
 			: (Character->IsHiddenInLocker() ? FString(TEXT("CONCEALED")) : FString(TEXT("BODY")));
 		DrawHudText(VitalsTitle.ToUpper(), SafePad, VitalsY - 19.0f, Character->IsDetentionMarked() ? FLinearColor(1.0f, 0.20f, 0.12f, 0.96f) : FLinearColor(0.76f, 0.72f, 0.64f, 0.84f), GEngine->GetSmallFont(), 0.66f);
-		DrawRawMeter(TEXT("BAT"), Character->GetFlashlightBattery(), SafePad, VitalsY, MeterW, FLinearColor(0.80f, 0.82f, 0.70f, 0.88f), false);
-		DrawRawMeter(TEXT("STAM"), Character->GetStaminaPercent(), SafePad, VitalsY + 18.0f, MeterW, FLinearColor(0.75f, 0.83f, 0.54f, 0.88f), false);
-		DrawRawMeter(TEXT("FEAR"), Character->GetFear(), SafePad, VitalsY + 36.0f, MeterW, FLinearColor(0.92f, 0.28f, 0.20f, 0.88f), true);
-		DrawRawMeter(TEXT("DREAD"), Character->GetDread(), SafePad, VitalsY + 54.0f, MeterW, FLinearColor(0.84f, 0.18f, 0.14f, 0.90f), true);
+		DrawProgressBar(TEXT("BATTERY"), Character->GetFlashlightBattery(), SafePad, VitalsY, MeterW, FLinearColor(0.80f, 0.82f, 0.70f, 0.88f));
+
+		const FBHTeacherProximityReadout TeacherProximity = FindTeacherProximity(GetWorld(), Character);
+		const FString TeacherText = TeacherProximity.bFound
+			? FString::Printf(TEXT("%s %.0fm"), TeacherProximity.bLineOfSight ? TEXT("VISIBLE") : TEXT("NEAR"), TeacherProximity.DistanceCm / 100.0f)
+			: FString(TEXT("CLEAR"));
+		DrawProgressBar(TEXT("TEACHER"), TeacherProximity.ProximityPercent, SafePad, VitalsY + 32.0f, MeterW, FLinearColor(0.90f, 0.36f, 0.22f, 0.90f), TeacherText);
+		DrawRawMeter(TEXT("STAM"), Character->GetStaminaPercent(), SafePad, VitalsY + 68.0f, MeterW, FLinearColor(0.75f, 0.83f, 0.54f, 0.88f), false);
+		DrawRawMeter(TEXT("FEAR"), Character->GetFear(), SafePad, VitalsY + 86.0f, MeterW, FLinearColor(0.92f, 0.28f, 0.20f, 0.88f), true);
+		DrawRawMeter(TEXT("DREAD"), Character->GetDread(), SafePad, VitalsY + 104.0f, MeterW, FLinearColor(0.84f, 0.18f, 0.14f, 0.90f), true);
 	}
 
 	float PathThreatAlpha = 0.0f;
@@ -543,8 +624,9 @@ void ABHHUD::DrawProgressBar(const FString& Label, float Value, float X, float Y
 	const float BarH = 9.0f;
 	const float BarY = Y + 13.0f;
 	const float FillW = W * (ClampedValue / 100.0f);
+	const bool bTeacherSignal = Label.Contains(TEXT("TEACHER"));
 	const bool bWarnLow = (Label.Contains(TEXT("BATTERY")) || Label.Contains(TEXT("STAMINA"))) && ClampedValue <= 24.0f;
-	const bool bWarnHigh = (Label.Contains(TEXT("FEAR")) || Label.Contains(TEXT("DREAD")) || Label.Contains(TEXT("PRESENCE"))) && ClampedValue >= 72.0f;
+	const bool bWarnHigh = (Label.Contains(TEXT("FEAR")) || Label.Contains(TEXT("DREAD")) || Label.Contains(TEXT("PRESENCE")) || bTeacherSignal) && ClampedValue >= (bTeacherSignal ? 58.0f : 72.0f);
 	const bool bWarning = bWarnLow || bWarnHigh;
 	const FString RightText = ValueText.IsEmpty() ? FString::Printf(TEXT("%.0f%%"), ClampedValue) : ValueText;
 	const FLinearColor ReadoutColor = bWarning ? FLinearColor(1.0f, 0.42f, 0.30f, 0.98f) : MutedText();

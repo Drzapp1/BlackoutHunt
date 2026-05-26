@@ -65,7 +65,7 @@ Three runtime levels are currently implemented:
 
 - `Facility`: expanded abandoned facility with concrete/plaster/tile materials, denser floor seams, wall trim, grime, hazard striping, pipes, warning signs, clutter, extra lockers, and extra breaker locations.
 - `Substation`: larger utility/substation map sized for 12 players, with concrete, plaster, diamond-plate, rusty metal, painted metal, warning placards, transformer lanes, control rooms, perimeter routes, shutters, terminals, batteries, lockers, circuit lighting, and industrial clutter.
-- `Foggrounds`: large outdoor nighttime facility perimeter with heavy fog presets, fenced service-road lanes, sheds, generator yards, watch posts, trees, rocks, two exits, and 12-player objective coverage.
+- `Foggrounds`: large outdoor nighttime facility perimeter with heavy fog presets, fenced service-road lanes, sheds, generator yards, watch posts, trees, rocks, two exits, and dense 12-player objective coverage.
 
 Imported art assets and licenses are tracked in `D:\MainGame\Docs\ASSETS.md`.
 
@@ -108,7 +108,7 @@ Account progress is saved locally under `D:\MainGame\Saved\Account` and can sync
 
 The project defaults to a classroom-safe profile: local username/password profiles are enabled, external account login/backend sync are disabled, and session/admin controls are restricted to the listen-server host machine. Students can still play the in-game Teacher role when the host assigns it, but that role does not grant host/admin controls.
 
-Use `LIVE CLASSROOM` from the Play menu for the LAN-first Physics Classroom flow: Facility, 10 minutes, adaptive questions, all topics, Horror scare intensity, classroom board, join address, and host roster. The host can adjust question focus, complexity, mastery targets, and scare intensity from the Classroom tab. Force-start stays disabled; the host removes blockers with the roster Kick button.
+Use one of the `LIVE CLASSROOM` map buttons from the Play menu for the LAN-first Physics Classroom flow: Facility, Substation, or Foggrounds, 10 minutes, adaptive questions, all topics, Horror scare intensity, classroom board, join address, and host roster. The host can adjust question focus, complexity, mastery targets, and scare intensity from the Classroom tab. Force-start stays disabled; the host removes blockers with the roster Kick button.
 
 For live classroom packaging and operation, see `D:\MainGame\Docs\CLASSROOM_DEPLOYMENT.md`. The primary release command is:
 

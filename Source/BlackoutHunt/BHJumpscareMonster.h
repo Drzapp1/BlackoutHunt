@@ -84,4 +84,5 @@ protected:
 	float HoldSeconds;
 	float SpawnTime;
 	bool bChargeStarted;
+	bool bUsingScpVisual;
 };
