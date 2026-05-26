@@ -37,6 +37,45 @@ function Copy-AppLocalDependenciesToPackageRoot {
     }
 }
 
+function Write-ClassroomLaunchHelpers {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PackageRoot
+    )
+
+    $dx11Launcher = @'
+@echo off
+setlocal
+cd /d "%~dp0"
+start "" "%~dp0BlackoutHunt.exe" -d3d11
+'@
+
+    $safeLauncher = @'
+@echo off
+setlocal
+cd /d "%~dp0"
+start "" "%~dp0BlackoutHunt.exe" -d3d11 -BHVirtualBoxSafe -ResX=1280 -ResY=720 -WINDOWED
+'@
+
+    $troubleshooting = @'
+Blackout Hunt classroom graphics launch notes
+
+Use Launch-BlackoutHunt-DX11.cmd on older Windows machines.
+Use Launch-BlackoutHunt-DX11-Low.cmd for VM or low-spec validation.
+
+If Windows still shows "A D3D11-compatible GPU is required", the machine is not exposing Direct3D feature level 11.0 / Shader Model 5.0 to Unreal. Check:
+
+- Install the real Intel/NVIDIA/AMD graphics driver; Microsoft Basic Display Adapter is not enough.
+- Avoid launching through Remote Desktop if it hides hardware acceleration.
+- On VirtualBox, enable 3D Acceleration, use the VBoxSVGA controller, install Guest Additions, and allocate the maximum video memory. Some VirtualBox hosts still cannot expose a UE-compatible D3D11 path.
+- Very old GPUs such as Intel HD 3000-era hardware cannot run this UE5 package.
+'@
+
+    Set-Content -LiteralPath (Join-Path $PackageRoot "Launch-BlackoutHunt-DX11.cmd") -Value $dx11Launcher -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $PackageRoot "Launch-BlackoutHunt-DX11-Low.cmd") -Value $safeLauncher -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $PackageRoot "GPU-TROUBLESHOOTING.txt") -Value $troubleshooting -Encoding ASCII
+}
+
 if (-not $Configuration) {
     if ($Classroom) {
         $Configuration = "Shipping"
@@ -110,5 +149,6 @@ finally {
 
 if ($Classroom) {
     Copy-AppLocalDependenciesToPackageRoot -SourceRoot $appLocalDependenciesX64 -PackageRoot $archive
+    Write-ClassroomLaunchHelpers -PackageRoot $archive
     & "$PSScriptRoot\Verify-ClassroomPackage.ps1" -PackageRoot $archive -ExpectedAppLocalDependencyRoot $appLocalDependenciesX64
 }

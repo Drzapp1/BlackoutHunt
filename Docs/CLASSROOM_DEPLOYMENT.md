@@ -110,6 +110,7 @@ Native Linux validation is still a separate release task.
 - Package classroom Windows build: `.\Tools\Package-Windows-Classroom.ps1`
 - Confirm package verification passes.
 - On a clean Windows machine, confirm a standard user can extract the zip and launch `BlackoutHunt.exe` without administrator rights or VC++ Redistributable installation.
+- On low-spec or lab machines, confirm `Launch-BlackoutHunt-DX11.cmd` and `Launch-BlackoutHunt-DX11-Low.cmd` start the game. If the D3D11-compatible GPU error appears, confirm the machine is not using Microsoft Basic Display Adapter, hidden hardware acceleration through Remote Desktop, or a VM graphics path without Direct3D feature level 11.0.
 - Host a LAN lobby from the teacher machine.
 - Join with at least two student clients.
 - If direct LAN is blocked, confirm the Playit fallback reaches `LAN blocked, tunnel ready` or gives a clear `network setup required` status with agent log path.

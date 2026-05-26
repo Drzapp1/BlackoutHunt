@@ -73,6 +73,8 @@ Packaged executable:
 
 Classroom Windows packages include app-local runtime DLLs beside the root launcher and Shipping executable. A clean standard Windows user should be able to extract the zip and launch the game without administrator rights or a separate VC++ Redistributable install.
 
+Classroom packages default to D3D11 for broader school-PC compatibility. If the normal launcher fails on graphics startup, try `Launch-BlackoutHunt-DX11.cmd` or `Launch-BlackoutHunt-DX11-Low.cmd` from the package root. If Windows still says a D3D11-compatible GPU is required, install the real GPU driver and make sure the machine exposes Direct3D feature level 11.0 / Shader Model 5.0; Microsoft Basic Display Adapter, Remote Desktop, some VirtualBox setups, and very old GPUs are not enough for this UE5 package.
+
 Validation automation flags are hidden and inert unless `-BHAutomation=1` is present. Supported flags are `-BHAutoHost=LiveClassroom|Facility|Substation|Foggrounds`, `-BHAutoJoin=<host:port-or-code>`, `-BHAutoReady=1`, `-BHAutoQuitSeconds=<seconds>`, `-BHAutomationTag=<id>`, and `-BHVirtualBoxSafe`. Packaged Shipping writes markers to `Saved\Logs\BlackoutHuntAutomation.log`.
 
 ## Next Editor Pass

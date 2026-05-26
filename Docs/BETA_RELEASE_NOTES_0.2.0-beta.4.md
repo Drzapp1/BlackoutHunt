@@ -34,6 +34,7 @@ Fedora/Wine and native Linux are secondary compatibility tracks and do not gate 
 - Restores the SCP096 prototype visual for the jumpscare actor, with procedural fallback pieces still available when the asset is missing.
 - Restores explicit survivor HUD readouts for flashlight battery and teacher proximity.
 - Adds many more revision objective modules on every runtime map, with the densest coverage pass on Foggrounds, and randomizes revision node fill across the map.
+- Switches Windows classroom packages to D3D11 by default and writes DX11/DX11-low helper launchers plus a GPU troubleshooting note into the package root.
 - Fixes menu tab widget index mapping for the native menu.
 
 ## Classroom Defaults
@@ -43,6 +44,7 @@ Fedora/Wine and native Linux are secondary compatibility tracks and do not gate 
 - Student admin/session controls are disabled.
 - External Google/Microsoft account login and backend sync are disabled.
 - Windows hotspot helper is disabled by default because it can require administrator networking permission.
+- Windows classroom graphics default to D3D11. The package also includes `Launch-BlackoutHunt-DX11.cmd` and `Launch-BlackoutHunt-DX11-Low.cmd` for older lab machines.
 - Local classroom profiles remain available and can be reset from the Account panel.
 
 ## Known Limits
@@ -50,6 +52,7 @@ Fedora/Wine and native Linux are secondary compatibility tracks and do not gate 
 - The Playit endpoint depends on the teacher-owned tunnel/agent staying configured and online.
 - Online session Host/Find/Join is for local/development validation only until EOS or Steam is configured.
 - The current maps are runtime-generated prototype levels rather than authored production maps.
+- Unreal still requires a GPU/driver exposing Direct3D feature level 11.0 / Shader Model 5.0; Microsoft Basic Display Adapter, Remote Desktop without hardware acceleration, some VMs, and pre-DX11 GPUs can still fail before the menu.
 - The SCP096 prototype jumpscare visual is included for beta classroom testing; broader distribution still needs a final source-asset audit.
 - Broad physical-device validation remains a follow-up after VM classroom validation.
 

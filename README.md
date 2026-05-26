@@ -34,7 +34,7 @@ While a hosted game is still in the lobby, the listen-server host can open Escap
 - `High 16GB`: 120 FPS cap, 1080p/100% render scale target, larger streaming pool, full-quality meshes/materials, and dynamic resolution only when needed.
 - `Ultra`: uncapped, no dynamic resolution, full streaming pool, max view/shadow/post settings, and no intentional graphics restrictions.
 
-For machines without a dedicated GPU, use `Low 4GB` plus the 720p windowed button. Packaged Windows builds now cook a D3D11 shader path as a fallback; launch with `-d3d11` if DX12 is too slow or unsupported. Headless server/testing can still use Unreal's `-nullrhi` path when rendering is not needed.
+For machines without a dedicated GPU, use `Low 4GB` plus the 720p windowed button. Packaged Windows classroom builds default to D3D11 and also include `Launch-BlackoutHunt-DX11.cmd` plus `Launch-BlackoutHunt-DX11-Low.cmd`. If Windows still reports that a D3D11-compatible GPU is required, the machine is not exposing Direct3D feature level 11 / Shader Model 5 to Unreal; update the graphics driver, avoid Remote Desktop, or use a different GPU/VM configuration. Headless server/testing can still use Unreal's `-nullrhi` path when rendering is not needed.
 
 ## Controls
 
