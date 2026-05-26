@@ -35,6 +35,13 @@ public:
 	void ClearFogPresetVote();
 	void SetFakeHunterEligible(bool bNewEligible);
 	void ResetRevisionStats();
+	void AddQuestionPoints(int32 Points);
+	bool SpendQuestionPoints(int32 Points);
+	int32 GetPowerupCharges(EBHPowerupType Type) const;
+	bool AddPowerupCharge(EBHPowerupType Type, int32 MaxCharges);
+	bool ConsumePowerupCharge(EBHPowerupType Type);
+	void SetPowerupCooldown(EBHPowerupType Type, float CooldownEndServerTime);
+	float GetPowerupCooldownEnd(EBHPowerupType Type) const;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt")
 	bool bReady;
@@ -77,4 +84,13 @@ public:
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Revision")
 	FBHPlayerRevisionStats RevisionStats;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Train")
+	int32 QuestionPoints;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Train")
+	int32 LifetimeQuestionPoints;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Powerups")
+	TArray<FBHPowerupInventoryEntry> Powerups;
 };

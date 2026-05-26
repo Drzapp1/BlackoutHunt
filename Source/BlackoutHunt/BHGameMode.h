@@ -2,19 +2,27 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ScriptMacros.h"
 #include "BHBlockActor.h"
 #include "BHTypes.h"
 #include "BHGameMode.generated.h"
 
 class ABHCharacter;
+class ABHCCTVZone;
 class ABHBotController;
 class ABHBreaker;
 class ABHDoor;
 class ABHExitGate;
+class ABHEscapeStationManager;
 class ABHFlickerLight;
 class ABHObjectiveStation;
 class ABHPlayerController;
+class ABHPlayerState;
+class ABHSecurityCamera;
+class ABHTrainIntermissionManager;
 class ANavMeshBoundsVolume;
+class UBHAtmosphereDirector;
 
 UCLASS()
 class BLACKOUTHUNT_API ABHGameMode : public AGameModeBase
@@ -36,7 +44,17 @@ public:
 	void NotifySurvivorEscaped(ABHCharacter* Survivor);
 	void ToggleLightCircuit(int32 CircuitId);
 	void OpenSecurityCircuit(int32 CircuitId);
+	bool ToggleSecurityCircuit(int32 CircuitId);
 	void NotifyLoudNoise(const FVector& Location, const FString& Reason);
+	void NotifyCCTVDetection(ABHSecurityCamera* Camera, AActor* ZoneActor, ABHCharacter* Survivor, const FString& AlertLabel);
+	void ReportAtmosphereStimulus(EBHAtmosphereStimulusType Type, const FVector& Location, AActor* SourceActor, AActor* TargetActor, float Strength, const FString& Reason);
+	bool TriggerAtmosphereCue(const FBHScareEventSpec& Spec);
+	bool TriggerBlackoutPulse(const FVector& Location, float Radius, float DurationSeconds);
+	bool TriggerManualScare(ABHCharacter* Target, EBHScareEventType ScareType);
+	bool TriggerStudentScareSwitch(ABHCharacter* Activator, const FVector& SourceLocation, const FString& ScareTitle, int32 Severity);
+	FBHJumpscareVariant ChooseJumpscareVariant(EBHScareEventType EventType) const;
+	void TestJumpscareVariant(ABHPlayerController* RequestingController, const FString& VariantToken);
+	FString GetJumpscareVariantTestReport() const;
 	void ForceStartRound(ABHPlayerController* RequestingController);
 	void SetDesiredRole(ABHPlayerController* RequestingController, APlayerState* TargetPlayerState, EBHPlayerRole DesiredRole);
 	void KickPlayer(ABHPlayerController* RequestingController, APlayerState* TargetPlayerState);
@@ -56,6 +74,8 @@ public:
 	void TriggerPracticeJumpscare(ABHPlayerController* RequestingController);
 	void TriggerTargetedJumpscare(ABHPlayerController* RequestingController, APlayerState* TargetPlayerState);
 	void TriggerHunterBlackout(const FVector& SourceLocation);
+	void CompleteTrainIntermission(const FString& NextMapName, bool bFinalRecap);
+	void NotifyFinalEscapeExpired();
 	void SetBotCount(ABHPlayerController* RequestingController, int32 NewBotCount);
 	void SetBotDifficulty(ABHPlayerController* RequestingController, EBHBotDifficulty NewDifficulty);
 	bool IsRevisionMode() const;
@@ -64,7 +84,13 @@ public:
 	int32 GetRevisionQuestionTargetPerNode() const;
 	int32 GetRevisionAnswerTeamTargetSize() const;
 	int32 GetRevisionMinimumContributionTarget() const;
-	void RecordRevisionAnswer(ABHCharacter* Character, const FBHRevisionQuestion& Question, bool bCorrect, bool bCorrection);
+	bool CanUseHallMonitorTools(const ABHPlayerState* PlayerState, FString& OutBlockReason) const;
+	static bool IsRevisionParticipantRole(EBHPlayerRole Role);
+	static int32 ResolveRevisionQuestionTargetFor(int32 StudentCount, int32 StageIndex);
+	static int32 ResolveRevisionNodeTargetFor(int32 StudentCount, int32 StageIndex, int32 StationCount);
+	static FVector ResolveFoggroundsDoorFrameOrigin(const FVector& DoorLocation);
+	void RecordRevisionAnswer(ABHCharacter* Character, const FBHRevisionQuestion& Question, bool bCorrect, bool bCorrection, const FString& SelectedAnswer = FString(), const FString& TeamSummary = FString());
+	void GetAdaptiveRevisionPlan(const ABHPlayerState* PlayerState, bool bLastAnswerCorrect, EBHPhysicsTopic& OutTopic, EBHQuestionDifficulty& OutDifficulty, FString& OutReason) const;
 	bool BuildRevisionAnswerTeam(ABHObjectiveStation* Station, ABHCharacter* RequestingCharacter, TSet<int32>& OutPlayerIds, FString& OutSummary) const;
 	void TriggerTeacherCounterJumpscare(ABHObjectiveStation* Station, EBHRevisionCounterNodeType CounterType);
 	void ActivateStudentScareRelay(ABHCharacter* Activator, ABHObjectiveStation* SourceNode);
@@ -73,7 +99,14 @@ public:
 	void SetRevisionThresholds(ABHPlayerController* RequestingController, float NewClassThreshold, float NewIndividualThreshold);
 	void SetScareIntensity(ABHPlayerController* RequestingController, int32 NewScareIntensity);
 	void ForceReview(ABHPlayerController* RequestingController);
+	void TesterGrantTrainResources(ABHPlayerController* RequestingController);
+	void TesterOpenTrainIntermission(ABHPlayerController* RequestingController);
+	void TesterAdvanceTrainPhase(ABHPlayerController* RequestingController);
+	void TesterLoadFinalStation(ABHPlayerController* RequestingController);
+	void TesterTriggerFinalEscape(ABHPlayerController* RequestingController);
+	void TesterForceFinalRecap(ABHPlayerController* RequestingController);
 	FString GetRevisionStatusReport() const;
+	bool ExportRevisionReport(ABHPlayerController* RequestingController, FString& OutMessage);
 	bool IsBotMode() const;
 	EBHBotDifficulty GetBotDifficulty() const;
 	bool IsRuntimeNavigationReady() const;
@@ -90,17 +123,27 @@ public:
 	int32 RunBotNavCheck(FString& OutSummary);
 	FString GetBotStatusReport() const;
 	FString GetBotMemoryReport() const;
+	FString GetAtmosphereDebugStatus() const;
 	void ForceBotHunt(ABHPlayerController* RequestingController);
 	void StartBotSoak(ABHPlayerController* RequestingController, const FString& LevelName, int32 DurationSeconds, int32 NewBotCount);
 	bool IsHostAdminController(const ABHPlayerController* RequestingController) const;
 	bool RequireHostAdmin(ABHPlayerController* RequestingController, const TCHAR* ActionDescription) const;
 
 protected:
+	friend class UBHAtmosphereDirector;
+
 	void BuildRuntimeFacility();
+	void BuildTrainIntermissionLevel();
 	void BuildSubstationLevel();
 	void BuildFoggroundsLevel();
+	void BuildFoggroundsFinalStation();
+	void BuildMapSubwayExitStation(const FVector& GateLocation, float DirectionSign, const FString& StationName, const FString& DestinationText);
 	void BuildRuntimeNavigation();
 	void CompleteRuntimeNavigationBuild();
+	void SetSecurityCircuitCCTVActive(int32 CircuitId, bool bCircuitOpen);
+	void ApplyRoundCCTVVisibility();
+	int32 SelectHiddenCCTVIndex(int32 CandidateCount, int32 Salt) const;
+	ABHCCTVZone* SpawnCCTVZoneForCamera(ABHSecurityCamera* Camera, int32 CircuitId, const FString& AlertLabel, bool bVisible);
 	void AddFacilityDetailPass();
 	void AddClassroomHorrorPass();
 	void AddSurfaceDetailGrid(float HalfX, float HalfY, const FLinearColor& LineTint);
@@ -110,6 +153,10 @@ protected:
 	void AddFoggroundsMoodPass();
 	void AddFoggroundsModeledFog();
 	void SpawnBlock(const FVector& Location, const FVector& Scale, const FLinearColor& Tint = FLinearColor(0.38f, 0.42f, 0.45f, 1.0f), const FRotator& Rotation = FRotator::ZeroRotator, bool bCollides = true, EBHBlockMaterial Material = EBHBlockMaterial::Tinted);
+	void SpawnHiddenBlocker(const FVector& Location, const FVector& Scale);
+	void AddMapContainment(float HalfX, float HalfY);
+	void RecoverPlayersFromVoid();
+	FVector GetVoidRecoveryLocationFor(const ABHCharacter* Character) const;
 	void SpawnAmbient(const FVector& Location, float Frequency, float Volume, float Noise, float Pulse, float LifeSpan = 0.0f);
 	void PrepareRoundDirector();
 	void StartDirectorTimer();
@@ -120,6 +167,11 @@ protected:
 	void TriggerTeacherFlatScare(ABHCharacter* Target, const FVector& FocusLocation, const FString& Message, float LockSeconds = 1.65f);
 	void FreezeTargetForJumpscare(ABHCharacter* Target, float DurationSeconds);
 	void CutLightsForJumpscare(const FVector& TargetLocation, const FVector& MonsterLocation, float Radius, float RestoreDelaySeconds = 9.5f);
+	int32 GetEffectiveScareIntensity() const;
+	bool ResolveJumpscareVariantToken(const FString& VariantToken, FBHJumpscareVariant& OutVariant, int32& OutVariantIndex, FString& OutError) const;
+	void TriggerTesterJumpscareVariant(ABHPlayerController* RequestingController, const FBHJumpscareVariant& Variant, const FString& TestLabel);
+	void TriggerTesterSuperJumpscare(ABHPlayerController* RequestingController, const FBHJumpscareVariant* ForcedVariant = nullptr);
+	bool ResolveSuperJumpscareRoute(ABHCharacter* Target, ABHPlayerController* TargetPC, FVector& OutPeekStart, FVector& OutPeekEnd, FVector& OutCrossStart, FVector& OutCrossEnd, FVector& OutChargeBendStart, FVector& OutChargeStart) const;
 	void TriggerColdCallEvent();
 	void UpdatePresenceDirector();
 	void ApplyPresenceSpike(const FVector& SourceLocation, float SpikeLevel, const FString& PresenceText);
@@ -140,6 +192,17 @@ protected:
 	void TickRoundTimer();
 	void EndRound(EBHRoundPhase ResultPhase);
 	void ResetRoundByTravel();
+	void TravelToTrainIntermission(EBHRoundPhase ResultPhase);
+	void PersistPlayersForTravel();
+	void RestorePlayersAfterTravel(AController* Controller);
+	void ConvertMonitorsBackToSurvivors(const FString& Reason);
+	void TriggerFinalEscapeIfNeeded();
+	bool CanUseTesterShortcut(ABHPlayerController* RequestingController, const TCHAR* ActionDescription) const;
+	bool IsFinalStage() const;
+	int32 GetConfiguredStageIndex() const;
+	FString GetDefaultMapForStage(int32 StageIndex) const;
+	FString GetNextMapAfterStage(int32 StageIndex) const;
+	FString BuildTravelOptionsForLevel(const FString& LevelName, bool bIntermission, int32 StageIndex, EBHRoundPhase ResultPhase) const;
 	bool AreAllReady() const;
 	int32 CountAliveSurvivors() const;
 	int32 CountEscapedSurvivors() const;
@@ -158,6 +221,7 @@ protected:
 	bool CanUnlockRevisionExit(FString& OutReason) const;
 	FString GetRevisionObjectiveText() const;
 	EBHPhysicsTopic GetWeakestRevisionTopic() const;
+	bool ExportRevisionReportToDisk(EBHRoundPhase ResultPhase, bool bAutomatic, FString& OutMessage);
 	ABHCharacter* FindCharacterForPlayerState(APlayerState* TargetPlayerState) const;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Rules")
@@ -185,6 +249,10 @@ protected:
 	TArray<TObjectPtr<ABHExitGate>> ExitGates;
 	TArray<TObjectPtr<ABHFlickerLight>> FlickerLights;
 	TArray<TObjectPtr<ABHObjectiveStation>> ObjectiveStations;
+	TArray<TObjectPtr<ABHEscapeStationManager>> EscapeStationManagers;
+	TObjectPtr<ABHTrainIntermissionManager> TrainIntermissionManager;
+	UPROPERTY(Transient)
+	TObjectPtr<UBHAtmosphereDirector> AtmosphereDirector;
 	FVector HunterSpawn;
 	FString RuntimeLevelName;
 	FString NextRuntimeLevelName;
@@ -194,6 +262,7 @@ protected:
 	bool bFacilityBuilt;
 	FTimerHandle RoundTimerHandle;
 	FTimerHandle DirectorTimerHandle;
+	FTimerHandle VoidRecoveryTimerHandle;
 	int32 RoundSeed;
 	int32 TargetHunterCount;
 	int32 ObjectiveIntensity;
@@ -212,6 +281,7 @@ protected:
 	int32 RevisionRoundDuration;
 	int32 RevisionScareIntensity;
 	int32 RevisionReviewTimeRemaining;
+	bool bRevisionReportExported;
 	bool bBotMode;
 	int32 TargetBotCount;
 	EBHBotDifficulty BotDifficulty;
@@ -226,6 +296,9 @@ protected:
 	FVector LastBotNoiseLocation;
 	float LastBotNoiseTime;
 	bool bRuntimeNavigationReady;
+	bool bTrainIntermissionLevel;
+	int32 RuntimeStageIndex;
+	EBHRoundPhase PendingIntermissionResult;
 	TObjectPtr<ANavMeshBoundsVolume> RuntimeNavBounds;
 	TArray<TObjectPtr<ABHBotController>> BotControllers;
 	TArray<FBHBotStimulus> BotWorldStimuli;

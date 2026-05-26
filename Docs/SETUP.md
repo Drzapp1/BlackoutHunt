@@ -16,14 +16,20 @@ Host machine:
 
 1. Launch the game/editor.
 2. Use the menu to host `LIVE CLASSROOM`, `Facility`, `Substation`, or `Foggrounds`. Console fallback: `HostGame`, `HostSubstationGame`, or `HostFoggroundsGame`.
-3. For classroom beta use, do not rely on creating firewall rules from the game. If direct LAN is blocked, use the Playit fallback.
+3. For classroom beta use, use Live Classroom with the configured Playit endpoint. The default classroom host binds to `127.0.0.1`, so it should not require the Windows Firewall public/private networks prompt.
 
 Client machine:
 
-1. Connect to the same LAN, game hotspot, or reachable network.
+1. Connect to the school internet/LAN as normal.
 2. Launch the game/editor.
 3. Enter an in-game lobby name if prompted.
-4. Use the menu's saved classroom endpoint, type `blackouthunt.playit.plus:24761`, or open the console and run `JoinGame 192.168.x.x:7777`, replacing the IP with the host's local IP.
+4. Use the menu's saved classroom endpoint or type `blackouthunt.playit.plus:24761`.
+
+Direct LAN classroom testing:
+
+1. Use `Host LAN`, normal direct-IP host commands, or set `bClassroomLoopbackOnlyHost=False` in an IT-managed build.
+2. Make sure UDP port `7777` is pre-authorized by school IT for the host executable.
+3. Clients can then join with `JoinGame 192.168.x.x:7777`, replacing the IP with the host's local IP.
 
 Internet/direct-IP play:
 
@@ -61,11 +67,19 @@ Gameplay actions are role/phase gated:
 - The listen-server host can open Escape in the lobby and queue players as Hunter, Survivor, Fake, or Auto before the round starts.
 - The Escape menu lets students cycle avatar shape/color, vote maps, ready up, and change local graphics/resolution/FPS/audio only on their own machine. Host-only session, classroom, role, tunnel, and admin controls stay on the host machine.
 - Survivors can hide during prep after roles are assigned.
-- Breaker repair, side-objective stations, panic alarms, hunter heartbeat scan, hunter blackout, fake seeker traps/hints, hunter capture, and exit gameplay unlock when Hunt begins.
+- Breaker repair, side-objective stations, panic alarms, hunter heartbeat scan, hunter blackout, fake seeker traps/hints, hunter capture, and exit gameplay unlock when Hunt begins. In Physics Classroom, Hall Monitors still count toward the 70/50 mastery goals, and their traps/hints also require the student to meet the answer-team contribution target.
 - Each round now randomizes the active breaker route, some starting door states, and some powered light circuits. The HUD and Escape menu show the round seed and current objective text.
 - Loud repair, station work, sprint, scan, alarm, trap, and decoy events ping the Hunter with directional noise. The round director can also trigger short local scare cues near Survivors during Hunt.
 - Survivor stamina limits chase duration. Fear rises near the Hunter or after scans/scares and slows stamina recovery. Batteries now restore flashlight charge, stamina, and nerve.
 - For quick local testing, the listen-server host can press `F10`, use `ForceStartRound`, or use the menu's Host Start Test Round button to skip directly to Hunt.
+
+Jumpscare variant testing:
+
+- Start a Test Round from the menu, or use a host-admin listen server.
+- Press `Escape`, open the `Round` tab, then use the expanded `Test Commands` panel. It is scrollable and has collapsible groups for jumpscare variants, atmosphere probes, and round/train commands.
+- Under `Jumpscare Variants`, use `All Jumpscare Variants` to queue every variant, or click an individual entry such as `SCP-096 Prototype`, `FabMonster01`, `FabMonster02`, or `FabMonster03`.
+- Under `Atmosphere Probes`, click ambient, monster charge, blackout, CCTV, footstep noise, or bot memory checks without opening the console.
+- If the Fab assets have not been imported to the configured `/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares` paths, the commands still fire and fall back to available proxy/SCP visuals where needed.
 
 Packaged executable:
 

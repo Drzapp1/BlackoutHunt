@@ -785,6 +785,38 @@ bool FBHRevisionQuestionBank::SelectQuestion(EBHPhysicsTopic Topic, EBHRevisionD
 	return true;
 }
 
+bool FBHRevisionQuestionBank::SelectQuestionByDifficulty(EBHPhysicsTopic Topic, EBHQuestionDifficulty Difficulty, int32 Seed, FBHRevisionQuestion& OutQuestion)
+{
+	TArray<const FBHRevisionQuestion*> Candidates;
+	TArray<const FBHRevisionQuestion*> TopicCandidates;
+	for (const FBHRevisionQuestion& Question : GetQuestions())
+	{
+		if (Question.Topic != Topic)
+		{
+			continue;
+		}
+
+		TopicCandidates.Add(&Question);
+		if (Question.Difficulty == Difficulty)
+		{
+			Candidates.Add(&Question);
+		}
+	}
+
+	if (Candidates.IsEmpty())
+	{
+		Candidates = TopicCandidates;
+	}
+	if (Candidates.IsEmpty())
+	{
+		return false;
+	}
+
+	const int32 ChosenIndex = FMath::Abs(Seed) % Candidates.Num();
+	OutQuestion = *Candidates[ChosenIndex];
+	return true;
+}
+
 EBHPhysicsTopic FBHRevisionQuestionBank::TopicForStationType(EBHObjectiveStationType StationType)
 {
 	switch (StationType)

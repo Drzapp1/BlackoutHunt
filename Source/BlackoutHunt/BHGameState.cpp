@@ -37,11 +37,27 @@ ABHGameState::ABHGameState()
 	RevisionClassThreshold = 70.0f;
 	RevisionIndividualThreshold = 50.0f;
 	RevisionRoundDuration = 600;
-	RevisionScareIntensity = 2;
+	RevisionScareIntensity = 3;
 	RevisionClassMasteryAverage = 0.0f;
 	RevisionWeakTopic = EBHPhysicsTopic::ForcesAndMotion;
 	RevisionReviewTimeRemaining = 0;
 	RevisionReviewText = TEXT("");
+	TrainPhase = EBHTrainPhase::Inactive;
+	TrainStageIndex = 0;
+	TrainPhaseEndServerTime = 0.0f;
+	TrainDestinationName = TEXT("");
+	TrainAnnouncement = TEXT("");
+	TrainRecapOverview = TEXT("");
+	TrainRecapTopics = TEXT("");
+	TrainRecapMissedQuestions = TEXT("");
+	TrainRecapTips = TEXT("");
+	FinalEscapeState = EBHFinalEscapeState::Inactive;
+	FinalEscapeCutsceneEndServerTime = 0.0f;
+	FinalEscapeEndServerTime = 0.0f;
+	HunterReleaseServerTime = 0.0f;
+	bCaptureDisabled = false;
+	bPlayerInputFrozen = false;
+	bHunterInputFrozen = false;
 }
 
 void ABHGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -87,6 +103,22 @@ void ABHGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 	DOREPLIFETIME(ABHGameState, RevisionWeakTopic);
 	DOREPLIFETIME(ABHGameState, RevisionReviewTimeRemaining);
 	DOREPLIFETIME(ABHGameState, RevisionReviewText);
+	DOREPLIFETIME(ABHGameState, TrainPhase);
+	DOREPLIFETIME(ABHGameState, TrainStageIndex);
+	DOREPLIFETIME(ABHGameState, TrainPhaseEndServerTime);
+	DOREPLIFETIME(ABHGameState, TrainDestinationName);
+	DOREPLIFETIME(ABHGameState, TrainAnnouncement);
+	DOREPLIFETIME(ABHGameState, TrainRecapOverview);
+	DOREPLIFETIME(ABHGameState, TrainRecapTopics);
+	DOREPLIFETIME(ABHGameState, TrainRecapMissedQuestions);
+	DOREPLIFETIME(ABHGameState, TrainRecapTips);
+	DOREPLIFETIME(ABHGameState, FinalEscapeState);
+	DOREPLIFETIME(ABHGameState, FinalEscapeCutsceneEndServerTime);
+	DOREPLIFETIME(ABHGameState, FinalEscapeEndServerTime);
+	DOREPLIFETIME(ABHGameState, HunterReleaseServerTime);
+	DOREPLIFETIME(ABHGameState, bCaptureDisabled);
+	DOREPLIFETIME(ABHGameState, bPlayerInputFrozen);
+	DOREPLIFETIME(ABHGameState, bHunterInputFrozen);
 }
 
 FString ABHGameState::GetPhaseText() const
@@ -116,6 +148,16 @@ FString ABHGameState::GetPhaseText() const
 		return TEXT("Classroom Lobby");
 	}
 
+	if (RoundPhase == EBHRoundPhase::Intermission)
+	{
+		return TEXT("Train Intermission");
+	}
+
+	if (RoundPhase == EBHRoundPhase::FinalEscape)
+	{
+		return TEXT("Final Escape");
+	}
+
 	if (bBotMode && RoundPhase == EBHRoundPhase::Lobby)
 	{
 		return TEXT("Bot Lobby");
@@ -129,6 +171,10 @@ FString ABHGameState::GetPhaseText() const
 		return TEXT("Survivor Prep");
 	case EBHRoundPhase::Hunt:
 		return TEXT("Hunt");
+	case EBHRoundPhase::Intermission:
+		return TEXT("Train Intermission");
+	case EBHRoundPhase::FinalEscape:
+		return TEXT("Final Escape");
 	case EBHRoundPhase::SurvivorsWin:
 		return TEXT("Survivors Win");
 	case EBHRoundPhase::HunterWin:
@@ -239,4 +285,36 @@ void ABHGameState::SetRevisionSummary(float NewClassMasteryAverage, EBHPhysicsTo
 	RevisionWeakTopic = NewWeakTopic;
 	RevisionReviewTimeRemaining = FMath::Max(0, NewReviewTimeRemaining);
 	RevisionReviewText = NewReviewText;
+}
+
+void ABHGameState::SetTrainState(EBHTrainPhase NewTrainPhase, int32 NewStageIndex, float NewPhaseEndServerTime, const FString& NewDestinationName, const FString& NewAnnouncement)
+{
+	TrainPhase = NewTrainPhase;
+	TrainStageIndex = FMath::Max(0, NewStageIndex);
+	TrainPhaseEndServerTime = FMath::Max(0.0f, NewPhaseEndServerTime);
+	TrainDestinationName = NewDestinationName;
+	TrainAnnouncement = NewAnnouncement;
+}
+
+void ABHGameState::SetTrainRecap(const FString& NewOverview, const FString& NewTopics, const FString& NewMissedQuestions, const FString& NewTips)
+{
+	TrainRecapOverview = NewOverview;
+	TrainRecapTopics = NewTopics;
+	TrainRecapMissedQuestions = NewMissedQuestions;
+	TrainRecapTips = NewTips;
+}
+
+void ABHGameState::SetFinalEscapeState(EBHFinalEscapeState NewFinalEscapeState, float NewCutsceneEndServerTime, float NewEscapeEndServerTime, float NewHunterReleaseServerTime)
+{
+	FinalEscapeState = NewFinalEscapeState;
+	FinalEscapeCutsceneEndServerTime = FMath::Max(0.0f, NewCutsceneEndServerTime);
+	FinalEscapeEndServerTime = FMath::Max(0.0f, NewEscapeEndServerTime);
+	HunterReleaseServerTime = FMath::Max(0.0f, NewHunterReleaseServerTime);
+}
+
+void ABHGameState::SetIntermissionLocks(bool bNewCaptureDisabled, bool bNewPlayerInputFrozen, bool bNewHunterInputFrozen)
+{
+	bCaptureDisabled = bNewCaptureDisabled;
+	bPlayerInputFrozen = bNewPlayerInputFrozen;
+	bHunterInputFrozen = bNewHunterInputFrozen;
 }

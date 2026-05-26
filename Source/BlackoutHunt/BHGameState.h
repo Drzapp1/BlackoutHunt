@@ -34,6 +34,10 @@ public:
 	void SetBotOptions(bool bNewBotMode, int32 NewTargetBotCount, EBHBotDifficulty NewBotDifficulty);
 	void SetRevisionOptions(EBHRevisionMode NewRevisionMode, int32 NewTopicMask, EBHRevisionDifficultyMix NewDifficultyMix, float NewClassThreshold, float NewIndividualThreshold, int32 NewRoundDuration, int32 NewScareIntensity);
 	void SetRevisionSummary(float NewClassMasteryAverage, EBHPhysicsTopic NewWeakTopic, int32 NewReviewTimeRemaining, const FString& NewReviewText);
+	void SetTrainState(EBHTrainPhase NewTrainPhase, int32 NewStageIndex, float NewPhaseEndServerTime, const FString& NewDestinationName, const FString& NewAnnouncement);
+	void SetTrainRecap(const FString& NewOverview, const FString& NewTopics, const FString& NewMissedQuestions, const FString& NewTips);
+	void SetFinalEscapeState(EBHFinalEscapeState NewFinalEscapeState, float NewCutsceneEndServerTime, float NewEscapeEndServerTime, float NewHunterReleaseServerTime);
+	void SetIntermissionLocks(bool bNewCaptureDisabled, bool bNewPlayerInputFrozen, bool bNewHunterInputFrozen);
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt")
 	EBHRoundPhase RoundPhase;
@@ -151,4 +155,52 @@ public:
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Revision")
 	FString RevisionReviewText;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Train")
+	EBHTrainPhase TrainPhase;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Train")
+	int32 TrainStageIndex;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Train")
+	float TrainPhaseEndServerTime;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Train")
+	FString TrainDestinationName;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Train")
+	FString TrainAnnouncement;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Train")
+	FString TrainRecapOverview;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Train")
+	FString TrainRecapTopics;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Train")
+	FString TrainRecapMissedQuestions;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Train")
+	FString TrainRecapTips;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Final Escape")
+	EBHFinalEscapeState FinalEscapeState;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Final Escape")
+	float FinalEscapeCutsceneEndServerTime;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Final Escape")
+	float FinalEscapeEndServerTime;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Final Escape")
+	float HunterReleaseServerTime;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Final Escape")
+	bool bCaptureDisabled;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Final Escape")
+	bool bPlayerInputFrozen;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Final Escape")
+	bool bHunterInputFrozen;
 };

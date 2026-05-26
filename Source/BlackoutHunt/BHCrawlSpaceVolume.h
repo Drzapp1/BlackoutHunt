@@ -25,9 +25,14 @@ protected:
 	UFUNCTION()
 	void OnVolumeBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult);
 
+	UFUNCTION()
+	void OnVolumeEndOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex);
+
 	bool CanCharacterUseCrawlSpace(const ABHCharacter* Character) const;
 	void RejectCharacter(ABHCharacter* Character);
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UBoxComponent> Volume;
+
+	TMap<TWeakObjectPtr<ABHCharacter>, FIntPoint> ActiveRejectDirections;
 };

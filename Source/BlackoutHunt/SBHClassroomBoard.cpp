@@ -743,6 +743,6 @@ FText SBHClassroomBoard::GetJoinText() const
 	}
 
 	const UBHGameInstance* BHGI = World ? World->GetGameInstance<UBHGameInstance>() : nullptr;
-	const FString JoinAddress = BHGI ? BHGI->GetPreferredJoinAddress(7777) : FString(TEXT("127.0.0.1:7777"));
+	const FString JoinAddress = BHGI ? BHGI->GetPreferredClassroomJoinAddress(7777) : FString(TEXT("127.0.0.1:7777"));
 	return FText::FromString(FString::Printf(TEXT("JOIN %s"), *JoinAddress));
 }

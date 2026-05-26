@@ -11,6 +11,23 @@
 
 namespace
 {
+float BHStationStressAlpha(float Value, float Threshold, float FullValue)
+{
+	return FMath::Clamp((Value - Threshold) / FMath::Max(1.0f, FullValue - Threshold), 0.0f, 1.0f);
+}
+
+float BHStationWorkerNerveMultiplier(const ABHCharacter* Character)
+{
+	if (!Character)
+	{
+		return 0.0f;
+	}
+
+	const float FearPenalty = BHStationStressAlpha(Character->GetFear(), 60.0f, 100.0f) * 0.18f;
+	const float DreadPenalty = BHStationStressAlpha(Character->GetDread(), 55.0f, 100.0f) * 0.24f;
+	return FMath::Clamp(1.0f - FearPenalty - DreadPenalty, 0.58f, 1.0f);
+}
+
 struct FBHStationQuestion
 {
 	const TCHAR* Topic;
@@ -271,6 +288,9 @@ ABHObjectiveStation::ABHObjectiveStation()
 	RevisionQuestionStep = 0;
 	RevisionCounterType = EBHRevisionCounterNodeType::None;
 	bTeacherMirrorTrapNode = false;
+	bUseAdaptiveQuestionOverride = false;
+	AdaptiveQuestionTopic = EBHPhysicsTopic::ForcesAndMotion;
+	AdaptiveQuestionDifficulty = EBHQuestionDifficulty::Easy;
 	WorkSeconds = 5.5f;
 	LastNoiseTime = -999.0f;
 	LastAnswerTime = -999.0f;
@@ -333,7 +353,12 @@ void ABHObjectiveStation::Tick(float DeltaSeconds)
 	}
 
 	const float Rate = FMath::Max(0.1f, WorkSeconds);
-	WorkProgress = FMath::Clamp(WorkProgress + DeltaSeconds * Workers.Num() / Rate, 0.0f, 1.0f);
+	float WorkerRate = 0.0f;
+	for (const TWeakObjectPtr<ABHCharacter>& Worker : Workers)
+	{
+		WorkerRate += BHStationWorkerNerveMultiplier(Worker.Get());
+	}
+	WorkProgress = FMath::Clamp(WorkProgress + DeltaSeconds * WorkerRate / Rate, 0.0f, 1.0f);
 	ApplyStationVisuals();
 	if (WorkProgress >= 1.0f)
 	{
@@ -451,12 +476,18 @@ FText ABHObjectiveStation::GetInteractionLabel_Implementation(ABHCharacter* Char
 		return FText::FromString(TEXT("Ready Up First"));
 	}
 
-	if (!BHPS->IsAliveSurvivor())
+	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	const bool bAliveMonitorCanAnswer = BHPS->PlayerRole == EBHPlayerRole::FakeHunter
+		&& BHPS->LifeState == EBHPlayerLifeState::Alive
+		&& BHGS
+		&& BHGS->bRevisionMode
+		&& !bQuestionSolved
+		&& QuestionChoices.Num() > 0;
+	if (!BHPS->IsAliveSurvivor() && !bAliveMonitorCanAnswer)
 	{
-		return FText::FromString(TEXT("Survivor Objective"));
+		return FText::FromString(BHPS->PlayerRole == EBHPlayerRole::FakeHunter ? TEXT("Monitor Must Revise") : TEXT("Survivor Objective"));
 	}
 
-	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
 	if (!BHGS || BHGS->RoundPhase != EBHRoundPhase::Hunt)
 	{
 		return FText::FromString(TEXT("Objective During Hunt"));
@@ -513,6 +544,7 @@ void ABHObjectiveStation::ConfigureTeacherMirrorTrapNode()
 	RevisionQuestionsSolved = 0;
 	RevisionQuestionsRequired = 1;
 	RevisionQuestionStep = 0;
+	bUseAdaptiveQuestionOverride = false;
 	WorkProgress = 0.0f;
 	WorkSeconds = 1.0f;
 	InteractionLabel = FText::FromString(TEXT("Class Scare Relay"));
@@ -546,6 +578,7 @@ void ABHObjectiveStation::SetDirectorActive(bool bNewActive)
 		RevisionTeamPlayerIds.Reset();
 		RevisionTeamSummary = TEXT("");
 		PendingCorrectionCharacters.Reset();
+		bUseAdaptiveQuestionOverride = false;
 	}
 	else
 	{
@@ -553,6 +586,7 @@ void ABHObjectiveStation::SetDirectorActive(bool bNewActive)
 		RevisionQuestionsSolved = 0;
 		RevisionQuestionStep = 0;
 		RevisionQuestionsRequired = 1;
+		bUseAdaptiveQuestionOverride = false;
 	}
 	ApplyStationVisuals();
 }
@@ -567,7 +601,13 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 	const ABHPlayerState* BHPS = Character ? Character->GetBHPlayerState() : nullptr;
 	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
 	ABHPlayerController* PC = Character ? Cast<ABHPlayerController>(Character->GetController()) : nullptr;
-	if (!bDirectorActive || bCompleted || !BHPS || !BHPS->IsAliveSurvivor() || !BHGS || BHGS->RoundPhase != EBHRoundPhase::Hunt)
+	const bool bAliveSurvivor = BHPS && BHPS->IsAliveSurvivor();
+	const bool bAliveMonitorCanAnswer = BHPS
+		&& BHPS->PlayerRole == EBHPlayerRole::FakeHunter
+		&& BHPS->LifeState == EBHPlayerLifeState::Alive
+		&& BHGS
+		&& BHGS->bRevisionMode;
+	if (!bDirectorActive || bCompleted || !BHPS || (!bAliveSurvivor && !bAliveMonitorCanAnswer) || !BHGS || BHGS->RoundPhase != EBHRoundPhase::Hunt)
 	{
 		if (PC)
 		{
@@ -693,6 +733,7 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 	}
 
 	const bool bCorrect = EvaluatedAnswerIndex == CorrectAnswerIndex;
+	const FString EvaluatedSelectedAnswer = QuestionChoices.IsValidIndex(EvaluatedAnswerIndex) ? QuestionChoices[EvaluatedAnswerIndex] : FString();
 	if (bCorrect)
 	{
 		bool bRevisionNodeUnlocked = true;
@@ -717,7 +758,7 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 				for (ABHCharacter* Participant : RevisionParticipants)
 				{
 					const bool bCorrection = PendingCorrectionCharacters.Contains(Participant);
-					BHGM->RecordRevisionAnswer(Participant, RevisionQuestion, true, bCorrection);
+					BHGM->RecordRevisionAnswer(Participant, RevisionQuestion, true, bCorrection, EvaluatedSelectedAnswer, RevisionTeamSummary);
 					PendingCorrectionCharacters.Remove(Participant);
 				}
 			}
@@ -750,6 +791,7 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 			const int32 CompletedStep = RevisionQuestionsSolved;
 			const int32 RequiredSteps = FMath::Max(1, RevisionQuestionsRequired);
 			const FString CompletedExplanation = QuestionExplanation;
+			QueueAdaptiveQuestionForParticipants(RevisionParticipants, true);
 			++RevisionQuestionStep;
 			ConfigureQuestion();
 			QuestionFeedback = FString::Printf(TEXT("Correct %d/%d: %s Next team question loaded."), CompletedStep, RequiredSteps, *CompletedExplanation);
@@ -803,7 +845,7 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 			}
 			for (ABHCharacter* Participant : RevisionParticipants)
 			{
-				BHGM->RecordRevisionAnswer(Participant, RevisionQuestion, false, false);
+				BHGM->RecordRevisionAnswer(Participant, RevisionQuestion, false, false, EvaluatedSelectedAnswer, RevisionTeamSummary);
 				PendingCorrectionCharacters.Add(Participant);
 			}
 		}
@@ -975,6 +1017,46 @@ int32 ABHObjectiveStation::ResolveRevisionQuestionTarget() const
 	return 1;
 }
 
+void ABHObjectiveStation::QueueAdaptiveQuestionForParticipants(const TArray<ABHCharacter*>& Participants, bool bLastAnswerCorrect)
+{
+	if (!HasAuthority() || Participants.IsEmpty())
+	{
+		return;
+	}
+
+	const ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr;
+	if (!BHGM || !BHGM->IsRevisionMode())
+	{
+		return;
+	}
+
+	float LowestMastery = TNumericLimits<float>::Max();
+	bool bFoundPlan = false;
+	for (ABHCharacter* Participant : Participants)
+	{
+		const ABHPlayerState* ParticipantPS = Participant ? Participant->GetPlayerState<ABHPlayerState>() : nullptr;
+		if (!ParticipantPS || !ABHGameMode::IsRevisionParticipantRole(ParticipantPS->PlayerRole))
+		{
+			continue;
+		}
+
+		EBHPhysicsTopic CandidateTopic = EBHPhysicsTopic::ForcesAndMotion;
+		EBHQuestionDifficulty CandidateDifficulty = EBHQuestionDifficulty::Easy;
+		FString CandidateReason;
+		BHGM->GetAdaptiveRevisionPlan(ParticipantPS, bLastAnswerCorrect, CandidateTopic, CandidateDifficulty, CandidateReason);
+		const float CandidateMastery = ParticipantPS->RevisionStats.MasteryPercent;
+		if (!bFoundPlan || CandidateMastery < LowestMastery)
+		{
+			bFoundPlan = true;
+			LowestMastery = CandidateMastery;
+			AdaptiveQuestionTopic = CandidateTopic;
+			AdaptiveQuestionDifficulty = CandidateDifficulty;
+		}
+	}
+
+	bUseAdaptiveQuestionOverride = bFoundPlan;
+}
+
 void ABHObjectiveStation::ConfigureQuestion()
 {
 	if (ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
@@ -982,11 +1064,15 @@ void ABHObjectiveStation::ConfigureQuestion()
 		if (BHGM->IsRevisionMode())
 		{
 			RevisionQuestionsRequired = FMath::Max(1, RevisionQuestionsRequired);
-			const EBHPhysicsTopic Topic = FBHRevisionQuestionBank::TopicForStationType(StationType);
+			const EBHPhysicsTopic Topic = bUseAdaptiveQuestionOverride ? AdaptiveQuestionTopic : FBHRevisionQuestionBank::TopicForStationType(StationType);
 			FBHRevisionQuestion Selected;
 			const FVector Location = GetActorLocation();
 			const int32 LocationSeed = FMath::Abs(FMath::RoundToInt(Location.X * 0.13f + Location.Y * 0.07f + static_cast<int32>(StationType) * 131.0f + RevisionQuestionStep * 911.0f + FMath::RandRange(0, 100000)));
-			if (FBHRevisionQuestionBank::SelectQuestion(Topic, BHGM->GetRevisionDifficultyMix(), LocationSeed, BHGM->GetRevisionWeakTopics(), Selected))
+			const bool bSelected = bUseAdaptiveQuestionOverride
+				? FBHRevisionQuestionBank::SelectQuestionByDifficulty(Topic, AdaptiveQuestionDifficulty, LocationSeed, Selected)
+				: FBHRevisionQuestionBank::SelectQuestion(Topic, BHGM->GetRevisionDifficultyMix(), LocationSeed, BHGM->GetRevisionWeakTopics(), Selected);
+			bUseAdaptiveQuestionOverride = false;
+			if (bSelected)
 			{
 				RevisionQuestionId = Selected.Id;
 				QuestionTopic = Selected.TopicName;

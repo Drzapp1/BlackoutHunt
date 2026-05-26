@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "AIController.h"
 #include "BHTypes.h"
+#include "Perception/AIPerceptionTypes.h"
 #include "BHBotController.generated.h"
 
 class ABHBreaker;
@@ -10,6 +11,13 @@ class ABHCharacter;
 class ABHExitGate;
 class ABHLocker;
 class ABHObjectiveStation;
+class UAITask_MoveTo;
+class UAIPerceptionComponent;
+class UAISenseConfig_Hearing;
+class UAISenseConfig_Sight;
+class UStateTree;
+class UStateTreeAIComponent;
+struct FAIStimulus;
 
 UCLASS()
 class BLACKOUTHUNT_API ABHBotController : public AAIController
@@ -23,6 +31,9 @@ public:
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void OnPossess(APawn* InPawn) override;
 	FString GetBotDebugLine() const;
+	bool RunStateTreeIntent(EBHBotIntent Intent, AActor* Target, const FVector& Location, float AcceptanceRadius);
+	bool HasRecentStateTreeStimulus(EBHBotStimulusType Type, float MaxAgeSeconds, FVector& OutLocation) const;
+	void ReportStateTreeDebugState(const FString& InStateName);
 
 private:
 	ABHCharacter* GetBHCharacter() const;
@@ -56,6 +67,11 @@ private:
 	void NoteMovementProgress();
 	bool HandleStuck(AActor* GoalActor);
 	void LogUnreachableOnce(AActor* Target, const FString& Reason);
+	void StartStateTreeIfAvailable();
+	bool ShouldUseStateTreeBrain() const;
+
+	UFUNCTION()
+	void OnTargetPerceptionUpdated(AActor* Actor, FAIStimulus Stimulus);
 
 	ABHCharacter* FindVisibleSurvivor(float Range, bool bIncludeHidden) const;
 	ABHCharacter* FindVisibleTeacherThreat(float Range) const;
@@ -104,9 +120,33 @@ private:
 	TWeakObjectPtr<AActor> CurrentInteractTarget;
 	TWeakObjectPtr<AActor> LastUnreachableTarget;
 	TWeakObjectPtr<AActor> CurrentClaimTarget;
+	TWeakObjectPtr<AActor> LastStateTreeIntentTarget;
 	EBHBotIntent CurrentIntent;
+	EBHBotIntent LastStateTreeIntent;
 	FString LastDecisionDebugLabel;
+	FVector LastStateTreeIntentLocation;
+	float LastStateTreeIntentTime;
 	FVector CurrentPatrolDestination;
 	float CurrentPatrolDestinationExpireTime;
 	bool bHasPatrolDestination;
+	bool bUseStateTreeAI;
+	bool bStateTreeBrainRunning;
+
+	UPROPERTY(VisibleAnywhere, Category = "AI")
+	TObjectPtr<UStateTreeAIComponent> StateTreeAIComponent;
+
+	UPROPERTY(VisibleAnywhere, Category = "AI")
+	TObjectPtr<UAIPerceptionComponent> BotPerceptionComponent;
+
+	UPROPERTY()
+	TObjectPtr<UAISenseConfig_Sight> SightSenseConfig;
+
+	UPROPERTY()
+	TObjectPtr<UAISenseConfig_Hearing> HearingSenseConfig;
+
+	UPROPERTY(EditDefaultsOnly, Category = "AI")
+	TObjectPtr<UStateTree> HunterStateTreeAsset;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UStateTree> ActiveStateTreeAsset;
 };

@@ -55,6 +55,59 @@
 			"TargetAllowList": [
 				"Editor"
 			]
+		},
+		{
+			"Name": "StateTree",
+			"Enabled": true
+		},
+		{
+			"Name": "GameplayStateTree",
+			"Enabled": true
+		},
+		{
+			"Name": "PropertyBindingUtils",
+			"Enabled": true
+		},
+		{
+			"Name": "SmartObjects",
+			"Enabled": true
+		},
+		{
+			"Name": "GameplayAbilities",
+			"Enabled": true
+		},
+		{
+			"Name": "CommonUI",
+			"Enabled": true
+		},
+		{
+			"Name": "PCG",
+			"Enabled": true
+		},
+		{
+			"Name": "GeometryScripting",
+			"Enabled": true
+		},
+		{
+			"Name": "EnvironmentQueryEditor",
+			"Enabled": true,
+			"TargetAllowList": [
+				"Editor"
+			]
+		},
+		{
+			"Name": "ModelingToolsEditorMode",
+			"Enabled": true,
+			"TargetAllowList": [
+				"Editor"
+			]
+		},
+		{
+			"Name": "DataValidation",
+			"Enabled": true,
+			"TargetAllowList": [
+				"Editor"
+			]
 		}
 	]
 }

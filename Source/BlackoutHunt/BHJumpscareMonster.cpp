@@ -1,15 +1,23 @@
 #include "BHJumpscareMonster.h"
 #include "BHAmbientEmitter.h"
 #include "BHCharacter.h"
+#include "BHGameSettings.h"
+#include "BHPlayerController.h"
 #include "Animation/AnimSequence.h"
+#include "Components/ChildActorComponent.h"
 #include "Components/PointLightComponent.h"
+#include "Components/PrimitiveComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
+#include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
+#include "Misc/PackageName.h"
+#include "Net/UnrealNetwork.h"
+#include "Sound/SoundBase.h"
 #include "UObject/ConstructorHelpers.h"
 
 namespace
@@ -45,6 +53,92 @@ void TintPart(UStaticMeshComponent* Part, const FLinearColor& Color)
 		DynamicMaterial->SetVectorParameterValue(TEXT("BaseColor"), Color);
 		DynamicMaterial->SetVectorParameterValue(TEXT("EmissiveColor"), Color * 2.5f);
 		DynamicMaterial->SetVectorParameterValue(TEXT("Emissive"), Color * 2.5f);
+	}
+}
+
+bool FindJumpscareVariantById(FName VariantId, FBHJumpscareVariant& OutVariant)
+{
+	if (VariantId.IsNone())
+	{
+		return false;
+	}
+
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	if (!Settings)
+	{
+		return false;
+	}
+
+	for (const FBHJumpscareVariant& Variant : Settings->JumpscareVariants)
+	{
+		if (Variant.VariantId == VariantId)
+		{
+			OutVariant = Variant;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool BHSoftObjectPathExists(const FSoftObjectPath& ObjectPath)
+{
+	if (ObjectPath.IsNull())
+	{
+		return false;
+	}
+
+	const FString PackageName = ObjectPath.GetLongPackageName();
+	return !PackageName.IsEmpty() && FPackageName::DoesPackageExist(PackageName);
+}
+
+bool BHJumpscareNameLooksLowerBody(const FString& RawName)
+{
+	FString Name = RawName.ToLower();
+	return Name.Contains(TEXT("leg"))
+		|| Name.Contains(TEXT("thigh"))
+		|| Name.Contains(TEXT("calf"))
+		|| Name.Contains(TEXT("shin"))
+		|| Name.Contains(TEXT("knee"))
+		|| Name.Contains(TEXT("foot"))
+		|| Name.Contains(TEXT("toe"));
+}
+
+void BHHideLowerBodyForCloseup(AActor* Actor)
+{
+	if (!Actor)
+	{
+		return;
+	}
+
+	TArray<USkeletalMeshComponent*> SkeletalComponents;
+	Actor->GetComponents<USkeletalMeshComponent>(SkeletalComponents);
+	for (USkeletalMeshComponent* SkeletalComponent : SkeletalComponents)
+	{
+		if (!SkeletalComponent)
+		{
+			continue;
+		}
+
+		const int32 BoneCount = SkeletalComponent->GetNumBones();
+		for (int32 BoneIndex = 0; BoneIndex < BoneCount; ++BoneIndex)
+		{
+			const FName BoneName = SkeletalComponent->GetBoneName(BoneIndex);
+			if (!BoneName.IsNone() && BHJumpscareNameLooksLowerBody(BoneName.ToString()))
+			{
+				SkeletalComponent->HideBoneByName(BoneName, EPhysBodyOp::PBO_None);
+			}
+		}
+	}
+
+	TArray<UPrimitiveComponent*> PrimitiveComponents;
+	Actor->GetComponents<UPrimitiveComponent>(PrimitiveComponents);
+	for (UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
+	{
+		if (PrimitiveComponent && BHJumpscareNameLooksLowerBody(PrimitiveComponent->GetName()))
+		{
+			PrimitiveComponent->SetHiddenInGame(true);
+			PrimitiveComponent->SetVisibility(false, true);
+		}
 	}
 }
 }
@@ -101,6 +195,10 @@ ABHJumpscareMonster::ABHJumpscareMonster()
 	EyeLight->SetupAttachment(VisualRoot);
 	CoreLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("CoreLight"));
 	CoreLight->SetupAttachment(VisualRoot);
+
+	VariantVisualActor = CreateDefaultSubobject<UChildActorComponent>(TEXT("VariantVisualActor"));
+	VariantVisualActor->SetupAttachment(VisualRoot);
+	VariantVisualActor->SetMobility(EComponentMobility::Movable);
 
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> CubeMesh(TEXT("/Engine/BasicShapes/Cube.Cube"));
 	if (CubeMesh.Succeeded())
@@ -177,7 +275,19 @@ ABHJumpscareMonster::ABHJumpscareMonster()
 	HoldSeconds = 0.0f;
 	SpawnTime = -1.0f;
 	bChargeStarted = false;
+	bContactJumpscareTriggered = false;
+	bUseScriptedPath = false;
+	bScriptedFaceLookAtTarget = false;
+	bScriptedPlayChargeEffects = true;
+	ScriptedPathIndex = 1;
 	bUsingScpVisual = false;
+	CameraFocusHeight = 145.0f;
+	PresentationLightColor = FLinearColor(1.0f, 0.02f, 0.0f, 1.0f);
+	PresentationVisualOffset = FVector(-20.0f, 0.0f, -88.0f);
+	PresentationVisualRotation = FRotator(0.0f, -90.0f, 0.0f);
+	PresentationVisualScale = FVector(1.32f);
+	JumpscareVariantId = TEXT("SCP096");
+	LaunchSound = nullptr;
 	SetActorScale3D(FVector(1.7f, 1.7f, 1.7f));
 
 	static ConstructorHelpers::FObjectFinder<USkeletalMesh> ScpSkeletalMesh(TEXT("/Game/BlackoutHunt/Art/SCP096/Skeletal/SK_SCP096.SK_SCP096"));
@@ -229,7 +339,7 @@ ABHJumpscareMonster::ABHJumpscareMonster()
 		SkeletalMonsterMesh->SetHiddenInGame(SkeletalMonsterMesh->GetSkeletalMeshAsset() == nullptr);
 		SkeletalMonsterMesh->SetVisibility(SkeletalMonsterMesh->GetSkeletalMeshAsset() != nullptr, true);
 
-		UStaticMeshComponent* ProxyParts[] = {
+		UStaticMeshComponent* ScpProxyParts[] = {
 			Body,
 			Chest,
 			Head,
@@ -241,7 +351,7 @@ ABHJumpscareMonster::ABHJumpscareMonster()
 			RightEye,
 			Mouth
 		};
-		for (UStaticMeshComponent* Part : ProxyParts)
+		for (UStaticMeshComponent* Part : ScpProxyParts)
 		{
 			if (Part)
 			{
@@ -250,6 +360,12 @@ ABHJumpscareMonster::ABHJumpscareMonster()
 			}
 		}
 	}
+}
+
+void ABHJumpscareMonster::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(ABHJumpscareMonster, JumpscareVariantId);
 }
 
 void ABHJumpscareMonster::BeginPlay()
@@ -270,7 +386,8 @@ void ABHJumpscareMonster::Tick(float DeltaSeconds)
 		const float Age = SpawnTime >= 0.0f ? GetWorld()->GetTimeSeconds() - SpawnTime : 0.0f;
 		const bool bHolding = HoldSeconds > 0.0f && Age < HoldSeconds;
 		const float Pulse = 0.65f + FMath::Abs(FMath::Sin(Age * (bHolding ? 19.0f : 13.0f))) * 0.35f;
-		if (!bHolding && !bChargeStarted)
+		const bool bCanStartChargeEffects = !bUseScriptedPath || bScriptedPlayChargeEffects;
+		if (!bHolding && !bChargeStarted && bCanStartChargeEffects)
 		{
 			StartChargeEffects();
 		}
@@ -296,6 +413,17 @@ void ABHJumpscareMonster::Tick(float DeltaSeconds)
 
 	if (!HasAuthority())
 	{
+		return;
+	}
+
+	if (bContactJumpscareTriggered)
+	{
+		return;
+	}
+
+	if (bUseScriptedPath)
+	{
+		TickScriptedPath(DeltaSeconds);
 		return;
 	}
 
@@ -327,20 +455,95 @@ void ABHJumpscareMonster::Tick(float DeltaSeconds)
 		return;
 	}
 
-	if (Delta.SizeSquared() <= FMath::Square(175.0f))
+	constexpr float ContactDistance = 190.0f;
+	const float DistanceToTarget = Delta.Size();
+	if (DistanceToTarget <= ContactDistance)
 	{
-		Destroy();
+		TriggerContactJumpscare();
 		return;
 	}
 
 	const float ChargeAge = SpawnTime >= 0.0f ? FMath::Max(0.0f, Now - SpawnTime - HoldSeconds) : MaxLifetime;
 	const float LaunchMultiplier = ChargeAge < 0.35f ? FMath::Lerp(1.35f, 1.0f, ChargeAge / 0.35f) : 1.0f;
-	SetActorLocation(GetActorLocation() + Direction * ChargeSpeed * LaunchMultiplier * DeltaSeconds);
+	const float MoveDistance = ChargeSpeed * LaunchMultiplier * DeltaSeconds;
+	if (DistanceToTarget - MoveDistance <= ContactDistance)
+	{
+		SetActorLocation(GetActorLocation() + Direction * FMath::Max(0.0f, DistanceToTarget - ContactDistance));
+		TriggerContactJumpscare();
+		return;
+	}
+
+	SetActorLocation(GetActorLocation() + Direction * MoveDistance);
+}
+
+void ABHJumpscareMonster::TickScriptedPath(float DeltaSeconds)
+{
+	if (!GetWorld() || ScriptedPathPoints.Num() < 2 || ScriptedPathIndex >= ScriptedPathPoints.Num())
+	{
+		Destroy();
+		return;
+	}
+
+	const float Now = GetWorld()->GetTimeSeconds();
+	if (SpawnTime >= 0.0f && Now - SpawnTime > MaxLifetime)
+	{
+		Destroy();
+		return;
+	}
+
+	FVector CurrentLocation = GetActorLocation();
+	FVector GoalLocation = ScriptedPathPoints[ScriptedPathIndex];
+	FVector Delta = GoalLocation - CurrentLocation;
+	Delta.Z = 0.0f;
+
+	while (Delta.SizeSquared2D() <= FMath::Square(36.0f))
+	{
+		++ScriptedPathIndex;
+		if (ScriptedPathIndex >= ScriptedPathPoints.Num())
+		{
+			Destroy();
+			return;
+		}
+
+		GoalLocation = ScriptedPathPoints[ScriptedPathIndex];
+		Delta = GoalLocation - CurrentLocation;
+		Delta.Z = 0.0f;
+	}
+
+	const FVector Direction = Delta.GetSafeNormal2D();
+	if (Direction.IsNearlyZero())
+	{
+		return;
+	}
+
+	if (bScriptedFaceLookAtTarget && ScriptedLookAtTarget.IsValid())
+	{
+		FVector LookDelta = ScriptedLookAtTarget->GetActorLocation() + FVector(0.0f, 0.0f, 95.0f) - CurrentLocation;
+		LookDelta.Z = 0.0f;
+		const FVector LookDirection = LookDelta.GetSafeNormal2D();
+		if (!LookDirection.IsNearlyZero())
+		{
+			SetActorRotation(LookDirection.Rotation());
+		}
+	}
+	else
+	{
+		SetActorRotation(Direction.Rotation());
+	}
+	const float MoveDistance = FMath::Max(120.0f, ChargeSpeed) * DeltaSeconds;
+	const float Distance = Delta.Size2D();
+	const FVector NewLocation = CurrentLocation + Direction * FMath::Min(MoveDistance, Distance);
+	SetActorLocation(FVector(NewLocation.X, NewLocation.Y, GoalLocation.Z));
 }
 
 void ABHJumpscareMonster::StartChargeEffects()
 {
 	bChargeStarted = true;
+
+	if (LaunchSound && GetWorld())
+	{
+		UGameplayStatics::PlaySoundAtLocation(this, LaunchSound, GetActorLocation(), 1.0f, 1.0f, 0.0f);
+	}
 
 	if (HasAuthority())
 	{
@@ -368,13 +571,370 @@ void ABHJumpscareMonster::SpawnLaunchScream()
 	}
 }
 
+void ABHJumpscareMonster::SetCloseupUpperBodyOnly()
+{
+	if (LeftLeg)
+	{
+		LeftLeg->SetHiddenInGame(true);
+		LeftLeg->SetVisibility(false, true);
+	}
+	if (RightLeg)
+	{
+		RightLeg->SetHiddenInGame(true);
+		RightLeg->SetVisibility(false, true);
+	}
+
+	BHHideLowerBodyForCloseup(this);
+	if (VariantVisualActor && VariantVisualActor->GetChildActor())
+	{
+		BHHideLowerBodyForCloseup(VariantVisualActor->GetChildActor());
+	}
+}
+
+void ABHJumpscareMonster::TriggerContactJumpscare()
+{
+	if (bContactJumpscareTriggered || !Target.IsValid() || !GetWorld())
+	{
+		return;
+	}
+
+	bContactJumpscareTriggered = true;
+	ABHCharacter* TargetCharacter = Target.Get();
+	ABHPlayerController* TargetPC = Cast<ABHPlayerController>(TargetCharacter ? TargetCharacter->GetController() : nullptr);
+
+	FVector ViewLocation = TargetCharacter ? TargetCharacter->GetActorLocation() + FVector(0.0f, 0.0f, 110.0f) : GetActorLocation();
+	FRotator ViewRotation = TargetCharacter ? TargetCharacter->GetActorRotation() : GetActorRotation();
+	if (TargetPC)
+	{
+		TargetPC->GetPlayerViewPoint(ViewLocation, ViewRotation);
+	}
+
+	FVector Forward = ViewRotation.Vector();
+	Forward.Z = 0.0f;
+	Forward = Forward.GetSafeNormal();
+	if (Forward.IsNearlyZero())
+	{
+		Forward = TargetCharacter ? TargetCharacter->GetActorForwardVector().GetSafeNormal2D() : GetActorForwardVector().GetSafeNormal2D();
+	}
+	if (Forward.IsNearlyZero())
+	{
+		Forward = FVector::ForwardVector;
+	}
+
+	const FVector CloseLocation = ViewLocation + Forward * 88.0f - FVector::UpVector * 135.0f;
+	SetActorLocation(CloseLocation);
+	SetActorRotation((ViewLocation - CloseLocation).Rotation());
+	SetActorScale3D(FVector(2.05f));
+	SetCloseupUpperBodyOnly();
+	ForceNetUpdate();
+	SetLifeSpan(1.15f);
+
+	if (TargetPC)
+	{
+		const FLinearColor ImpactColor = ActiveVariant.LightColor.A > 0.0f ? ActiveVariant.LightColor : PresentationLightColor;
+		const FVector FocusLocation = ViewLocation + Forward * 86.0f - FVector::UpVector * 22.0f;
+		TargetPC->ClientSnapViewToFlatFocus(FocusLocation);
+
+		FBHClientHorrorCue Cue;
+		Cue.EventType = EBHScareEventType::MonsterCharge;
+		Cue.FocusLocation = FocusLocation;
+		Cue.DurationSeconds = 1.35f;
+		Cue.LockSeconds = 0.92f;
+		Cue.ShakeIntensity = FMath::Clamp(FMath::Max(ActiveVariant.CameraShakeIntensity, 0.96f), 0.0f, 1.0f);
+		Cue.CameraJitterDuration = FMath::Clamp(FMath::Max(ActiveVariant.CameraJitterDuration, 1.25f), 0.0f, 3.0f);
+		Cue.CameraJitterFrequency = 52.0f;
+		Cue.FlashIntensity = FMath::Clamp(FMath::Max(ActiveVariant.FlashIntensity, 0.92f), 0.0f, 1.0f);
+		Cue.FlashColor = ImpactColor;
+		Cue.AudioAsset = ActiveVariant.LaunchSound;
+		Cue.AudioVolume = 1.35f;
+		Cue.VisualActorClass = ActiveVariant.VisualActorClass;
+		Cue.CloseVisualOffset = ActiveVariant.CloseVisualOffset;
+		Cue.CloseVisualRotation = ActiveVariant.CloseVisualRotation;
+		Cue.CloseVisualScale = ActiveVariant.CloseVisualScale;
+		Cue.VariantId = ActiveVariant.VariantId;
+		Cue.bSnapToFocus = true;
+		Cue.bLockInput = true;
+		Cue.bCloseRangeFocus = true;
+		Cue.bUpperBodyCloseVisual = true;
+		TargetPC->ClientPlayHorrorCue(Cue);
+	}
+}
+
 void ABHJumpscareMonster::Configure(ABHCharacter* NewTarget, float NewSpeed, float NewLifetime, float NewHoldSeconds)
 {
 	Target = NewTarget;
 	ChargeSpeed = FMath::Max(400.0f, NewSpeed);
 	HoldSeconds = FMath::Clamp(NewHoldSeconds, 0.0f, 5.0f);
 	MaxLifetime = FMath::Clamp(NewLifetime, FMath::Max(1.0f, HoldSeconds + 0.8f), 12.0f);
+	bContactJumpscareTriggered = false;
+	bUseScriptedPath = false;
+	bScriptedFaceLookAtTarget = false;
+	bScriptedPlayChargeEffects = true;
+	ScriptedLookAtTarget.Reset();
+	ScriptedPathPoints.Reset();
+	ScriptedPathIndex = 1;
 	SetLifeSpan(MaxLifetime + 0.35f);
+}
+
+void ABHJumpscareMonster::ConfigureScriptedPath(const TArray<FVector>& NewPathPoints, float NewSpeed, float NewLifetime, AActor* NewLookAtTarget, bool bNewFaceLookAtTarget, bool bNewPlayChargeEffects)
+{
+	Target.Reset();
+	ScriptedPathPoints = NewPathPoints;
+	ScriptedPathIndex = 1;
+	ScriptedLookAtTarget = NewLookAtTarget;
+	ChargeSpeed = FMath::Max(120.0f, NewSpeed);
+	HoldSeconds = 0.0f;
+	MaxLifetime = FMath::Clamp(NewLifetime, 0.4f, 8.0f);
+	bContactJumpscareTriggered = false;
+	bUseScriptedPath = ScriptedPathPoints.Num() >= 2;
+	bScriptedFaceLookAtTarget = bUseScriptedPath && bNewFaceLookAtTarget;
+	bScriptedPlayChargeEffects = bNewPlayChargeEffects;
+	if (bUseScriptedPath)
+	{
+		SetActorLocation(ScriptedPathPoints[0]);
+		const FVector InitialDelta = (ScriptedPathPoints[1] - ScriptedPathPoints[0]).GetSafeNormal2D();
+		if (bScriptedFaceLookAtTarget && ScriptedLookAtTarget.IsValid())
+		{
+			FVector LookDelta = ScriptedLookAtTarget->GetActorLocation() + FVector(0.0f, 0.0f, 95.0f) - ScriptedPathPoints[0];
+			LookDelta.Z = 0.0f;
+			const FVector LookDirection = LookDelta.GetSafeNormal2D();
+			if (!LookDirection.IsNearlyZero())
+			{
+				SetActorRotation(LookDirection.Rotation());
+			}
+		}
+		else if (!InitialDelta.IsNearlyZero())
+		{
+			SetActorRotation(InitialDelta.Rotation());
+		}
+	}
+	SetLifeSpan(MaxLifetime + 0.35f);
+}
+
+void ABHJumpscareMonster::ConfigurePresentation(USkeletalMesh* NewSkeletalMesh, UAnimSequence* NewRunAnimation, UStaticMesh* NewStaticMesh, UMaterialInterface* NewMaterial, USoundBase* NewLaunchSound, const FLinearColor& NewLightColor, float NewFocusHeight)
+{
+	LaunchSound = NewLaunchSound;
+	PresentationLightColor = NewLightColor;
+	CameraFocusHeight = FMath::Clamp(NewFocusHeight, 80.0f, 260.0f);
+
+	if (NewSkeletalMesh && SkeletalMonsterMesh)
+	{
+		SkeletalMonsterMesh->SetSkeletalMesh(NewSkeletalMesh);
+		if (NewRunAnimation)
+		{
+			SkeletalMonsterMesh->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+			SkeletalMonsterMesh->SetAnimation(NewRunAnimation);
+			SkeletalMonsterMesh->Play(true);
+		}
+		if (NewMaterial)
+		{
+			SkeletalMonsterMesh->SetMaterial(0, NewMaterial);
+		}
+		SkeletalMonsterMesh->SetHiddenInGame(false);
+		SkeletalMonsterMesh->SetVisibility(true, true);
+		if (MonsterMesh)
+		{
+			MonsterMesh->SetHiddenInGame(true);
+			MonsterMesh->SetVisibility(false, true);
+		}
+		bUsingScpVisual = true;
+	}
+	else if (NewStaticMesh && MonsterMesh)
+	{
+		MonsterMesh->SetStaticMesh(NewStaticMesh);
+		if (NewMaterial)
+		{
+			MonsterMesh->SetMaterial(0, NewMaterial);
+		}
+		MonsterMesh->SetHiddenInGame(false);
+		MonsterMesh->SetVisibility(true, true);
+		if (SkeletalMonsterMesh)
+		{
+			SkeletalMonsterMesh->SetHiddenInGame(true);
+			SkeletalMonsterMesh->SetVisibility(false, true);
+		}
+		bUsingScpVisual = true;
+	}
+
+	ApplyConfiguredPresentation();
+}
+
+void ABHJumpscareMonster::ConfigureVariant(const FBHJumpscareVariant& NewVariant)
+{
+	ActiveVariant = NewVariant;
+	if (!NewVariant.VariantId.IsNone())
+	{
+		JumpscareVariantId = NewVariant.VariantId;
+	}
+	ApplyConfiguredVariant();
+}
+
+void ABHJumpscareMonster::OnRep_JumpscareVariantId()
+{
+	if (FindJumpscareVariantById(JumpscareVariantId, ActiveVariant))
+	{
+		ApplyConfiguredVariant();
+	}
+}
+
+void ABHJumpscareMonster::SetProxyPartsVisible(bool bVisible)
+{
+	UStaticMeshComponent* ProxyParts[] = {
+		Body,
+		Chest,
+		Head,
+		LeftArm,
+		RightArm,
+		LeftLeg,
+		RightLeg,
+		LeftEye,
+		RightEye,
+		Mouth
+	};
+
+	for (UStaticMeshComponent* Part : ProxyParts)
+	{
+		if (Part)
+		{
+			Part->SetHiddenInGame(!bVisible);
+			Part->SetVisibility(bVisible, true);
+		}
+	}
+}
+
+void ABHJumpscareMonster::ApplyConfiguredVariant()
+{
+	if (ActiveVariant.VariantId.IsNone() && !FindJumpscareVariantById(JumpscareVariantId, ActiveVariant))
+	{
+		return;
+	}
+
+	PresentationLightColor = ActiveVariant.LightColor;
+	CameraFocusHeight = FMath::Clamp(ActiveVariant.FocusHeight, 80.0f, 320.0f);
+	PresentationVisualOffset = ActiveVariant.VisualOffset;
+	PresentationVisualRotation = ActiveVariant.VisualRotation;
+	PresentationVisualScale = ActiveVariant.VisualScale.GetAbs();
+	if (PresentationVisualScale.IsNearlyZero())
+	{
+		PresentationVisualScale = FVector::OneVector;
+	}
+
+	USoundBase* ResolvedLaunchSound = !ActiveVariant.LaunchSound.IsNull() && BHSoftObjectPathExists(ActiveVariant.LaunchSound.ToSoftObjectPath())
+		? ActiveVariant.LaunchSound.LoadSynchronous()
+		: nullptr;
+	if (ResolvedLaunchSound)
+	{
+		LaunchSound = ResolvedLaunchSound;
+	}
+
+	UMaterialInterface* ResolvedMaterial = !ActiveVariant.Material.IsNull() && BHSoftObjectPathExists(ActiveVariant.Material.ToSoftObjectPath())
+		? ActiveVariant.Material.LoadSynchronous()
+		: nullptr;
+	bool bAppliedImportedVisual = false;
+	bool bAppliedSkeletalVisual = false;
+	bool bAppliedStaticVisual = false;
+
+	if (!ActiveVariant.SkeletalMesh.IsNull() && BHSoftObjectPathExists(ActiveVariant.SkeletalMesh.ToSoftObjectPath()))
+	{
+		if (USkeletalMesh* ResolvedSkeletalMesh = ActiveVariant.SkeletalMesh.LoadSynchronous())
+		{
+			if (SkeletalMonsterMesh)
+			{
+				SkeletalMonsterMesh->SetSkeletalMesh(ResolvedSkeletalMesh);
+				if (!ActiveVariant.RunAnimation.IsNull() && BHSoftObjectPathExists(ActiveVariant.RunAnimation.ToSoftObjectPath()))
+				{
+					if (UAnimSequence* ResolvedAnimation = ActiveVariant.RunAnimation.LoadSynchronous())
+					{
+						SkeletalMonsterMesh->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+						SkeletalMonsterMesh->SetAnimation(ResolvedAnimation);
+						SkeletalMonsterMesh->Play(true);
+					}
+				}
+				if (ResolvedMaterial)
+				{
+					SkeletalMonsterMesh->SetMaterial(0, ResolvedMaterial);
+				}
+				SkeletalMonsterMesh->SetRelativeLocation(PresentationVisualOffset);
+				SkeletalMonsterMesh->SetRelativeRotation(PresentationVisualRotation);
+				SkeletalMonsterMesh->SetRelativeScale3D(PresentationVisualScale);
+				SkeletalMonsterMesh->SetHiddenInGame(false);
+				SkeletalMonsterMesh->SetVisibility(true, true);
+				bAppliedImportedVisual = true;
+				bAppliedSkeletalVisual = true;
+			}
+		}
+	}
+
+	if (!bAppliedImportedVisual && !ActiveVariant.StaticMesh.IsNull() && BHSoftObjectPathExists(ActiveVariant.StaticMesh.ToSoftObjectPath()))
+	{
+		if (UStaticMesh* ResolvedStaticMesh = ActiveVariant.StaticMesh.LoadSynchronous())
+		{
+			if (MonsterMesh)
+			{
+				MonsterMesh->SetStaticMesh(ResolvedStaticMesh);
+				if (ResolvedMaterial)
+				{
+					MonsterMesh->SetMaterial(0, ResolvedMaterial);
+				}
+				MonsterMesh->SetRelativeLocation(PresentationVisualOffset);
+				MonsterMesh->SetRelativeRotation(PresentationVisualRotation);
+				MonsterMesh->SetRelativeScale3D(PresentationVisualScale);
+				MonsterMesh->SetHiddenInGame(false);
+				MonsterMesh->SetVisibility(true, true);
+				bAppliedImportedVisual = true;
+				bAppliedStaticVisual = true;
+			}
+		}
+	}
+
+	bool bAppliedVisualActor = false;
+	if (VariantVisualActor)
+	{
+		VariantVisualActor->SetRelativeLocation(PresentationVisualOffset);
+		VariantVisualActor->SetRelativeRotation(PresentationVisualRotation);
+		VariantVisualActor->SetRelativeScale3D(PresentationVisualScale);
+		VariantVisualActor->DestroyChildActor();
+		if (!ActiveVariant.VisualActorClass.IsNull() && BHSoftObjectPathExists(ActiveVariant.VisualActorClass.ToSoftObjectPath()))
+		{
+			if (UClass* VisualClass = ActiveVariant.VisualActorClass.LoadSynchronous())
+			{
+				VariantVisualActor->SetChildActorClass(VisualClass);
+				if (AActor* ChildActor = VariantVisualActor->GetChildActor())
+				{
+					ChildActor->SetActorEnableCollision(false);
+					TArray<UPrimitiveComponent*> PrimitiveComponents;
+					ChildActor->GetComponents<UPrimitiveComponent>(PrimitiveComponents);
+					for (UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
+					{
+						if (PrimitiveComponent)
+						{
+							PrimitiveComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+						}
+					}
+				}
+				bAppliedVisualActor = true;
+			}
+		}
+	}
+
+	if (bAppliedImportedVisual || bAppliedVisualActor)
+	{
+		SetProxyPartsVisible(false);
+		if (MonsterMesh)
+		{
+			const bool bShowStatic = bAppliedStaticVisual && !bAppliedVisualActor;
+			MonsterMesh->SetHiddenInGame(!bShowStatic);
+			MonsterMesh->SetVisibility(bShowStatic, true);
+		}
+		if (SkeletalMonsterMesh)
+		{
+			const bool bShowSkeletal = bAppliedSkeletalVisual && !bAppliedVisualActor;
+			SkeletalMonsterMesh->SetHiddenInGame(!bShowSkeletal);
+			SkeletalMonsterMesh->SetVisibility(bShowSkeletal, true);
+		}
+	}
+
+	ApplyConfiguredPresentation();
 }
 
 void ABHJumpscareMonster::ApplyVisuals()
@@ -393,4 +953,17 @@ void ABHJumpscareMonster::ApplyVisuals()
 	TintPart(LeftEye, EyeColor);
 	TintPart(RightEye, EyeColor);
 	TintPart(Mouth, EyeColor);
+	ApplyConfiguredPresentation();
+}
+
+void ABHJumpscareMonster::ApplyConfiguredPresentation()
+{
+	if (EyeLight)
+	{
+		EyeLight->SetLightColor(PresentationLightColor);
+	}
+	if (CoreLight)
+	{
+		CoreLight->SetLightColor(PresentationLightColor);
+	}
 }

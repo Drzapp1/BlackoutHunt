@@ -10,6 +10,14 @@
 #include "IPAddress.h"
 #include "SocketSubsystem.h"
 
+#if PLATFORM_WINDOWS
+THIRD_PARTY_INCLUDES_START
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include <bcrypt.h>
+#include "Windows/HideWindowsPlatformTypes.h"
+THIRD_PARTY_INCLUDES_END
+#endif
+
 namespace
 {
 	constexpr int32 BHDefaultGamePort = 7777;
@@ -388,6 +396,92 @@ namespace
 			TEXT("BlackoutHuntPlayit.log")));
 	}
 
+	FString BytesToLowerHex(const uint8* Bytes, const int32 NumBytes)
+	{
+		static constexpr TCHAR Hex[] = TEXT("0123456789abcdef");
+		FString Result;
+		Result.Reserve(NumBytes * 2);
+		for (int32 Index = 0; Index < NumBytes; ++Index)
+		{
+			const uint8 Byte = Bytes[Index];
+			Result.AppendChar(Hex[(Byte >> 4) & 0x0f]);
+			Result.AppendChar(Hex[Byte & 0x0f]);
+		}
+		return Result;
+	}
+
+	bool ComputeSha256Hex(TArray<uint8>& Bytes, FString& OutHash)
+	{
+		BCRYPT_ALG_HANDLE AlgorithmHandle = nullptr;
+		BCRYPT_HASH_HANDLE HashHandle = nullptr;
+
+		auto CloseHandles = [&]()
+		{
+			if (HashHandle)
+			{
+				BCryptDestroyHash(HashHandle);
+				HashHandle = nullptr;
+			}
+			if (AlgorithmHandle)
+			{
+				BCryptCloseAlgorithmProvider(AlgorithmHandle, 0);
+				AlgorithmHandle = nullptr;
+			}
+		};
+
+		NTSTATUS Status = BCryptOpenAlgorithmProvider(&AlgorithmHandle, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
+		if (Status < 0)
+		{
+			return false;
+		}
+
+		DWORD BytesWritten = 0;
+		DWORD HashObjectSize = 0;
+		Status = BCryptGetProperty(AlgorithmHandle, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&HashObjectSize), sizeof(HashObjectSize), &BytesWritten, 0);
+		if (Status < 0 || HashObjectSize == 0)
+		{
+			CloseHandles();
+			return false;
+		}
+
+		DWORD HashLength = 0;
+		Status = BCryptGetProperty(AlgorithmHandle, BCRYPT_HASH_LENGTH, reinterpret_cast<PUCHAR>(&HashLength), sizeof(HashLength), &BytesWritten, 0);
+		if (Status < 0 || HashLength == 0)
+		{
+			CloseHandles();
+			return false;
+		}
+
+		TArray<uint8> HashObject;
+		HashObject.SetNumUninitialized(static_cast<int32>(HashObjectSize));
+		Status = BCryptCreateHash(AlgorithmHandle, &HashHandle, HashObject.GetData(), HashObjectSize, nullptr, 0, 0);
+		if (Status < 0)
+		{
+			CloseHandles();
+			return false;
+		}
+
+		Status = BCryptHashData(HashHandle, Bytes.GetData(), static_cast<ULONG>(Bytes.Num()), 0);
+		if (Status < 0)
+		{
+			CloseHandles();
+			return false;
+		}
+
+		TArray<uint8> Digest;
+		Digest.SetNumUninitialized(static_cast<int32>(HashLength));
+		Status = BCryptFinishHash(HashHandle, Digest.GetData(), HashLength, 0);
+		if (Status < 0)
+		{
+			CloseHandles();
+			return false;
+		}
+
+		OutHash = BytesToLowerHex(Digest.GetData(), Digest.Num());
+		CloseHandles();
+		return true;
+	}
+
 	bool VerifyPlayitExecutable(const FString& Path, FString& OutMessage)
 	{
 		const int64 FileSize = IFileManager::Get().FileSize(*Path);
@@ -405,14 +499,13 @@ namespace
 			return false;
 		}
 
-		FSHA256Signature Signature;
-		if (!FPlatformMisc::GetSHA256Signature(FileBytes.GetData(), static_cast<uint32>(FileBytes.Num()), Signature))
+		FString ActualHash;
+		if (!ComputeSha256Hex(FileBytes, ActualHash))
 		{
 			OutMessage = TEXT("Could not verify bundled tunnel agent signature on this platform.");
 			return false;
 		}
 
-		const FString ActualHash = Signature.ToString();
 		if (!ActualHash.Equals(ExpectedPlayitSha256(), ESearchCase::IgnoreCase))
 		{
 			OutMessage = FString::Printf(
@@ -683,6 +776,20 @@ FString FBHNetworkSupport::NormalizeJoinAddress(const FString& Address, int32 De
 	}
 
 	return BuildJoinAddress(Host, Port);
+}
+
+FString FBHNetworkSupport::NormalizePreferredJoinEndpoint(const TArray<FString>& Endpoints, int32 DefaultPort)
+{
+	for (const FString& Endpoint : Endpoints)
+	{
+		const FString NormalizedEndpoint = NormalizeJoinAddress(Endpoint, DefaultPort);
+		if (!NormalizedEndpoint.IsEmpty())
+		{
+			return NormalizedEndpoint;
+		}
+	}
+
+	return FString();
 }
 
 FString FBHNetworkSupport::MakeJoinInviteCode(const FString& Address, int32 DefaultPort)

@@ -27,7 +27,7 @@ Project attribution text:
 - `Tiles078`: tiled facility floor patches
 - `Sign009`: warning placards near exits and hazard routes
 
-## 0.2.0-beta.4 Package Policy
+## 0.2.0-beta.5 Package Policy
 
 The Windows classroom beta cooks the documented package-safe content paths plus the restored SCP096 prototype jumpscare visual requested for beta. Package-safe paths include ambientCG materials/textures, in-house/generated audio, UI background media, and the Quaternius/KayKit CC0 character sets used by the current avatar path.
 
@@ -36,6 +36,9 @@ The repository also contains prototype/import source assets that need explicit p
 - SCP096 prototype meshes and textures: included only for beta classroom testing; complete source-license evidence is still required before broader distribution.
 - Low-poly hider source mesh: excluded from beta package because no local distributable license evidence is present.
 - FNaTI Hunter source mesh: excluded from beta package for classroom beta. Local source license states CC-BY-4.0 and requires attribution if it is included in a future package.
+- Fab Free Customizable Jumpscares: planned runtime destination is `Content/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares` with gameplay config soft paths under `/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares`. Import through the UE Fab window/Add to Project flow, then migrate or rename the three monster, Blueprint, and audio assets to the configured paths or update `UBHGameSettings.JumpscareVariants`.
+- Fab listing: `https://www.fab.com/listings/c0874256-c114-4821-a42e-2e988a1cfb87`
+- Fab license terms: `https://www.fab.com/eula`
 
 ## Windows Executable Icon
 

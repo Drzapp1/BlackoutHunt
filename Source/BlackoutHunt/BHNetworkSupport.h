@@ -31,6 +31,7 @@ public:
 	static FBHInternetTunnelResult OpenInternetTunnelSetup(int32 LocalPort = 7777);
 	static FBHInternetTunnelResult GetInternetTunnelStatus(int32 LocalPort = 7777);
 	static FString NormalizeJoinAddress(const FString& Address, int32 DefaultPort = 7777);
+	static FString NormalizePreferredJoinEndpoint(const TArray<FString>& Endpoints, int32 DefaultPort = 7777);
 	static FString MakeJoinInviteCode(const FString& Address, int32 DefaultPort = 7777);
 	static FString ResolveLocalJoinAddress(int32 LocalPort = 7777);
 	static FString MakeDefaultGameSsid();

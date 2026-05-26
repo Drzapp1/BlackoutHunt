@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "TimerManager.h"
 #include "BHFlickerLight.generated.h"
 
 class UPointLightComponent;
@@ -20,12 +21,16 @@ public:
 
 	void Configure(int32 NewCircuitId, const FLinearColor& NewColor, float NewBaseIntensity, float NewRadius);
 	void SetPowered(bool bNewPowered);
+	void TriggerFlickerBurst(float DurationSeconds, float IntensityMultiplier, const FLinearColor& BurstColor, float BurstSpeed, bool bForcePowered = true);
 
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt")
 	int32 GetCircuitId() const;
 
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt")
 	bool IsPowered() const;
+
+	UFUNCTION(BlueprintPure, Category = "Blackout Hunt")
+	bool IsFlickerBurstActive() const;
 
 protected:
 	UFUNCTION()
@@ -34,6 +39,10 @@ protected:
 	UFUNCTION()
 	void OnRep_LightConfig();
 
+	UFUNCTION()
+	void OnRep_FlickerBurst();
+
+	void EndFlickerBurst();
 	void ApplyLightState();
 	void ApplyLightConfig();
 
@@ -61,5 +70,25 @@ protected:
 	UPROPERTY(ReplicatedUsing = OnRep_Powered, BlueprintReadOnly, Category = "Light")
 	bool bPowered;
 
+	UPROPERTY(ReplicatedUsing = OnRep_FlickerBurst, BlueprintReadOnly, Category = "Light")
+	bool bFlickerBurstActive;
+
+	UPROPERTY(ReplicatedUsing = OnRep_FlickerBurst, BlueprintReadOnly, Category = "Light")
+	float FlickerBurstEndTime;
+
+	UPROPERTY(ReplicatedUsing = OnRep_FlickerBurst, BlueprintReadOnly, Category = "Light")
+	float FlickerBurstIntensityMultiplier;
+
+	UPROPERTY(ReplicatedUsing = OnRep_FlickerBurst, BlueprintReadOnly, Category = "Light")
+	float FlickerBurstSpeed;
+
+	UPROPERTY(ReplicatedUsing = OnRep_FlickerBurst, BlueprintReadOnly, Category = "Light")
+	FLinearColor FlickerBurstColor;
+
+	UPROPERTY(ReplicatedUsing = OnRep_FlickerBurst, BlueprintReadOnly, Category = "Light")
+	bool bFlickerBurstForcePowered;
+
 	float Phase;
+	float FlickerBurstRemainingSeconds;
+	FTimerHandle FlickerBurstTimerHandle;
 };

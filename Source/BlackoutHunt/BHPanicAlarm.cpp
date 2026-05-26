@@ -54,6 +54,8 @@ void ABHPanicAlarm::BeginInteract_Implementation(ABHCharacter* Character)
 	bUsed = true;
 	ApplyAlarmVisuals();
 
+	Character->AddFear(12.0f);
+	Character->AddDread(18.0f);
 	if (ABHPlayerController* PC = Character ? Cast<ABHPlayerController>(Character->GetController()) : nullptr)
 	{
 		PC->ClientShowStatusMessage(TEXT("Alarm pulled. The Teacher heard it."), 2.75f);

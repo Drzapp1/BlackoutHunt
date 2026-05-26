@@ -89,6 +89,8 @@ void ABHAlarmTrap::NotifyActorBeginOverlap(AActor* OtherActor)
 	}
 
 	bTriggered = true;
+	Survivor->AddFear(18.0f);
+	Survivor->AddDread(16.0f);
 	if (ABHPlayerController* PC = Cast<ABHPlayerController>(Survivor->GetController()))
 	{
 		PC->ClientShowStatusMessage(TEXT("You tripped a fake seeker trap."), 2.75f);

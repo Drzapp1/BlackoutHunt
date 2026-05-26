@@ -29,6 +29,7 @@ protected:
 	float DrawWrappedHudText(const FString& Text, float X, float Y, float MaxWidth, const FLinearColor& Color, const UFont* Font = nullptr, float Scale = 1.0f, float LineHeight = 16.0f, int32 MaxLines = 2) const;
 	void DrawProgressBar(const FString& Label, float Value, float X, float Y, float W, const FLinearColor& FillColor, const FString& ValueText = FString());
 	void DrawRawMeter(const FString& Label, float Value, float X, float Y, float W, const FLinearColor& FillColor, bool bHighIsBad = false);
+	void DrawVisibleHunterArrow(const ABHCharacter* Character, const FVector& HunterLocation, float DistanceCm);
 	void DrawCrosshair(float DangerAlpha = 0.0f);
 	void DrawHorrorOverlay(const ABHCharacter* Character, const class ABHGameState* GameState);
 	void DrawHeatSensor(const ABHCharacter* Character, const class ABHGameState* GameState, float X, float Y);

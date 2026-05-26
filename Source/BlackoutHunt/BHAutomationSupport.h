@@ -12,6 +12,7 @@ struct FBHAutomationConfig
 	float AutoQuitSeconds = 0.0f;
 	FString AutoHost;
 	FString AutoJoin;
+	FString AutoAtmosphereTests;
 	FString Tag;
 
 	bool HasAutoHost() const
@@ -37,6 +38,11 @@ struct FBHAutomationConfig
 	bool ShouldAutoQuit() const
 	{
 		return bEnabled && AutoQuitSeconds > 0.0f;
+	}
+
+	bool HasAutoAtmosphereTests() const
+	{
+		return bEnabled && !AutoAtmosphereTests.IsEmpty();
 	}
 
 	bool ShouldUseVirtualBoxSafeMode() const

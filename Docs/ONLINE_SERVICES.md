@@ -4,7 +4,7 @@ Blackout Hunt now has two network paths:
 
 - Direct IP: `HostGame` / `JoinGame host:7777`. This still needs UDP `7777` to reach the host.
 - Online sessions: `HostOnlineGame`, `HostOnlineSubstationGame`, `FindOnlineGames`, and `JoinOnlineGame <index>`. This uses Unreal's configured OnlineSubsystem.
-- Internet tunnel fallback: `StartInternetTunnel` verifies and launches the bundled Playit agent on Windows, writes the agent log path, and opens tunnel setup. Create a Custom UDP tunnel to `127.0.0.1:7777`, then copy a `BH1:...` join code from the menu or let clients join the allocation address through the normal direct-IP path. The beta.4 classroom package also ships the owned endpoint `blackouthunt.playit.plus:24761` in the saved join list.
+- Internet tunnel fallback: `StartInternetTunnel` verifies and launches the bundled Playit agent on Windows, writes the agent log path, and opens tunnel setup. Create a Custom UDP tunnel to `127.0.0.1:7777`, then copy a `BH1:...` join code from the menu or let clients join the allocation address through the normal direct-IP path. The beta.5 classroom package also ships the owned endpoint `blackouthunt.playit.plus:24761` in the saved join list.
 
 The checked-in default is:
 

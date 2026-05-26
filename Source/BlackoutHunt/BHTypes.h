@@ -6,6 +6,11 @@
 class AActor;
 class AController;
 class ABHCharacter;
+class UAnimSequence;
+class UMaterialInterface;
+class USoundBase;
+class USkeletalMesh;
+class UStaticMesh;
 
 UENUM(BlueprintType)
 enum class EBHRoundPhase : uint8
@@ -13,6 +18,8 @@ enum class EBHRoundPhase : uint8
 	Lobby UMETA(DisplayName = "Lobby"),
 	Prep UMETA(DisplayName = "Prep"),
 	Hunt UMETA(DisplayName = "Hunt"),
+	Intermission UMETA(DisplayName = "Train Intermission"),
+	FinalEscape UMETA(DisplayName = "Final Escape"),
 	SurvivorsWin UMETA(DisplayName = "Survivors Win"),
 	HunterWin UMETA(DisplayName = "Hunter Win")
 };
@@ -111,6 +118,211 @@ enum class EBHBotStimulusType : uint8
 };
 
 UENUM(BlueprintType)
+enum class EBHAtmosphereStimulusType : uint8
+{
+	Noise UMETA(DisplayName = "Noise"),
+	Objective UMETA(DisplayName = "Objective"),
+	Locker UMETA(DisplayName = "Locker"),
+	Footstep UMETA(DisplayName = "Footstep"),
+	CCTV UMETA(DisplayName = "CCTV"),
+	Power UMETA(DisplayName = "Power"),
+	Monster UMETA(DisplayName = "Monster"),
+	Manual UMETA(DisplayName = "Manual")
+};
+
+UENUM(BlueprintType)
+enum class EBHScareEventType : uint8
+{
+	Ambient UMETA(DisplayName = "Ambient"),
+	MonsterCharge UMETA(DisplayName = "Monster Charge"),
+	FaceFlash UMETA(DisplayName = "Face Flash"),
+	AudioStinger UMETA(DisplayName = "Audio Stinger"),
+	LightCut UMETA(DisplayName = "Light Cut"),
+	CCTVGlitch UMETA(DisplayName = "CCTV Glitch"),
+	LockerKnock UMETA(DisplayName = "Locker Knock")
+};
+
+USTRUCT(BlueprintType)
+struct FBHJumpscareVariant
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	FName VariantId = NAME_None;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	FString DisplayName;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0.0"))
+	float Weight = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0", ClampMax = "3"))
+	int32 MinimumScareIntensity = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	TSoftObjectPtr<USkeletalMesh> SkeletalMesh;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	TSoftObjectPtr<UAnimSequence> RunAnimation;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	TSoftObjectPtr<UStaticMesh> StaticMesh;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	TSoftObjectPtr<UMaterialInterface> Material;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	TSoftClassPtr<AActor> VisualActorClass;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	TSoftObjectPtr<USoundBase> LaunchSound;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	FVector VisualOffset = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	FRotator VisualRotation = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	FVector VisualScale = FVector::OneVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	FVector CloseVisualOffset = FVector(92.0f, 0.0f, -118.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	FRotator CloseVisualRotation = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	FVector CloseVisualScale = FVector(1.35f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	FLinearColor LightColor = FLinearColor(1.0f, 0.02f, 0.0f, 1.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "60.0", ClampMax = "320.0"))
+	float FocusHeight = 145.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float CameraShakeIntensity = 0.96f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float FlashIntensity = 0.70f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0.0"))
+	float CameraJitterDuration = 1.10f;
+};
+
+USTRUCT(BlueprintType)
+struct FBHScareEventSpec
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	EBHScareEventType EventType = EBHScareEventType::Ambient;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	TObjectPtr<ABHCharacter> Target = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	FVector Origin = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float Intensity = 0.65f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0.0"))
+	float LockSeconds = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0.0"))
+	float LightRadius = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	TSoftObjectPtr<USoundBase> AudioAsset;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	TSubclassOf<AActor> VisualActorClass;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	FName VariantId = NAME_None;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float FlashIntensity = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	FLinearColor FlashColor = FLinearColor(1.0f, 0.04f, 0.02f, 1.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	FString Message;
+};
+
+USTRUCT(BlueprintType)
+struct FBHClientHorrorCue
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	EBHScareEventType EventType = EBHScareEventType::Ambient;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	FVector FocusLocation = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	FString Message;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0.0"))
+	float DurationSeconds = 2.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0.0"))
+	float LockSeconds = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float ShakeIntensity = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	bool bSnapToFocus = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	bool bLockInput = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	TSoftObjectPtr<USoundBase> AudioAsset;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0.0", ClampMax = "2.0"))
+	float AudioVolume = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	TSoftClassPtr<AActor> VisualActorClass;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	FVector CloseVisualOffset = FVector(92.0f, 0.0f, -118.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	FRotator CloseVisualRotation = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	FVector CloseVisualScale = FVector(1.35f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	FName VariantId = NAME_None;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float FlashIntensity = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	FLinearColor FlashColor = FLinearColor(1.0f, 0.04f, 0.02f, 1.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0.0"))
+	float CameraJitterDuration = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0.0"))
+	float CameraJitterFrequency = 34.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	bool bCloseRangeFocus = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	bool bUpperBodyCloseVisual = false;
+};
+
+UENUM(BlueprintType)
 enum class EBHObjectiveStationType : uint8
 {
 	Valve UMETA(DisplayName = "Valve"),
@@ -189,6 +401,150 @@ enum class EBHRevisionDifficultyMix : uint8
 	Easy UMETA(DisplayName = "Easy"),
 	Hard UMETA(DisplayName = "Hard"),
 	Adaptive UMETA(DisplayName = "Adaptive")
+};
+
+UENUM(BlueprintType)
+enum class EBHTrainPhase : uint8
+{
+	Inactive UMETA(DisplayName = "Inactive"),
+	Arrival UMETA(DisplayName = "Arrival"),
+	Recap UMETA(DisplayName = "Class Recap"),
+	BonusQuestion UMETA(DisplayName = "Bonus Question"),
+	Shop UMETA(DisplayName = "Shop"),
+	StationStop UMETA(DisplayName = "Station Stop"),
+	Departing UMETA(DisplayName = "Departing")
+};
+
+UENUM(BlueprintType)
+enum class EBHFinalEscapeState : uint8
+{
+	Inactive UMETA(DisplayName = "Inactive"),
+	Locked UMETA(DisplayName = "Locked"),
+	Cutscene UMETA(DisplayName = "Unlock Cutscene"),
+	EscapeActive UMETA(DisplayName = "Escape Active"),
+	Departed UMETA(DisplayName = "Departed"),
+	Failed UMETA(DisplayName = "Failed")
+};
+
+UENUM(BlueprintType)
+enum class EBHPowerupType : uint8
+{
+	StaminaBoost UMETA(DisplayName = "Stamina Boost"),
+	SprintBurst UMETA(DisplayName = "Sprint Burst"),
+	FlashlightBoost UMETA(DisplayName = "Light Boost"),
+	QuestionHint UMETA(DisplayName = "Question Hint"),
+	DecoySound UMETA(DisplayName = "Decoy Sound"),
+	DoorRush UMETA(DisplayName = "Door Rush"),
+	TeamBeacon UMETA(DisplayName = "Team Beacon"),
+	AntiScareCharm UMETA(DisplayName = "Anti-Scare Charm")
+};
+
+USTRUCT(BlueprintType)
+struct FBHPowerupDefinition
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Blackout Hunt|Powerups")
+	EBHPowerupType Type = EBHPowerupType::StaminaBoost;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Blackout Hunt|Powerups")
+	FString Name;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Blackout Hunt|Powerups")
+	FString Description;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Blackout Hunt|Powerups")
+	int32 Cost = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Blackout Hunt|Powerups")
+	int32 MaxCharges = 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Blackout Hunt|Powerups")
+	float DurationSeconds = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Blackout Hunt|Powerups")
+	float CooldownSeconds = 0.0f;
+};
+
+USTRUCT(BlueprintType)
+struct FBHPowerupInventoryEntry
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Powerups")
+	EBHPowerupType Type = EBHPowerupType::StaminaBoost;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Powerups")
+	int32 Charges = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Powerups")
+	float CooldownEndServerTime = 0.0f;
+};
+
+USTRUCT(BlueprintType)
+struct FBHQuestionAttemptRecord
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	FString PlayerName;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	FString QuestionId;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	FString TopicName;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	FString QuestionText;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	FString QuestionSubtopic;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	FString SelectedAnswer;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	FString CorrectAnswer;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	FString Explanation;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	EBHQuestionDifficulty Difficulty = EBHQuestionDifficulty::Easy;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	EBHQuestionType QuestionType = EBHQuestionType::MultipleChoice;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	EBHPhysicsTopic Topic = EBHPhysicsTopic::ForcesAndMotion;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	bool bCorrect = false;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	bool bCorrection = false;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	int32 StageIndex = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	float TimestampSeconds = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	int32 PointsEarned = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	FString TeamSummary;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	EBHPhysicsTopic AdaptiveRecommendedTopic = EBHPhysicsTopic::ForcesAndMotion;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	EBHQuestionDifficulty AdaptiveRecommendedDifficulty = EBHQuestionDifficulty::Easy;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	FString AdaptiveReason;
 };
 
 USTRUCT(BlueprintType)

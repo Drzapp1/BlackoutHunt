@@ -28,6 +28,11 @@ bool FBHAutomationCommandLineTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Automation tag is captured."), EnabledConfig.Tag, FString(TEXT("student-01")));
 	TestTrue(TEXT("VirtualBox-safe mode can be forced independently."), EnabledConfig.ShouldUseVirtualBoxSafeMode());
 
+	const FBHAutomationConfig AtmosphereConfig = FBHAutomationSupport::ParseCommandLine(
+		TEXT("-BHAutomation=1 -BHAutoAtmosphereTests=ambient,charge,targetclient -BHAutoMinPlayers=2"));
+	TestTrue(TEXT("Atmosphere proof commands are parsed for command-line smoke runs."), AtmosphereConfig.HasAutoAtmosphereTests());
+	TestEqual(TEXT("Atmosphere proof command list is captured."), AtmosphereConfig.AutoAtmosphereTests, FString(TEXT("ambient,charge,targetclient")));
+
 	const FBHAutomationConfig MinPlayersConfig = FBHAutomationSupport::ParseCommandLine(
 		TEXT("-BHAutomation=1 -BHAutoReady=1 -BHAutoMinPlayers=3"));
 	TestEqual(TEXT("Auto min players can delay host ready for multi-client validation."), MinPlayersConfig.GetAutoMinPlayers(), 3);
@@ -37,6 +42,10 @@ bool FBHAutomationCommandLineTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("VirtualBox safe mode can be requested without automation."), VirtualBoxOnlyConfig.ShouldUseVirtualBoxSafeMode());
 
 	TestTrue(TEXT("Known host mode accepts Foggrounds."), FBHAutomationSupport::IsKnownHostMode(FBHAutomationSupport::NormalizeHostMode(TEXT("fog"))));
+	TestEqual(TEXT("Live Facility alias keeps Live Classroom map selection."), FBHAutomationSupport::NormalizeHostMode(TEXT("LiveFacility")), FString(TEXT("LiveFacility")));
+	TestEqual(TEXT("Live Substation alias keeps Live Classroom map selection."), FBHAutomationSupport::NormalizeHostMode(TEXT("LiveSubstation")), FString(TEXT("LiveSubstation")));
+	TestEqual(TEXT("Live Fog alias keeps Live Classroom map selection."), FBHAutomationSupport::NormalizeHostMode(TEXT("LiveFog")), FString(TEXT("LiveFoggrounds")));
+	TestTrue(TEXT("Known host mode accepts Live Foggrounds."), FBHAutomationSupport::IsKnownHostMode(FBHAutomationSupport::NormalizeHostMode(TEXT("LiveFoggrounds"))));
 	TestFalse(TEXT("Unknown host mode remains invalid."), FBHAutomationSupport::IsKnownHostMode(FBHAutomationSupport::NormalizeHostMode(TEXT("Basement"))));
 
 	return true;

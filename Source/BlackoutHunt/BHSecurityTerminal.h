@@ -12,6 +12,9 @@ class BLACKOUTHUNT_API ABHSecurityTerminal : public ABHInteractableActor
 public:
 	ABHSecurityTerminal();
 
+	virtual void BeginPlay() override;
+	virtual void Tick(float DeltaSeconds) override;
+
 	void Configure(int32 NewCircuitId, const FText& NewLabel);
 
 	virtual bool CanInteract_Implementation(ABHCharacter* Character) const override;
@@ -19,6 +22,9 @@ public:
 	virtual FText GetInteractionLabel_Implementation(ABHCharacter* Character) const override;
 
 protected:
+	bool CircuitHasClosedShutter() const;
+	void RefreshCircuitVisuals();
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UStaticMeshComponent> TerminalScreen;
 
@@ -36,4 +42,7 @@ protected:
 
 	UPROPERTY(EditAnywhere, Category = "Security")
 	FText TerminalLabel;
+
+	bool bHasCachedCircuitState;
+	bool bCachedCircuitWillOpen;
 };

@@ -4,6 +4,8 @@
 #include "BHInteractableActor.h"
 #include "BHSecurityShutter.generated.h"
 
+class UStaticMeshComponent;
+
 UCLASS()
 class BLACKOUTHUNT_API ABHSecurityShutter : public ABHInteractableActor
 {
@@ -12,21 +14,56 @@ class BLACKOUTHUNT_API ABHSecurityShutter : public ABHInteractableActor
 public:
 	ABHSecurityShutter();
 
+	virtual void BeginPlay() override;
+	virtual void Tick(float DeltaSeconds) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	void Configure(int32 NewCircuitId);
 	void SetOpen(bool bNewOpen);
+	bool TrySetOpen(bool bNewOpen);
 	int32 GetCircuitId() const;
+	bool IsOpen() const;
+
+	virtual bool CanInteract_Implementation(ABHCharacter* Character) const override;
+	virtual void BeginInteract_Implementation(ABHCharacter* Character) override;
+	virtual FText GetInteractionLabel_Implementation(ABHCharacter* Character) const override;
 
 protected:
 	UFUNCTION()
 	void OnRep_Open();
 
-	void ApplyOpenState();
+	FVector GetTargetMeshLocation() const;
+	bool CanCloseWithoutBlockingPawn() const;
+	void ApplyOpenState(bool bSnapMesh = false);
+	void ApplyCollisionState();
+	void ApplyStatusVisuals();
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UStaticMeshComponent> LeftRail;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UStaticMeshComponent> RightRail;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UStaticMeshComponent> HeaderPanel;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UStaticMeshComponent> WarningStripe;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UStaticMeshComponent> StatusLight;
 
 	UPROPERTY(ReplicatedUsing = OnRep_Open)
 	bool bOpen;
 
 	UPROPERTY(Replicated)
 	int32 CircuitId;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Security")
+	float OpenLiftHeight;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Security")
+	float OpenInterpSpeed;
+
+	FVector ClosedMeshLocation;
 };

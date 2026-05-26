@@ -218,7 +218,31 @@ public:
 	void ForceReview();
 
 	UFUNCTION(Exec)
+	void TesterShortcuts();
+
+	UFUNCTION(Exec)
+	void TesterGrantTrainResources();
+
+	UFUNCTION(Exec)
+	void TesterOpenTrainIntermission();
+
+	UFUNCTION(Exec)
+	void TesterAdvanceTrainPhase();
+
+	UFUNCTION(Exec)
+	void TesterLoadFinalStation();
+
+	UFUNCTION(Exec)
+	void TesterTriggerFinalEscape();
+
+	UFUNCTION(Exec)
+	void TesterForceFinalRecap();
+
+	UFUNCTION(Exec)
 	void RevisionStatus();
+
+	UFUNCTION(Exec)
+	void ExportRevisionReport();
 
 	UFUNCTION(Exec)
 	void ToggleInfectionMode();
@@ -232,11 +256,19 @@ public:
 	UFUNCTION(Exec)
 	void TriggerPracticeJumpscare();
 
+	UFUNCTION(Exec)
+	void JumpscareTest(const FString& VariantToken);
+
+	UFUNCTION(Exec)
+	void AtmosphereTest(const FString& Command);
+
 	void ShowMainMenu();
 	void HideMainMenu();
 	void ToggleMainMenu();
 	void ReturnToMainMenu();
 	void QuitGame();
+	void ShowTravelLoadingScreen(const FString& Title, const FString& Detail);
+	void HideTravelLoadingScreen();
 	bool HostOnlineGameForMenu(const FString& LevelName, FString& OutMessage);
 	bool HostPracticeGameForMenu(FString& OutMessage);
 	bool HostTestRoundForMenu(const FString& LevelName, FString& OutMessage);
@@ -277,6 +309,8 @@ public:
 	bool SetPracticeModifierForMenu(EBHRoundModifier NewModifier, FString& OutMessage);
 	bool RefreshPracticeRoundForMenu(FString& OutMessage);
 	bool TriggerPracticeJumpscareForMenu(FString& OutMessage);
+	bool TriggerJumpscareVariantForMenu(const FString& VariantToken, FString& OutMessage);
+	bool RunAtmosphereTestForMenu(const FString& Command, FString& OutMessage);
 	bool TriggerTargetedJumpscareForMenu(APlayerState* TargetPlayerState, FString& OutMessage);
 	bool CycleAvatarForMenu(FString& OutMessage);
 	bool SetAvatarForMenu(int32 AvatarIndex, FString& OutMessage);
@@ -289,9 +323,30 @@ public:
 	bool SetScareIntensityForMenu(int32 Intensity, FString& OutMessage);
 	bool ForceReviewForMenu(FString& OutMessage);
 	bool RevisionStatusForMenu(FString& OutMessage);
+	bool ExportRevisionReportForMenu(FString& OutMessage);
 	bool ApplyGraphicsPresetForMenu(int32 Quality, FString& OutMessage);
+	bool ApplyAutoGraphicsForMenu(FString& OutMessage);
+	bool SetAdaptiveGraphicsForMenu(bool bEnabled, FString& OutMessage);
+	bool SetAdaptiveFrameRateGoalForMenu(int32 FpsGoal, FString& OutMessage);
+	bool ApplyRenderScaleForMenu(int32 Percent, FString& OutMessage);
+	bool ApplyTextureQualityForMenu(int32 Quality, FString& OutMessage);
+	bool ApplyShadowQualityForMenu(int32 Quality, FString& OutMessage);
+	bool ApplyEffectsQualityForMenu(int32 Quality, FString& OutMessage);
 	bool ApplyResolutionForMenu(int32 Width, int32 Height, bool bFullscreen, FString& OutMessage);
 	bool ApplyFrameRateLimitForMenu(int32 FrameRateLimit, FString& OutMessage);
+	FString GetGraphicsSummaryForMenu() const;
+	bool IsAutoGraphicsEnabledForMenu() const;
+	bool IsAdaptiveGraphicsEnabledForMenu() const;
+	int32 GetGraphicsPresetQualityForMenu() const;
+	int32 GetGraphicsRenderScalePercentForMenu() const;
+	int32 GetGraphicsEffectiveRenderScalePercentForMenu() const;
+	int32 GetGraphicsAdaptiveFpsGoalForMenu() const;
+	int32 GetGraphicsFrameRateLimitForMenu() const;
+	int32 GetGraphicsTextureQualityForMenu() const;
+	int32 GetGraphicsShadowQualityForMenu() const;
+	int32 GetGraphicsEffectsQualityForMenu() const;
+	int32 GetGraphicsAdaptiveStepForMenu() const;
+	bool IsGraphicsResolutionSelectedForMenu(int32 Width, int32 Height, bool bFullscreen) const;
 	bool ToggleReadyForMenu(FString& OutMessage);
 	bool SetLocalDisplayNameForMenu(const FString& DisplayName, FString& OutMessage);
 	FString GetLocalDisplayNameForMenu() const;
@@ -312,6 +367,8 @@ public:
 	void SetUiVolumeForMenu(float Volume);
 	bool IsHudMapVisible() const;
 	int32 GetCrosshairStyle() const;
+	float GetHorrorCueFlashAlpha() const;
+	FLinearColor GetHorrorCueFlashColor() const;
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetReady(bool bReady);
@@ -398,7 +455,28 @@ public:
 	void ServerForceReview();
 
 	UFUNCTION(Server, Reliable)
+	void ServerTesterGrantTrainResources();
+
+	UFUNCTION(Server, Reliable)
+	void ServerTesterOpenTrainIntermission();
+
+	UFUNCTION(Server, Reliable)
+	void ServerTesterAdvanceTrainPhase();
+
+	UFUNCTION(Server, Reliable)
+	void ServerTesterLoadFinalStation();
+
+	UFUNCTION(Server, Reliable)
+	void ServerTesterTriggerFinalEscape();
+
+	UFUNCTION(Server, Reliable)
+	void ServerTesterForceFinalRecap();
+
+	UFUNCTION(Server, Reliable)
 	void ServerRevisionStatus();
+
+	UFUNCTION(Server, Reliable)
+	void ServerExportRevisionReport();
 
 	UFUNCTION(Server, Reliable)
 	void ServerToggleInfectionMode();
@@ -421,6 +499,12 @@ public:
 	UFUNCTION(Server, Reliable)
 	void ServerTriggerTargetedJumpscare(APlayerState* TargetPlayerState);
 
+	UFUNCTION(Server, Reliable)
+	void ServerJumpscareTest(const FString& VariantToken);
+
+	UFUNCTION(Server, Reliable)
+	void ServerAtmosphereTest(const FString& Command);
+
 	UFUNCTION(Client, Reliable)
 	void ClientShowStatusMessage(const FString& Message, float DurationSeconds);
 
@@ -431,12 +515,25 @@ public:
 	void ClientSnapViewToFlatFocus(const FVector& FocusLocation);
 
 	UFUNCTION(Client, Reliable)
+	void ClientPlayHorrorCue(const FBHClientHorrorCue& Cue);
+
+	UFUNCTION(Client, Reliable)
 	void ClientRecordRoundResult(EBHPlayerRole AccountRole, EBHPlayerLifeState LifeState, EBHRoundPhase ResultPhase);
 
 private:
 	void ApplyGameplayInputMode();
 	void EnsureAudioPreferencesLoaded();
 	void SaveAudioPreference(const TCHAR* Key, float Value) const;
+	void EnsureGraphicsPreferencesLoaded();
+	void SaveGraphicsPreference(const TCHAR* Key, int32 Value) const;
+	void SaveGraphicsPreference(const TCHAR* Key, bool bValue) const;
+	void ApplyStartupGraphicsSettings();
+	bool ApplyGraphicsPresetInternal(int32 Quality, bool bSaveAsManualChoice, FString& OutMessage);
+	void ApplySavedManualGraphicsTuning();
+	void ApplySavedGraphicsResolution();
+	void ApplyAdaptiveGraphicsState(bool bAnnounce);
+	void TickAdaptiveGraphics(float DeltaSeconds);
+	void SaveGraphicsPreferences() const;
 	void EnsureAmbientMusic();
 	void UpdateAmbientMusic();
 	bool ShouldPlayAmbientMusic() const;
@@ -454,13 +551,16 @@ private:
 	void ApplyVirtualBoxSafeModeIfNeeded();
 	void ScheduleAutomation();
 	void RunAutomationStartup();
+	void RunAutomationAtmosphereTests();
 	void TickAutomation();
+	void TickHorrorCueEffects(float DeltaSeconds);
 	void HandleRoundPhaseUiState();
 	void RunClassroomNetworkPreflight();
 	void RunClassroomFallbackCheck();
 	void RequestCleanQuit(FString Reason);
 
 	TSharedPtr<SWidget> MainMenuWidget;
+	TSharedPtr<SWidget> TravelLoadingScreenWidget;
 	TSharedPtr<SWindow> ClassroomBoardWindow;
 	UPROPERTY(Transient)
 	TObjectPtr<UAudioComponent> AmbientMusicComponent;
@@ -476,16 +576,48 @@ private:
 	float MusicVolume = 0.85f;
 	float UiVolume = 0.9f;
 	float LastMenuSelectionSoundTime = -100.0f;
+	FString GraphicsGpuBrand;
+	float GraphicsSystemMemoryGB = 0.0f;
+	float GraphicsDedicatedVideoMemoryGB = 0.0f;
+	float GraphicsAverageFrameTimeMs = 0.0f;
+	float GraphicsAdaptiveEvaluationSeconds = 0.0f;
+	float GraphicsLastAdaptiveMessageTime = -1000.0f;
+	int32 GraphicsRecommendedPreset = 1;
+	int32 GraphicsRecommendedRenderScale = 82;
+	int32 GraphicsRecommendedFpsGoal = 60;
+	int32 GraphicsPresetQuality = 1;
+	int32 GraphicsRenderScalePercent = 82;
+	int32 GraphicsAdaptiveFpsGoal = 60;
+	int32 GraphicsFrameRateLimit = 60;
+	int32 GraphicsTextureQuality = 1;
+	int32 GraphicsShadowQuality = 1;
+	int32 GraphicsEffectsQuality = 1;
+	int32 GraphicsResolutionWidth = 0;
+	int32 GraphicsResolutionHeight = 0;
+	int32 GraphicsAdaptiveStep = 0;
+	int32 GraphicsUnderTargetSamples = 0;
+	int32 GraphicsOverTargetSamples = 0;
+	int32 GraphicsPhysicalCores = 0;
+	int32 GraphicsLogicalCores = 0;
 	bool bHudMapVisible = false;
 	int32 CrosshairStyle = 0;
 	bool bAmbientMusicStarted = false;
 	bool bAudioPreferencesLoaded = false;
+	bool bGraphicsPreferencesLoaded = false;
+	bool bAutoHardwareGraphicsEnabled = true;
+	bool bAdaptiveGraphicsEnabled = true;
+	bool bGraphicsAppliedAtStartup = false;
+	bool bGraphicsLikelyIntegratedGpu = false;
+	bool bGraphicsLikelySoftwareGpu = false;
+	bool bGraphicsFullscreen = false;
+	bool bGraphicsResolutionOverrideEnabled = false;
 	bool bVirtualBoxSafeApplied = false;
 	bool bAutomationStartupRan = false;
 	bool bAutomationJoinAttempted = false;
 	bool bAutomationJoinedLogged = false;
 	bool bAutomationReadyLogged = false;
 	bool bAutomationRoundStartedLogged = false;
+	bool bAutomationAtmosphereTestsRan = false;
 	bool bClassroomPreflightReported = false;
 	bool bClassroomFallbackStarted = false;
 	bool bRoundPhaseObserved = false;
@@ -493,6 +625,14 @@ private:
 	bool bCleanQuitRequested = false;
 	EBHRoundPhase LastObservedRoundPhase = EBHRoundPhase::Lobby;
 	float AutomationJoinAttemptTime = -1.0f;
+	float HorrorCueJitterEndTime = -1.0f;
+	float HorrorCueNextJitterTime = -1.0f;
+	float HorrorCueJitterIntensity = 0.0f;
+	float HorrorCueJitterFrequency = 34.0f;
+	float HorrorCueFlashStartTime = -1.0f;
+	float HorrorCueFlashEndTime = -1.0f;
+	float HorrorCueFlashIntensity = 0.0f;
+	FLinearColor HorrorCueFlashColor = FLinearColor(1.0f, 0.04f, 0.02f, 1.0f);
 	FTimerHandle AutomationStartupTimerHandle;
 	FTimerHandle AutomationQuitTimerHandle;
 	FTimerHandle ClassroomPreflightTimerHandle;

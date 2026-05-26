@@ -64,8 +64,7 @@ bool ABHLocker::CanInteract_Implementation(ABHCharacter* Character) const
 
 	if (BHPS->IsAliveHunter())
 	{
-		const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
-		return BHGS && BHGS->RoundPhase == EBHRoundPhase::Hunt && Occupant != nullptr;
+		return false;
 	}
 
 	return BHPS->IsAliveSurvivor() && Occupant == nullptr;
@@ -100,14 +99,8 @@ void ABHLocker::BeginInteract_Implementation(ABHCharacter* Character)
 		return;
 	}
 
-	if (BHPS->IsAliveHunter() && BHGS && BHGS->RoundPhase == EBHRoundPhase::Hunt && Occupant)
+	if (BHPS->IsAliveHunter())
 	{
-		if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
-		{
-			BHGM->NotifySurvivorCaptured(Occupant);
-		}
-		Occupant = nullptr;
-		ApplyLockerVisuals();
 		return;
 	}
 
@@ -134,13 +127,7 @@ FText ABHLocker::GetInteractionLabel_Implementation(ABHCharacter* Character) con
 
 	if (BHPS && BHPS->IsAliveHunter())
 	{
-		const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
-		if (!BHGS || BHGS->RoundPhase != EBHRoundPhase::Hunt)
-		{
-			return FText::FromString(TEXT("Search During Hunt"));
-		}
-
-		return Occupant ? FText::FromString(TEXT("Search Locker")) : FText::FromString(TEXT("Empty Locker"));
+		return Occupant ? FText::FromString(TEXT("Hidden From Teacher")) : FText::FromString(TEXT("Hiding Spot"));
 	}
 
 	if (!BHPS || BHPS->PlayerRole == EBHPlayerRole::Unassigned)

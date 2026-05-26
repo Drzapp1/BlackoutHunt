@@ -1,10 +1,13 @@
 #include "BHGameMode.h"
+#include "BHAtmosphereDirector.h"
 #include "BHAmbientEmitter.h"
 #include "BHBatteryPickup.h"
+#include "BHEscapeStationManager.h"
 #include "BHBlockActor.h"
 #include "BHBotController.h"
 #include "BHBotPolicySubsystem.h"
 #include "BHBreaker.h"
+#include "BHCCTVZone.h"
 #include "BHCharacter.h"
 #include "BHCrawlSpaceVolume.h"
 #include "BHDoor.h"
@@ -18,13 +21,23 @@
 #include "BHLocker.h"
 #include "BHObjectiveStation.h"
 #include "BHPanicAlarm.h"
+#include "BHPowerupLibrary.h"
 #include "BHPowerSwitch.h"
 #include "BHPlayerController.h"
 #include "BHPlayerState.h"
+#include "BHPowerupShopTerminal.h"
 #include "BHRevisionQuestionBank.h"
+#include "BHSecurityCamera.h"
+#include "BHSecurityMonitor.h"
 #include "BHSecurityShutter.h"
 #include "BHSecurityTerminal.h"
 #include "BHSlidingGate.h"
+#include "BHStudentScareSwitch.h"
+#include "BHTrainBonusQuestionTerminal.h"
+#include "BHTrainDisplayActor.h"
+#include "BHTrainDoor.h"
+#include "BHTrainIntermissionManager.h"
+#include "BHTrainTunnelMotionActor.h"
 #include "Components/BoxComponent.h"
 #include "Components/BrushComponent.h"
 #include "Components/DirectionalLightComponent.h"
@@ -46,7 +59,14 @@
 #include "NavigationPath.h"
 #include "NavigationSystem.h"
 #include "Kismet/GameplayStatics.h"
+#include "HAL/FileManager.h"
+#include "Misc/DateTime.h"
+#include "Misc/FileHelper.h"
+#include "Misc/PackageName.h"
+#include "Misc/Paths.h"
 #include "TimerManager.h"
+
+#include <initializer_list>
 
 namespace
 {
@@ -71,12 +91,22 @@ int32 CountActiveRevisionStudents(const AGameStateBase* GameState, bool bHumansO
 	for (APlayerState* RawPS : GameState->PlayerArray)
 	{
 		const ABHPlayerState* BHPS = Cast<ABHPlayerState>(RawPS);
-		if (BHPS && BHPS->IsAliveSurvivor() && (!bHumansOnly || !BHPS->IsABot()))
+		const bool bRevisionParticipant = BHPS
+			&& BHPS->LifeState == EBHPlayerLifeState::Alive
+			&& ABHGameMode::IsRevisionParticipantRole(BHPS->PlayerRole);
+		if (bRevisionParticipant && (!bHumansOnly || !BHPS->IsABot()))
 		{
 			++Count;
 		}
 	}
 	return Count;
+}
+
+bool IsRevisionParticipantState(const ABHPlayerState* BHPS)
+{
+	return BHPS
+		&& BHPS->LifeState == EBHPlayerLifeState::Alive
+		&& ABHGameMode::IsRevisionParticipantRole(BHPS->PlayerRole);
 }
 
 FLinearColor AvatarColorForIndex(int32 Index)
@@ -93,6 +123,96 @@ FLinearColor AvatarColorForIndex(int32 Index)
 	};
 
 	return Palette[FMath::Abs(Index) % UE_ARRAY_COUNT(Palette)];
+}
+
+bool BHSoftObjectPathExists(const FSoftObjectPath& ObjectPath)
+{
+	if (ObjectPath.IsNull())
+	{
+		return false;
+	}
+
+	const FString PackageName = ObjectPath.GetLongPackageName();
+	return !PackageName.IsEmpty() && FPackageName::DoesPackageExist(PackageName);
+}
+
+bool BHJumpscareVariantHasExistingAudio(const FBHJumpscareVariant& Variant)
+{
+	return BHSoftObjectPathExists(Variant.LaunchSound.ToSoftObjectPath());
+}
+
+bool BHJumpscareVariantHasExistingVisual(const FBHJumpscareVariant& Variant)
+{
+	return BHSoftObjectPathExists(Variant.VisualActorClass.ToSoftObjectPath())
+		|| BHSoftObjectPathExists(Variant.SkeletalMesh.ToSoftObjectPath())
+		|| BHSoftObjectPathExists(Variant.StaticMesh.ToSoftObjectPath());
+}
+
+bool BHIsFabJumpscarePackVariant(const FBHJumpscareVariant& Variant)
+{
+	const FString VariantId = Variant.VariantId.ToString();
+	return VariantId.Equals(TEXT("FabMonster01"), ESearchCase::IgnoreCase)
+		|| VariantId.Equals(TEXT("FabMonster02"), ESearchCase::IgnoreCase)
+		|| VariantId.Equals(TEXT("FabMonster03"), ESearchCase::IgnoreCase);
+}
+
+ABHJumpscareMonster* BHSpawnScriptedJumpscareStage(UWorld* World, AActor* Owner, const FBHJumpscareVariant& Variant, const TArray<FVector>& PathPoints, float Speed, float Lifetime, AActor* LookAtTarget = nullptr, bool bFaceLookAtTarget = false, bool bPlayChargeEffects = true)
+{
+	if (!World || PathPoints.Num() < 2)
+	{
+		return nullptr;
+	}
+
+	const FVector InitialDirection = (PathPoints[1] - PathPoints[0]).GetSafeNormal2D();
+	const FRotator SpawnRotation = InitialDirection.IsNearlyZero() ? FRotator::ZeroRotator : InitialDirection.Rotation();
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.Owner = Owner;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	ABHJumpscareMonster* Monster = World->SpawnActor<ABHJumpscareMonster>(PathPoints[0], SpawnRotation, SpawnParams);
+	if (Monster)
+	{
+		Monster->ConfigureScriptedPath(PathPoints, Speed, Lifetime, LookAtTarget, bFaceLookAtTarget, bPlayChargeEffects);
+		Monster->ConfigureVariant(Variant);
+	}
+	return Monster;
+}
+
+FVector BHResolveSpawnLocation(const UWorld* World, const FVector& DesiredLocation, int32 PlayerIndex)
+{
+	if (!World)
+	{
+		return DesiredLocation;
+	}
+
+	static const FVector2D Rings[] = {
+		FVector2D(0.0f, 0.0f),
+		FVector2D(260.0f, 0.0f),
+		FVector2D(-260.0f, 0.0f),
+		FVector2D(0.0f, 260.0f),
+		FVector2D(0.0f, -260.0f),
+		FVector2D(260.0f, 260.0f),
+		FVector2D(-260.0f, 260.0f),
+		FVector2D(260.0f, -260.0f),
+		FVector2D(-260.0f, -260.0f),
+		FVector2D(520.0f, 0.0f),
+		FVector2D(-520.0f, 0.0f),
+		FVector2D(0.0f, 520.0f),
+		FVector2D(0.0f, -520.0f)
+	};
+
+	const int32 StartOffset = FMath::Abs(PlayerIndex) % UE_ARRAY_COUNT(Rings);
+	const FCollisionShape Capsule = FCollisionShape::MakeCapsule(42.0f, 98.0f);
+	for (int32 Attempt = 0; Attempt < UE_ARRAY_COUNT(Rings); ++Attempt)
+	{
+		const FVector2D Offset2D = Rings[(StartOffset + Attempt) % UE_ARRAY_COUNT(Rings)];
+		const FVector Candidate = DesiredLocation + FVector(Offset2D.X, Offset2D.Y, 0.0f);
+		if (!World->OverlapBlockingTestByChannel(Candidate, FQuat::Identity, ECC_Pawn, Capsule))
+		{
+			return Candidate;
+		}
+	}
+
+	return DesiredLocation + FVector(static_cast<float>((PlayerIndex % 5) - 2) * 180.0f, static_cast<float>((PlayerIndex / 5) % 5) * 180.0f, 0.0f);
 }
 
 FString CompassFromDelta(const FVector& Delta)
@@ -135,6 +255,32 @@ bool IsTrueOption(const FString& Value)
 		|| Value.Equals(TEXT("yes"), ESearchCase::IgnoreCase)
 		|| Value.Equals(TEXT("bot"), ESearchCase::IgnoreCase)
 		|| Value.Equals(TEXT("bots"), ESearchCase::IgnoreCase);
+}
+
+FString RoundPhaseToUrlValue(EBHRoundPhase Phase)
+{
+	switch (Phase)
+	{
+	case EBHRoundPhase::SurvivorsWin:
+		return TEXT("SurvivorsWin");
+	case EBHRoundPhase::HunterWin:
+		return TEXT("HunterWin");
+	default:
+		return TEXT("None");
+	}
+}
+
+EBHRoundPhase RoundPhaseFromUrlValue(const FString& Value)
+{
+	if (Value.Equals(TEXT("SurvivorsWin"), ESearchCase::IgnoreCase))
+	{
+		return EBHRoundPhase::SurvivorsWin;
+	}
+	if (Value.Equals(TEXT("HunterWin"), ESearchCase::IgnoreCase))
+	{
+		return EBHRoundPhase::HunterWin;
+	}
+	return EBHRoundPhase::Lobby;
 }
 
 EBHFogPreset ParseFogPreset(const FString& Value, EBHFogPreset DefaultPreset)
@@ -234,6 +380,122 @@ FString RevisionDifficultyMixToString(EBHRevisionDifficultyMix Mix)
 	default:
 		return TEXT("Adaptive");
 	}
+}
+
+int32 ReportTopicIndex(EBHPhysicsTopic Topic)
+{
+	return FMath::Clamp(static_cast<int32>(Topic), 0, 3);
+}
+
+float RevisionTopicMastery(const FBHPlayerRevisionStats& Stats, EBHPhysicsTopic Topic)
+{
+	switch (Topic)
+	{
+	case EBHPhysicsTopic::ForcesAndMotion:
+		return Stats.ForcesMastery;
+	case EBHPhysicsTopic::Electricity:
+		return Stats.ElectricityMastery;
+	case EBHPhysicsTopic::Waves:
+		return Stats.WavesMastery;
+	case EBHPhysicsTopic::Energy:
+		return Stats.EnergyMastery;
+	default:
+		return 0.0f;
+	}
+}
+
+EBHPhysicsTopic WeakestTopicForStats(const FBHPlayerRevisionStats& Stats, int32 TopicMask)
+{
+	EBHPhysicsTopic WeakTopic = EBHPhysicsTopic::ForcesAndMotion;
+	float WeakScore = TNumericLimits<float>::Max();
+	for (int32 TopicIndex = 0; TopicIndex < 4; ++TopicIndex)
+	{
+		const EBHPhysicsTopic Topic = static_cast<EBHPhysicsTopic>(TopicIndex);
+		if ((TopicMask & FBHRevisionQuestionBank::TopicMaskBit(Topic)) == 0)
+		{
+			continue;
+		}
+
+		const float Score = RevisionTopicMastery(Stats, Topic);
+		if (Score < WeakScore)
+		{
+			WeakScore = Score;
+			WeakTopic = Topic;
+		}
+	}
+	return WeakTopic;
+}
+
+EBHPhysicsTopic StrongestTopicForStats(const FBHPlayerRevisionStats& Stats, int32 TopicMask)
+{
+	EBHPhysicsTopic StrongTopic = EBHPhysicsTopic::ForcesAndMotion;
+	float StrongScore = -1.0f;
+	for (int32 TopicIndex = 0; TopicIndex < 4; ++TopicIndex)
+	{
+		const EBHPhysicsTopic Topic = static_cast<EBHPhysicsTopic>(TopicIndex);
+		if ((TopicMask & FBHRevisionQuestionBank::TopicMaskBit(Topic)) == 0)
+		{
+			continue;
+		}
+
+		const float Score = RevisionTopicMastery(Stats, Topic);
+		if (Score > StrongScore)
+		{
+			StrongScore = Score;
+			StrongTopic = Topic;
+		}
+	}
+	return StrongTopic;
+}
+
+EBHQuestionDifficulty AdaptiveDifficultyForStats(const FBHPlayerRevisionStats& Stats, bool bLastAnswerCorrect)
+{
+	if (Stats.Attempts <= 0)
+	{
+		return EBHQuestionDifficulty::Easy;
+	}
+	if (!bLastAnswerCorrect && Stats.MasteryPercent < 55.0f)
+	{
+		return EBHQuestionDifficulty::Easy;
+	}
+	if (Stats.MasteryPercent >= 78.0f && bLastAnswerCorrect)
+	{
+		return EBHQuestionDifficulty::Hard;
+	}
+	if (Stats.MasteryPercent >= 45.0f)
+	{
+		return EBHQuestionDifficulty::Medium;
+	}
+	return EBHQuestionDifficulty::Easy;
+}
+
+FString CsvEscape(const FString& Input)
+{
+	FString Value = Input;
+	Value.ReplaceInline(TEXT("\r"), TEXT(" "));
+	Value.ReplaceInline(TEXT("\n"), TEXT(" "));
+	Value.ReplaceInline(TEXT("\""), TEXT("\"\""));
+	return FString::Printf(TEXT("\"%s\""), *Value);
+}
+
+FString SanitizeReportToken(FString Token)
+{
+	Token.TrimStartAndEndInline();
+	if (Token.IsEmpty())
+	{
+		return TEXT("Classroom");
+	}
+
+	for (int32 Index = 0; Index < Token.Len(); ++Index)
+	{
+		TCHAR& Character = Token[Index];
+		const bool bSafe = FChar::IsAlnum(Character) || Character == TCHAR('_') || Character == TCHAR('-');
+		if (!bSafe)
+		{
+			Character = TCHAR('_');
+		}
+	}
+	return Token;
 }
 
 int32 ParsePhysicsTopicMask(const FString& Value, int32 DefaultMask)
@@ -340,6 +602,7 @@ ABHGameMode::ABHGameMode()
 	RevisionRoundDuration = FMath::Max(60, Settings->RevisionRoundSeconds);
 	RevisionScareIntensity = FMath::Clamp(Settings->RevisionScareIntensity, 0, 3);
 	RevisionReviewTimeRemaining = 0;
+	bRevisionReportExported = false;
 	bBotMode = false;
 	TargetBotCount = 0;
 	BotDifficulty = Settings->DefaultBotDifficulty;
@@ -354,23 +617,42 @@ ABHGameMode::ABHGameMode()
 	LastBotNoiseLocation = FVector::ZeroVector;
 	LastBotNoiseTime = -9999.0f;
 	bRuntimeNavigationReady = false;
+	bTrainIntermissionLevel = false;
+	RuntimeStageIndex = 0;
+	PendingIntermissionResult = EBHRoundPhase::Lobby;
 	RuntimeNavBounds = nullptr;
+	TrainIntermissionManager = nullptr;
+	AtmosphereDirector = nullptr;
 }
 
 void ABHGameMode::BeginPlay()
 {
 	Super::BeginPlay();
 
+	if (HasAuthority())
+	{
+		AtmosphereDirector = NewObject<UBHAtmosphereDirector>(this, TEXT("AtmosphereDirector"));
+		if (AtmosphereDirector)
+		{
+			AtmosphereDirector->Initialize(this);
+		}
+	}
+
 	BuildRuntimeFacility();
+
+	if (HasAuthority() && GetWorld())
+	{
+		GetWorldTimerManager().SetTimer(VoidRecoveryTimerHandle, this, &ABHGameMode::RecoverPlayersFromVoid, 0.5f, true, 0.5f);
+	}
 
 	if (ABHGameState* BHGS = GetGameState<ABHGameState>())
 	{
-		BHGS->SetRoundPhase(EBHRoundPhase::Lobby);
+		BHGS->SetRoundPhase(bTrainIntermissionLevel ? EBHRoundPhase::Intermission : EBHRoundPhase::Lobby);
 		BHGS->SetRemainingTime(0);
 		BHGS->SetBreakerCounts(0, RequiredBreakers);
 		BHGS->SetSideObjectiveCounts(0, 0);
 		BHGS->SetExitUnlocked(false);
-		BHGS->SetDirectorState(RoundSeed, TEXT("Reach the lobby and ready up."), NextRuntimeLevelName);
+		BHGS->SetDirectorState(RoundSeed, bTrainIntermissionLevel ? TEXT("Board the subway, review the class recap, and prepare for the next stop.") : TEXT("Reach the lobby and ready up."), NextRuntimeLevelName);
 		BHGS->SetRoundOptions(TargetHunterCount, ObjectiveIntensity, bInfectionMode, bPartyPace, EBHRoundModifier::None);
 		BHGS->SetFogOptions(NextFogPreset, bFogPresetOverride);
 		BHGS->SetActiveFogPreset(RuntimeFogPreset);
@@ -473,10 +755,11 @@ void ABHGameMode::PostLogin(APlayerController* NewPlayer)
 		BHPS->SetAvatarColor(AvatarColorForIndex(PlayerIndex));
 		BHPS->SetMapVote(TEXT(""));
 		BHPS->ClearFogPresetVote();
-		if (bRevisionMode)
+		if (bRevisionMode && !bTrainIntermissionLevel)
 		{
 			BHPS->ResetRevisionStats();
 		}
+		RestorePlayersAfterTravel(NewPlayer);
 	}
 
 	if (bBotMode)
@@ -492,7 +775,7 @@ void ABHGameMode::PostLogin(APlayerController* NewPlayer)
 
 	RestartPlayer(NewPlayer);
 
-	if (bTestMode)
+	if (bTestMode && !bTrainIntermissionLevel)
 	{
 		StartTestMode(Cast<ABHPlayerController>(NewPlayer));
 	}
@@ -556,6 +839,10 @@ void ABHGameMode::SetPlayerReady(ABHPlayerController* Controller, bool bReady)
 			BHPS->SetLifeState(EBHPlayerLifeState::Alive);
 			BHPS->SetHiddenInLocker(false);
 		}
+		if (bTrainIntermissionLevel)
+		{
+			return;
+		}
 		if (!BHGS || BHGS->RoundPhase != EBHRoundPhase::Hunt)
 		{
 			StartTestMode(Controller);
@@ -604,12 +891,13 @@ void ABHGameMode::NotifyBreakerRepaired(const FVector& BreakerLocation)
 	const int32 NewCompleted = FMath::Min(BHGS->BreakersCompleted + 1, ActiveRequiredBreakers);
 	BHGS->SetBreakerCounts(NewCompleted, ActiveRequiredBreakers);
 	ReportBotStimulus(EBHBotStimulusType::Objective, BreakerLocation, nullptr, nullptr, TEXT("breaker repaired"), 1.2f);
+	ReportAtmosphereStimulus(EBHAtmosphereStimulusType::Power, BreakerLocation, nullptr, nullptr, 1.15f, TEXT("breaker repaired"));
 	BroadcastStatus(FString::Printf(TEXT("Breaker repaired: %d/%d."), NewCompleted, ActiveRequiredBreakers), 3.0f);
 	if (!FlickerLights.IsEmpty() && FMath::FRand() < 0.35f)
 	{
 		if (ABHFlickerLight* Light = FlickerLights[FMath::RandRange(0, FlickerLights.Num() - 1)])
 		{
-			Light->SetPowered(false);
+			Light->TriggerFlickerBurst(2.8f, 1.75f, FLinearColor(0.92f, 0.68f, 0.32f, 1.0f), 14.0f);
 		}
 	}
 	ApplyPresenceSpike(BreakerLocation, 54.0f + NewCompleted * 4.0f, TEXT("The Shape noticed the power coming back."));
@@ -628,6 +916,7 @@ void ABHGameMode::NotifyObjectiveStationCompleted(ABHObjectiveStation* Station)
 	const int32 NewCompleted = FMath::Min(BHGS->SideObjectivesCompleted + 1, RequiredSideObjectives);
 	BHGS->SetSideObjectiveCounts(NewCompleted, RequiredSideObjectives);
 	ReportBotStimulus(EBHBotStimulusType::Objective, Station->GetActorLocation(), Station, Station, TEXT("completed station"), 1.3f);
+	ReportAtmosphereStimulus(EBHAtmosphereStimulusType::Objective, Station->GetActorLocation(), Station, Station, 1.25f, TEXT("completed station"));
 	BroadcastStatus(FString::Printf(TEXT("Side objective complete: %d/%d."), NewCompleted, RequiredSideObjectives), 3.5f);
 	NotifyLoudNoise(Station->GetActorLocation(), TEXT("completed station"));
 	ApplyPresenceSpike(Station->GetActorLocation(), 58.0f + NewCompleted * 5.0f, TEXT("The next task made too much noise."));
@@ -707,7 +996,18 @@ void ABHGameMode::NotifySurvivorCaptured(ABHCharacter* Survivor)
 		SurvivorPS->SetLifeState(EBHPlayerLifeState::Alive);
 		SurvivorPS->SetHiddenInLocker(false);
 		SurvivorPS->SetFakeHunterEligible(false);
-		BroadcastStatus(FString::Printf(TEXT("%s returned as a hall monitor. They can trap and mislead, but cannot capture."), *SurvivorPS->GetPlayerName()), 5.0f);
+		if (bRevisionMode)
+		{
+			BroadcastStatus(FString::Printf(TEXT("%s returned as a hall monitor. They still count toward 70/50; tools unlock after %d answer-team contribution(s)."), *SurvivorPS->GetPlayerName(), GetRevisionMinimumContributionTarget()), 5.0f);
+			if (ABHPlayerController* SurvivorPC = Cast<ABHPlayerController>(SurvivorController))
+			{
+				SurvivorPC->ClientShowStatusMessage(TEXT("Hall monitor tools are locked. You still count toward 70/50. Aim at a station and answer with 1-4."), 5.0f);
+			}
+		}
+		else
+		{
+			BroadcastStatus(FString::Printf(TEXT("%s returned as a hall monitor. They can trap and mislead, but cannot capture."), *SurvivorPS->GetPlayerName()), 5.0f);
+		}
 		RestartPlayer(SurvivorController);
 		return;
 	}
@@ -725,7 +1025,10 @@ void ABHGameMode::NotifySurvivorEscaped(ABHCharacter* Survivor)
 		return;
 	}
 
-	if (bPracticeMode || bTestMode)
+	const ABHGameState* CurrentBHGS = GetGameState<ABHGameState>();
+	const bool bFinalEscapeInProgress = CurrentBHGS
+		&& (CurrentBHGS->RoundPhase == EBHRoundPhase::FinalEscape || CurrentBHGS->FinalEscapeState == EBHFinalEscapeState::EscapeActive);
+	if ((bPracticeMode || bTestMode) && !bFinalEscapeInProgress)
 	{
 		BroadcastStatus(bTestMode ? TEXT("Test escape reached. The round stays open.") : TEXT("Practice escape reached. The lab stays open."), 3.5f);
 		if (ABHGameState* BHGS = GetGameState<ABHGameState>())
@@ -738,6 +1041,19 @@ void ABHGameMode::NotifySurvivorEscaped(ABHCharacter* Survivor)
 
 	ReportBotStimulus(EBHBotStimulusType::Escape, Survivor->GetActorLocation(), Survivor, Survivor, TEXT("survivor escaped"), 1.6f);
 	Survivor->MarkEscaped();
+	if (ABHGameState* BHGS = GetGameState<ABHGameState>())
+	{
+		if (BHGS->RoundPhase == EBHRoundPhase::FinalEscape || BHGS->FinalEscapeState == EBHFinalEscapeState::EscapeActive)
+		{
+			BroadcastStatus(TEXT("A student boarded the evacuation train."), 3.0f);
+			if (CountAliveSurvivors() <= 0)
+			{
+				BHGS->SetFinalEscapeState(EBHFinalEscapeState::Departed, 0.0f, 0.0f, 0.0f);
+				EndRound(EBHRoundPhase::SurvivorsWin);
+			}
+			return;
+		}
+	}
 	EndRound(EBHRoundPhase::SurvivorsWin);
 }
 
@@ -777,6 +1093,174 @@ void ABHGameMode::OpenSecurityCircuit(int32 CircuitId)
 			It->SetOpen(true);
 		}
 	}
+	SetSecurityCircuitCCTVActive(CircuitId, true);
+}
+
+bool ABHGameMode::ToggleSecurityCircuit(int32 CircuitId)
+{
+	if (CircuitId <= 0)
+	{
+		return false;
+	}
+
+	bool bFoundClosedShutter = false;
+	bool bFoundCircuitShutter = false;
+	for (TActorIterator<ABHSecurityShutter> It(GetWorld()); It; ++It)
+	{
+		if (It->GetCircuitId() != CircuitId)
+		{
+			continue;
+		}
+
+		bFoundCircuitShutter = true;
+		if (!It->IsOpen())
+		{
+			bFoundClosedShutter = true;
+			break;
+		}
+	}
+
+	const bool bNewOpen = bFoundClosedShutter;
+	bool bAllApplied = bFoundCircuitShutter;
+	bool bAnyOpenAfterToggle = false;
+	for (TActorIterator<ABHSecurityShutter> It(GetWorld()); It; ++It)
+	{
+		if (It->GetCircuitId() == CircuitId)
+		{
+			if (!It->TrySetOpen(bNewOpen))
+			{
+				bAllApplied = false;
+			}
+			bAnyOpenAfterToggle = bAnyOpenAfterToggle || It->IsOpen();
+		}
+	}
+	SetSecurityCircuitCCTVActive(CircuitId, bAnyOpenAfterToggle);
+	return bAllApplied;
+}
+
+void ABHGameMode::SetSecurityCircuitCCTVActive(int32 CircuitId, bool bCircuitOpen)
+{
+	if (CircuitId <= 0 || !GetWorld())
+	{
+		return;
+	}
+
+	for (TActorIterator<ABHSecurityCamera> It(GetWorld()); It; ++It)
+	{
+		ABHSecurityCamera* Camera = *It;
+		if (Camera && Camera->GetCircuitId() == CircuitId)
+		{
+			Camera->SetCameraDisabled(bCircuitOpen);
+		}
+	}
+
+	for (TActorIterator<ABHCCTVZone> It(GetWorld()); It; ++It)
+	{
+		ABHCCTVZone* Zone = *It;
+		if (Zone && Zone->GetCircuitId() == CircuitId)
+		{
+			Zone->SetZoneEnabled(!bCircuitOpen);
+		}
+	}
+}
+
+void ABHGameMode::ApplyRoundCCTVVisibility()
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+
+	TArray<ABHCCTVZone*> Zones;
+	for (TActorIterator<ABHCCTVZone> It(GetWorld()); It; ++It)
+	{
+		if (ABHCCTVZone* Zone = *It)
+		{
+			Zones.Add(Zone);
+		}
+	}
+
+	if (Zones.IsEmpty())
+	{
+		return;
+	}
+
+	Zones.Sort([](const ABHCCTVZone& A, const ABHCCTVZone& B)
+	{
+		const FVector ALocation = A.GetActorLocation();
+		const FVector BLocation = B.GetActorLocation();
+		if (!FMath::IsNearlyEqual(ALocation.X, BLocation.X))
+		{
+			return ALocation.X < BLocation.X;
+		}
+		if (!FMath::IsNearlyEqual(ALocation.Y, BLocation.Y))
+		{
+			return ALocation.Y < BLocation.Y;
+		}
+		return ALocation.Z < BLocation.Z;
+	});
+
+	int32 Salt = 10017;
+	if (RuntimeLevelName.Equals(TEXT("Substation"), ESearchCase::IgnoreCase))
+	{
+		Salt = 20017;
+	}
+	else if (RuntimeLevelName.Equals(TEXT("Foggrounds"), ESearchCase::IgnoreCase))
+	{
+		Salt = 30017;
+	}
+
+	const int32 HiddenIndex = SelectHiddenCCTVIndex(Zones.Num(), Salt);
+	for (int32 ZoneIndex = 0; ZoneIndex < Zones.Num(); ++ZoneIndex)
+	{
+		if (ABHCCTVZone* Zone = Zones[ZoneIndex])
+		{
+			Zone->SetZoneVisible(ZoneIndex != HiddenIndex);
+		}
+	}
+}
+
+int32 ABHGameMode::SelectHiddenCCTVIndex(int32 CandidateCount, int32 Salt) const
+{
+	if (CandidateCount <= 0)
+	{
+		return INDEX_NONE;
+	}
+
+	FRandomStream Stream(RoundSeed + Salt);
+	return Stream.RandRange(0, CandidateCount - 1);
+}
+
+ABHCCTVZone* ABHGameMode::SpawnCCTVZoneForCamera(ABHSecurityCamera* Camera, int32 CircuitId, const FString& AlertLabel, bool bVisible)
+{
+	if (!Camera || !GetWorld())
+	{
+		return nullptr;
+	}
+
+	FVector Forward = Camera->GetActorForwardVector();
+	Forward.Z = 0.0f;
+	Forward = Forward.GetSafeNormal();
+	if (Forward.IsNearlyZero())
+	{
+		Forward = FVector::ForwardVector;
+	}
+
+	const float DetectionRange = Camera->GetDetectionRange();
+	const float ConeRadians = FMath::DegreesToRadians(Camera->GetDetectionConeDegrees() * 0.5f);
+	const float HalfLength = FMath::Clamp(DetectionRange * 0.30f, 900.0f, 1750.0f);
+	const float HalfWidth = FMath::Clamp(DetectionRange * FMath::Tan(ConeRadians) * 0.28f, 360.0f, 950.0f);
+	const float CenterDistance = FMath::Clamp(DetectionRange * 0.42f, 1100.0f, 2450.0f);
+	const FVector ZoneCenter = Camera->GetActorLocation() + Forward * CenterDistance;
+	const FVector ZoneLocation(ZoneCenter.X, ZoneCenter.Y, 120.0f);
+	const FRotator ZoneRotation(0.0f, Camera->GetActorRotation().Yaw, 0.0f);
+
+	ABHCCTVZone* Zone = GetWorld()->SpawnActor<ABHCCTVZone>(ZoneLocation, ZoneRotation);
+	if (Zone)
+	{
+		Zone->ConfigureZone(Camera, CircuitId, AlertLabel, FVector(HalfLength, HalfWidth, 120.0f), bVisible);
+	}
+	return Zone;
 }
 
 void ABHGameMode::NotifyLoudNoise(const FVector& Location, const FString& Reason)
@@ -784,6 +1268,7 @@ void ABHGameMode::NotifyLoudNoise(const FVector& Location, const FString& Reason
 	LastBotNoiseLocation = Location;
 	LastBotNoiseTime = GetWorld() ? GetWorld()->GetTimeSeconds() : LastBotNoiseTime;
 	ReportBotStimulus(EBHBotStimulusType::Noise, Location, nullptr, nullptr, Reason, Reason.Contains(TEXT("decoy"), ESearchCase::IgnoreCase) ? 0.7f : 1.0f);
+	ReportAtmosphereStimulus(Reason.Contains(TEXT("footstep"), ESearchCase::IgnoreCase) ? EBHAtmosphereStimulusType::Footstep : EBHAtmosphereStimulusType::Noise, Location, nullptr, nullptr, Reason.Contains(TEXT("decoy"), ESearchCase::IgnoreCase) ? 0.7f : 1.0f, Reason);
 	SpawnAmbient(Location + FVector(0.0f, 0.0f, 80.0f), 150.0f, 0.18f, 0.08f, 3.2f, 3.5f);
 	const float Spike = Reason.Contains(TEXT("decoy"), ESearchCase::IgnoreCase) ? 42.0f : 50.0f;
 	ApplyPresenceSpike(Location, Spike, FString::Printf(TEXT("Something turned toward the %s."), *Reason));
@@ -814,6 +1299,805 @@ void ABHGameMode::NotifyLoudNoise(const FVector& Location, const FString& Reason
 			PC->ClientShowStatusMessage(FString::Printf(TEXT("Noise: %s %s, %.0fm away."), *Reason, *CompassFromDelta(Delta), DistanceMeters), 2.5f);
 		}
 	}
+}
+
+void ABHGameMode::NotifyCCTVDetection(ABHSecurityCamera* Camera, AActor* ZoneActor, ABHCharacter* Survivor, const FString& AlertLabel)
+{
+	if (!GetWorld() || !Survivor)
+	{
+		return;
+	}
+
+	const ABHGameState* BHGS = GetWorld()->GetGameState<ABHGameState>();
+	const ABHPlayerState* SurvivorPS = Survivor->GetPlayerState<ABHPlayerState>();
+	if (!BHGS || BHGS->RoundPhase != EBHRoundPhase::Hunt || !SurvivorPS || !SurvivorPS->IsAliveSurvivor())
+	{
+		return;
+	}
+
+	const FString Reason = AlertLabel.IsEmpty() ? TEXT("CCTV zone detection") : AlertLabel;
+	const FVector SurvivorLocation = Survivor->GetActorLocation();
+	AActor* SourceActor = Camera ? static_cast<AActor*>(Camera) : ZoneActor;
+	ReportBotStimulus(EBHBotStimulusType::Sight, SurvivorLocation, SourceActor, Survivor, Reason, 1.0f);
+	ReportAtmosphereStimulus(EBHAtmosphereStimulusType::CCTV, SourceActor ? SourceActor->GetActorLocation() : SurvivorLocation, SourceActor, Survivor, 0.95f, TEXT("CCTV zone detection"));
+
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get());
+		ABHPlayerState* BHPS = PC ? PC->GetPlayerState<ABHPlayerState>() : nullptr;
+		APawn* Pawn = PC ? PC->GetPawn() : nullptr;
+		if (!PC || !BHPS || !Pawn || !BHPS->IsAliveHunter())
+		{
+			continue;
+		}
+
+		const FVector Delta = SurvivorLocation - Pawn->GetActorLocation();
+		const float DistanceMeters = Delta.Size() / 100.0f;
+		PC->ClientShowStatusMessage(FString::Printf(TEXT("CCTV: movement %s, %.0fm away."), *CompassFromDelta(Delta), DistanceMeters), 3.0f);
+	}
+}
+
+void ABHGameMode::ReportAtmosphereStimulus(EBHAtmosphereStimulusType Type, const FVector& Location, AActor* SourceActor, AActor* TargetActor, float Strength, const FString& Reason)
+{
+	if (AtmosphereDirector)
+	{
+		AtmosphereDirector->ReportAtmosphereStimulus(Type, Location, SourceActor, TargetActor, Strength, Reason);
+	}
+}
+
+bool ABHGameMode::TriggerAtmosphereCue(const FBHScareEventSpec& Spec)
+{
+	return AtmosphereDirector ? AtmosphereDirector->TriggerAtmosphereCue(Spec) : false;
+}
+
+bool ABHGameMode::TriggerBlackoutPulse(const FVector& Location, float Radius, float DurationSeconds)
+{
+	return AtmosphereDirector ? AtmosphereDirector->TriggerBlackoutPulse(Location, Radius, DurationSeconds) : false;
+}
+
+bool ABHGameMode::TriggerManualScare(ABHCharacter* Target, EBHScareEventType ScareType)
+{
+	return AtmosphereDirector ? AtmosphereDirector->TriggerManualScare(Target, ScareType) : false;
+}
+
+int32 ABHGameMode::GetEffectiveScareIntensity() const
+{
+	return bRevisionMode ? FMath::Clamp(RevisionScareIntensity, 0, 3) : 3;
+}
+
+FBHJumpscareVariant ABHGameMode::ChooseJumpscareVariant(EBHScareEventType EventType) const
+{
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	const int32 EffectiveScareIntensity = GetEffectiveScareIntensity();
+	TArray<const FBHJumpscareVariant*> Candidates;
+	float TotalWeight = 0.0f;
+
+	if (Settings)
+	{
+		for (const FBHJumpscareVariant& Variant : Settings->JumpscareVariants)
+		{
+			if (Variant.VariantId.IsNone() || Variant.Weight <= 0.0f || Variant.MinimumScareIntensity > EffectiveScareIntensity)
+			{
+				continue;
+			}
+
+			const bool bHasExistingAudio = BHJumpscareVariantHasExistingAudio(Variant);
+			const bool bHasExistingVisual = BHJumpscareVariantHasExistingVisual(Variant);
+			const bool bUsefulForCue = EventType == EBHScareEventType::MonsterCharge
+				? bHasExistingVisual
+				: (bHasExistingAudio || bHasExistingVisual);
+			if (!bUsefulForCue)
+			{
+				continue;
+			}
+
+			Candidates.Add(&Variant);
+			TotalWeight += FMath::Max(0.01f, Variant.Weight);
+		}
+	}
+
+	if (Candidates.IsEmpty() || TotalWeight <= 0.0f)
+	{
+		FBHJumpscareVariant Fallback;
+		Fallback.VariantId = TEXT("SCP096");
+		Fallback.DisplayName = TEXT("SCP-096 Prototype");
+		Fallback.Weight = 1.0f;
+		Fallback.FocusHeight = 145.0f;
+		Fallback.LightColor = FLinearColor(1.0f, 0.02f, 0.0f, 1.0f);
+		Fallback.CameraShakeIntensity = 0.96f;
+		Fallback.FlashIntensity = 0.70f;
+		Fallback.CameraJitterDuration = 1.10f;
+		return Fallback;
+	}
+
+	float Pick = FMath::FRandRange(0.0f, TotalWeight);
+	for (const FBHJumpscareVariant* Candidate : Candidates)
+	{
+		const float CandidateWeight = FMath::Max(0.01f, Candidate ? Candidate->Weight : 0.0f);
+		if (Pick <= CandidateWeight)
+		{
+			return *Candidate;
+		}
+		Pick -= CandidateWeight;
+	}
+
+	return *Candidates.Last();
+}
+
+FString ABHGameMode::GetJumpscareVariantTestReport() const
+{
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	FString Report = TEXT("Jumpscare variants are available from Escape > Round > Test Commands.\n");
+	Report += TEXT("Use SUPER JUMPSCARE CHAIN for peek, cross-screen sprint, corner sprint, final impact close-up. Use SUPER1, SUPER2, SUPER3 to force a pack chain.\n");
+	Report += TEXT("Configured jumpscare variants:\n");
+
+	if (!Settings || Settings->JumpscareVariants.IsEmpty())
+	{
+		Report += TEXT("No configured variants. Runtime scares will use the SCP096 fallback proxy.");
+		return Report;
+	}
+
+	for (int32 Index = 0; Index < Settings->JumpscareVariants.Num(); ++Index)
+	{
+		const FBHJumpscareVariant& Variant = Settings->JumpscareVariants[Index];
+		const FString VariantId = Variant.VariantId.IsNone() ? TEXT("None") : Variant.VariantId.ToString();
+		const FString DisplayName = Variant.DisplayName.IsEmpty() ? VariantId : Variant.DisplayName;
+		const bool bHasPackVisual = !Variant.VisualActorClass.IsNull() || !Variant.SkeletalMesh.IsNull() || !Variant.StaticMesh.IsNull();
+		const bool bHasPackAudio = !Variant.LaunchSound.IsNull();
+		Report += FString::Printf(TEXT("%d. %s (%s) minIntensity=%d weight=%.2f visuals=%s audio=%s\n"),
+			Index + 1,
+			*DisplayName,
+			*VariantId,
+			Variant.MinimumScareIntensity,
+			Variant.Weight,
+			bHasPackVisual ? TEXT("yes") : TEXT("proxy"),
+			bHasPackAudio ? TEXT("yes") : TEXT("fallback"));
+	}
+
+	return Report;
+}
+
+bool ABHGameMode::ResolveJumpscareVariantToken(const FString& VariantToken, FBHJumpscareVariant& OutVariant, int32& OutVariantIndex, FString& OutError) const
+{
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	const FString Token = VariantToken.TrimStartAndEnd();
+	OutVariantIndex = INDEX_NONE;
+
+	if (!Settings || Settings->JumpscareVariants.IsEmpty())
+	{
+		OutError = TEXT("No jumpscare variants are configured.");
+		return false;
+	}
+
+	if (Token.IsEmpty())
+	{
+		OutError = TEXT("Missing jumpscare variant. Use Escape > Round > Test Commands.");
+		return false;
+	}
+
+	if (Token.IsNumeric())
+	{
+		const int32 OneBasedIndex = FCString::Atoi(*Token);
+		if (OneBasedIndex >= 1 && OneBasedIndex <= Settings->JumpscareVariants.Num())
+		{
+			OutVariantIndex = OneBasedIndex - 1;
+			OutVariant = Settings->JumpscareVariants[OutVariantIndex];
+			return true;
+		}
+
+		OutError = FString::Printf(TEXT("Jumpscare variant number %d is out of range. Use Escape > Round > Test Commands."), OneBasedIndex);
+		return false;
+	}
+
+	for (int32 Index = 0; Index < Settings->JumpscareVariants.Num(); ++Index)
+	{
+		const FBHJumpscareVariant& Variant = Settings->JumpscareVariants[Index];
+		if (Variant.VariantId.ToString().Equals(Token, ESearchCase::IgnoreCase))
+		{
+			OutVariantIndex = Index;
+			OutVariant = Variant;
+			return true;
+		}
+	}
+
+	for (int32 Index = 0; Index < Settings->JumpscareVariants.Num(); ++Index)
+	{
+		const FBHJumpscareVariant& Variant = Settings->JumpscareVariants[Index];
+		if (!Variant.DisplayName.IsEmpty() && Variant.DisplayName.Contains(Token, ESearchCase::IgnoreCase))
+		{
+			OutVariantIndex = Index;
+			OutVariant = Variant;
+			return true;
+		}
+	}
+
+	OutError = FString::Printf(TEXT("Unknown jumpscare variant '%s'. Use Escape > Round > Test Commands."), *Token);
+	return false;
+}
+
+void ABHGameMode::TestJumpscareVariant(ABHPlayerController* RequestingController, const FString& VariantToken)
+{
+	const ABHGameState* BHGS = GetGameState<ABHGameState>();
+	const ABHPlayerState* BHPS = RequestingController ? RequestingController->GetPlayerState<ABHPlayerState>() : nullptr;
+	const bool bTesterContext = IsHostAdminController(RequestingController)
+		|| bTestMode
+		|| (BHGS && BHGS->bTestMode)
+		|| (BHPS && BHPS->PlayerRole == EBHPlayerRole::Tester);
+	if (!bTesterContext)
+	{
+		if (RequestingController)
+		{
+			RequestingController->ClientShowStatusMessage(TEXT("Jumpscare testing requires host admin, Test Round, or the Tester role."), 4.0f);
+		}
+		return;
+	}
+
+	const FString Token = VariantToken.TrimStartAndEnd();
+	const FString Normalized = Token.ToLower();
+	if (Token.IsEmpty() || Normalized == TEXT("list") || Normalized == TEXT("help") || Normalized == TEXT("?"))
+	{
+		const FString Report = GetJumpscareVariantTestReport();
+		UE_LOG(LogTemp, Display, TEXT("%s"), *Report);
+		if (RequestingController)
+		{
+			RequestingController->ClientShowStatusMessage(Report.Left(900), 10.0f);
+		}
+		return;
+	}
+
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	if (Normalized == TEXT("super") || Normalized == TEXT("chain") || Normalized == TEXT("superchain"))
+	{
+		TriggerTesterSuperJumpscare(RequestingController);
+		return;
+	}
+	if (Normalized == TEXT("super1") || Normalized == TEXT("super01")
+		|| Normalized == TEXT("super2") || Normalized == TEXT("super02")
+		|| Normalized == TEXT("super3") || Normalized == TEXT("super03")
+		|| Normalized.StartsWith(TEXT("super:"))
+		|| Normalized.StartsWith(TEXT("super ")))
+	{
+		FString ForcedToken;
+		if (Normalized == TEXT("super1") || Normalized == TEXT("super01"))
+		{
+			ForcedToken = TEXT("FabMonster01");
+		}
+		else if (Normalized == TEXT("super2") || Normalized == TEXT("super02"))
+		{
+			ForcedToken = TEXT("FabMonster02");
+		}
+		else if (Normalized == TEXT("super3") || Normalized == TEXT("super03"))
+		{
+			ForcedToken = TEXT("FabMonster03");
+		}
+		else if (Normalized.StartsWith(TEXT("super:")) || Normalized.StartsWith(TEXT("super ")))
+		{
+			ForcedToken = Token.RightChop(6).TrimStartAndEnd();
+		}
+
+		FBHJumpscareVariant ForcedVariant;
+		int32 ForcedVariantIndex = INDEX_NONE;
+		FString Error;
+		if (!ResolveJumpscareVariantToken(ForcedToken, ForcedVariant, ForcedVariantIndex, Error))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("%s"), *Error);
+			if (RequestingController)
+			{
+				RequestingController->ClientShowStatusMessage(Error, 4.5f);
+			}
+			return;
+		}
+
+		TriggerTesterSuperJumpscare(RequestingController, &ForcedVariant);
+		return;
+	}
+
+	if (Normalized == TEXT("all"))
+	{
+		if (!Settings || Settings->JumpscareVariants.IsEmpty() || !GetWorld())
+		{
+			if (RequestingController)
+			{
+				RequestingController->ClientShowStatusMessage(TEXT("No jumpscare variants are configured."), 3.0f);
+			}
+			return;
+		}
+
+		TWeakObjectPtr<ABHGameMode> WeakGameMode(this);
+		TWeakObjectPtr<ABHPlayerController> WeakController(RequestingController);
+		for (int32 Index = 0; Index < Settings->JumpscareVariants.Num(); ++Index)
+		{
+			const FBHJumpscareVariant Variant = Settings->JumpscareVariants[Index];
+			const FString VariantName = Variant.DisplayName.IsEmpty() ? Variant.VariantId.ToString() : Variant.DisplayName;
+			const FString Label = FString::Printf(TEXT("%d/%d %s"), Index + 1, Settings->JumpscareVariants.Num(), *VariantName);
+			FTimerDelegate TestDelegate;
+			TestDelegate.BindLambda([WeakGameMode, WeakController, Variant, Label]()
+			{
+				if (WeakGameMode.IsValid() && WeakController.IsValid())
+				{
+					WeakGameMode->TriggerTesterJumpscareVariant(WeakController.Get(), Variant, Label);
+				}
+			});
+
+			FTimerHandle TestTimerHandle;
+			GetWorldTimerManager().SetTimer(TestTimerHandle, TestDelegate, 0.15f + static_cast<float>(Index) * 6.5f, false);
+		}
+
+		if (RequestingController)
+		{
+			RequestingController->ClientShowStatusMessage(FString::Printf(TEXT("Queued %d jumpscare variants. Stand still until the sequence finishes."), Settings->JumpscareVariants.Num()), 5.0f);
+		}
+		UE_LOG(LogTemp, Display, TEXT("BlackoutHunt queued %d jumpscare variant tests for %s."), Settings->JumpscareVariants.Num(), *GetNameSafe(RequestingController));
+		return;
+	}
+
+	FBHJumpscareVariant Variant;
+	int32 VariantIndex = INDEX_NONE;
+	FString Error;
+	if (!ResolveJumpscareVariantToken(Token, Variant, VariantIndex, Error))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("%s"), *Error);
+		if (RequestingController)
+		{
+			RequestingController->ClientShowStatusMessage(Error, 4.5f);
+		}
+		return;
+	}
+
+	const FString VariantName = Variant.DisplayName.IsEmpty() ? Variant.VariantId.ToString() : Variant.DisplayName;
+	const FString Label = FString::Printf(TEXT("%d/%d %s"),
+		VariantIndex + 1,
+		Settings ? Settings->JumpscareVariants.Num() : 1,
+		*VariantName);
+	TriggerTesterJumpscareVariant(RequestingController, Variant, Label);
+}
+
+void ABHGameMode::TriggerTesterJumpscareVariant(ABHPlayerController* RequestingController, const FBHJumpscareVariant& Variant, const FString& TestLabel)
+{
+	if (!RequestingController || !GetWorld())
+	{
+		return;
+	}
+
+	ABHCharacter* Target = Cast<ABHCharacter>(RequestingController->GetPawn());
+	const ABHPlayerState* BHPS = RequestingController->GetPlayerState<ABHPlayerState>();
+	if (!Target || !BHPS || BHPS->LifeState != EBHPlayerLifeState::Alive)
+	{
+		RequestingController->ClientShowStatusMessage(TEXT("Jumpscare testing needs an alive player pawn."), 3.0f);
+		return;
+	}
+
+	const FVector TargetLocation = Target->GetActorLocation();
+	FVector Forward = RequestingController->GetControlRotation().Vector();
+	Forward.Z = 0.0f;
+	Forward = Forward.GetSafeNormal();
+	if (Forward.IsNearlyZero())
+	{
+		Forward = Target->GetActorForwardVector().GetSafeNormal2D();
+	}
+	if (Forward.IsNearlyZero())
+	{
+		Forward = FVector::ForwardVector;
+	}
+
+	const FVector Right = FVector::CrossProduct(FVector::UpVector, Forward).GetSafeNormal();
+	const FVector Directions[] = { Forward, Right, -Right, -Forward };
+	const float Distances[] = { 2600.0f, 2100.0f, 1600.0f, 1200.0f };
+	const float TargetFloorZ = TargetLocation.Z - Target->GetSimpleCollisionHalfHeight();
+	const FVector EyeTarget = TargetLocation + FVector(0.0f, 0.0f, 95.0f);
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BHJumpscareVariantTestLine), false, Target);
+	FVector SpawnLocation = TargetLocation + Forward * 1800.0f;
+	SpawnLocation.Z = TargetFloorZ + 4.0f;
+	float BestScore = -1.0f;
+
+	for (int32 DirectionIndex = 0; DirectionIndex < UE_ARRAY_COUNT(Directions); ++DirectionIndex)
+	{
+		const FVector Direction = Directions[DirectionIndex];
+		if (Direction.IsNearlyZero())
+		{
+			continue;
+		}
+
+		for (float Distance : Distances)
+		{
+			FVector Candidate = TargetLocation + Direction * Distance;
+			Candidate.Z = TargetFloorZ + 4.0f;
+			const FVector CandidateEye = Candidate + FVector(0.0f, 0.0f, 150.0f);
+
+			FHitResult Hit;
+			const bool bBlocked = GetWorld()->LineTraceSingleByChannel(Hit, EyeTarget, CandidateEye, ECC_Visibility, Params);
+			float VisibleDistance = Distance;
+			if (bBlocked)
+			{
+				VisibleDistance = FMath::Sqrt(FVector::DistSquared2D(TargetLocation, Hit.Location)) - 260.0f;
+				if (VisibleDistance < 900.0f)
+				{
+					continue;
+				}
+				Candidate = TargetLocation + Direction * VisibleDistance;
+				Candidate.Z = TargetFloorZ + 4.0f;
+			}
+
+			const float DirectionBonus = DirectionIndex == 0 ? 450.0f : (DirectionIndex == 3 ? -300.0f : 0.0f);
+			const float ClearLineBonus = bBlocked ? 0.0f : 220.0f;
+			const float Score = VisibleDistance + DirectionBonus + ClearLineBonus;
+			if (Score > BestScore)
+			{
+				BestScore = Score;
+				SpawnLocation = Candidate;
+			}
+		}
+	}
+
+	const FVector DirectionToTarget = (TargetLocation - SpawnLocation).GetSafeNormal2D();
+	const FRotator SpawnRotation = DirectionToTarget.IsNearlyZero() ? Forward.Rotation() : DirectionToTarget.Rotation();
+	const float FocusHeight = FMath::Clamp(Variant.FocusHeight, 80.0f, 320.0f);
+	const float HoldDuration = 3.05f;
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.Owner = RequestingController;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	ABHJumpscareMonster* Monster = GetWorld()->SpawnActor<ABHJumpscareMonster>(SpawnLocation, SpawnRotation, SpawnParams);
+	if (!Monster)
+	{
+		RequestingController->ClientShowStatusMessage(TEXT("Could not spawn the jumpscare test monster."), 3.0f);
+		return;
+	}
+
+	Monster->Configure(Target, 9400.0f, 8.4f, HoldDuration);
+	Monster->ConfigureVariant(Variant);
+
+	ABHPlayerController* TargetPC = Cast<ABHPlayerController>(Target->GetController());
+	if (TargetPC)
+	{
+		FBHClientHorrorCue Cue;
+		Cue.EventType = EBHScareEventType::MonsterCharge;
+		Cue.FocusLocation = SpawnLocation + FVector(0.0f, 0.0f, FocusHeight);
+		Cue.Message = FString::Printf(TEXT("Jumpscare test: %s"), *TestLabel);
+		Cue.DurationSeconds = HoldDuration + 1.1f;
+		Cue.LockSeconds = HoldDuration;
+		Cue.ShakeIntensity = FMath::Clamp(Variant.CameraShakeIntensity, 0.75f, 1.0f);
+		Cue.CameraJitterDuration = FMath::Max(Variant.CameraJitterDuration, 1.0f);
+		Cue.FlashIntensity = FMath::Clamp(Variant.FlashIntensity, 0.55f, 1.0f);
+		Cue.FlashColor = Variant.LightColor;
+		Cue.AudioAsset = Variant.LaunchSound;
+		Cue.AudioVolume = 1.0f;
+		Cue.VariantId = Variant.VariantId;
+		Cue.bSnapToFocus = true;
+		Cue.bLockInput = true;
+		Cue.bCloseRangeFocus = false;
+		TargetPC->ClientSnapViewToFlatFocus(Cue.FocusLocation);
+		TargetPC->ClientPlayHorrorCue(Cue);
+		TargetPC->ClientShowStatusMessage(Cue.Message, 2.75f);
+	}
+
+	FreezeTargetForJumpscare(Target, HoldDuration);
+	CutLightsForJumpscare(TargetLocation, SpawnLocation, 2200.0f, 8.5f);
+	LastMonsterChargeTime = GetWorld()->GetTimeSeconds();
+	Target->AddFear(44.0f);
+	Target->AddDread(44.0f);
+
+	UE_LOG(LogTemp, Display, TEXT("BlackoutHunt jumpscare test fired: %s id=%s target=%s"),
+		*TestLabel,
+		*Variant.VariantId.ToString(),
+		*GetNameSafe(Target));
+}
+
+bool ABHGameMode::ResolveSuperJumpscareRoute(ABHCharacter* Target, ABHPlayerController* TargetPC, FVector& OutPeekStart, FVector& OutPeekEnd, FVector& OutCrossStart, FVector& OutCrossEnd, FVector& OutChargeBendStart, FVector& OutChargeStart) const
+{
+	UWorld* World = GetWorld();
+	if (!World || !Target)
+	{
+		return false;
+	}
+
+	const FVector TargetLocation = Target->GetActorLocation();
+	FVector Forward = TargetPC ? TargetPC->GetControlRotation().Vector() : Target->GetActorForwardVector();
+	Forward.Z = 0.0f;
+	Forward = Forward.GetSafeNormal();
+	if (Forward.IsNearlyZero())
+	{
+		Forward = Target->GetActorForwardVector().GetSafeNormal2D();
+	}
+	if (Forward.IsNearlyZero())
+	{
+		Forward = FVector::ForwardVector;
+	}
+
+	const FVector Right = FVector::CrossProduct(FVector::UpVector, Forward).GetSafeNormal();
+	if (Right.IsNearlyZero())
+	{
+		return false;
+	}
+
+	const float TargetFloorZ = TargetLocation.Z - Target->GetSimpleCollisionHalfHeight();
+	const FVector EyeTarget = TargetLocation + FVector(0.0f, 0.0f, 95.0f);
+	FCollisionQueryParams TraceParams(SCENE_QUERY_STAT(BHSuperJumpscareRoute), false, Target);
+	TraceParams.AddIgnoredActor(Target);
+
+	auto Grounded = [TargetFloorZ](const FVector& Location)
+	{
+		return FVector(Location.X, Location.Y, TargetFloorZ + 4.0f);
+	};
+	auto HasVisibleFocus = [World, &TraceParams, EyeTarget](const FVector& Location)
+	{
+		FHitResult Hit;
+		return !World->LineTraceSingleByChannel(Hit, EyeTarget, Location + FVector(0.0f, 0.0f, 150.0f), ECC_Visibility, TraceParams);
+	};
+	auto HasClearSweep = [World, &TraceParams](const FVector& Start, const FVector& End, float Radius)
+	{
+		FHitResult Hit;
+		const FCollisionShape Shape = FCollisionShape::MakeSphere(Radius);
+		return !World->SweepSingleByChannel(Hit, Start + FVector(0.0f, 0.0f, 108.0f), End + FVector(0.0f, 0.0f, 108.0f), FQuat::Identity, ECC_Visibility, Shape, TraceParams);
+	};
+	auto HasSpawnSpace = [World, &TraceParams](const FVector& Location)
+	{
+		const FCollisionShape Shape = FCollisionShape::MakeCapsule(62.0f, 142.0f);
+		return !World->OverlapBlockingTestByChannel(Location + FVector(0.0f, 0.0f, 142.0f), FQuat::Identity, ECC_WorldStatic, Shape, TraceParams);
+	};
+
+	const int32 FirstSide = FMath::RandBool() ? 1 : -1;
+	const int32 SideOptions[] = { FirstSide, -FirstSide };
+	const float ForwardDistances[] = { 1550.0f, 1850.0f, 2200.0f, 2550.0f };
+	const float SideScales[] = { 1.0f, 0.72f, 0.52f };
+	for (int32 Side : SideOptions)
+	{
+		for (float ForwardDistance : ForwardDistances)
+		{
+			for (float SideScale : SideScales)
+			{
+				const float CrossDistance = FMath::Clamp(ForwardDistance * 0.78f, 1180.0f, 1900.0f);
+				FVector PeekStart = Grounded(TargetLocation + Forward * ForwardDistance + Right * (static_cast<float>(Side) * 1140.0f * SideScale));
+				FVector PeekEnd = Grounded(TargetLocation + Forward * ForwardDistance + Right * (static_cast<float>(Side) * 720.0f * SideScale));
+				FVector CrossStart = Grounded(TargetLocation + Forward * CrossDistance + Right * (static_cast<float>(Side) * 1280.0f * SideScale));
+				FVector CrossEnd = Grounded(TargetLocation + Forward * CrossDistance - Right * (static_cast<float>(Side) * 1120.0f * SideScale));
+				FVector ChargeBendStart = Grounded(TargetLocation + Forward * (ForwardDistance + 1240.0f) - Right * (static_cast<float>(Side) * 1280.0f * SideScale));
+				FVector ChargeStart = Grounded(TargetLocation + Forward * (ForwardDistance + 760.0f) - Right * (static_cast<float>(Side) * 560.0f * SideScale));
+				const FVector ChargeEnd = Grounded(TargetLocation + Forward * 170.0f);
+
+				if (!HasSpawnSpace(PeekStart) || !HasSpawnSpace(PeekEnd) || !HasSpawnSpace(CrossStart) || !HasSpawnSpace(CrossEnd) || !HasSpawnSpace(ChargeBendStart) || !HasSpawnSpace(ChargeStart))
+				{
+					continue;
+				}
+				if (!HasVisibleFocus(PeekEnd) || !HasVisibleFocus(CrossStart) || !HasVisibleFocus(CrossEnd) || !HasVisibleFocus(ChargeStart))
+				{
+					continue;
+				}
+				if (!HasClearSweep(PeekStart, PeekEnd, 46.0f) || !HasClearSweep(CrossStart, CrossEnd, 54.0f) || !HasClearSweep(ChargeBendStart, ChargeStart, 62.0f) || !HasClearSweep(ChargeStart, ChargeEnd, 70.0f))
+				{
+					continue;
+				}
+
+				OutPeekStart = PeekStart;
+				OutPeekEnd = PeekEnd;
+				OutCrossStart = CrossStart;
+				OutCrossEnd = CrossEnd;
+				OutChargeBendStart = ChargeBendStart;
+				OutChargeStart = ChargeStart;
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+void ABHGameMode::TriggerTesterSuperJumpscare(ABHPlayerController* RequestingController, const FBHJumpscareVariant* ForcedVariant)
+{
+	if (!RequestingController || !GetWorld())
+	{
+		return;
+	}
+
+	ABHCharacter* Target = Cast<ABHCharacter>(RequestingController->GetPawn());
+	const ABHPlayerState* BHPS = RequestingController->GetPlayerState<ABHPlayerState>();
+	if (!Target || !BHPS || BHPS->LifeState != EBHPlayerLifeState::Alive)
+	{
+		RequestingController->ClientShowStatusMessage(TEXT("Super jumpscare testing needs an alive player pawn."), 3.0f);
+		return;
+	}
+
+	FBHJumpscareVariant Variant = ForcedVariant ? *ForcedVariant : ChooseJumpscareVariant(EBHScareEventType::MonsterCharge);
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	TArray<FBHJumpscareVariant> FabVariants;
+	if (!ForcedVariant && Settings)
+	{
+		for (const FBHJumpscareVariant& Candidate : Settings->JumpscareVariants)
+		{
+			if (BHIsFabJumpscarePackVariant(Candidate) && BHJumpscareVariantHasExistingVisual(Candidate))
+			{
+				FabVariants.Add(Candidate);
+			}
+		}
+	}
+	if (!FabVariants.IsEmpty())
+	{
+		Variant = FabVariants[FMath::RandRange(0, FabVariants.Num() - 1)];
+	}
+
+	FVector PeekStart;
+	FVector PeekEnd;
+	FVector CrossStart;
+	FVector CrossEnd;
+	FVector ChargeBendStart;
+	FVector ChargeStart;
+	if (!ResolveSuperJumpscareRoute(Target, RequestingController, PeekStart, PeekEnd, CrossStart, CrossEnd, ChargeBendStart, ChargeStart))
+	{
+		RequestingController->ClientShowStatusMessage(TEXT("No clear super-jumpscare route found; falling back to direct impact test."), 3.5f);
+		const FString VariantName = Variant.DisplayName.IsEmpty() ? Variant.VariantId.ToString() : Variant.DisplayName;
+		TriggerTesterJumpscareVariant(RequestingController, Variant, FString::Printf(TEXT("Super fallback %s"), *VariantName));
+		return;
+	}
+
+	const FVector TargetLocation = Target->GetActorLocation();
+	const float FocusHeight = FMath::Clamp(Variant.FocusHeight, 80.0f, 320.0f);
+	const float TotalLockSeconds = 4.95f;
+	const FLinearColor StageColor = Variant.LightColor.A > 0.0f ? Variant.LightColor : FLinearColor(1.0f, 0.04f, 0.02f, 1.0f);
+	TWeakObjectPtr<ABHGameMode> WeakGameMode(this);
+	TWeakObjectPtr<ABHPlayerController> WeakController(RequestingController);
+	TWeakObjectPtr<ABHCharacter> WeakTarget(Target);
+
+	auto SendStageCue = [](ABHPlayerController* TargetPC, const FVector& FocusLocation, const FString& Message, const FBHJumpscareVariant& CueVariant, const FLinearColor& CueColor, float Duration, float LockSeconds, float Shake, float Flash, float Jitter, float AudioVolume)
+	{
+		if (!TargetPC)
+		{
+			return;
+		}
+
+		FBHClientHorrorCue Cue;
+		Cue.EventType = EBHScareEventType::MonsterCharge;
+		Cue.FocusLocation = FocusLocation;
+		Cue.Message = Message;
+		Cue.DurationSeconds = Duration;
+		Cue.LockSeconds = LockSeconds;
+		Cue.ShakeIntensity = FMath::Clamp(Shake, 0.0f, 1.0f);
+		Cue.CameraJitterDuration = FMath::Clamp(Jitter, 0.0f, 3.0f);
+		Cue.CameraJitterFrequency = 34.0f;
+		Cue.FlashIntensity = FMath::Clamp(Flash, 0.0f, 1.0f);
+		Cue.FlashColor = CueColor;
+		if (AudioVolume > 0.0f)
+		{
+			Cue.AudioAsset = CueVariant.LaunchSound;
+			Cue.AudioVolume = AudioVolume;
+		}
+		Cue.VariantId = CueVariant.VariantId;
+		Cue.bSnapToFocus = true;
+		Cue.bLockInput = true;
+		Cue.bCloseRangeFocus = false;
+		TargetPC->ClientSnapViewToFlatFocus(FocusLocation);
+		TargetPC->ClientPlayHorrorCue(Cue);
+		if (!Message.IsEmpty())
+		{
+			TargetPC->ClientShowStatusMessage(Message, FMath::Min(Duration, 2.6f));
+		}
+	};
+
+	SendStageCue(RequestingController, PeekEnd + FVector(0.0f, 0.0f, FocusHeight), TEXT("Something sees you."), Variant, StageColor, 1.35f, TotalLockSeconds, 0.42f, 0.18f, 0.55f, 0.0f);
+	BHSpawnScriptedJumpscareStage(GetWorld(), RequestingController, Variant, TArray<FVector>{ PeekStart, PeekEnd }, 420.0f, 1.25f, Target, true, false);
+
+	FTimerDelegate CrossDelegate;
+	CrossDelegate.BindLambda([WeakController, Variant, StageColor, CrossStart, CrossEnd, FocusHeight, TotalLockSeconds]()
+	{
+		ABHPlayerController* TargetPC = WeakController.Get();
+		if (!TargetPC)
+		{
+			return;
+		}
+
+		FBHClientHorrorCue Cue;
+		Cue.EventType = EBHScareEventType::MonsterCharge;
+		Cue.FocusLocation = (CrossStart + CrossEnd) * 0.5f + FVector(0.0f, 0.0f, FocusHeight);
+		Cue.Message = TEXT("");
+		Cue.DurationSeconds = 0.95f;
+		Cue.LockSeconds = FMath::Max(0.0f, TotalLockSeconds - 1.05f);
+		Cue.ShakeIntensity = 0.68f;
+		Cue.CameraJitterDuration = 0.95f;
+		Cue.CameraJitterFrequency = 42.0f;
+		Cue.FlashIntensity = 0.28f;
+		Cue.FlashColor = StageColor;
+		Cue.AudioAsset = Variant.LaunchSound;
+		Cue.AudioVolume = 1.2f;
+		Cue.VariantId = Variant.VariantId;
+		Cue.bSnapToFocus = true;
+		Cue.bLockInput = true;
+		TargetPC->ClientSnapViewToFlatFocus(Cue.FocusLocation);
+		TargetPC->ClientPlayHorrorCue(Cue);
+
+		BHSpawnScriptedJumpscareStage(TargetPC->GetWorld(), TargetPC, Variant, TArray<FVector>{ CrossStart, CrossEnd }, 5600.0f, 1.05f);
+	});
+	FTimerHandle CrossTimerHandle;
+	GetWorldTimerManager().SetTimer(CrossTimerHandle, CrossDelegate, 1.05f, false);
+
+	FTimerDelegate ChargeDelegate;
+	FTimerDelegate BendDelegate;
+	BendDelegate.BindLambda([WeakController, Variant, StageColor, ChargeBendStart, ChargeStart, FocusHeight, TotalLockSeconds]()
+	{
+		ABHPlayerController* TargetPC = WeakController.Get();
+		if (!TargetPC)
+		{
+			return;
+		}
+
+		FBHClientHorrorCue Cue;
+		Cue.EventType = EBHScareEventType::MonsterCharge;
+		Cue.FocusLocation = ChargeStart + FVector(0.0f, 0.0f, FocusHeight);
+		Cue.Message = TEXT("It moved.");
+		Cue.DurationSeconds = 0.80f;
+		Cue.LockSeconds = FMath::Max(0.0f, TotalLockSeconds - 2.05f);
+		Cue.ShakeIntensity = 0.58f;
+		Cue.CameraJitterDuration = 0.70f;
+		Cue.CameraJitterFrequency = 44.0f;
+		Cue.FlashIntensity = 0.20f;
+		Cue.FlashColor = StageColor;
+		Cue.VariantId = Variant.VariantId;
+		Cue.bSnapToFocus = true;
+		Cue.bLockInput = true;
+		TargetPC->ClientSnapViewToFlatFocus(Cue.FocusLocation);
+		TargetPC->ClientPlayHorrorCue(Cue);
+		TargetPC->ClientShowStatusMessage(Cue.Message, 1.35f);
+
+		BHSpawnScriptedJumpscareStage(TargetPC->GetWorld(), TargetPC, Variant, TArray<FVector>{ ChargeBendStart, ChargeStart }, 3300.0f, 0.78f, nullptr, false, false);
+	});
+	FTimerHandle BendTimerHandle;
+	GetWorldTimerManager().SetTimer(BendTimerHandle, BendDelegate, 2.05f, false);
+
+	ChargeDelegate.BindLambda([WeakGameMode, WeakController, WeakTarget, Variant, StageColor, ChargeStart, FocusHeight, TotalLockSeconds]()
+	{
+		ABHGameMode* GameMode = WeakGameMode.Get();
+		ABHPlayerController* TargetPC = WeakController.Get();
+		ABHCharacter* TargetCharacter = WeakTarget.Get();
+		if (!GameMode || !TargetPC || !TargetCharacter || !GameMode->GetWorld())
+		{
+			return;
+		}
+
+		FBHClientHorrorCue Cue;
+		Cue.EventType = EBHScareEventType::MonsterCharge;
+		Cue.FocusLocation = ChargeStart + FVector(0.0f, 0.0f, FocusHeight);
+		Cue.Message = TEXT("It is coming.");
+		Cue.DurationSeconds = 2.45f;
+		Cue.LockSeconds = FMath::Max(0.0f, TotalLockSeconds - 2.62f);
+		Cue.ShakeIntensity = 0.88f;
+		Cue.CameraJitterDuration = 1.85f;
+		Cue.CameraJitterFrequency = 48.0f;
+		Cue.FlashIntensity = 0.42f;
+		Cue.FlashColor = StageColor;
+		Cue.AudioAsset = Variant.LaunchSound;
+		Cue.AudioVolume = 1.25f;
+		Cue.VariantId = Variant.VariantId;
+		Cue.bSnapToFocus = true;
+		Cue.bLockInput = true;
+		TargetPC->ClientSnapViewToFlatFocus(Cue.FocusLocation);
+		TargetPC->ClientPlayHorrorCue(Cue);
+		TargetPC->ClientShowStatusMessage(Cue.Message, 2.0f);
+
+		const FVector DirectionToTarget = (TargetCharacter->GetActorLocation() - ChargeStart).GetSafeNormal2D();
+		const FRotator SpawnRotation = DirectionToTarget.IsNearlyZero() ? FRotator::ZeroRotator : DirectionToTarget.Rotation();
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.Owner = TargetPC;
+		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		ABHJumpscareMonster* Monster = GameMode->GetWorld()->SpawnActor<ABHJumpscareMonster>(ChargeStart, SpawnRotation, SpawnParams);
+		if (Monster)
+		{
+			Monster->Configure(TargetCharacter, 9800.0f, 6.6f, 0.10f);
+			Monster->ConfigureVariant(Variant);
+		}
+	});
+	FTimerHandle ChargeTimerHandle;
+	GetWorldTimerManager().SetTimer(ChargeTimerHandle, ChargeDelegate, 2.62f, false);
+
+	FreezeTargetForJumpscare(Target, TotalLockSeconds);
+	CutLightsForJumpscare(TargetLocation, ChargeBendStart, 3200.0f, 10.5f);
+	LastMonsterChargeTime = GetWorld()->GetTimeSeconds();
+	Target->AddFear(72.0f);
+	Target->AddDread(82.0f);
+
+	const FString VariantName = Variant.DisplayName.IsEmpty() ? Variant.VariantId.ToString() : Variant.DisplayName;
+	RequestingController->ClientShowStatusMessage(FString::Printf(TEXT("Super jumpscare chain armed: %s"), *VariantName), 3.0f);
+	UE_LOG(LogTemp, Display, TEXT("BlackoutHunt super jumpscare chain fired: %s id=%s target=%s"),
+		*VariantName,
+		*Variant.VariantId.ToString(),
+		*GetNameSafe(Target));
 }
 
 bool ABHGameMode::IsHostAdminController(const ABHPlayerController* RequestingController) const
@@ -1276,6 +2560,32 @@ TArray<EBHPhysicsTopic> ABHGameMode::GetRevisionWeakTopics() const
 	return {GetWeakestRevisionTopic()};
 }
 
+int32 ABHGameMode::ResolveRevisionQuestionTargetFor(int32 StudentCount, int32 StageIndex)
+{
+	if (StudentCount >= 10)
+	{
+		return StageIndex <= 0 ? 2 : 3;
+	}
+	if (StudentCount >= 6)
+	{
+		return 3;
+	}
+	return 2;
+}
+
+int32 ABHGameMode::ResolveRevisionNodeTargetFor(int32 StudentCount, int32 StageIndex, int32 StationCount)
+{
+	const int32 StageNodeFloor = StageIndex <= 0 ? 8 : (StageIndex == 1 ? 10 : 12);
+	const int32 StudentNodeTarget = StudentCount >= 10 ? 18 : (StudentCount >= 6 ? 12 : 8);
+	const int32 RevisionNodeTarget = FMath::Max(StageNodeFloor, StudentNodeTarget);
+	return FMath::Clamp(RevisionNodeTarget, 0, FMath::Max(0, StationCount));
+}
+
+FVector ABHGameMode::ResolveFoggroundsDoorFrameOrigin(const FVector& DoorLocation)
+{
+	return FVector(DoorLocation.X, DoorLocation.Y, 0.0f);
+}
+
 int32 ABHGameMode::GetRevisionQuestionTargetPerNode() const
 {
 	int32 StudentCount = CountActiveRevisionStudents(GameState, true);
@@ -1284,15 +2594,7 @@ int32 ABHGameMode::GetRevisionQuestionTargetPerNode() const
 		StudentCount = CountActiveRevisionStudents(GameState, false);
 	}
 
-	if (StudentCount >= 10)
-	{
-		return 4;
-	}
-	if (StudentCount >= 6)
-	{
-		return 3;
-	}
-	return 2;
+	return ResolveRevisionQuestionTargetFor(StudentCount, RuntimeStageIndex);
 }
 
 int32 ABHGameMode::GetRevisionAnswerTeamTargetSize() const
@@ -1320,7 +2622,38 @@ int32 ABHGameMode::GetRevisionAnswerTeamTargetSize() const
 
 int32 ABHGameMode::GetRevisionMinimumContributionTarget() const
 {
-	return FMath::Clamp(GetRevisionQuestionTargetPerNode() - 1, 1, 3);
+	return FMath::Clamp(GetRevisionQuestionTargetPerNode() - 1 + FMath::Clamp(RuntimeStageIndex, 0, 2), 1, 4);
+}
+
+bool ABHGameMode::IsRevisionParticipantRole(EBHPlayerRole Role)
+{
+	return Role == EBHPlayerRole::Survivor || Role == EBHPlayerRole::FakeHunter;
+}
+
+bool ABHGameMode::CanUseHallMonitorTools(const ABHPlayerState* PlayerState, FString& OutBlockReason) const
+{
+	OutBlockReason.Reset();
+	if (!bRevisionMode
+		|| !PlayerState
+		|| PlayerState->PlayerRole != EBHPlayerRole::FakeHunter
+		|| PlayerState->LifeState != EBHPlayerLifeState::Alive
+		|| PlayerState->IsABot())
+	{
+		return true;
+	}
+
+	const int32 RequiredContributions = GetRevisionMinimumContributionTarget();
+	const int32 CurrentContributions = PlayerState->RevisionStats.ContributionCount;
+	if (CurrentContributions >= RequiredContributions)
+	{
+		return true;
+	}
+
+	OutBlockReason = FString::Printf(
+		TEXT("Hall monitor tools locked: join an answer team at a station (%d/%d contributions). Monitors still count toward 70/50."),
+		CurrentContributions,
+		RequiredContributions);
+	return false;
 }
 
 bool ABHGameMode::IsRevisionAdmin(const ABHPlayerController* RequestingController) const
@@ -1328,20 +2661,44 @@ bool ABHGameMode::IsRevisionAdmin(const ABHPlayerController* RequestingControlle
 	return IsHostAdminController(RequestingController);
 }
 
-void ABHGameMode::RecordRevisionAnswer(ABHCharacter* Character, const FBHRevisionQuestion& Question, bool bCorrect, bool bCorrection)
+void ABHGameMode::GetAdaptiveRevisionPlan(const ABHPlayerState* PlayerState, bool bLastAnswerCorrect, EBHPhysicsTopic& OutTopic, EBHQuestionDifficulty& OutDifficulty, FString& OutReason) const
+{
+	if (!PlayerState)
+	{
+		OutTopic = GetWeakestRevisionTopic();
+		OutDifficulty = EBHQuestionDifficulty::Easy;
+		OutReason = TEXT("No student profile yet; using the current class weak topic.");
+		return;
+	}
+
+	const FBHPlayerRevisionStats& Stats = PlayerState->RevisionStats;
+	OutTopic = WeakestTopicForStats(Stats, RevisionTopicMask);
+	OutDifficulty = AdaptiveDifficultyForStats(Stats, bLastAnswerCorrect);
+	OutReason = FString::Printf(TEXT("Mastery %.0f%% after %d attempt(s); next question targets %s at %s difficulty."),
+		Stats.MasteryPercent,
+		Stats.Attempts,
+		*FBHRevisionQuestionBank::TopicToString(OutTopic),
+		*FBHRevisionQuestionBank::DifficultyToString(OutDifficulty));
+}
+
+void ABHGameMode::RecordRevisionAnswer(ABHCharacter* Character, const FBHRevisionQuestion& Question, bool bCorrect, bool bCorrection, const FString& SelectedAnswer, const FString& TeamSummary)
 {
 	ABHPlayerState* BHPS = Character ? Character->GetPlayerState<ABHPlayerState>() : nullptr;
-	if (!bRevisionMode || !BHPS || BHPS->PlayerRole != EBHPlayerRole::Survivor)
+	if (!bRevisionMode || !IsRevisionParticipantState(BHPS))
 	{
 		return;
 	}
 
 	FBHPlayerRevisionStats Stats = BHPS->RevisionStats;
+	const int32 PreviousContributionCount = Stats.ContributionCount;
 	Stats.Attempts = FMath::Max(0, Stats.Attempts + 1);
+	int32 PointsEarned = 0;
 	if (bCorrect)
 	{
 		Stats.CorrectAnswers = FMath::Max(0, Stats.CorrectAnswers + 1);
 		Stats.ContributionCount = FMath::Max(0, Stats.ContributionCount + 1);
+		PointsEarned = FBHPowerupLibrary::QuestionPointValue(Question.Difficulty, false);
+		BHPS->AddQuestionPoints(PointsEarned);
 		if (bCorrection)
 		{
 			Stats.CorrectionsCompleted = FMath::Max(0, Stats.CorrectionsCompleted + 1);
@@ -1372,6 +2729,47 @@ void ABHGameMode::RecordRevisionAnswer(ABHCharacter* Character, const FBHRevisio
 	const int32 MasteredAnswers = Stats.CorrectAnswers + Stats.CorrectionsCompleted;
 	Stats.MasteryPercent = Stats.Attempts > 0 ? FMath::Clamp(100.0f * static_cast<float>(MasteredAnswers) / static_cast<float>(Stats.Attempts), 0.0f, 100.0f) : 0.0f;
 	BHPS->RevisionStats = Stats;
+
+	if (bCorrect && BHPS->PlayerRole == EBHPlayerRole::FakeHunter)
+	{
+		const int32 RequiredContributions = GetRevisionMinimumContributionTarget();
+		if (PreviousContributionCount < RequiredContributions && Stats.ContributionCount >= RequiredContributions)
+		{
+			if (ABHPlayerController* PC = Character ? Cast<ABHPlayerController>(Character->GetController()) : nullptr)
+			{
+				PC->ClientShowStatusMessage(TEXT("Hall monitor tools unlocked. Traps and hints are available."), 3.5f);
+			}
+		}
+	}
+
+	if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
+	{
+		FBHQuestionAttemptRecord Attempt;
+		Attempt.PlayerName = BHPS->GetPlayerName();
+		Attempt.QuestionId = Question.Id;
+		Attempt.TopicName = Question.TopicName;
+		Attempt.QuestionText = Question.Prompt;
+		Attempt.QuestionSubtopic = Question.Subtopic;
+		Attempt.SelectedAnswer = SelectedAnswer.IsEmpty()
+			? (bCorrect ? TEXT("Correct response") : TEXT("Incorrect response"))
+			: SelectedAnswer;
+		if (Question.Answer.Choices.IsValidIndex(Question.Answer.CorrectChoiceIndex))
+		{
+			Attempt.CorrectAnswer = Question.Answer.Choices[Question.Answer.CorrectChoiceIndex];
+		}
+		Attempt.Explanation = Question.Explanation.IsEmpty() ? Question.Hint : Question.Explanation;
+		Attempt.Difficulty = Question.Difficulty;
+		Attempt.QuestionType = Question.Type;
+		Attempt.Topic = Question.Topic;
+		Attempt.bCorrect = bCorrect;
+		Attempt.bCorrection = bCorrection;
+		Attempt.StageIndex = RuntimeStageIndex;
+		Attempt.TimestampSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+		Attempt.PointsEarned = PointsEarned;
+		Attempt.TeamSummary = TeamSummary;
+		GetAdaptiveRevisionPlan(BHPS, bCorrect, Attempt.AdaptiveRecommendedTopic, Attempt.AdaptiveRecommendedDifficulty, Attempt.AdaptiveReason);
+		BHGI->RecordQuestionAttempt(Attempt);
+	}
 
 	UpdateRevisionSummary(bCorrect
 		? FString::Printf(TEXT("%s banked %s mastery."), *BHPS->GetPlayerName(), *Question.TopicName)
@@ -1414,7 +2812,7 @@ bool ABHGameMode::BuildRevisionAnswerTeam(ABHObjectiveStation* Station, ABHChara
 	for (APlayerState* RawPS : GameState->PlayerArray)
 	{
 		ABHPlayerState* BHPS = Cast<ABHPlayerState>(RawPS);
-		if (BHPS && BHPS->IsAliveSurvivor() && !BHPS->IsABot())
+		if (IsRevisionParticipantState(BHPS) && !BHPS->IsABot())
 		{
 			Students.Add(BHPS);
 		}
@@ -1424,7 +2822,7 @@ bool ABHGameMode::BuildRevisionAnswerTeam(ABHObjectiveStation* Station, ABHChara
 		for (APlayerState* RawPS : GameState->PlayerArray)
 		{
 			ABHPlayerState* BHPS = Cast<ABHPlayerState>(RawPS);
-			if (BHPS && BHPS->IsAliveSurvivor())
+			if (IsRevisionParticipantState(BHPS))
 			{
 				Students.Add(BHPS);
 			}
@@ -1548,6 +2946,172 @@ void ABHGameMode::ForceReview(ABHPlayerController* RequestingController)
 	BroadcastStatus(TEXT("Physics review screen forced for 60 seconds."), 3.5f);
 }
 
+bool ABHGameMode::CanUseTesterShortcut(ABHPlayerController* RequestingController, const TCHAR* ActionDescription) const
+{
+	const ABHGameState* BHGS = GetGameState<ABHGameState>();
+	const ABHPlayerState* BHPS = RequestingController ? RequestingController->GetPlayerState<ABHPlayerState>() : nullptr;
+	const bool bTesterContext = bTestMode
+		|| (BHGS && BHGS->bTestMode)
+		|| (BHPS && BHPS->PlayerRole == EBHPlayerRole::Tester);
+	if (!bTesterContext)
+	{
+		if (RequestingController)
+		{
+			RequestingController->ClientShowStatusMessage(TEXT("Tester train shortcuts only work in Test Round or for the Tester role."), 4.0f);
+		}
+		return false;
+	}
+
+	return true;
+}
+
+void ABHGameMode::TesterGrantTrainResources(ABHPlayerController* RequestingController)
+{
+	if (!CanUseTesterShortcut(RequestingController, TEXT("grant tester train resources")) || !GameState)
+	{
+		return;
+	}
+
+	int32 GrantedPlayers = 0;
+	for (APlayerState* RawPS : GameState->PlayerArray)
+	{
+		ABHPlayerState* BHPS = Cast<ABHPlayerState>(RawPS);
+		if (!BHPS || BHPS->PlayerRole == EBHPlayerRole::Spectator || BHPS->PlayerRole == EBHPlayerRole::Unassigned)
+		{
+			continue;
+		}
+
+		BHPS->AddQuestionPoints(250);
+		for (const FBHPowerupDefinition& Definition : FBHPowerupLibrary::GetDefaultPowerups())
+		{
+			const int32 TargetCharges = FMath::Max(1, Definition.MaxCharges);
+			while (BHPS->GetPowerupCharges(Definition.Type) < TargetCharges)
+			{
+				if (!BHPS->AddPowerupCharge(Definition.Type, TargetCharges))
+				{
+					break;
+				}
+			}
+		}
+		++GrantedPlayers;
+	}
+
+	BroadcastStatus(FString::Printf(TEXT("Tester resources granted: 250 points and max train powerups for %d player(s)."), GrantedPlayers), 4.0f);
+}
+
+void ABHGameMode::TesterOpenTrainIntermission(ABHPlayerController* RequestingController)
+{
+	if (!CanUseTesterShortcut(RequestingController, TEXT("open the train intermission")) || !GetWorld())
+	{
+		return;
+	}
+
+	if (bTrainIntermissionLevel)
+	{
+		if (RequestingController)
+		{
+			RequestingController->ClientShowStatusMessage(TEXT("Already in the train intermission. Press F9 to advance phases."), 3.5f);
+		}
+		return;
+	}
+
+	BroadcastStatus(TEXT("Tester shortcut: opening subway intermission."), 2.5f);
+	ConvertMonitorsBackToSurvivors(TEXT("tester subway intermission"));
+	PersistPlayersForTravel();
+	FString TravelURL = BuildTravelOptionsForLevel(TEXT("TrainIntermission"), true, RuntimeStageIndex, EBHRoundPhase::SurvivorsWin);
+	TravelURL += TEXT("?BHTestMode=1");
+	GetWorld()->ServerTravel(TravelURL, true);
+}
+
+void ABHGameMode::TesterAdvanceTrainPhase(ABHPlayerController* RequestingController)
+{
+	if (!CanUseTesterShortcut(RequestingController, TEXT("advance the train phase")))
+	{
+		return;
+	}
+
+	if (!bTrainIntermissionLevel || !TrainIntermissionManager)
+	{
+		if (RequestingController)
+		{
+			RequestingController->ClientShowStatusMessage(TEXT("F9 advances train phases only while inside the train intermission."), 3.5f);
+		}
+		return;
+	}
+
+	TrainIntermissionManager->TesterAdvancePhase();
+	BroadcastStatus(TEXT("Tester shortcut: train phase advanced."), 2.0f);
+}
+
+void ABHGameMode::TesterLoadFinalStation(ABHPlayerController* RequestingController)
+{
+	if (!CanUseTesterShortcut(RequestingController, TEXT("load Foggrounds final station")) || !GetWorld())
+	{
+		return;
+	}
+
+	ConvertMonitorsBackToSurvivors(TEXT("tester final station load"));
+	PersistPlayersForTravel();
+	RuntimeStageIndex = 2;
+	if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
+	{
+		BHGI->SetPersistentStageIndex(RuntimeStageIndex);
+	}
+
+	FString TravelURL = FString::Printf(TEXT("/Engine/Maps/Entry?listen?BHLevel=Foggrounds?BHFogPreset=%s?BHStageIndex=2?BHTestMode=1"),
+		*FogPresetToString(NextFogPreset));
+	if (bFogPresetOverride)
+	{
+		TravelURL += TEXT("?BHFogOverride=1");
+	}
+	GetWorld()->ServerTravel(TravelURL, true);
+}
+
+void ABHGameMode::TesterTriggerFinalEscape(ABHPlayerController* RequestingController)
+{
+	if (!CanUseTesterShortcut(RequestingController, TEXT("trigger final escape")))
+	{
+		return;
+	}
+
+	if (!IsFinalStage())
+	{
+		if (RequestingController)
+		{
+			RequestingController->ClientShowStatusMessage(TEXT("Final escape needs Foggrounds stage 3. Press F10 first."), 4.0f);
+		}
+		return;
+	}
+
+	TriggerFinalEscapeIfNeeded();
+}
+
+void ABHGameMode::TesterForceFinalRecap(ABHPlayerController* RequestingController)
+{
+	if (!CanUseTesterShortcut(RequestingController, TEXT("force the final train recap")) || !GetWorld())
+	{
+		return;
+	}
+
+	if (bTrainIntermissionLevel && TrainIntermissionManager)
+	{
+		TrainIntermissionManager->TesterFinishIntermission();
+		return;
+	}
+
+	ConvertMonitorsBackToSurvivors(TEXT("tester final recap"));
+	PersistPlayersForTravel();
+	RuntimeStageIndex = 2;
+	if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
+	{
+		BHGI->SetPersistentStageIndex(RuntimeStageIndex);
+	}
+
+	FString TravelURL = BuildTravelOptionsForLevel(TEXT("TrainIntermission"), true, RuntimeStageIndex, EBHRoundPhase::SurvivorsWin);
+	TravelURL += TEXT("?BHTestMode=1");
+	GetWorld()->ServerTravel(TravelURL, true);
+}
+
 void ABHGameMode::ResetRevisionStats()
 {
 	if (!GameState || !bRevisionMode)
@@ -1562,7 +3126,12 @@ void ABHGameMode::ResetRevisionStats()
 			BHPS->ResetRevisionStats();
 		}
 	}
+	if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
+	{
+		BHGI->ClearQuestionAttemptHistory();
+	}
 	RevisionReviewTimeRemaining = 0;
+	bRevisionReportExported = false;
 	UpdateRevisionSummary();
 }
 
@@ -1582,7 +3151,7 @@ FBHClassRevisionSummary ABHGameMode::ComputeRevisionSummary() const
 	for (APlayerState* RawPS : GameState->PlayerArray)
 	{
 		const ABHPlayerState* BHPS = Cast<ABHPlayerState>(RawPS);
-		if (!BHPS || !BHPS->IsAliveSurvivor() || BHPS->IsABot())
+		if (!IsRevisionParticipantState(BHPS) || BHPS->IsABot())
 		{
 			continue;
 		}
@@ -1671,12 +3240,12 @@ bool ABHGameMode::CanUnlockRevisionExit(FString& OutReason) const
 	}
 	if (Summary.StudentsBelowIndividualThreshold > 0)
 	{
-		OutReason = FString::Printf(TEXT("Exit locked: %d student(s) below %.0f%% mastery."), Summary.StudentsBelowIndividualThreshold, RevisionIndividualThreshold);
+		OutReason = FString::Printf(TEXT("Exit locked: %d student/monitor(s) below %.0f%% mastery."), Summary.StudentsBelowIndividualThreshold, RevisionIndividualThreshold);
 		return false;
 	}
 	if (Summary.StudentsWithoutContribution > 0)
 	{
-		OutReason = FString::Printf(TEXT("Exit locked: %d student(s) still need %d answer-team or correction contribution(s)."), Summary.StudentsWithoutContribution, GetRevisionMinimumContributionTarget());
+		OutReason = FString::Printf(TEXT("Exit locked: %d student/monitor(s) still need %d answer-team or correction contribution(s)."), Summary.StudentsWithoutContribution, GetRevisionMinimumContributionTarget());
 		return false;
 	}
 	return true;
@@ -1685,7 +3254,7 @@ bool ABHGameMode::CanUnlockRevisionExit(FString& OutReason) const
 FString ABHGameMode::GetRevisionObjectiveText() const
 {
 	const FBHClassRevisionSummary Summary = ComputeRevisionSummary();
-	return FString::Printf(TEXT("Physics Classroom: complete %d team nodes (%d questions each, %d-student teams). Escape needs class %.0f%%/%.0f%%, every student %.0f%%/%.0f%%, %d contribution(s) each. Weak topic: %s."),
+	return FString::Printf(TEXT("Physics Classroom: complete %d team nodes (%d questions each, %d-student teams). Escape needs class %.0f%%/%.0f%%, every student/monitor %.0f%%/%.0f%%, %d contribution(s) each. Weak topic: %s."),
 		ActiveSideObjectiveCount,
 		GetRevisionQuestionTargetPerNode(),
 		GetRevisionAnswerTeamTargetSize(),
@@ -1722,6 +3291,330 @@ FString ABHGameMode::GetRevisionStatusReport() const
 		RevisionTopicMask,
 		RevisionReviewTimeRemaining,
 		RevisionScareIntensity);
+}
+
+bool ABHGameMode::ExportRevisionReport(ABHPlayerController* RequestingController, FString& OutMessage)
+{
+	if (!RequireHostAdmin(RequestingController, TEXT("export classroom performance data")))
+	{
+		OutMessage = TEXT("Only the host machine can export classroom performance data.");
+		return false;
+	}
+
+	const ABHGameState* BHGS = GetGameState<ABHGameState>();
+	const EBHRoundPhase ResultPhase = BHGS ? BHGS->RoundPhase : EBHRoundPhase::Lobby;
+	const bool bExported = ExportRevisionReportToDisk(ResultPhase, false, OutMessage);
+	if (RequestingController)
+	{
+		RequestingController->ClientShowStatusMessage(OutMessage, bExported ? 8.0f : 5.0f);
+	}
+	return bExported;
+}
+
+bool ABHGameMode::ExportRevisionReportToDisk(EBHRoundPhase ResultPhase, bool bAutomatic, FString& OutMessage)
+{
+	if (!bRevisionMode)
+	{
+		OutMessage = TEXT("No revision classroom is active; no classroom report was exported.");
+		return false;
+	}
+	if (bAutomatic && bRevisionReportExported)
+	{
+		OutMessage = TEXT("Revision classroom report was already exported for this round.");
+		return true;
+	}
+
+	const UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>();
+	if (!BHGI)
+	{
+		OutMessage = TEXT("No game instance was available for classroom report export.");
+		return false;
+	}
+
+	const TArray<FBHQuestionAttemptRecord>& Attempts = BHGI->GetQuestionAttemptHistory();
+	if (Attempts.IsEmpty() && (!GameState || GameState->PlayerArray.IsEmpty()))
+	{
+		OutMessage = TEXT("No classroom performance data has been recorded yet.");
+		return false;
+	}
+
+	struct FStudentReportRow
+	{
+		FString PlayerName;
+		FString RoleName;
+		FBHPlayerRevisionStats Stats;
+		bool bHasPlayerState = false;
+		int32 Attempts = 0;
+		int32 Correct = 0;
+		int32 Points = 0;
+		int32 TopicAttempts[4] = {0, 0, 0, 0};
+		int32 TopicCorrect[4] = {0, 0, 0, 0};
+		TArray<FString> CorrectQuestionIds;
+		TArray<FString> WrongQuestionIds;
+	};
+
+	struct FQuestionReportRow
+	{
+		FBHQuestionAttemptRecord FirstAttempt;
+		int32 Attempts = 0;
+		int32 Correct = 0;
+		TSet<FString> MissedBy;
+	};
+
+	TMap<FString, FStudentReportRow> StudentsByName;
+	if (GameState)
+	{
+		const UEnum* RoleEnum = StaticEnum<EBHPlayerRole>();
+		for (APlayerState* RawPS : GameState->PlayerArray)
+		{
+			const ABHPlayerState* BHPS = Cast<ABHPlayerState>(RawPS);
+			if (!BHPS || !IsRevisionParticipantRole(BHPS->PlayerRole))
+			{
+				continue;
+			}
+
+			const FString PlayerName = BHPS->GetPlayerName().IsEmpty() ? TEXT("Player") : BHPS->GetPlayerName();
+			FStudentReportRow& Row = StudentsByName.FindOrAdd(PlayerName);
+			Row.PlayerName = PlayerName;
+			Row.RoleName = RoleEnum ? RoleEnum->GetNameStringByValue(static_cast<int64>(BHPS->PlayerRole)) : TEXT("Student");
+			if (BHPS->IsABot())
+			{
+				Row.RoleName += TEXT(" Bot");
+			}
+			Row.Stats = BHPS->RevisionStats;
+			Row.bHasPlayerState = true;
+		}
+	}
+
+	TMap<FString, FQuestionReportRow> QuestionsByKey;
+	for (const FBHQuestionAttemptRecord& Attempt : Attempts)
+	{
+		const FString PlayerName = Attempt.PlayerName.IsEmpty() ? TEXT("Unknown") : Attempt.PlayerName;
+		FStudentReportRow& StudentRow = StudentsByName.FindOrAdd(PlayerName);
+		if (StudentRow.PlayerName.IsEmpty())
+		{
+			StudentRow.PlayerName = PlayerName;
+			StudentRow.RoleName = TEXT("Student");
+		}
+		++StudentRow.Attempts;
+		StudentRow.Points += FMath::Max(0, Attempt.PointsEarned);
+		const int32 TopicIndex = ReportTopicIndex(Attempt.Topic);
+		++StudentRow.TopicAttempts[TopicIndex];
+		if (Attempt.bCorrect)
+		{
+			++StudentRow.Correct;
+			++StudentRow.TopicCorrect[TopicIndex];
+			StudentRow.CorrectQuestionIds.Add(Attempt.QuestionId.IsEmpty() ? Attempt.QuestionText.Left(48) : Attempt.QuestionId);
+		}
+		else
+		{
+			StudentRow.WrongQuestionIds.Add(Attempt.QuestionId.IsEmpty() ? Attempt.QuestionText.Left(48) : Attempt.QuestionId);
+		}
+
+		const FString QuestionKey = Attempt.QuestionId.IsEmpty() ? Attempt.QuestionText.Left(96) : Attempt.QuestionId;
+		FQuestionReportRow& QuestionRow = QuestionsByKey.FindOrAdd(QuestionKey);
+		if (QuestionRow.Attempts == 0)
+		{
+			QuestionRow.FirstAttempt = Attempt;
+		}
+		++QuestionRow.Attempts;
+		if (Attempt.bCorrect)
+		{
+			++QuestionRow.Correct;
+		}
+		else
+		{
+			QuestionRow.MissedBy.Add(PlayerName);
+		}
+	}
+
+	const auto MakeCsvRow = [](std::initializer_list<FString> Cells)
+	{
+		TArray<FString> Escaped;
+		for (const FString& Cell : Cells)
+		{
+			Escaped.Add(CsvEscape(Cell));
+		}
+		return FString::Join(Escaped, TEXT(","));
+	};
+
+	const FString ReportDir = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("ClassReports")));
+	IFileManager::Get().MakeDirectory(*ReportDir, true);
+	const FString Timestamp = FDateTime::UtcNow().ToString(TEXT("%Y%m%d_%H%M%S"));
+	const FString LevelToken = SanitizeReportToken(RuntimeLevelName);
+	const FString Prefix = FString::Printf(TEXT("BlackoutHunt_%s_stage%d_%s"), *LevelToken, RuntimeStageIndex, *Timestamp);
+	const FString SummaryPath = FPaths::Combine(ReportDir, Prefix + TEXT("_summary.csv"));
+	const FString StudentPath = FPaths::Combine(ReportDir, Prefix + TEXT("_students.csv"));
+	const FString AttemptsPath = FPaths::Combine(ReportDir, Prefix + TEXT("_attempts.csv"));
+	const FString QuestionsPath = FPaths::Combine(ReportDir, Prefix + TEXT("_questions.csv"));
+
+	const FBHClassRevisionSummary ClassSummary = ComputeRevisionSummary();
+	const FString ResultText = StaticEnum<EBHRoundPhase>() ? StaticEnum<EBHRoundPhase>()->GetNameStringByValue(static_cast<int64>(ResultPhase)) : TEXT("Unknown");
+	TArray<FString> SummaryLines;
+	SummaryLines.Add(MakeCsvRow({TEXT("Metric"), TEXT("Value")}));
+	SummaryLines.Add(MakeCsvRow({TEXT("ExportedUtc"), FDateTime::UtcNow().ToIso8601()}));
+	SummaryLines.Add(MakeCsvRow({TEXT("Result"), ResultText}));
+	SummaryLines.Add(MakeCsvRow({TEXT("Level"), RuntimeLevelName}));
+	SummaryLines.Add(MakeCsvRow({TEXT("StageIndex"), FString::FromInt(RuntimeStageIndex)}));
+	SummaryLines.Add(MakeCsvRow({TEXT("ClassMasteryAverage"), FString::Printf(TEXT("%.1f"), ClassSummary.ClassMasteryAverage)}));
+	SummaryLines.Add(MakeCsvRow({TEXT("LowestStudentMastery"), FString::Printf(TEXT("%.1f"), ClassSummary.LowestStudentMastery)}));
+	SummaryLines.Add(MakeCsvRow({TEXT("ActiveStudentCount"), FString::FromInt(ClassSummary.ActiveStudentCount)}));
+	SummaryLines.Add(MakeCsvRow({TEXT("StudentsBelowIndividualThreshold"), FString::FromInt(ClassSummary.StudentsBelowIndividualThreshold)}));
+	SummaryLines.Add(MakeCsvRow({TEXT("StudentsBelowContributionTarget"), FString::FromInt(ClassSummary.StudentsWithoutContribution)}));
+	SummaryLines.Add(MakeCsvRow({TEXT("ClassWeakTopic"), FBHRevisionQuestionBank::TopicToString(ClassSummary.WeakTopic)}));
+	SummaryLines.Add(MakeCsvRow({TEXT("RevisionDifficultyMix"), RevisionDifficultyMixToString(RevisionDifficultyMix)}));
+	SummaryLines.Add(MakeCsvRow({TEXT("QuestionAttemptsLogged"), FString::FromInt(Attempts.Num())}));
+
+	TArray<FString> StudentLines;
+	StudentLines.Add(MakeCsvRow({
+		TEXT("Player"), TEXT("Role"), TEXT("Attempts"), TEXT("Correct"), TEXT("AccuracyPercent"), TEXT("Points"),
+		TEXT("MasteryPercent"), TEXT("StrongSuit"), TEXT("WeakPoint"),
+		TEXT("ForcesCorrect"), TEXT("ForcesAttempts"), TEXT("ElectricityCorrect"), TEXT("ElectricityAttempts"),
+		TEXT("WavesCorrect"), TEXT("WavesAttempts"), TEXT("EnergyCorrect"), TEXT("EnergyAttempts"),
+		TEXT("CorrectQuestions"), TEXT("WrongQuestions"), TEXT("RecommendedNextTopic"), TEXT("RecommendedDifficulty"), TEXT("AdaptiveReason")
+	}));
+
+	TArray<FString> StudentNames;
+	StudentsByName.GetKeys(StudentNames);
+	StudentNames.Sort();
+	for (const FString& StudentName : StudentNames)
+	{
+		const FStudentReportRow* Row = StudentsByName.Find(StudentName);
+		if (!Row)
+		{
+			continue;
+		}
+
+		FBHPlayerRevisionStats EffectiveStats = Row->Stats;
+		if (!Row->bHasPlayerState && Row->Attempts > 0)
+		{
+			EffectiveStats.Attempts = Row->Attempts;
+			EffectiveStats.CorrectAnswers = Row->Correct;
+			EffectiveStats.MasteryPercent = 100.0f * static_cast<float>(Row->Correct) / static_cast<float>(FMath::Max(1, Row->Attempts));
+		}
+
+		const EBHPhysicsTopic StrongTopic = StrongestTopicForStats(EffectiveStats, RevisionTopicMask);
+		const EBHPhysicsTopic WeakTopic = WeakestTopicForStats(EffectiveStats, RevisionTopicMask);
+		const EBHQuestionDifficulty RecommendedDifficulty = AdaptiveDifficultyForStats(EffectiveStats, Row->Attempts <= 0 || Row->Correct >= Row->Attempts);
+		const FString AdaptiveReason = FString::Printf(TEXT("Mastery %.0f%% over %d attempt(s); target %s at %s."),
+			EffectiveStats.MasteryPercent,
+			Row->Attempts,
+			*FBHRevisionQuestionBank::TopicToString(WeakTopic),
+			*FBHRevisionQuestionBank::DifficultyToString(RecommendedDifficulty));
+		const float Accuracy = Row->Attempts > 0 ? 100.0f * static_cast<float>(Row->Correct) / static_cast<float>(Row->Attempts) : 0.0f;
+
+		StudentLines.Add(MakeCsvRow({
+			Row->PlayerName,
+			Row->RoleName,
+			FString::FromInt(Row->Attempts),
+			FString::FromInt(Row->Correct),
+			FString::Printf(TEXT("%.1f"), Accuracy),
+			FString::FromInt(Row->Points),
+			FString::Printf(TEXT("%.1f"), EffectiveStats.MasteryPercent),
+			FBHRevisionQuestionBank::TopicToString(StrongTopic),
+			FBHRevisionQuestionBank::TopicToString(WeakTopic),
+			FString::FromInt(Row->TopicCorrect[0]),
+			FString::FromInt(Row->TopicAttempts[0]),
+			FString::FromInt(Row->TopicCorrect[1]),
+			FString::FromInt(Row->TopicAttempts[1]),
+			FString::FromInt(Row->TopicCorrect[2]),
+			FString::FromInt(Row->TopicAttempts[2]),
+			FString::FromInt(Row->TopicCorrect[3]),
+			FString::FromInt(Row->TopicAttempts[3]),
+			FString::Join(Row->CorrectQuestionIds, TEXT("; ")),
+			FString::Join(Row->WrongQuestionIds, TEXT("; ")),
+			FBHRevisionQuestionBank::TopicToString(WeakTopic),
+			FBHRevisionQuestionBank::DifficultyToString(RecommendedDifficulty),
+			AdaptiveReason
+		}));
+	}
+
+	TArray<FString> AttemptLines;
+	AttemptLines.Add(MakeCsvRow({
+		TEXT("Player"), TEXT("Stage"), TEXT("TimeSeconds"), TEXT("QuestionId"), TEXT("Topic"), TEXT("Subtopic"),
+		TEXT("Difficulty"), TEXT("Type"), TEXT("Question"), TEXT("SelectedAnswer"), TEXT("CorrectAnswer"), TEXT("Result"),
+		TEXT("Explanation"), TEXT("Points"), TEXT("Correction"), TEXT("Team"), TEXT("AdaptiveNextTopic"),
+		TEXT("AdaptiveNextDifficulty"), TEXT("AdaptiveReason")
+	}));
+	for (const FBHQuestionAttemptRecord& Attempt : Attempts)
+	{
+		AttemptLines.Add(MakeCsvRow({
+			Attempt.PlayerName,
+			FString::FromInt(Attempt.StageIndex),
+			FString::Printf(TEXT("%.1f"), Attempt.TimestampSeconds),
+			Attempt.QuestionId,
+			Attempt.TopicName.IsEmpty() ? FBHRevisionQuestionBank::TopicToString(Attempt.Topic) : Attempt.TopicName,
+			Attempt.QuestionSubtopic,
+			FBHRevisionQuestionBank::DifficultyToString(Attempt.Difficulty),
+			FBHRevisionQuestionBank::QuestionTypeToString(Attempt.QuestionType),
+			Attempt.QuestionText,
+			Attempt.SelectedAnswer,
+			Attempt.CorrectAnswer,
+			Attempt.bCorrect ? TEXT("Correct") : TEXT("Wrong"),
+			Attempt.Explanation,
+			FString::FromInt(Attempt.PointsEarned),
+			Attempt.bCorrection ? TEXT("Yes") : TEXT("No"),
+			Attempt.TeamSummary,
+			FBHRevisionQuestionBank::TopicToString(Attempt.AdaptiveRecommendedTopic),
+			FBHRevisionQuestionBank::DifficultyToString(Attempt.AdaptiveRecommendedDifficulty),
+			Attempt.AdaptiveReason
+		}));
+	}
+
+	TArray<FString> QuestionLines;
+	QuestionLines.Add(MakeCsvRow({
+		TEXT("QuestionId"), TEXT("Topic"), TEXT("Subtopic"), TEXT("Difficulty"), TEXT("Type"), TEXT("Question"),
+		TEXT("CorrectAnswer"), TEXT("Attempts"), TEXT("Correct"), TEXT("Wrong"), TEXT("AccuracyPercent"),
+		TEXT("MissedBy"), TEXT("Explanation")
+	}));
+
+	TArray<FString> QuestionKeys;
+	QuestionsByKey.GetKeys(QuestionKeys);
+	QuestionKeys.Sort();
+	for (const FString& QuestionKey : QuestionKeys)
+	{
+		const FQuestionReportRow* Row = QuestionsByKey.Find(QuestionKey);
+		if (!Row)
+		{
+			continue;
+		}
+
+		TArray<FString> MissedBy = Row->MissedBy.Array();
+		MissedBy.Sort();
+		const int32 Wrong = FMath::Max(0, Row->Attempts - Row->Correct);
+		const float Accuracy = Row->Attempts > 0 ? 100.0f * static_cast<float>(Row->Correct) / static_cast<float>(Row->Attempts) : 0.0f;
+		const FBHQuestionAttemptRecord& First = Row->FirstAttempt;
+		QuestionLines.Add(MakeCsvRow({
+			First.QuestionId,
+			First.TopicName.IsEmpty() ? FBHRevisionQuestionBank::TopicToString(First.Topic) : First.TopicName,
+			First.QuestionSubtopic,
+			FBHRevisionQuestionBank::DifficultyToString(First.Difficulty),
+			FBHRevisionQuestionBank::QuestionTypeToString(First.QuestionType),
+			First.QuestionText,
+			First.CorrectAnswer,
+			FString::FromInt(Row->Attempts),
+			FString::FromInt(Row->Correct),
+			FString::FromInt(Wrong),
+			FString::Printf(TEXT("%.1f"), Accuracy),
+			FString::Join(MissedBy, TEXT("; ")),
+			First.Explanation
+		}));
+	}
+
+	const bool bSavedSummary = FFileHelper::SaveStringToFile(FString::Join(SummaryLines, LINE_TERMINATOR), *SummaryPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	const bool bSavedStudents = FFileHelper::SaveStringToFile(FString::Join(StudentLines, LINE_TERMINATOR), *StudentPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	const bool bSavedAttempts = FFileHelper::SaveStringToFile(FString::Join(AttemptLines, LINE_TERMINATOR), *AttemptsPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	const bool bSavedQuestions = FFileHelper::SaveStringToFile(FString::Join(QuestionLines, LINE_TERMINATOR), *QuestionsPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	if (!bSavedSummary || !bSavedStudents || !bSavedAttempts || !bSavedQuestions)
+	{
+		OutMessage = FString::Printf(TEXT("Classroom report export failed. Check write access to %s."), *ReportDir);
+		return false;
+	}
+
+	bRevisionReportExported = true;
+	OutMessage = FString::Printf(TEXT("Classroom report exported to %s"), *ReportDir);
+	UE_LOG(LogTemp, Display, TEXT("%s (%s, %s, %s, %s)"), *OutMessage, *SummaryPath, *StudentPath, *AttemptsPath, *QuestionsPath);
+	return true;
 }
 
 bool ABHGameMode::IsBotMode() const
@@ -2183,6 +4076,7 @@ FString ABHGameMode::GetBotMemoryReport() const
 {
 	TArray<FString> Lines;
 	Lines.Add(GetBotStatusReport());
+	Lines.Add(GetAtmosphereDebugStatus());
 	for (const TObjectPtr<ABHBotController>& Bot : BotControllers)
 	{
 		if (Bot && Lines.Num() < 8)
@@ -2205,6 +4099,11 @@ FString ABHGameMode::GetBotMemoryReport() const
 			*Stimulus.Reason));
 	}
 	return FString::Join(Lines, TEXT(" | "));
+}
+
+FString ABHGameMode::GetAtmosphereDebugStatus() const
+{
+	return AtmosphereDirector ? AtmosphereDirector->GetDebugStatus() : TEXT("Atmosphere unavailable");
 }
 
 void ABHGameMode::ForceBotHunt(ABHPlayerController* RequestingController)
@@ -2399,6 +4298,11 @@ void ABHGameMode::TriggerPracticeJumpscare(ABHPlayerController* RequestingContro
 		return;
 	}
 
+	if (TriggerManualScare(Target, EBHScareEventType::MonsterCharge))
+	{
+		return;
+	}
+
 	const FVector TargetLocation = Target->GetActorLocation();
 	FVector Forward = RequestingController ? RequestingController->GetControlRotation().Vector() : Target->GetActorForwardVector();
 	Forward.Z = 0.0f;
@@ -2466,12 +4370,15 @@ void ABHGameMode::TriggerPracticeJumpscare(ABHPlayerController* RequestingContro
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.Owner = RequestingController;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	const FBHJumpscareVariant Variant = ChooseJumpscareVariant(EBHScareEventType::MonsterCharge);
+	const float FocusHeight = FMath::Clamp(Variant.FocusHeight, 80.0f, 320.0f);
 	if (ABHJumpscareMonster* Monster = GetWorld()->SpawnActor<ABHJumpscareMonster>(SpawnLocation, SpawnRotation, SpawnParams))
 	{
 		Monster->Configure(Target, 9300.0f, 8.6f, 3.05f);
+		Monster->ConfigureVariant(Variant);
 		if (ABHPlayerController* TargetPC = Cast<ABHPlayerController>(Target->GetController()))
 		{
-			TargetPC->ClientSnapViewToFlatFocus(SpawnLocation + FVector(0.0f, 0.0f, 145.0f));
+			TargetPC->ClientSnapViewToFlatFocus(SpawnLocation + FVector(0.0f, 0.0f, FocusHeight));
 		}
 		FreezeTargetForJumpscare(Target, 3.0f);
 		CutLightsForJumpscare(TargetLocation, SpawnLocation, 0.0f, 10.25f);
@@ -2505,7 +4412,10 @@ void ABHGameMode::TriggerTargetedJumpscare(ABHPlayerController* RequestingContro
 		return;
 	}
 
-	TriggerMonsterChargeJumpscare(Target);
+	if (!TriggerManualScare(Target, EBHScareEventType::MonsterCharge))
+	{
+		TriggerMonsterChargeJumpscare(Target);
+	}
 	if (ABHPlayerController* TargetPC = Cast<ABHPlayerController>(Target->GetController()))
 	{
 		TargetPC->ClientShowStatusMessage(TEXT("The Teacher chose you."), 2.75f);
@@ -2564,7 +4474,14 @@ void ABHGameMode::BuildRuntimeFacility()
 	ExitGates.Reset();
 	FlickerLights.Reset();
 	ObjectiveStations.Reset();
+	EscapeStationManagers.Reset();
 	ScarePoints.Reset();
+	TrainIntermissionManager = nullptr;
+	const FString IntermissionOption = GetWorld()->URL.GetOption(TEXT("BHTrainIntermission="), TEXT(""));
+	bTrainIntermissionLevel = IsTrueOption(IntermissionOption);
+	const FString StageIndexOption = GetWorld()->URL.GetOption(TEXT("BHStageIndex="), TEXT(""));
+	RuntimeStageIndex = StageIndexOption.IsEmpty() ? GetConfiguredStageIndex() : FMath::Clamp(FCString::Atoi(*StageIndexOption), 0, 2);
+	PendingIntermissionResult = RoundPhaseFromUrlValue(GetWorld()->URL.GetOption(TEXT("BHIntermissionResult="), TEXT("")));
 	const FString TestOption = GetWorld()->URL.GetOption(TEXT("BHTestMode="), TEXT(""));
 	bTestMode = IsTrueOption(TestOption);
 	const FString PracticeOption = GetWorld()->URL.GetOption(TEXT("BHPractice="), TEXT(""));
@@ -2580,6 +4497,11 @@ void ABHGameMode::BuildRuntimeFacility()
 	const FString RevisionModeOption = GetWorld()->URL.GetOption(TEXT("BHRevisionMode="), TEXT(""));
 	bRevisionMode = !bPracticeMode && !bTestMode && IsTrueOption(RevisionModeOption);
 	RevisionMode = bRevisionMode ? EBHRevisionMode::PhysicsClassroom : EBHRevisionMode::None;
+	if (bTrainIntermissionLevel)
+	{
+		bRevisionMode = true;
+		RevisionMode = EBHRevisionMode::PhysicsClassroom;
+	}
 	if (bRevisionMode)
 	{
 		const FString RevisionTopicsOption = GetWorld()->URL.GetOption(TEXT("BHRevisionTopics="), TEXT("All"));
@@ -2598,6 +4520,14 @@ void ABHGameMode::BuildRuntimeFacility()
 		RevisionReviewTimeRemaining = 0;
 		ObjectiveIntensity = 4;
 	}
+	if (bRevisionMode && !bTrainIntermissionLevel && HuntSecondsOption.IsEmpty() && Settings && Settings->bUseTrainIntermissions)
+	{
+		const int32 StageSeconds = RuntimeStageIndex <= 0
+			? Settings->StageOneSeconds
+			: (RuntimeStageIndex == 1 ? Settings->StageTwoSeconds : Settings->StageThreeSeconds);
+		HuntSeconds = FMath::Clamp(StageSeconds, 60, 3600);
+		RevisionRoundDuration = HuntSeconds;
+	}
 	const FString BotModeOption = GetWorld()->URL.GetOption(TEXT("BHBotMode="), TEXT(""));
 	bBotMode = !bPracticeMode && !bTestMode && !bRevisionMode && IsTrueOption(BotModeOption);
 	if (bBotMode)
@@ -2615,9 +4545,9 @@ void ABHGameMode::BuildRuntimeFacility()
 	RuntimeLevelName = GetWorld()->URL.GetOption(TEXT("BHLevel="), TEXT(""));
 	if (RuntimeLevelName.IsEmpty())
 	{
-		RuntimeLevelName = TEXT("Facility");
+		RuntimeLevelName = bTrainIntermissionLevel ? TEXT("TrainIntermission") : GetDefaultMapForStage(RuntimeStageIndex);
 	}
-	RuntimeLevelName = NormalizeBHLevelName(RuntimeLevelName);
+	RuntimeLevelName = bTrainIntermissionLevel ? TEXT("TrainIntermission") : NormalizeBHLevelName(RuntimeLevelName);
 	NextRuntimeLevelName = RuntimeLevelName;
 	const FString FogPresetOption = GetWorld()->URL.GetOption(TEXT("BHFogPreset="), TEXT("Heavy"));
 	RuntimeFogPreset = ParseFogPreset(FogPresetOption, EBHFogPreset::Heavy);
@@ -2625,23 +4555,35 @@ void ABHGameMode::BuildRuntimeFacility()
 	const FString FogOverrideOption = GetWorld()->URL.GetOption(TEXT("BHFogOverride="), TEXT(""));
 	bFogPresetOverride = IsTrueOption(FogOverrideOption);
 
+	if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
+	{
+		BHGI->SetPersistentStageIndex(RuntimeStageIndex);
+	}
+
+	if (bTrainIntermissionLevel)
+	{
+		NextRuntimeLevelName = GetNextMapAfterStage(RuntimeStageIndex);
+		BuildTrainIntermissionLevel();
+		return;
+	}
+
 	if (RuntimeLevelName.Equals(TEXT("Substation"), ESearchCase::IgnoreCase))
 	{
 		RuntimeLevelName = TEXT("Substation");
-		NextRuntimeLevelName = RuntimeLevelName;
+		NextRuntimeLevelName = GetNextMapAfterStage(RuntimeStageIndex);
 		BuildSubstationLevel();
 		return;
 	}
 	if (RuntimeLevelName.Equals(TEXT("Foggrounds"), ESearchCase::IgnoreCase))
 	{
 		RuntimeLevelName = TEXT("Foggrounds");
-		NextRuntimeLevelName = RuntimeLevelName;
+		NextRuntimeLevelName = GetNextMapAfterStage(RuntimeStageIndex);
 		BuildFoggroundsLevel();
 		return;
 	}
 
 	RuntimeLevelName = TEXT("Facility");
-	NextRuntimeLevelName = RuntimeLevelName;
+	NextRuntimeLevelName = GetNextMapAfterStage(RuntimeStageIndex);
 	SurvivorSpawns = {
 		FVector(3450.0f, -2800.0f, 120.0f),
 		FVector(3800.0f, -2350.0f, 120.0f),
@@ -2673,6 +4615,7 @@ void ABHGameMode::BuildRuntimeFacility()
 	SpawnBlock(FVector(0.0f, 4400.0f, CenterZForBlockBottom(0.0f, 3.35f)), FVector(110.0f, 0.35f, 3.35f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Plaster);
 	SpawnBlock(FVector(-5500.0f, 0.0f, CenterZForBlockBottom(0.0f, 3.35f)), FVector(0.35f, 88.0f, 3.35f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Plaster);
 	SpawnBlock(FVector(5500.0f, 0.0f, CenterZForBlockBottom(0.0f, 3.35f)), FVector(0.35f, 88.0f, 3.35f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Plaster);
+	AddMapContainment(5500.0f, 4400.0f);
 
 	const TArray<TPair<FVector, FVector>> InternalWalls = {
 		{FVector(-3000.0f, -2400.0f, 165.0f), FVector(26.0f, 0.28f, 3.1f)},
@@ -2727,20 +4670,25 @@ void ABHGameMode::BuildRuntimeFacility()
 		}
 	};
 
-	SpawnDoorAt(FVector(-3000.0f, -1300.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f));
-	SpawnDoorAt(FVector(-1500.0f, -1200.0f, 120.0f), FRotator::ZeroRotator);
-	SpawnDoorAt(FVector(1350.0f, -1200.0f, 120.0f), FRotator::ZeroRotator);
-	SpawnDoorAt(FVector(3000.0f, -1350.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f));
-	SpawnDoorAt(FVector(-1500.0f, 1200.0f, 120.0f), FRotator::ZeroRotator);
-	SpawnDoorAt(FVector(1500.0f, 1200.0f, 120.0f), FRotator::ZeroRotator);
-	SpawnDoorAt(FVector(3000.0f, 800.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f));
-	SpawnDoorAt(FVector(-3000.0f, 800.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f));
-	SpawnDoorAt(FVector(0.0f, -2400.0f, 120.0f), FRotator::ZeroRotator);
-	SpawnDoorAt(FVector(0.0f, 2400.0f, 120.0f), FRotator::ZeroRotator);
-	SpawnDoorAt(FVector(-5000.0f, -2450.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f));
-	SpawnDoorAt(FVector(-5000.0f, 2950.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f));
-	SpawnDoorAt(FVector(5000.0f, -3000.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f));
-	SpawnDoorAt(FVector(5000.0f, 2950.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f));
+	SpawnDoorAt(FVector(-900.0f, -2400.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f));
+	SpawnDoorAt(FVector(1900.0f, -2400.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f));
+	SpawnDoorAt(FVector(-1550.0f, -1200.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f));
+	SpawnDoorAt(FVector(1550.0f, -1200.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f));
+	SpawnDoorAt(FVector(-1600.0f, 1200.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f));
+	SpawnDoorAt(FVector(1600.0f, 1200.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f));
+	SpawnDoorAt(FVector(-750.0f, 2400.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f));
+	SpawnDoorAt(FVector(-3000.0f, -1500.0f, 120.0f), FRotator::ZeroRotator);
+	SpawnDoorAt(FVector(-3000.0f, 475.0f, 120.0f), FRotator::ZeroRotator);
+	SpawnDoorAt(FVector(-1500.0f, -1000.0f, 120.0f), FRotator::ZeroRotator);
+	SpawnDoorAt(FVector(-1500.0f, 1600.0f, 120.0f), FRotator::ZeroRotator);
+	SpawnDoorAt(FVector(1500.0f, -800.0f, 120.0f), FRotator::ZeroRotator);
+	SpawnDoorAt(FVector(1500.0f, 1350.0f, 120.0f), FRotator::ZeroRotator);
+	SpawnDoorAt(FVector(3000.0f, -1450.0f, 120.0f), FRotator::ZeroRotator);
+	SpawnDoorAt(FVector(3000.0f, 1000.0f, 120.0f), FRotator::ZeroRotator);
+	SpawnDoorAt(FVector(-5000.0f, -1850.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f));
+	SpawnDoorAt(FVector(-5000.0f, 1750.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f));
+	SpawnDoorAt(FVector(5000.0f, -1650.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f));
+	SpawnDoorAt(FVector(5000.0f, 1700.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f));
 
 	const TArray<TPair<FVector, FRotator>> Breakers = {
 		{FVector(-3950.0f, -2850.0f, 80.0f), FRotator(0.0f, 90.0f, 0.0f)},
@@ -2879,6 +4827,12 @@ void ABHGameMode::BuildRuntimeFacility()
 		GetWorld()->SpawnActor<ABHLocker>(Location, FRotator::ZeroRotator);
 	}
 
+	AddIndustrialClutter({
+		FVector(-5050.0f, -3650.0f, 45.0f), FVector(-5050.0f, 3650.0f, 45.0f),
+		FVector(5050.0f, -3650.0f, 45.0f), FVector(5050.0f, 3650.0f, 45.0f),
+		FVector(-4300.0f, -3950.0f, 45.0f), FVector(4300.0f, 3950.0f, 45.0f)
+	}, UtilityTint);
+
 	const FVector BatteryLocations[] = {
 		FVector(-3600.0f, -2000.0f, 70.0f), FVector(3900.0f, -1900.0f, 70.0f), FVector(-3900.0f, 1700.0f, 70.0f),
 		FVector(3650.0f, 1500.0f, 70.0f), FVector(-650.0f, -2750.0f, 70.0f), FVector(550.0f, 2750.0f, 70.0f),
@@ -2901,39 +4855,18 @@ void ABHGameMode::BuildRuntimeFacility()
 		GetWorld()->SpawnActor<ABHPanicAlarm>(Location, FRotator::ZeroRotator);
 	}
 
-	if (ABHExitGate* ExitGate = GetWorld()->SpawnActor<ABHExitGate>(FVector(4450.0f, 0.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)))
+	const FVector FacilityEastStationGate(5000.0f, 0.0f, 120.0f);
+	const FVector FacilityWestStationGate(-5000.0f, 0.0f, 120.0f);
+	if (ABHExitGate* ExitGate = GetWorld()->SpawnActor<ABHExitGate>(FacilityEastStationGate, FRotator(0.0f, 90.0f, 0.0f)))
 	{
 		ExitGates.Add(ExitGate);
 	}
-	if (ABHExitGate* ExitGate = GetWorld()->SpawnActor<ABHExitGate>(FVector(-5450.0f, 0.0f, 120.0f), FRotator(0.0f, -90.0f, 0.0f)))
+	if (ABHExitGate* ExitGate = GetWorld()->SpawnActor<ABHExitGate>(FacilityWestStationGate, FRotator(0.0f, -90.0f, 0.0f)))
 	{
 		ExitGates.Add(ExitGate);
 	}
-	SpawnBlock(FVector(4428.0f, -520.0f, 165.0f), FVector(0.04f, 1.25f, 0.65f), FLinearColor::White, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
-	SpawnBlock(FVector(4428.0f, 520.0f, 165.0f), FVector(0.04f, 1.25f, 0.65f), FLinearColor::White, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
-	SpawnBlock(FVector(-5428.0f, -520.0f, 165.0f), FVector(0.04f, 1.25f, 0.65f), FLinearColor::White, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
-	SpawnBlock(FVector(-5428.0f, 520.0f, 165.0f), FVector(0.04f, 1.25f, 0.65f), FLinearColor::White, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
-	SpawnBlock(FVector(-3600.0f, -3558.0f, 165.0f), FVector(1.25f, 0.04f, 0.65f), FLinearColor::White, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
-	SpawnBlock(FVector(3600.0f, -3558.0f, 165.0f), FVector(1.25f, 0.04f, 0.65f), FLinearColor::White, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
-	const FLinearColor ExitGreen(0.05f, 0.84f, 0.42f, 1.0f);
-	const FLinearColor ExitAmber(0.98f, 0.76f, 0.12f, 1.0f);
-	const FLinearColor ExitBlue(0.10f, 0.52f, 0.92f, 1.0f);
-	const float ExitFloorZ = CenterZForBlockBottom(0.72f, 0.045f);
-	const float FacilityExitCenters[] = {4975.0f, -4975.0f};
-	const float FacilityGateXs[] = {4450.0f, -5450.0f};
-	for (int32 ExitIndex = 0; ExitIndex < UE_ARRAY_COUNT(FacilityExitCenters); ++ExitIndex)
-	{
-		const float CenterX = FacilityExitCenters[ExitIndex];
-		const float GateX = FacilityGateXs[ExitIndex];
-		const float Direction = CenterX > 0.0f ? 1.0f : -1.0f;
-		SpawnBlock(FVector(CenterX, 0.0f, ExitFloorZ), FVector(7.4f, 2.25f, 0.045f), ExitGreen, FRotator::ZeroRotator, false, EBHBlockMaterial::Tiles);
-		SpawnBlock(FVector(CenterX, -275.0f, ExitFloorZ + 1.5f), FVector(7.0f, 0.08f, 0.055f), ExitAmber, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
-		SpawnBlock(FVector(CenterX, 275.0f, ExitFloorZ + 1.5f), FVector(7.0f, 0.08f, 0.055f), ExitAmber, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
-		SpawnBlock(FVector(GateX, 0.0f, 252.0f), FVector(0.08f, 2.45f, 0.16f), ExitGreen, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
-		SpawnBlock(FVector(GateX, 0.0f, 68.0f), FVector(0.08f, 2.45f, 0.12f), ExitAmber, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
-		SpawnBlock(FVector(GateX - Direction * 420.0f, -350.0f, 92.0f), FVector(0.16f, 0.16f, 1.25f), ExitBlue, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
-		SpawnBlock(FVector(GateX - Direction * 420.0f, 350.0f, 92.0f), FVector(0.16f, 0.16f, 1.25f), ExitBlue, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
-	}
+	BuildMapSubwayExitStation(FacilityEastStationGate, 1.0f, TEXT("MECHANICS PLATFORM"), GetNextMapAfterStage(RuntimeStageIndex));
+	BuildMapSubwayExitStation(FacilityWestStationGate, -1.0f, TEXT("MAINTENANCE PLATFORM"), GetNextMapAfterStage(RuntimeStageIndex));
 
 	const struct FLightSpec { FVector Location; int32 Circuit; FLinearColor Color; float Intensity; } Lights[] = {
 		{FVector(-3650.0f, -2850.0f, 275.0f), 1, FLinearColor(0.95f, 0.75f, 0.45f, 1.0f), 1050.0f},
@@ -2995,11 +4928,26 @@ void ABHGameMode::BuildRuntimeFacility()
 
 	if (ABHSecurityTerminal* Terminal = GetWorld()->SpawnActor<ABHSecurityTerminal>(FVector(-4200.0f, 0.0f, 110.0f), FRotator(0.0f, 90.0f, 0.0f)))
 	{
-		Terminal->Configure(100, FText::FromString(TEXT("Open Central Shutters")));
+		Terminal->Configure(100, FText::FromString(TEXT("Toggle Central Shutters")));
 	}
 	if (ABHSecurityTerminal* Terminal = GetWorld()->SpawnActor<ABHSecurityTerminal>(FVector(4200.0f, 1000.0f, 110.0f), FRotator(0.0f, -90.0f, 0.0f)))
 	{
-		Terminal->Configure(100, FText::FromString(TEXT("Open Central Shutters")));
+		Terminal->Configure(100, FText::FromString(TEXT("Toggle Central Shutters")));
+	}
+	GetWorld()->SpawnActor<ABHSecurityMonitor>(FVector(0.0f, -3650.0f, 115.0f), FRotator(0.0f, 90.0f, 0.0f));
+	const TArray<TPair<FVector, FRotator>> CameraSpecs = {
+		{FVector(-3800.0f, -2650.0f, 330.0f), FRotator(0.0f, 42.0f, 0.0f)},
+		{FVector(3800.0f, 2500.0f, 330.0f), FRotator(0.0f, -138.0f, 0.0f)},
+		{FVector(0.0f, 3180.0f, 330.0f), FRotator(0.0f, -90.0f, 0.0f)}
+	};
+	for (int32 CameraIndex = 0; CameraIndex < CameraSpecs.Num(); ++CameraIndex)
+	{
+		const TPair<FVector, FRotator>& CameraSpec = CameraSpecs[CameraIndex];
+		if (ABHSecurityCamera* Camera = GetWorld()->SpawnActor<ABHSecurityCamera>(CameraSpec.Key, CameraSpec.Value))
+		{
+			Camera->ConfigureCamera(4300.0f, 48.0f, 100);
+			SpawnCCTVZoneForCamera(Camera, 100, TEXT("facility CCTV zone"), true);
+		}
 	}
 
 	SpawnAmbient(FVector(-3800.0f, -3000.0f, 160.0f), 42.0f, 0.18f, 0.04f, 0.16f);
@@ -3115,15 +5063,16 @@ void ABHGameMode::BuildFoggroundsLevel()
 	};
 	const auto SpawnDoorGateFrame = [&](const FVector& Origin, const FRotator& Rotation, bool bLiftGate)
 	{
+		const FVector FrameOrigin = ResolveFoggroundsDoorFrameOrigin(Origin);
 		const FVector PostScale(0.18f, 0.12f, bLiftGate ? 3.18f : 2.58f);
-		SpawnBlock(LocalPoint(Origin, Rotation, FVector(0.0f, -98.0f, CenterZForBlockBottom(0.0f, PostScale.Z))), PostScale, WetMetal, Rotation, true, EBHBlockMaterial::PaintedMetal);
-		SpawnBlock(LocalPoint(Origin, Rotation, FVector(0.0f, 98.0f, CenterZForBlockBottom(0.0f, PostScale.Z))), PostScale, WetMetal, Rotation, true, EBHBlockMaterial::PaintedMetal);
-		SpawnBlock(LocalPoint(Origin, Rotation, FVector(0.0f, 0.0f, bLiftGate ? 325.0f : 264.0f)), FVector(0.20f, 2.35f, 0.14f), Warning, Rotation, false, EBHBlockMaterial::WarningSign);
+		SpawnBlock(LocalPoint(FrameOrigin, Rotation, FVector(0.0f, -98.0f, CenterZForBlockBottom(0.0f, PostScale.Z))), PostScale, WetMetal, Rotation, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(LocalPoint(FrameOrigin, Rotation, FVector(0.0f, 98.0f, CenterZForBlockBottom(0.0f, PostScale.Z))), PostScale, WetMetal, Rotation, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(LocalPoint(FrameOrigin, Rotation, FVector(0.0f, 0.0f, bLiftGate ? 325.0f : 264.0f)), FVector(0.20f, 2.35f, 0.14f), Warning, Rotation, false, EBHBlockMaterial::WarningSign);
 		if (bLiftGate)
 		{
-			SpawnBlock(LocalPoint(Origin, Rotation, FVector(18.0f, 0.0f, 282.0f)), FVector(0.08f, 2.15f, 0.08f), WetMetal, Rotation, true, EBHBlockMaterial::RustedMetal);
+			SpawnBlock(LocalPoint(FrameOrigin, Rotation, FVector(18.0f, 0.0f, 282.0f)), FVector(0.08f, 2.15f, 0.08f), WetMetal, Rotation, true, EBHBlockMaterial::RustedMetal);
 		}
-		SpawnBlock(LocalPoint(Origin, Rotation, FVector(0.0f, 0.0f, CenterZForBlockBottom(0.50f, 0.035f))), FVector(0.32f, 2.15f, 0.035f), Road, Rotation, false, EBHBlockMaterial::DiamondPlate);
+		SpawnBlock(LocalPoint(FrameOrigin, Rotation, FVector(0.0f, 0.0f, CenterZForBlockBottom(0.50f, 0.035f))), FVector(0.32f, 2.15f, 0.035f), Road, Rotation, false, EBHBlockMaterial::DiamondPlate);
 	};
 	const auto SpawnHiderCulvert = [&](const FVector& Origin, const FRotator& Rotation, float LengthScale)
 	{
@@ -3145,7 +5094,9 @@ void ABHGameMode::BuildFoggroundsLevel()
 		SpawnBlock(LocalPoint(Origin, Rotation, FVector(0.0f, 0.0f, CenterZForBlockBottom(0.58f, 0.040f))), FVector(6.5f, 5.1f, 0.040f), Road, Rotation, false, EBHBlockMaterial::DiamondPlate);
 		SpawnBlock(LocalPoint(Origin, Rotation, FVector(325.0f, 0.0f, CenterZForBlockBottom(0.0f, 2.75f))), FVector(0.20f, 5.1f, 2.75f), RoomWall, Rotation, true, EBHBlockMaterial::PaintedMetal);
 		SpawnBlock(LocalPoint(Origin, Rotation, FVector(0.0f, -255.0f, CenterZForBlockBottom(0.0f, 2.75f))), FVector(6.7f, 0.20f, 2.75f), RoomWall, Rotation, true, EBHBlockMaterial::PaintedMetal);
-		SpawnBlock(LocalPoint(Origin, Rotation, FVector(0.0f, 255.0f, CenterZForBlockBottom(0.0f, 2.75f))), FVector(6.7f, 0.20f, 2.75f), RoomWall, Rotation, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(LocalPoint(Origin, Rotation, FVector(-292.5f, 255.0f, CenterZForBlockBottom(0.0f, 2.75f))), FVector(0.85f, 0.20f, 2.75f), RoomWall, Rotation, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(LocalPoint(Origin, Rotation, FVector(167.5f, 255.0f, CenterZForBlockBottom(0.0f, 2.75f))), FVector(3.35f, 0.20f, 2.75f), RoomWall, Rotation, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(LocalPoint(Origin, Rotation, FVector(-125.0f, 255.0f, CenterZForBlockBottom(148.0f, 1.27f))), FVector(2.50f, 0.20f, 1.27f), RoomWall, Rotation, true, EBHBlockMaterial::PaintedMetal);
 		SpawnBlock(LocalPoint(Origin, Rotation, FVector(-325.0f, -190.0f, CenterZForBlockBottom(0.0f, 2.75f))), FVector(0.20f, 1.3f, 2.75f), RoomWall, Rotation, true, EBHBlockMaterial::PaintedMetal);
 		SpawnBlock(LocalPoint(Origin, Rotation, FVector(-325.0f, 190.0f, CenterZForBlockBottom(0.0f, 2.75f))), FVector(0.20f, 1.3f, 2.75f), RoomWall, Rotation, true, EBHBlockMaterial::PaintedMetal);
 		SpawnBlock(LocalPoint(Origin, Rotation, FVector(-325.0f, 0.0f, CenterZForBlockBottom(148.0f, 1.27f))), FVector(0.20f, 2.25f, 1.27f), RoomWall, Rotation, true, EBHBlockMaterial::PaintedMetal);
@@ -3160,6 +5111,7 @@ void ABHGameMode::BuildFoggroundsLevel()
 	SpawnBlock(FVector(0.0f, 6200.0f, CenterZForBlockBottom(0.0f, 2.4f)), FVector(158.0f, 0.18f, 2.4f), Wall, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
 	SpawnBlock(FVector(-7900.0f, 0.0f, CenterZForBlockBottom(0.0f, 2.4f)), FVector(0.18f, 124.0f, 2.4f), Wall, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
 	SpawnBlock(FVector(7900.0f, 0.0f, CenterZForBlockBottom(0.0f, 2.4f)), FVector(0.18f, 124.0f, 2.4f), Wall, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	AddMapContainment(7900.0f, 6200.0f);
 
 	SpawnBlock(FVector(5600.0f, -4850.0f, CenterZForBlockBottom(0.62f, 0.035f)), FVector(40.0f, 10.5f, 0.035f), Road, FRotator::ZeroRotator, false, EBHBlockMaterial::DiamondPlate);
 	SpawnBlock(FVector(0.0f, -4050.0f, CenterZForBlockBottom(0.58f, 0.035f)), FVector(118.0f, 7.0f, 0.035f), Road, FRotator::ZeroRotator, false, EBHBlockMaterial::DiamondPlate);
@@ -3217,14 +5169,14 @@ void ABHGameMode::BuildFoggroundsLevel()
 			bool bCrawl;
 		};
 		const FWallCutSpec WallCuts[] = {
-			{FVector(2500.0f, -3600.0f, 190.0f), -1650.0f, 132.0f, true},
-			{FVector(-4700.0f, -1200.0f, 190.0f), 1050.0f, 132.0f, true},
-			{FVector(-3900.0f, 1450.0f, 190.0f), -1250.0f, 132.0f, true},
-			{FVector(3950.0f, 3950.0f, 190.0f), -1050.0f, 132.0f, true},
-			{FVector(-6100.0f, 2600.0f, 190.0f), -1200.0f, 132.0f, true},
-			{FVector(-3100.0f, 900.0f, 190.0f), -1350.0f, 132.0f, true},
-			{FVector(3500.0f, -200.0f, 190.0f), 1200.0f, 132.0f, true},
-			{FVector(6200.0f, 2850.0f, 190.0f), -850.0f, 132.0f, true},
+			{FVector(2500.0f, -3600.0f, 190.0f), -700.0f, 132.0f, true},
+			{FVector(-4700.0f, -1200.0f, 190.0f), 350.0f, 132.0f, true},
+			{FVector(-3900.0f, 1450.0f, 190.0f), -650.0f, 132.0f, true},
+			{FVector(3950.0f, 3950.0f, 190.0f), -250.0f, 132.0f, true},
+			{FVector(-6100.0f, 2600.0f, 190.0f), -350.0f, 132.0f, true},
+			{FVector(-3100.0f, 900.0f, 190.0f), -400.0f, 132.0f, true},
+			{FVector(3500.0f, -200.0f, 190.0f), 350.0f, 132.0f, true},
+			{FVector(6200.0f, 2850.0f, 190.0f), -150.0f, 132.0f, true},
 			{FVector(-6100.0f, -2300.0f, 190.0f), 1200.0f, 118.0f, false},
 			{FVector(-700.0f, -1200.0f, 190.0f), 1000.0f, 118.0f, false},
 			{FVector(2500.0f, -3600.0f, 190.0f), 1000.0f, 118.0f, false},
@@ -3328,6 +5280,7 @@ void ABHGameMode::BuildFoggroundsLevel()
 	{
 		SpawnSecretRoom(Origin, Rotation);
 		SpawnHiderCulvert(LocalPoint(Origin, Rotation, FVector(-650.0f, 0.0f, 0.0f)), Rotation, 6.5f);
+		SpawnHiderCulvert(LocalPoint(Origin, Rotation, FVector(-125.0f, 580.0f, 0.0f)), Rotation + FRotator(0.0f, 90.0f, 0.0f), 6.5f);
 	};
 	SpawnSecretRoomWithCulvert(FVector(-6900.0f, -1700.0f, 0.0f), FRotator::ZeroRotator);
 	SpawnSecretRoomWithCulvert(FVector(5450.0f, 4750.0f, 0.0f), FRotator(0.0f, 180.0f, 0.0f));
@@ -3482,6 +5435,10 @@ void ABHGameMode::BuildFoggroundsLevel()
 	{
 		ExitGates.Add(ExitGate);
 	}
+	if (IsFinalStage())
+	{
+		BuildFoggroundsFinalStation();
+	}
 	const float ExitFloorZ = CenterZForBlockBottom(0.72f, 0.045f);
 	SpawnBlock(FVector(7100.0f, 0.0f, ExitFloorZ), FVector(8.4f, 2.8f, 0.045f), ExitGreen, FRotator::ZeroRotator, false, EBHBlockMaterial::Tiles);
 	SpawnBlock(FVector(-7100.0f, 0.0f, ExitFloorZ), FVector(8.4f, 2.8f, 0.045f), ExitGreen, FRotator::ZeroRotator, false, EBHBlockMaterial::Tiles);
@@ -3509,19 +5466,27 @@ void ABHGameMode::BuildFoggroundsLevel()
 		}
 	}
 
-	const TArray<TPair<FVector, int32>> FoggroundSwitches = {
-		{FVector(-7000.0f, -4100.0f, 120.0f), 1},
-		{FVector(2500.0f, -5300.0f, 120.0f), 2},
-		{FVector(-7050.0f, 900.0f, 120.0f), 3},
-		{FVector(7050.0f, -900.0f, 120.0f), 4},
-		{FVector(-1800.0f, 5250.0f, 120.0f), 5},
-		{FVector(5200.0f, 5000.0f, 120.0f), 6}
-	};
-	for (const TPair<FVector, int32>& Switch : FoggroundSwitches)
+	struct FFoggroundsScareSwitchSpec
 	{
-		if (ABHPowerSwitch* PowerSwitch = GetWorld()->SpawnActor<ABHPowerSwitch>(Switch.Key, FRotator::ZeroRotator))
+		FVector Location;
+		int32 Severity;
+		const TCHAR* Title;
+		float CooldownSeconds;
+	};
+
+	const FFoggroundsScareSwitchSpec FoggroundScareSwitches[] = {
+		{FVector(-7000.0f, -4100.0f, 120.0f), 1, TEXT("Shadow Flicker"), 45.0f},
+		{FVector(2500.0f, -5300.0f, 120.0f), 2, TEXT("Static Face"), 60.0f},
+		{FVector(-7050.0f, 900.0f, 120.0f), 3, TEXT("Hallway Lunge"), 75.0f},
+		{FVector(7050.0f, -900.0f, 120.0f), 4, TEXT("Blackout Charge"), 90.0f},
+		{FVector(-1800.0f, 5250.0f, 120.0f), 2, TEXT("Breath Behind"), 60.0f},
+		{FVector(5200.0f, 5000.0f, 120.0f), 3, TEXT("Glass Face"), 75.0f}
+	};
+	for (const FFoggroundsScareSwitchSpec& Switch : FoggroundScareSwitches)
+	{
+		if (ABHStudentScareSwitch* ScareSwitch = GetWorld()->SpawnActor<ABHStudentScareSwitch>(Switch.Location, FRotator::ZeroRotator))
 		{
-			PowerSwitch->Configure(Switch.Value, FText::FromString(FString::Printf(TEXT("Toggle Fog Circuit %d"), Switch.Value)));
+			ScareSwitch->Configure(Switch.Severity, Switch.Title, Switch.CooldownSeconds);
 		}
 	}
 
@@ -3531,10 +5496,25 @@ void ABHGameMode::BuildFoggroundsLevel()
 	}
 	if (ABHSecurityTerminal* Terminal = GetWorld()->SpawnActor<ABHSecurityTerminal>(FVector(-7000.0f, 0.0f, 110.0f), FRotator(0.0f, 90.0f, 0.0f)))
 	{
-		Terminal->Configure(300, FText::FromString(TEXT("Open Fogground Shutter")));
+		Terminal->Configure(300, FText::FromString(TEXT("Toggle Fogground Shutter")));
+	}
+	GetWorld()->SpawnActor<ABHSecurityMonitor>(FVector(-6500.0f, -800.0f, 115.0f), FRotator(0.0f, 90.0f, 0.0f));
+	const TArray<TPair<FVector, FRotator>> FoggroundCameras = {
+		{FVector(-5200.0f, 2400.0f, 360.0f), FRotator(0.0f, -35.0f, 0.0f)},
+		{FVector(5200.0f, -2400.0f, 360.0f), FRotator(0.0f, 145.0f, 0.0f)}
+	};
+	for (int32 CameraIndex = 0; CameraIndex < FoggroundCameras.Num(); ++CameraIndex)
+	{
+		const TPair<FVector, FRotator>& CameraSpec = FoggroundCameras[CameraIndex];
+		if (ABHSecurityCamera* Camera = GetWorld()->SpawnActor<ABHSecurityCamera>(CameraSpec.Key, CameraSpec.Value))
+		{
+			Camera->ConfigureCamera(5200.0f, 52.0f, 300);
+			SpawnCCTVZoneForCamera(Camera, 300, TEXT("foggrounds CCTV zone"), true);
+		}
 	}
 
 	AddIndustrialClutter({FVector(-5100.0f, -5050.0f, 55.0f), FVector(-700.0f, -4700.0f, 55.0f), FVector(4300.0f, -4900.0f, 55.0f), FVector(-6400.0f, 2100.0f, 55.0f), FVector(-1800.0f, 3200.0f, 55.0f), FVector(3600.0f, 3000.0f, 55.0f), FVector(6600.0f, 2200.0f, 55.0f)}, WetMetal);
+	AddIndustrialClutter({FVector(-7350.0f, -5550.0f, 55.0f), FVector(7350.0f, -5550.0f, 55.0f), FVector(-7350.0f, 5550.0f, 55.0f), FVector(7350.0f, 5550.0f, 55.0f)}, WetMetal);
 	AddSurfaceDetailGrid(7600.0f, 5900.0f, FLinearColor(0.08f, 0.12f, 0.13f, 1.0f));
 
 	FRandomStream NatureStream(73421);
@@ -3572,6 +5552,448 @@ void ABHGameMode::BuildFoggroundsLevel()
 
 	AddFoggroundsLightingPass();
 	AddFoggroundsMoodPass();
+	BuildRuntimeNavigation();
+}
+
+void ABHGameMode::BuildMapSubwayExitStation(const FVector& GateLocation, float DirectionSign, const FString& StationName, const FString& DestinationText)
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+
+	const float Direction = DirectionSign >= 0.0f ? 1.0f : -1.0f;
+	const auto StationPoint = [&](float TowardTrain, float AlongPlatform, float Z)
+	{
+		return FVector(GateLocation.X + Direction * TowardTrain, GateLocation.Y + AlongPlatform, Z);
+	};
+	const float MapHalfX = RuntimeLevelName.Equals(TEXT("Substation"), ESearchCase::IgnoreCase) ? 6100.0f : 5500.0f;
+	const float BoundaryX = Direction > 0.0f ? MapHalfX : -MapHalfX;
+	const float TowardBoundaryDistance = FMath::Max(360.0f, FMath::Abs(BoundaryX - GateLocation.X));
+	const auto SafeTowardTrain = [&](float TowardTrain, float HalfDepthCm)
+	{
+		if (TowardTrain <= 0.0f)
+		{
+			return TowardTrain;
+		}
+		return FMath::Min(TowardTrain, FMath::Max(0.0f, TowardBoundaryDistance - 38.0f - HalfDepthCm));
+	};
+	const auto SafeStationPoint = [&](float TowardTrain, float AlongPlatform, float Z, float HalfDepthCm)
+	{
+		return StationPoint(SafeTowardTrain(TowardTrain, HalfDepthCm), AlongPlatform, Z);
+	};
+
+	const FLinearColor PlatformTint(0.115f, 0.130f, 0.135f, 1.0f);
+	const FLinearColor ConcourseTint(0.090f, 0.105f, 0.110f, 1.0f);
+	const FLinearColor TrackTint(0.018f, 0.021f, 0.023f, 1.0f);
+	const FLinearColor RailTint(0.58f, 0.56f, 0.47f, 1.0f);
+	const FLinearColor TrainTint(0.130f, 0.170f, 0.180f, 1.0f);
+	const FLinearColor DoorTint(0.045f, 0.080f, 0.088f, 1.0f);
+	const FLinearColor WarningTint(0.94f, 0.62f, 0.14f, 1.0f);
+	const FLinearColor ExitGreen(0.12f, 0.92f, 0.46f, 1.0f);
+	const FLinearColor EmergencyRed(0.82f, 0.07f, 0.045f, 1.0f);
+	const FLinearColor GlassTint(0.028f, 0.065f, 0.075f, 1.0f);
+	const FLinearColor SignalWhite(0.66f, 0.88f, 0.92f, 1.0f);
+
+	SpawnBlock(StationPoint(-360.0f, 0.0f, CenterZForBlockTop(0.0f, 0.16f)), FVector(10.2f, 37.0f, 0.16f), PlatformTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+	SpawnBlock(StationPoint(-1040.0f, 0.0f, CenterZForBlockTop(0.0f, 0.14f)), FVector(6.2f, 22.0f, 0.14f), ConcourseTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+	SpawnBlock(StationPoint(-120.0f, 0.0f, CenterZForBlockBottom(296.0f, 0.14f)), FVector(12.0f, 40.0f, 0.14f), FLinearColor(0.055f, 0.064f, 0.067f, 1.0f), FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(StationPoint(-72.0f, -520.0f, 138.0f), FVector(0.18f, 0.11f, 2.35f), ExitGreen, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
+	SpawnBlock(StationPoint(-72.0f, 520.0f, 138.0f), FVector(0.18f, 0.11f, 2.35f), ExitGreen, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
+	SpawnBlock(StationPoint(-72.0f, 0.0f, 260.0f), FVector(0.20f, 10.8f, 0.12f), ExitGreen, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
+	SpawnBlock(StationPoint(-96.0f, 0.0f, 286.0f), FVector(0.12f, 7.8f, 0.055f), SignalWhite, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
+	for (int32 GuideIndex = 0; GuideIndex < 4; ++GuideIndex)
+	{
+		const float TowardGate = -1120.0f + GuideIndex * 230.0f;
+		SpawnBlock(StationPoint(TowardGate, -72.0f, 7.0f), FVector(1.35f, 0.045f, 0.035f), ExitGreen, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
+		SpawnBlock(StationPoint(TowardGate, 72.0f, 7.0f), FVector(1.35f, 0.045f, 0.035f), ExitGreen, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
+	}
+
+	SpawnBlock(SafeStationPoint(340.0f, 0.0f, CenterZForBlockTop(-36.0f, 0.15f), 205.0f), FVector(4.1f, 40.0f, 0.15f), TrackTint, FRotator::ZeroRotator, true, EBHBlockMaterial::RustedMetal);
+	SpawnBlock(SafeStationPoint(245.0f, 0.0f, 16.0f, 5.0f), FVector(0.10f, 38.0f, 0.10f), RailTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(SafeStationPoint(435.0f, 0.0f, 16.0f, 5.0f), FVector(0.10f, 38.0f, 0.10f), RailTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(SafeStationPoint(500.0f, 0.0f, CenterZForBlockBottom(-24.0f, 3.25f), 11.0f), FVector(0.22f, 41.0f, 3.25f), TrackTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+
+	const float PortalToward = SafeTowardTrain(462.0f, 16.0f);
+	SpawnBlock(StationPoint(PortalToward, -1875.0f, 148.0f), FVector(0.32f, 0.26f, 2.95f), FLinearColor(0.070f, 0.082f, 0.086f, 1.0f), FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+	SpawnBlock(StationPoint(PortalToward, 1875.0f, 148.0f), FVector(0.32f, 0.26f, 2.95f), FLinearColor(0.070f, 0.082f, 0.086f, 1.0f), FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+	SpawnBlock(StationPoint(PortalToward, 0.0f, 286.0f), FVector(0.34f, 38.0f, 0.18f), WarningTint, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
+
+	SpawnBlock(SafeStationPoint(120.0f, -1220.0f, 152.0f, 31.0f), FVector(0.62f, 10.4f, 2.58f), TrainTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(SafeStationPoint(120.0f, 1220.0f, 152.0f, 31.0f), FVector(0.62f, 10.4f, 2.58f), TrainTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(SafeStationPoint(120.0f, 0.0f, 280.0f, 32.0f), FVector(0.64f, 7.0f, 0.20f), TrainTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(SafeStationPoint(82.0f, -430.0f, 132.0f, 8.0f), FVector(0.16f, 0.18f, 2.15f), DoorTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(SafeStationPoint(82.0f, 430.0f, 132.0f, 8.0f), FVector(0.16f, 0.18f, 2.15f), DoorTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(SafeStationPoint(82.0f, 0.0f, 248.0f, 9.0f), FVector(0.18f, 4.7f, 0.13f), ExitGreen, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
+	SpawnBlock(SafeStationPoint(68.0f, -240.0f, 96.0f, 6.0f), FVector(0.12f, 0.78f, 1.46f), EmergencyRed, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(SafeStationPoint(68.0f, 240.0f, 96.0f, 6.0f), FVector(0.12f, 0.78f, 1.46f), EmergencyRed, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+
+	for (float DoorY : {-1500.0f, 1500.0f})
+	{
+		SpawnBlock(SafeStationPoint(76.0f, DoorY - 260.0f, 124.0f, 6.0f), FVector(0.12f, 0.06f, 1.90f), DoorTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(SafeStationPoint(76.0f, DoorY + 260.0f, 124.0f, 6.0f), FVector(0.12f, 0.06f, 1.90f), DoorTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(SafeStationPoint(76.0f, DoorY, 232.0f, 6.5f), FVector(0.13f, 2.8f, 0.10f), EmergencyRed, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
+		SpawnBlock(SafeStationPoint(54.0f, DoorY - 180.0f, 194.0f, 4.5f), FVector(0.09f, 0.34f, 0.08f), ExitGreen, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
+		SpawnBlock(SafeStationPoint(54.0f, DoorY + 180.0f, 194.0f, 4.5f), FVector(0.09f, 0.34f, 0.08f), ExitGreen, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
+	}
+
+	SpawnBlock(SafeStationPoint(12.0f, 0.0f, 25.0f, 6.0f), FVector(0.12f, 36.5f, 0.15f), WarningTint, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
+	for (int32 StripIndex = 0; StripIndex < 11; ++StripIndex)
+	{
+		const float Y = -1650.0f + StripIndex * 330.0f;
+		SpawnBlock(SafeStationPoint(32.0f, Y, 31.0f, 5.5f), FVector(0.11f, 0.42f, 0.055f), WarningTint, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
+	}
+	for (int32 BollardIndex = 0; BollardIndex < 7; ++BollardIndex)
+	{
+		const float Y = -1500.0f + BollardIndex * 500.0f;
+		SpawnBlock(SafeStationPoint(-70.0f, Y, 62.0f, 4.5f), FVector(0.09f, 0.09f, 1.05f), SignalWhite, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+	}
+	SpawnBlock(StationPoint(-650.0f, -1980.0f, 128.0f), FVector(9.2f, 0.22f, 2.55f), TrackTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+	SpawnBlock(StationPoint(-650.0f, 1980.0f, 128.0f), FVector(9.2f, 0.22f, 2.55f), TrackTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+	SpawnBlock(StationPoint(-1260.0f, -1120.0f, 68.0f), FVector(1.0f, 0.16f, 0.88f), WarningTint, FRotator::ZeroRotator, true, EBHBlockMaterial::WarningSign);
+	SpawnBlock(StationPoint(-1260.0f, 0.0f, 68.0f), FVector(1.0f, 0.16f, 0.88f), WarningTint, FRotator::ZeroRotator, true, EBHBlockMaterial::WarningSign);
+	SpawnBlock(StationPoint(-1260.0f, 1120.0f, 68.0f), FVector(1.0f, 0.16f, 0.88f), WarningTint, FRotator::ZeroRotator, true, EBHBlockMaterial::WarningSign);
+
+	for (int32 PillarIndex = 0; PillarIndex < 6; ++PillarIndex)
+	{
+		const float Y = -1500.0f + PillarIndex * 600.0f;
+		SpawnBlock(StationPoint(-620.0f, Y, 124.0f), FVector(0.32f, 0.32f, 2.50f), FLinearColor(0.080f, 0.092f, 0.096f, 1.0f), FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+	}
+
+	for (int32 BenchIndex = 0; BenchIndex < 4; ++BenchIndex)
+	{
+		const float Y = -1350.0f + BenchIndex * 900.0f;
+		SpawnBlock(StationPoint(-720.0f, Y, 52.0f), FVector(2.2f, 0.55f, 0.42f), GlassTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+	}
+
+	const float DisplayYaw = Direction > 0.0f ? 0.0f : 180.0f;
+	const float ReverseDisplayYaw = FRotator::NormalizeAxis(DisplayYaw + 180.0f);
+	if (ABHTrainDisplayActor* DisplayA = GetWorld()->SpawnActor<ABHTrainDisplayActor>(StationPoint(-520.0f, -1180.0f, 226.0f), FRotator(0.0f, DisplayYaw, 0.0f)))
+	{
+		DisplayA->ConfigureExitCountdownDisplay(StationName, DestinationText, ExitGreen);
+		DisplayA->SetActorScale3D(FVector(1.08f, 1.0f, 1.08f));
+	}
+	if (ABHTrainDisplayActor* DisplayB = GetWorld()->SpawnActor<ABHTrainDisplayActor>(StationPoint(-520.0f, 1180.0f, 226.0f), FRotator(0.0f, ReverseDisplayYaw, 0.0f)))
+	{
+		DisplayB->ConfigureExitCountdownDisplay(StationName, DestinationText, ExitGreen);
+		DisplayB->SetActorScale3D(FVector(1.08f, 1.0f, 1.08f));
+	}
+
+	for (int32 LightIndex = 0; LightIndex < 4; ++LightIndex)
+	{
+		const FVector LightLocation = StationPoint(-220.0f, -1350.0f + LightIndex * 900.0f, 268.0f);
+		if (ABHFlickerLight* Light = GetWorld()->SpawnActor<ABHFlickerLight>(LightLocation, FRotator::ZeroRotator))
+		{
+			Light->Configure(0, LightIndex % 2 == 0 ? FLinearColor(0.35f, 0.88f, 0.78f, 1.0f) : FLinearColor(0.90f, 0.54f, 0.30f, 1.0f), 760.0f, 920.0f);
+			FlickerLights.Add(Light);
+		}
+	}
+}
+
+void ABHGameMode::BuildFoggroundsFinalStation()
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+
+	const FLinearColor PlatformTint(0.12f, 0.14f, 0.145f, 1.0f);
+	const FLinearColor TrackTint(0.025f, 0.028f, 0.030f, 1.0f);
+	const FLinearColor TrainTint(0.13f, 0.17f, 0.18f, 1.0f);
+	const FLinearColor WarningTint(0.95f, 0.58f, 0.12f, 1.0f);
+	const FLinearColor ExitGreen(0.14f, 0.95f, 0.44f, 1.0f);
+	const FLinearColor EmergencyRed(0.90f, 0.08f, 0.04f, 1.0f);
+	const FLinearColor GlassTint(0.03f, 0.08f, 0.10f, 1.0f);
+
+	SpawnBlock(FVector(6580.0f, 0.0f, CenterZForBlockTop(0.0f, 0.18f)), FVector(27.0f, 72.0f, 0.18f), PlatformTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+	SpawnBlock(FVector(7540.0f, 0.0f, CenterZForBlockTop(-42.0f, 0.15f)), FVector(8.5f, 76.0f, 0.15f), TrackTint, FRotator::ZeroRotator, true, EBHBlockMaterial::RustedMetal);
+	SpawnBlock(FVector(7810.0f, 0.0f, 152.0f), FVector(5.0f, 74.0f, 3.0f), TrainTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(7180.0f, -3725.0f, CenterZForBlockBottom(0.0f, 2.7f)), FVector(23.0f, 0.22f, 2.7f), TrackTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+	SpawnBlock(FVector(7180.0f, 3725.0f, CenterZForBlockBottom(0.0f, 2.7f)), FVector(23.0f, 0.22f, 2.7f), TrackTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+	SpawnBlock(FVector(5350.0f, 0.0f, CenterZForBlockBottom(0.0f, 2.45f)), FVector(0.24f, 58.0f, 2.45f), TrackTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+
+	for (int32 DoorIndex = 0; DoorIndex < 4; ++DoorIndex)
+	{
+		const float DoorY = -2250.0f + DoorIndex * 1500.0f;
+		SpawnBlock(FVector(7200.0f, DoorY, 232.0f), FVector(0.10f, 3.4f, 0.12f), ExitGreen, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
+		SpawnBlock(FVector(7235.0f, DoorY, 52.0f), FVector(0.12f, 3.6f, 0.11f), WarningTint, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
+		if (ABHTrainDoor* Door = GetWorld()->SpawnActor<ABHTrainDoor>(FVector(7150.0f, DoorY, 92.0f), FRotator::ZeroRotator))
+		{
+			Door->ConfigureDoor(true, FString::Printf(TEXT("Evacuation Door %d"), DoorIndex + 1));
+			if (EscapeStationManagers.Num() == 0)
+			{
+				if (ABHEscapeStationManager* Manager = GetWorld()->SpawnActor<ABHEscapeStationManager>(FVector(6500.0f, 0.0f, 120.0f), FRotator::ZeroRotator))
+				{
+					EscapeStationManagers.Add(Manager);
+				}
+			}
+			if (EscapeStationManagers.Num() > 0 && EscapeStationManagers[0])
+			{
+				EscapeStationManagers[0]->RegisterEscapeDoor(Door);
+			}
+		}
+	}
+
+	for (int32 SignIndex = 0; SignIndex < 3; ++SignIndex)
+	{
+		const float SignY = -2500.0f + SignIndex * 2500.0f;
+		if (ABHTrainDisplayActor* Display = GetWorld()->SpawnActor<ABHTrainDisplayActor>(FVector(5820.0f, SignY, 238.0f), FRotator(0.0f, 90.0f, 0.0f)))
+		{
+			Display->ConfigureDisplay(TEXT("FINAL TERMINAL LOCKED"), TEXT("Class average, individual mastery, and required questions must clear before evacuation."), EmergencyRed);
+			Display->SetActorScale3D(FVector(1.12f, 1.0f, 1.10f));
+			if (EscapeStationManagers.Num() == 0)
+			{
+				if (ABHEscapeStationManager* Manager = GetWorld()->SpawnActor<ABHEscapeStationManager>(FVector(6500.0f, 0.0f, 120.0f), FRotator::ZeroRotator))
+				{
+					EscapeStationManagers.Add(Manager);
+				}
+			}
+			if (EscapeStationManagers.Num() > 0 && EscapeStationManagers[0])
+			{
+				EscapeStationManagers[0]->RegisterDisplay(Display);
+			}
+		}
+	}
+
+	for (int32 PillarIndex = 0; PillarIndex < 10; ++PillarIndex)
+	{
+		const float Y = -3000.0f + PillarIndex * 660.0f;
+		const float X = (PillarIndex % 2 == 0) ? 6120.0f : 6620.0f;
+		SpawnBlock(FVector(X, Y, 125.0f), FVector(0.42f, 0.42f, 2.55f), TrackTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+	}
+
+	for (int32 CoverIndex = 0; CoverIndex < 8; ++CoverIndex)
+	{
+		const float Y = -2800.0f + CoverIndex * 800.0f;
+		SpawnBlock(FVector(5840.0f + (CoverIndex % 2) * 640.0f, Y, 52.0f), FVector(2.4f, 0.75f, 0.58f), CoverIndex % 2 == 0 ? TrainTint : WarningTint, FRotator(0.0f, CoverIndex * 17.0f, 0.0f), true, CoverIndex % 2 == 0 ? EBHBlockMaterial::PaintedMetal : EBHBlockMaterial::WarningSign);
+	}
+
+	SpawnBlock(FVector(5500.0f, -2850.0f, CenterZForBlockTop(0.0f, 0.12f)), FVector(14.0f, 7.5f, 0.12f), PlatformTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+	SpawnBlock(FVector(5500.0f, 0.0f, CenterZForBlockTop(0.0f, 0.12f)), FVector(16.0f, 9.0f, 0.12f), PlatformTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+	SpawnBlock(FVector(5500.0f, 2850.0f, CenterZForBlockTop(0.0f, 0.12f)), FVector(14.0f, 7.5f, 0.12f), PlatformTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+	SpawnBlock(FVector(6160.0f, -3120.0f, 112.0f), FVector(8.0f, 0.18f, 1.35f), GlassTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tinted);
+	SpawnBlock(FVector(6160.0f, 3120.0f, 112.0f), FVector(8.0f, 0.18f, 1.35f), GlassTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tinted);
+
+	const TArray<FVector> CrawlCenters = {
+		FVector(5960.0f, -2440.0f, 76.0f),
+		FVector(5960.0f, 2440.0f, 76.0f),
+		FVector(6420.0f, 620.0f, 76.0f)
+	};
+	for (int32 Index = 0; Index < CrawlCenters.Num(); ++Index)
+	{
+		const FVector Center = CrawlCenters[Index];
+		SpawnBlock(Center + FVector(0.0f, 0.0f, 38.0f), FVector(5.8f, 1.55f, 0.85f), TrainTint, FRotator::ZeroRotator, true, EBHBlockMaterial::RustedMetal);
+		SpawnBlock(Center + FVector(0.0f, -96.0f, 118.0f), FVector(5.6f, 0.10f, 0.18f), WarningTint, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
+		if (ABHCrawlSpaceVolume* Crawl = GetWorld()->SpawnActor<ABHCrawlSpaceVolume>(Center, FRotator::ZeroRotator))
+		{
+			Crawl->Configure(FVector(360.0f, 110.0f, 86.0f));
+		}
+	}
+
+	for (int32 LightIndex = 0; LightIndex < 9; ++LightIndex)
+	{
+		const FVector LightLocation(6500.0f, -3150.0f + LightIndex * 790.0f, 275.0f);
+		if (ABHFlickerLight* Light = GetWorld()->SpawnActor<ABHFlickerLight>(LightLocation, FRotator::ZeroRotator))
+		{
+			Light->Configure(0, LightIndex % 3 == 0 ? EmergencyRed : FLinearColor(0.34f, 0.88f, 0.76f, 1.0f), 820.0f, 920.0f);
+			FlickerLights.Add(Light);
+		}
+	}
+
+	if (ABHGameState* BHGS = GetGameState<ABHGameState>())
+	{
+		BHGS->SetFinalEscapeState(EBHFinalEscapeState::Locked, 0.0f, 0.0f, 0.0f);
+		BHGS->SetIntermissionLocks(false, false, false);
+	}
+}
+
+void ABHGameMode::BuildTrainIntermissionLevel()
+{
+	SurvivorSpawns = {
+		FVector(-520.0f, -140.0f, 124.0f), FVector(-420.0f, -40.0f, 124.0f), FVector(-320.0f, 80.0f, 124.0f),
+		FVector(-220.0f, 180.0f, 124.0f), FVector(-90.0f, -165.0f, 124.0f), FVector(20.0f, -55.0f, 124.0f),
+		FVector(130.0f, 65.0f, 124.0f), FVector(240.0f, 165.0f, 124.0f), FVector(360.0f, -145.0f, 124.0f),
+		FVector(470.0f, -45.0f, 124.0f), FVector(580.0f, 65.0f, 124.0f), FVector(690.0f, 165.0f, 124.0f)
+	};
+	HunterSpawn = FVector(-760.0f, 0.0f, 124.0f);
+
+	const FLinearColor FloorTint(0.055f, 0.065f, 0.068f, 1.0f);
+	const FLinearColor WallTint(0.10f, 0.12f, 0.13f, 1.0f);
+	const FLinearColor TrainMetal(0.18f, 0.22f, 0.23f, 1.0f);
+	const FLinearColor SeatTint(0.10f, 0.36f, 0.42f, 1.0f);
+	const FLinearColor PoleTint(0.70f, 0.66f, 0.54f, 1.0f);
+	const FLinearColor PlatformTint(0.17f, 0.16f, 0.14f, 1.0f);
+	const FLinearColor WarningTint(0.92f, 0.64f, 0.18f, 1.0f);
+
+	SpawnBlock(FVector(0.0f, 0.0f, CenterZForBlockTop(0.0f, 0.20f)), FVector(80.0f, 24.0f, 0.20f), FloorTint, FRotator::ZeroRotator, true, EBHBlockMaterial::DiamondPlate);
+	SpawnBlock(FVector(0.0f, -1180.0f, CenterZForBlockBottom(0.0f, 3.1f)), FVector(80.0f, 0.22f, 3.1f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(0.0f, 1180.0f, CenterZForBlockBottom(0.0f, 3.1f)), FVector(80.0f, 0.22f, 3.1f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(-4000.0f, 0.0f, CenterZForBlockBottom(0.0f, 3.1f)), FVector(0.22f, 24.0f, 3.1f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(4000.0f, 0.0f, CenterZForBlockBottom(0.0f, 3.1f)), FVector(0.22f, 24.0f, 3.1f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(0.0f, -620.0f, CenterZForBlockTop(3.0f, 0.07f)), FVector(80.0f, 3.7f, 0.07f), FLinearColor(0.018f, 0.021f, 0.023f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::RustedMetal);
+	SpawnBlock(FVector(0.0f, 620.0f, CenterZForBlockTop(3.0f, 0.07f)), FVector(80.0f, 3.7f, 0.07f), FLinearColor(0.018f, 0.021f, 0.023f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::RustedMetal);
+	SpawnBlock(FVector(0.0f, -720.0f, 21.0f), FVector(78.0f, 0.055f, 0.12f), FLinearColor(0.68f, 0.64f, 0.46f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(0.0f, -520.0f, 21.0f), FVector(78.0f, 0.055f, 0.12f), FLinearColor(0.68f, 0.64f, 0.46f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(0.0f, 520.0f, 21.0f), FVector(78.0f, 0.055f, 0.12f), FLinearColor(0.68f, 0.64f, 0.46f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(0.0f, 720.0f, 21.0f), FVector(78.0f, 0.055f, 0.12f), FLinearColor(0.68f, 0.64f, 0.46f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(-1150.0f, -392.0f, CenterZForBlockBottom(0.0f, 1.35f)), FVector(57.0f, 0.10f, 1.35f), FLinearColor(0.035f, 0.045f, 0.050f, 1.0f), FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(0.0f, 392.0f, CenterZForBlockBottom(0.0f, 1.35f)), FVector(80.0f, 0.10f, 1.35f), FLinearColor(0.035f, 0.045f, 0.050f, 1.0f), FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(0.0f, -520.0f, CenterZForBlockBottom(0.0f, 0.48f)), FVector(80.0f, 0.07f, 0.48f), FLinearColor(0.06f, 0.07f, 0.07f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::RustedMetal);
+	SpawnBlock(FVector(0.0f, 520.0f, CenterZForBlockBottom(0.0f, 0.48f)), FVector(80.0f, 0.07f, 0.48f), FLinearColor(0.06f, 0.07f, 0.07f, 1.0f), FRotator::ZeroRotator, true, EBHBlockMaterial::RustedMetal);
+
+	const FString Destination = PendingIntermissionResult == EBHRoundPhase::HunterWin
+		? TEXT("Remediation Platform")
+		: FString::Printf(TEXT("Next Stop: %s"), *GetNextMapAfterStage(RuntimeStageIndex));
+	const bool bFinalRecap = RuntimeStageIndex >= 2 || GetNextMapAfterStage(RuntimeStageIndex).Equals(TEXT("Final"), ESearchCase::IgnoreCase);
+
+	TrainIntermissionManager = GetWorld()->SpawnActor<ABHTrainIntermissionManager>(FVector::ZeroVector, FRotator::ZeroRotator);
+	if (TrainIntermissionManager)
+	{
+		TrainIntermissionManager->ConfigureIntermission(RuntimeStageIndex, GetNextMapAfterStage(RuntimeStageIndex), bFinalRecap ? TEXT("Final Station: Leaderboard") : Destination, bFinalRecap);
+	}
+
+	for (int32 CarIndex = 0; CarIndex < 5; ++CarIndex)
+	{
+		const float CenterX = -3000.0f + CarIndex * 1500.0f;
+		const FString CarName = CarIndex == 0
+			? TEXT("BOARDING")
+			: (CarIndex == 1 ? TEXT("RECAP") : (CarIndex == 2 ? TEXT("SHOP") : (CarIndex == 3 ? TEXT("SOCIAL") : TEXT("STATION"))));
+		SpawnBlock(FVector(CenterX, 0.0f, CenterZForBlockTop(0.0f, 0.18f)), FVector(13.0f, 4.8f, 0.18f), TrainMetal, FRotator::ZeroRotator, true, EBHBlockMaterial::DiamondPlate);
+		SpawnBlock(FVector(CenterX, -300.0f, 148.0f), FVector(13.0f, 0.14f, 2.1f), TrainMetal, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(CenterX, 300.0f, 148.0f), FVector(13.0f, 0.14f, 2.1f), TrainMetal, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(CenterX, 0.0f, 304.0f), FVector(13.0f, 4.9f, 0.16f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(CenterX, -238.0f, 70.0f), FVector(10.0f, 0.42f, 0.38f), SeatTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+		SpawnBlock(FVector(CenterX, 238.0f, 70.0f), FVector(10.0f, 0.42f, 0.38f), SeatTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+		SpawnBlock(FVector(CenterX, -265.0f, 166.0f), FVector(1.25f, 0.04f, 0.68f), FLinearColor(0.02f, 0.03f, 0.04f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::Tinted);
+		SpawnBlock(FVector(CenterX, 265.0f, 166.0f), FVector(1.25f, 0.04f, 0.68f), FLinearColor(0.02f, 0.03f, 0.04f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::Tinted);
+		SpawnBlock(FVector(CenterX, 0.0f, 260.0f), FVector(5.8f, 0.05f, 0.06f), WarningTint, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
+
+		for (int32 PoleIndex = 0; PoleIndex < 3; ++PoleIndex)
+		{
+			const float PoleX = CenterX - 420.0f + PoleIndex * 420.0f;
+			SpawnBlock(FVector(PoleX, -72.0f, 150.0f), FVector(0.07f, 0.07f, 2.7f), PoleTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+			SpawnBlock(FVector(PoleX, 72.0f, 150.0f), FVector(0.07f, 0.07f, 2.7f), PoleTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		}
+
+		if (ABHTrainDisplayActor* Display = GetWorld()->SpawnActor<ABHTrainDisplayActor>(FVector(CenterX - 250.0f, -304.0f, 170.0f), FRotator(0.0f, 0.0f, 0.0f)))
+		{
+			Display->ConfigureDisplay(CarName, TEXT("Class performance review in progress."), FLinearColor(0.38f, 0.90f, 0.78f, 1.0f));
+			if (TrainIntermissionManager)
+			{
+				TrainIntermissionManager->RegisterDisplay(Display);
+			}
+		}
+
+		if (ABHTrainTunnelMotionActor* TunnelLeft = GetWorld()->SpawnActor<ABHTrainTunnelMotionActor>(FVector(CenterX, -430.0f, 166.0f), FRotator::ZeroRotator))
+		{
+			TunnelLeft->ConfigureMotion(1250.0f, 740.0f);
+			if (TrainIntermissionManager)
+			{
+				TrainIntermissionManager->RegisterTunnelMotion(TunnelLeft);
+			}
+		}
+		if (ABHTrainTunnelMotionActor* TunnelRight = GetWorld()->SpawnActor<ABHTrainTunnelMotionActor>(FVector(CenterX, 430.0f, 166.0f), FRotator::ZeroRotator))
+		{
+			TunnelRight->ConfigureMotion(1250.0f, 740.0f);
+			if (TrainIntermissionManager)
+			{
+				TrainIntermissionManager->RegisterTunnelMotion(TunnelRight);
+			}
+		}
+	}
+
+	for (int32 CarIndex = 0; CarIndex < 5; ++CarIndex)
+	{
+		const float CenterX = -3000.0f + CarIndex * 1500.0f;
+		const FString CarName = CarIndex == 0
+			? TEXT("BOARDING")
+			: (CarIndex == 1 ? TEXT("RECAP") : (CarIndex == 2 ? TEXT("SHOP") : (CarIndex == 3 ? TEXT("SOCIAL") : TEXT("STATION"))));
+		if (ABHTrainDisplayActor* Display = GetWorld()->SpawnActor<ABHTrainDisplayActor>(FVector(CenterX + 250.0f, 304.0f, 170.0f), FRotator(0.0f, 180.0f, 0.0f)))
+		{
+			Display->ConfigureDisplay(CarName, TEXT("Class performance review in progress."), FLinearColor(0.38f, 0.90f, 0.78f, 1.0f));
+			if (TrainIntermissionManager)
+			{
+				TrainIntermissionManager->RegisterDisplay(Display);
+			}
+		}
+	}
+
+	for (int32 LinkIndex = 0; LinkIndex < 4; ++LinkIndex)
+	{
+		const float DoorX = -2250.0f + LinkIndex * 1500.0f;
+		if (ABHTrainDoor* Door = GetWorld()->SpawnActor<ABHTrainDoor>(FVector(DoorX, -304.0f, 92.0f), FRotator(0.0f, 0.0f, 0.0f)))
+		{
+			Door->ConfigureDoor(false, TEXT("Carriage Door"));
+			Door->SetDoorOpen(true);
+			if (TrainIntermissionManager)
+			{
+				TrainIntermissionManager->RegisterDoor(Door);
+			}
+		}
+	}
+
+	if (ABHTrainDoor* PlatformDoor = GetWorld()->SpawnActor<ABHTrainDoor>(FVector(3600.0f, -304.0f, 92.0f), FRotator(0.0f, 0.0f, 0.0f)))
+	{
+		PlatformDoor->ConfigureDoor(false, TEXT("Station Access"));
+		if (TrainIntermissionManager)
+		{
+			TrainIntermissionManager->RegisterDoor(PlatformDoor);
+		}
+	}
+
+	const EBHPowerupType ShopTypes[] = {
+		EBHPowerupType::StaminaBoost,
+		EBHPowerupType::SprintBurst,
+		EBHPowerupType::FlashlightBoost,
+		EBHPowerupType::QuestionHint,
+		EBHPowerupType::DecoySound,
+		EBHPowerupType::DoorRush
+	};
+	for (int32 Index = 0; Index < UE_ARRAY_COUNT(ShopTypes); ++Index)
+	{
+		if (ABHPowerupShopTerminal* Terminal = GetWorld()->SpawnActor<ABHPowerupShopTerminal>(FVector(-120.0f + (Index % 3) * 280.0f, 210.0f - (Index / 3) * 420.0f, 110.0f), FRotator(0.0f, 180.0f, 0.0f)))
+		{
+			Terminal->ConfigureShopItem(ShopTypes[Index]);
+		}
+	}
+
+	if (ABHTrainBonusQuestionTerminal* BonusTerminal = GetWorld()->SpawnActor<ABHTrainBonusQuestionTerminal>(FVector(-1450.0f, 0.0f, 118.0f), FRotator(0.0f, 180.0f, 0.0f)))
+	{
+		if (TrainIntermissionManager)
+		{
+			TrainIntermissionManager->RegisterBonusTerminal(BonusTerminal);
+		}
+	}
+
+	SpawnBlock(FVector(3300.0f, -760.0f, CenterZForBlockTop(0.0f, 0.22f)), FVector(20.0f, 6.0f, 0.22f), PlatformTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+	SpawnBlock(FVector(3300.0f, -1120.0f, 155.0f), FVector(20.0f, 0.28f, 3.1f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+	SpawnBlock(FVector(3300.0f, -430.0f, 26.0f), FVector(20.0f, 0.12f, 0.16f), WarningTint, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
+	SpawnBlock(FVector(2030.0f, -760.0f, 140.0f), FVector(0.24f, 6.8f, 2.8f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+	SpawnBlock(FVector(4570.0f, -760.0f, 140.0f), FVector(0.24f, 6.8f, 2.8f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+	SpawnBlock(FVector(2580.0f, -430.0f, 72.0f), FVector(8.0f, 0.09f, 0.92f), FLinearColor(0.10f, 0.12f, 0.12f, 1.0f), FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(4140.0f, -430.0f, 72.0f), FVector(6.8f, 0.09f, 0.92f), FLinearColor(0.10f, 0.12f, 0.12f, 1.0f), FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(3300.0f, -930.0f, 34.0f), FVector(17.5f, 0.08f, 0.18f), FLinearColor(0.07f, 0.075f, 0.07f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::RustedMetal);
+	SpawnBlock(FVector(2300.0f, -760.0f, 95.0f), FVector(0.38f, 0.38f, 1.9f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+	SpawnBlock(FVector(3100.0f, -760.0f, 95.0f), FVector(0.38f, 0.38f, 1.9f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+	SpawnBlock(FVector(3900.0f, -760.0f, 95.0f), FVector(0.38f, 0.38f, 1.9f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+
+	for (int32 LightIndex = 0; LightIndex < 8; ++LightIndex)
+	{
+		const FVector LightLocation(-3200.0f + LightIndex * 900.0f, 0.0f, 270.0f);
+		if (ABHFlickerLight* Light = GetWorld()->SpawnActor<ABHFlickerLight>(LightLocation, FRotator::ZeroRotator))
+		{
+			Light->Configure(0, FLinearColor(0.42f, 0.84f, 0.78f, 1.0f), 680.0f, 820.0f);
+			FlickerLights.Add(Light);
+		}
+	}
+
+	if (ABHGameState* BHGS = GetGameState<ABHGameState>())
+	{
+		BHGS->SetRoundPhase(EBHRoundPhase::Intermission);
+		BHGS->SetDirectorState(RoundSeed, bFinalRecap ? TEXT("Final station recap and leaderboard.") : TEXT("Review the recap, answer bonus questions, buy upgrades, and board before departure."), NextRuntimeLevelName);
+		BHGS->SetRevisionOptions(RevisionMode, RevisionTopicMask, RevisionDifficultyMix, RevisionClassThreshold, RevisionIndividualThreshold, RevisionRoundDuration, RevisionScareIntensity);
+	}
+	ConvertMonitorsBackToSurvivors(TEXT("subway intermission"));
 	BuildRuntimeNavigation();
 }
 
@@ -3823,7 +6245,7 @@ void ABHGameMode::BuildSubstationLevel()
 		FVector(1400.0f, 4000.0f, 120.0f), FVector(1400.0f, -4000.0f, 120.0f), FVector(-900.0f, 4100.0f, 120.0f),
 		FVector(-900.0f, -4100.0f, 120.0f), FVector(-3600.0f, 3500.0f, 120.0f), FVector(-3600.0f, -3500.0f, 120.0f)
 	};
-	HunterSpawn = FVector(-5600.0f, 0.0f, 120.0f);
+	HunterSpawn = FVector(-5600.0f, -1200.0f, 120.0f);
 
 	const FLinearColor Concrete(0.11f, 0.12f, 0.125f, 1.0f);
 	const FLinearColor Ceiling(0.045f, 0.050f, 0.055f, 1.0f);
@@ -3842,6 +6264,7 @@ void ABHGameMode::BuildSubstationLevel()
 	SpawnBlock(FVector(0.0f, 4600.0f, CenterZForBlockBottom(0.0f, 3.5f)), FVector(122.0f, 0.35f, 3.5f), Wall, FRotator::ZeroRotator, true, EBHBlockMaterial::Plaster);
 	SpawnBlock(FVector(-6100.0f, 0.0f, CenterZForBlockBottom(0.0f, 3.5f)), FVector(0.35f, 92.0f, 3.5f), Wall, FRotator::ZeroRotator, true, EBHBlockMaterial::Plaster);
 	SpawnBlock(FVector(6100.0f, 0.0f, CenterZForBlockBottom(0.0f, 3.5f)), FVector(0.35f, 92.0f, 3.5f), Wall, FRotator::ZeroRotator, true, EBHBlockMaterial::Plaster);
+	AddMapContainment(6100.0f, 4600.0f);
 
 	const TArray<TPair<FVector, FVector>> Walls = {
 		{FVector(-4400.0f, -2500.0f, 175.0f), FVector(34.0f, 0.30f, 3.25f)}, {FVector(-900.0f, -2500.0f, 175.0f), FVector(24.0f, 0.30f, 3.25f)}, {FVector(3200.0f, -2500.0f, 175.0f), FVector(40.0f, 0.30f, 3.25f)},
@@ -3859,12 +6282,12 @@ void ABHGameMode::BuildSubstationLevel()
 	}
 
 	const TArray<TPair<FVector, FRotator>> Doors = {
-		{FVector(-4500.0f, -2450.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)}, {FVector(-2500.0f, -2500.0f, 120.0f), FRotator::ZeroRotator},
-		{FVector(-500.0f, -2500.0f, 120.0f), FRotator::ZeroRotator}, {FVector(1800.0f, -2500.0f, 120.0f), FRotator::ZeroRotator},
-		{FVector(3900.0f, -2500.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)}, {FVector(-2500.0f, 0.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)},
-		{FVector(-500.0f, 0.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)}, {FVector(1800.0f, 0.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)},
-		{FVector(3900.0f, 0.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)}, {FVector(-2500.0f, 2500.0f, 120.0f), FRotator::ZeroRotator},
-		{FVector(-500.0f, 2500.0f, 120.0f), FRotator::ZeroRotator}, {FVector(1800.0f, 2500.0f, 120.0f), FRotator::ZeroRotator}
+		{FVector(-2400.0f, -2500.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)}, {FVector(750.0f, -2500.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)},
+		{FVector(-1850.0f, 0.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)}, {FVector(2200.0f, 0.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)},
+		{FVector(-1825.0f, 2500.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)}, {FVector(2450.0f, 2500.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)},
+		{FVector(-4500.0f, -1350.0f, 120.0f), FRotator::ZeroRotator}, {FVector(-2500.0f, 1150.0f, 120.0f), FRotator::ZeroRotator},
+		{FVector(-500.0f, -1300.0f, 120.0f), FRotator::ZeroRotator}, {FVector(1800.0f, 1400.0f, 120.0f), FRotator::ZeroRotator},
+		{FVector(3900.0f, -1250.0f, 120.0f), FRotator::ZeroRotator}
 	};
 	for (const TPair<FVector, FRotator>& Door : Doors)
 	{
@@ -3976,6 +6399,10 @@ void ABHGameMode::BuildSubstationLevel()
 		FVector(-900.0f, 3500.0f, 40.0f), FVector(1550.0f, 3500.0f, 40.0f), FVector(3900.0f, 3300.0f, 40.0f), FVector(5300.0f, 2300.0f, 40.0f)
 	};
 	AddIndustrialClutter(ClutterCenters, Rust);
+	AddIndustrialClutter({
+		FVector(-5700.0f, -4100.0f, 45.0f), FVector(-5700.0f, 4100.0f, 45.0f),
+		FVector(5700.0f, -4100.0f, 45.0f), FVector(5700.0f, 4100.0f, 45.0f)
+	}, Steel);
 
 	const TArray<FVector> Lockers = {
 		FVector(-5750.0f, -4050.0f, 100.0f), FVector(-5000.0f, -4050.0f, 100.0f), FVector(-3100.0f, -4050.0f, 100.0f), FVector(-1800.0f, -4050.0f, 100.0f),
@@ -4011,23 +6438,12 @@ void ABHGameMode::BuildSubstationLevel()
 		GetWorld()->SpawnActor<ABHPanicAlarm>(Location, FRotator::ZeroRotator);
 	}
 
-	if (ABHExitGate* ExitGate = GetWorld()->SpawnActor<ABHExitGate>(FVector(6000.0f, 0.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)))
+	const FVector SubstationExitGateLocation(5600.0f, 0.0f, 120.0f);
+	if (ABHExitGate* ExitGate = GetWorld()->SpawnActor<ABHExitGate>(SubstationExitGateLocation, FRotator(0.0f, 90.0f, 0.0f)))
 	{
 		ExitGates.Add(ExitGate);
 	}
-	SpawnBlock(FVector(5968.0f, -720.0f, 170.0f), FVector(0.04f, 1.35f, 0.70f), FLinearColor::White, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
-	SpawnBlock(FVector(5968.0f, 720.0f, 170.0f), FVector(0.04f, 1.35f, 0.70f), FLinearColor::White, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
-	const FLinearColor ExitGreen(0.05f, 0.84f, 0.42f, 1.0f);
-	const FLinearColor ExitAmber(0.98f, 0.76f, 0.12f, 1.0f);
-	const FLinearColor ExitBlue(0.10f, 0.52f, 0.92f, 1.0f);
-	const float SubstationExitFloorZ = CenterZForBlockBottom(0.72f, 0.045f);
-	SpawnBlock(FVector(5550.0f, 0.0f, SubstationExitFloorZ), FVector(10.2f, 3.0f, 0.045f), ExitGreen, FRotator::ZeroRotator, false, EBHBlockMaterial::DiamondPlate);
-	SpawnBlock(FVector(5550.0f, -360.0f, SubstationExitFloorZ + 1.5f), FVector(9.4f, 0.08f, 0.055f), ExitAmber, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
-	SpawnBlock(FVector(5550.0f, 360.0f, SubstationExitFloorZ + 1.5f), FVector(9.4f, 0.08f, 0.055f), ExitAmber, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
-	SpawnBlock(FVector(5968.0f, 0.0f, 260.0f), FVector(0.09f, 2.85f, 0.18f), ExitGreen, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
-	SpawnBlock(FVector(5968.0f, 0.0f, 70.0f), FVector(0.09f, 2.85f, 0.12f), ExitAmber, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
-	SpawnBlock(FVector(5460.0f, -455.0f, 96.0f), FVector(0.16f, 0.16f, 1.28f), ExitBlue, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
-	SpawnBlock(FVector(5460.0f, 455.0f, 96.0f), FVector(0.16f, 0.16f, 1.28f), ExitBlue, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+	BuildMapSubwayExitStation(SubstationExitGateLocation, 1.0f, TEXT("SUBSTATION PLATFORM"), GetNextMapAfterStage(RuntimeStageIndex));
 	SpawnBlock(FVector(-5850.0f, -2500.0f, CenterZForBlockBottom(0.5f, 0.04f)), FVector(6.5f, 1.4f, 0.04f), Steel, FRotator::ZeroRotator, false, EBHBlockMaterial::DiamondPlate);
 	SpawnBlock(FVector(-5850.0f, 2500.0f, CenterZForBlockBottom(0.5f, 0.04f)), FVector(6.5f, 1.4f, 0.04f), Steel, FRotator::ZeroRotator, false, EBHBlockMaterial::DiamondPlate);
 	SpawnBlock(FVector(4200.0f, -2500.0f, CenterZForBlockBottom(0.5f, 0.04f)), FVector(7.5f, 1.4f, 0.04f), Steel, FRotator::ZeroRotator, false, EBHBlockMaterial::DiamondPlate);
@@ -4061,11 +6477,25 @@ void ABHGameMode::BuildSubstationLevel()
 	}
 	if (ABHSecurityTerminal* Terminal = GetWorld()->SpawnActor<ABHSecurityTerminal>(FVector(-5850.0f, 0.0f, 110.0f), FRotator(0.0f, 90.0f, 0.0f)))
 	{
-		Terminal->Configure(200, FText::FromString(TEXT("Open Substation Shutters")));
+		Terminal->Configure(200, FText::FromString(TEXT("Toggle Substation Shutters")));
 	}
 	if (ABHSecurityTerminal* Terminal = GetWorld()->SpawnActor<ABHSecurityTerminal>(FVector(5800.0f, 2100.0f, 110.0f), FRotator(0.0f, -90.0f, 0.0f)))
 	{
-		Terminal->Configure(200, FText::FromString(TEXT("Open Substation Shutters")));
+		Terminal->Configure(200, FText::FromString(TEXT("Toggle Substation Shutters")));
+	}
+	GetWorld()->SpawnActor<ABHSecurityMonitor>(FVector(-5450.0f, -850.0f, 115.0f), FRotator(0.0f, 90.0f, 0.0f));
+	const TArray<TPair<FVector, FRotator>> SubstationCameras = {
+		{FVector(-4550.0f, -2650.0f, 355.0f), FRotator(0.0f, 35.0f, 0.0f)},
+		{FVector(4550.0f, 2650.0f, 355.0f), FRotator(0.0f, -145.0f, 0.0f)}
+	};
+	for (int32 CameraIndex = 0; CameraIndex < SubstationCameras.Num(); ++CameraIndex)
+	{
+		const TPair<FVector, FRotator>& CameraSpec = SubstationCameras[CameraIndex];
+		if (ABHSecurityCamera* Camera = GetWorld()->SpawnActor<ABHSecurityCamera>(CameraSpec.Key, CameraSpec.Value))
+		{
+			Camera->ConfigureCamera(5000.0f, 50.0f, 200);
+			SpawnCCTVZoneForCamera(Camera, 200, TEXT("substation CCTV zone"), true);
+		}
 	}
 
 	AddSurfaceDetailGrid(6100.0f, 4600.0f, FLinearColor(0.020f, 0.022f, 0.024f, 1.0f));
@@ -4394,6 +6824,102 @@ void ABHGameMode::SpawnBlock(const FVector& Location, const FVector& Scale, cons
 	}
 }
 
+void ABHGameMode::SpawnHiddenBlocker(const FVector& Location, const FVector& Scale)
+{
+	if (ABHBlockActor* Block = GetWorld()->SpawnActor<ABHBlockActor>(Location, FRotator::ZeroRotator))
+	{
+		Block->SetActorScale3D(Scale);
+		Block->SetBlockCollisionEnabled(true);
+		Block->SetActorHiddenInGame(true);
+	}
+}
+
+void ABHGameMode::AddMapContainment(float HalfX, float HalfY)
+{
+	constexpr float BlockerThickness = 0.90f;
+	constexpr float CornerPlugScale = 1.85f;
+	constexpr float BlockerHeight = 4.20f;
+	const float BlockerZ = CenterZForBlockBottom(-55.0f, BlockerHeight);
+	const float ScaleX = (HalfX * 2.0f) / 100.0f;
+	const float ScaleY = (HalfY * 2.0f) / 100.0f;
+
+	SpawnHiddenBlocker(FVector(0.0f, -HalfY, BlockerZ), FVector(ScaleX, BlockerThickness, BlockerHeight));
+	SpawnHiddenBlocker(FVector(0.0f, HalfY, BlockerZ), FVector(ScaleX, BlockerThickness, BlockerHeight));
+	SpawnHiddenBlocker(FVector(-HalfX, 0.0f, BlockerZ), FVector(BlockerThickness, ScaleY, BlockerHeight));
+	SpawnHiddenBlocker(FVector(HalfX, 0.0f, BlockerZ), FVector(BlockerThickness, ScaleY, BlockerHeight));
+
+	SpawnHiddenBlocker(FVector(-HalfX, -HalfY, BlockerZ), FVector(CornerPlugScale, CornerPlugScale, BlockerHeight));
+	SpawnHiddenBlocker(FVector(-HalfX, HalfY, BlockerZ), FVector(CornerPlugScale, CornerPlugScale, BlockerHeight));
+	SpawnHiddenBlocker(FVector(HalfX, -HalfY, BlockerZ), FVector(CornerPlugScale, CornerPlugScale, BlockerHeight));
+	SpawnHiddenBlocker(FVector(HalfX, HalfY, BlockerZ), FVector(CornerPlugScale, CornerPlugScale, BlockerHeight));
+}
+
+void ABHGameMode::RecoverPlayersFromVoid()
+{
+	const AGameStateBase* BaseGameState = GameState;
+	if (!BaseGameState)
+	{
+		return;
+	}
+
+	constexpr float VoidZThreshold = -650.0f;
+	for (APlayerState* RawPS : BaseGameState->PlayerArray)
+	{
+		ABHPlayerState* BHPS = Cast<ABHPlayerState>(RawPS);
+		if (!BHPS || BHPS->LifeState != EBHPlayerLifeState::Alive)
+		{
+			continue;
+		}
+
+		ABHCharacter* Character = FindCharacterForPlayerState(BHPS);
+		if (!Character || Character->GetActorLocation().Z >= VoidZThreshold)
+		{
+			continue;
+		}
+
+		if (UCharacterMovementComponent* Movement = Character->GetCharacterMovement())
+		{
+			Movement->StopMovementImmediately();
+		}
+
+		const FVector RecoveryLocation = GetVoidRecoveryLocationFor(Character);
+		Character->SetActorLocation(RecoveryLocation, false, nullptr, ETeleportType::TeleportPhysics);
+		if (ABHPlayerController* PC = Cast<ABHPlayerController>(Character->GetController()))
+		{
+			PC->ClientShowStatusMessage(TEXT("Recovered from map edge."), 2.0f);
+		}
+	}
+}
+
+FVector ABHGameMode::GetVoidRecoveryLocationFor(const ABHCharacter* Character) const
+{
+	TArray<FVector> Candidates = SurvivorSpawns;
+	if (!HunterSpawn.IsNearlyZero())
+	{
+		Candidates.Add(HunterSpawn);
+	}
+	if (Candidates.IsEmpty())
+	{
+		return FVector(0.0f, 0.0f, 160.0f);
+	}
+
+	const FVector CurrentLocation = Character ? Character->GetActorLocation() : FVector::ZeroVector;
+	FVector BestLocation = Candidates[0];
+	float BestDistanceSquared = FVector::DistSquared2D(CurrentLocation, BestLocation);
+	for (int32 Index = 1; Index < Candidates.Num(); ++Index)
+	{
+		const float CandidateDistanceSquared = FVector::DistSquared2D(CurrentLocation, Candidates[Index]);
+		if (CandidateDistanceSquared < BestDistanceSquared)
+		{
+			BestDistanceSquared = CandidateDistanceSquared;
+			BestLocation = Candidates[Index];
+		}
+	}
+
+	BestLocation.Z = FMath::Max(BestLocation.Z, 145.0f);
+	return BestLocation;
+}
+
 void ABHGameMode::SpawnAmbient(const FVector& Location, float Frequency, float Volume, float Noise, float Pulse, float LifeSpan)
 {
 	if (ABHAmbientEmitter* Emitter = GetWorld()->SpawnActor<ABHAmbientEmitter>(Location, FRotator::ZeroRotator))
@@ -4410,6 +6936,17 @@ void ABHGameMode::PrepareRoundDirector()
 {
 	RoundSeed = FMath::Rand();
 	FRandomStream Stream(RoundSeed);
+	ApplyRoundCCTVVisibility();
+	if (UWorld* World = GetWorld())
+	{
+		for (TActorIterator<ABHSecurityCamera> It(World); It; ++It)
+		{
+			if (ABHSecurityCamera* Camera = *It)
+			{
+				Camera->ResetCCTVState();
+			}
+		}
+	}
 
 	BreakerActors.RemoveAll([](const TObjectPtr<ABHBreaker>& Breaker) { return !IsValid(Breaker); });
 	DoorActors.RemoveAll([](const TObjectPtr<ABHDoor>& Door) { return !IsValid(Door); });
@@ -4446,8 +6983,7 @@ void ABHGameMode::PrepareRoundDirector()
 		{
 			StudentCount = CountActiveRevisionStudents(GameState, false);
 		}
-		const int32 RevisionNodeTarget = StudentCount >= 10 ? 12 : (StudentCount >= 6 ? 10 : 8);
-		ActiveSideObjectiveCount = FMath::Min(RevisionNodeTarget, ObjectiveStations.Num());
+		ActiveSideObjectiveCount = ResolveRevisionNodeTargetFor(StudentCount, RuntimeStageIndex, ObjectiveStations.Num());
 	}
 	else if (bPartyPace && ObjectiveIntensity > 0)
 	{
@@ -4594,7 +7130,7 @@ void ABHGameMode::PrepareRoundDirector()
 	{
 		if (ABHExitGate* ExitGate = ExitGates[Index])
 		{
-			ExitGate->SetDirectorActive(bTestMode || Index == ActiveExitIndex);
+			ExitGate->SetDirectorActive(!IsFinalStage() && (bTestMode || Index == ActiveExitIndex));
 		}
 	}
 
@@ -5106,6 +7642,7 @@ void ABHGameMode::TriggerScareEvent()
 
 	if (ABHPlayerController* PC = Cast<ABHPlayerController>(Target->GetController()))
 	{
+		const FBHJumpscareVariant CueVariant = ChooseJumpscareVariant(EBHScareEventType::AudioStinger);
 		static const TCHAR* Messages[] = {
 			TEXT("Something scraped the wall beside you."),
 			TEXT("A light snaps behind you."),
@@ -5120,7 +7657,22 @@ void ABHGameMode::TriggerScareEvent()
 			TEXT("The air behind your neck goes warm."),
 			TEXT("A locker knocks from the inside as you pass.")
 		};
-		PC->ClientShowStatusMessage(Messages[FMath::RandRange(0, UE_ARRAY_COUNT(Messages) - 1)], 2.75f);
+		const FString Message = Messages[FMath::RandRange(0, UE_ARRAY_COUNT(Messages) - 1)];
+		PC->ClientShowStatusMessage(Message, 2.75f);
+		FBHClientHorrorCue Cue;
+		Cue.EventType = EBHScareEventType::AudioStinger;
+		Cue.FocusLocation = ScareLocation + FVector(0.0f, 0.0f, FMath::Clamp(CueVariant.FocusHeight, 90.0f, 240.0f));
+		Cue.Message = Message;
+		Cue.DurationSeconds = 2.35f;
+		Cue.ShakeIntensity = FMath::Clamp(CueVariant.CameraShakeIntensity * 0.64f, 0.0f, 0.92f);
+		Cue.CameraJitterDuration = FMath::Max(0.25f, CueVariant.CameraJitterDuration * 0.42f);
+		Cue.FlashIntensity = FMath::Clamp(CueVariant.FlashIntensity * 0.28f, 0.0f, 0.48f);
+		Cue.FlashColor = CueVariant.LightColor;
+		Cue.AudioAsset = CueVariant.LaunchSound;
+		Cue.AudioVolume = 0.74f;
+		Cue.VisualActorClass = CueVariant.VisualActorClass;
+		Cue.VariantId = CueVariant.VariantId;
+		PC->ClientPlayHorrorCue(Cue);
 	}
 
 	if (!FlickerLights.IsEmpty() && FMath::FRand() < 0.45f)
@@ -5213,6 +7765,7 @@ void ABHGameMode::TriggerRevisionThemedAmbientScare(ABHCharacter* Target)
 	SpawnAmbient(BehindTarget, Frequency, 0.28f, 0.20f, Pulse, 4.4f);
 	Target->AddFear(20.0f);
 	Target->AddDread(10.0f);
+	const FBHJumpscareVariant CueVariant = ChooseJumpscareVariant(EBHScareEventType::Ambient);
 	if (Variant == 1 || Variant == 2 || Variant == 8 || Variant == 9)
 	{
 		CutLightsForJumpscare(TargetLocation, BehindTarget, 1700.0f, 4.8f);
@@ -5220,6 +7773,21 @@ void ABHGameMode::TriggerRevisionThemedAmbientScare(ABHCharacter* Target)
 	if (ABHPlayerController* PC = Cast<ABHPlayerController>(Target->GetController()))
 	{
 		PC->ClientShowStatusMessage(Message, 2.9f);
+		FBHClientHorrorCue Cue;
+		Cue.EventType = EBHScareEventType::Ambient;
+		Cue.FocusLocation = BehindTarget + FVector(0.0f, 0.0f, FMath::Clamp(CueVariant.FocusHeight, 90.0f, 240.0f));
+		Cue.Message = Message;
+		Cue.DurationSeconds = 2.6f;
+		Cue.ShakeIntensity = FMath::Clamp(0.45f + CueVariant.CameraShakeIntensity * 0.24f, 0.0f, 0.82f);
+		Cue.CameraJitterDuration = FMath::Max(0.35f, CueVariant.CameraJitterDuration * 0.45f);
+		Cue.FlashIntensity = FMath::Clamp(CueVariant.FlashIntensity * 0.34f, 0.0f, 0.55f);
+		Cue.FlashColor = CueVariant.LightColor;
+		Cue.AudioAsset = CueVariant.LaunchSound;
+		Cue.AudioVolume = 0.72f;
+		Cue.VisualActorClass = CueVariant.VisualActorClass;
+		Cue.VariantId = CueVariant.VariantId;
+		Cue.bSnapToFocus = false;
+		PC->ClientPlayHorrorCue(Cue);
 	}
 }
 
@@ -5330,13 +7898,175 @@ void ABHGameMode::ActivateStudentScareRelay(ABHCharacter* Activator, ABHObjectiv
 
 		++ScaredTeachers;
 		TriggerMonsterChargeJumpscare(TeacherTarget);
-		PC->ClientShowStatusMessage(TEXT("Something sprints toward you."), 2.75f);
+		PC->ClientShowStatusMessage(TEXT("Something sees you."), 2.75f);
 	}
 
 	if (ABHPlayerController* ActivatorPC = Cast<ABHPlayerController>(Activator->GetController()))
 	{
 		ActivatorPC->ClientShowStatusMessage(ScaredTeachers > 0 ? TEXT("Scare relay armed.") : TEXT("Scare relay armed, but no Teacher signal was found."), 2.75f);
 	}
+}
+
+bool ABHGameMode::TriggerStudentScareSwitch(ABHCharacter* Activator, const FVector& SourceLocation, const FString& ScareTitle, int32 Severity)
+{
+	if (!Activator || !GetWorld())
+	{
+		return false;
+	}
+
+	ABHPlayerController* ActivatorPC = Cast<ABHPlayerController>(Activator->GetController());
+	const ABHPlayerState* ActivatorPS = Activator->GetBHPlayerState();
+	const bool bStudentRole = ActivatorPS
+		&& ActivatorPS->LifeState == EBHPlayerLifeState::Alive
+		&& (ActivatorPS->PlayerRole == EBHPlayerRole::Survivor
+			|| ActivatorPS->PlayerRole == EBHPlayerRole::FakeHunter
+			|| ActivatorPS->PlayerRole == EBHPlayerRole::Tester);
+	if (!bStudentRole)
+	{
+		if (ActivatorPC)
+		{
+			ActivatorPC->ClientShowStatusMessage(TEXT("Student scare toggles are student-only."), 2.4f);
+		}
+		return false;
+	}
+
+	const ABHGameState* BHGS = GetGameState<ABHGameState>();
+	const bool bScarePhase = bPracticeMode
+		|| bTestMode
+		|| (BHGS && (BHGS->bTestMode || BHGS->RoundPhase == EBHRoundPhase::Hunt || BHGS->RoundPhase == EBHRoundPhase::FinalEscape));
+	if (!bScarePhase)
+	{
+		if (ActivatorPC)
+		{
+			ActivatorPC->ClientShowStatusMessage(TEXT("Scare toggles wake up when Hunt starts."), 2.6f);
+		}
+		return false;
+	}
+
+	const int32 ClampedSeverity = FMath::Clamp(Severity, 1, 4);
+	static const TCHAR* DefaultTitles[] = {
+		TEXT("Shadow Flicker"),
+		TEXT("Static Face"),
+		TEXT("Hallway Lunge"),
+		TEXT("Blackout Charge")
+	};
+	const FString Title = ScareTitle.IsEmpty() ? FString(DefaultTitles[ClampedSeverity - 1]) : ScareTitle.Left(24);
+
+	ABHCharacter* TargetTeacher = nullptr;
+	ABHPlayerController* TargetPC = nullptr;
+	float BestDistSq = TNumericLimits<float>::Max();
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get());
+		ABHCharacter* Teacher = PC ? Cast<ABHCharacter>(PC->GetPawn()) : nullptr;
+		const ABHPlayerState* TeacherPS = Teacher ? Teacher->GetPlayerState<ABHPlayerState>() : nullptr;
+		if (!Teacher || Teacher == Activator || !TeacherPS || !TeacherPS->IsAliveHunter())
+		{
+			continue;
+		}
+
+		const float DistSq = FVector::DistSquared2D(SourceLocation, Teacher->GetActorLocation());
+		if (DistSq < BestDistSq)
+		{
+			BestDistSq = DistSq;
+			TargetTeacher = Teacher;
+			TargetPC = PC;
+		}
+	}
+
+	if (!TargetTeacher)
+	{
+		if (ActivatorPC)
+		{
+			ActivatorPC->ClientShowStatusMessage(TEXT("No Teacher signal found for the scare toggle."), 2.6f);
+		}
+		return false;
+	}
+
+	static const TCHAR* TeacherMessages[] = {
+		TEXT("a face flashes at the edge of your vision."),
+		TEXT("static tears open and fills the camera."),
+		TEXT("something lunges out of the corridor."),
+		TEXT("something charges from the blackout.")
+	};
+	const FString TeacherMessage = FString::Printf(TEXT("%s (%d/4): %s"), *Title, ClampedSeverity, TeacherMessages[ClampedSeverity - 1]);
+	const FVector TeacherLocation = TargetTeacher->GetActorLocation();
+	FVector FocusDirection = TargetPC ? TargetPC->GetControlRotation().Vector() : TargetTeacher->GetActorForwardVector();
+	FocusDirection.Z = 0.0f;
+	FocusDirection = FocusDirection.GetSafeNormal();
+	if (FocusDirection.IsNearlyZero())
+	{
+		FocusDirection = FVector::ForwardVector;
+	}
+	const FVector FocusLocation = TeacherLocation + FocusDirection * 230.0f + FVector(0.0f, 0.0f, 132.0f);
+	const FBHJumpscareVariant CueVariant = ChooseJumpscareVariant(ClampedSeverity >= 2 ? EBHScareEventType::FaceFlash : EBHScareEventType::AudioStinger);
+
+	if (ClampedSeverity >= 4)
+	{
+		if (TargetPC)
+		{
+			TargetPC->ClientShowStatusMessage(TeacherMessage, 3.0f);
+		}
+		TriggerMonsterChargeJumpscare(TargetTeacher);
+	}
+	else
+	{
+		const float SeverityAlpha = static_cast<float>(ClampedSeverity - 1) / 3.0f;
+		const float LockSeconds = ClampedSeverity == 1 ? 0.0f : (ClampedSeverity == 2 ? 0.45f : 1.15f);
+		SpawnAmbient(FocusLocation, 320.0f + ClampedSeverity * 140.0f, 0.26f + SeverityAlpha * 0.20f, 0.18f + SeverityAlpha * 0.18f, 5.2f + ClampedSeverity * 1.0f, 3.6f + SeverityAlpha * 1.8f);
+		if (ClampedSeverity >= 1)
+		{
+			CutLightsForJumpscare(TeacherLocation, FocusLocation, 950.0f + ClampedSeverity * 420.0f, 3.4f + SeverityAlpha * 2.4f);
+		}
+		if (TargetPC)
+		{
+			if (ClampedSeverity >= 2)
+			{
+				TargetPC->ClientSnapViewToFlatFocus(FocusLocation);
+			}
+
+			FBHClientHorrorCue Cue;
+			Cue.EventType = ClampedSeverity >= 2 ? EBHScareEventType::FaceFlash : EBHScareEventType::AudioStinger;
+			Cue.FocusLocation = FocusLocation;
+			Cue.Message = TeacherMessage;
+			Cue.DurationSeconds = 2.0f + ClampedSeverity * 0.42f;
+			Cue.LockSeconds = LockSeconds;
+			Cue.ShakeIntensity = FMath::Clamp(0.30f + ClampedSeverity * 0.18f, 0.0f, 0.90f);
+			Cue.CameraJitterDuration = 0.36f + ClampedSeverity * 0.27f;
+			Cue.FlashIntensity = FMath::Clamp(0.25f + ClampedSeverity * 0.14f, 0.0f, 0.78f);
+			Cue.FlashColor = CueVariant.LightColor;
+			Cue.AudioAsset = CueVariant.LaunchSound;
+			Cue.AudioVolume = FMath::Clamp(0.62f + ClampedSeverity * 0.11f, 0.0f, 1.0f);
+			Cue.VisualActorClass = CueVariant.VisualActorClass;
+			Cue.CloseVisualOffset = CueVariant.CloseVisualOffset;
+			Cue.CloseVisualRotation = CueVariant.CloseVisualRotation;
+			Cue.CloseVisualScale = CueVariant.CloseVisualScale;
+			Cue.VariantId = CueVariant.VariantId;
+			Cue.bSnapToFocus = ClampedSeverity >= 2;
+			Cue.bLockInput = LockSeconds > 0.0f;
+			Cue.bCloseRangeFocus = ClampedSeverity >= 2;
+			Cue.bUpperBodyCloseVisual = Cue.bCloseRangeFocus;
+			TargetPC->ClientPlayHorrorCue(Cue);
+			TargetPC->ClientShowStatusMessage(TeacherMessage, 2.6f);
+		}
+		if (LockSeconds > 0.0f)
+		{
+			FreezeTargetForJumpscare(TargetTeacher, LockSeconds);
+		}
+		TargetTeacher->AddFear(10.0f + ClampedSeverity * 7.0f);
+		TargetTeacher->AddDread(8.0f + ClampedSeverity * 8.0f);
+	}
+
+	ApplyPresenceSpike(SourceLocation, 34.0f + ClampedSeverity * 10.0f, FString::Printf(TEXT("A student triggered %s."), *Title));
+	if (ActivatorPC)
+	{
+		ActivatorPC->ClientShowStatusMessage(FString::Printf(TEXT("%s sent to the Teacher. Severity %d/4."), *Title, ClampedSeverity), 2.5f);
+	}
+	if (ClampedSeverity >= 3)
+	{
+		BroadcastStatus(FString::Printf(TEXT("Student scare fired: %s %d/4."), *Title, ClampedSeverity), 2.6f);
+	}
+	return true;
 }
 
 void ABHGameMode::TriggerMonsterChargeJumpscare(ABHCharacter* Target)
@@ -5349,6 +8079,35 @@ void ABHGameMode::TriggerMonsterChargeJumpscare(ABHCharacter* Target)
 	const FVector TargetLocation = Target->GetActorLocation();
 	const float TargetFloorZ = TargetLocation.Z - Target->GetSimpleCollisionHalfHeight();
 	const FVector EyeTarget = TargetLocation + FVector(0.0f, 0.0f, 95.0f);
+	const FBHJumpscareVariant Variant = ChooseJumpscareVariant(EBHScareEventType::MonsterCharge);
+	const float FocusHeight = FMath::Clamp(Variant.FocusHeight, 80.0f, 320.0f);
+	const int32 EffectiveScareIntensity = GetEffectiveScareIntensity();
+	const float Speed = bPartyPace ? 10800.0f : FMath::Lerp(9000.0f, 10300.0f, static_cast<float>(EffectiveScareIntensity) / 3.0f);
+	const float HoldDuration = bPartyPace ? 2.15f : FMath::Lerp(2.65f, 3.25f, static_cast<float>(EffectiveScareIntensity) / 3.0f);
+	const auto SendMonsterChargeCue = [Target, &Variant, HoldDuration](const FVector& FocusLocation)
+	{
+		if (ABHPlayerController* TargetPC = Cast<ABHPlayerController>(Target->GetController()))
+		{
+			TargetPC->ClientSnapViewToFlatFocus(FocusLocation);
+			FBHClientHorrorCue Cue;
+			Cue.EventType = EBHScareEventType::MonsterCharge;
+			Cue.FocusLocation = FocusLocation;
+			Cue.Message = TEXT("Something sees you.");
+			Cue.DurationSeconds = HoldDuration + 1.0f;
+			Cue.LockSeconds = HoldDuration;
+			Cue.ShakeIntensity = FMath::Clamp(Variant.CameraShakeIntensity, 0.75f, 1.0f);
+			Cue.CameraJitterDuration = FMath::Max(Variant.CameraJitterDuration, 0.85f);
+			Cue.FlashIntensity = FMath::Clamp(Variant.FlashIntensity, 0.45f, 1.0f);
+			Cue.FlashColor = Variant.LightColor;
+			Cue.AudioAsset = Variant.LaunchSound;
+			Cue.AudioVolume = 1.0f;
+			Cue.VariantId = Variant.VariantId;
+			Cue.bSnapToFocus = true;
+			Cue.bLockInput = true;
+			Cue.bCloseRangeFocus = false;
+			TargetPC->ClientPlayHorrorCue(Cue);
+		}
+	};
 	FVector SpawnLocation = FVector::ZeroVector;
 	float BestScore = -1.0f;
 
@@ -5433,8 +8192,12 @@ void ABHGameMode::TriggerMonsterChargeJumpscare(ABHCharacter* Target)
 
 		if (BestScore < 0.0f)
 		{
+			const FVector FallbackFocusLocation = TargetLocation + Target->GetActorForwardVector() * 220.0f + FVector(0.0f, 0.0f, 105.0f);
 			LastMonsterChargeTime = GetWorld()->GetTimeSeconds();
-			SpawnAmbient(TargetLocation + Target->GetActorForwardVector() * 220.0f + FVector(0.0f, 0.0f, 105.0f), 260.0f, 0.26f, 0.16f, 5.4f, 3.4f);
+			SpawnAmbient(FallbackFocusLocation, 260.0f, 0.26f, 0.16f, 5.4f, 3.4f);
+			SendMonsterChargeCue(FallbackFocusLocation);
+			FreezeTargetForJumpscare(Target, FMath::Min(HoldDuration, 2.1f));
+			CutLightsForJumpscare(TargetLocation, FallbackFocusLocation, 1400.0f, 4.8f);
 			Target->AddFear(16.0f);
 			Target->AddDread(18.0f);
 			return;
@@ -5444,18 +8207,16 @@ void ABHGameMode::TriggerMonsterChargeJumpscare(ABHCharacter* Target)
 
 	const FVector Direction = (TargetLocation - SpawnLocation).GetSafeNormal2D();
 	const FRotator SpawnRotation = Direction.IsNearlyZero() ? Target->GetActorRotation() : Direction.Rotation();
-	if (ABHJumpscareMonster* Monster = GetWorld()->SpawnActor<ABHJumpscareMonster>(SpawnLocation, SpawnRotation))
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	if (ABHJumpscareMonster* Monster = GetWorld()->SpawnActor<ABHJumpscareMonster>(SpawnLocation, SpawnRotation, SpawnParams))
 	{
-		const float Speed = bPartyPace ? 9800.0f : 8800.0f;
-		const float HoldDuration = bPartyPace ? 2.25f : 2.95f;
 		Monster->Configure(Target, Speed, bPartyPace ? 7.4f : 8.6f, HoldDuration);
-		if (ABHPlayerController* TargetPC = Cast<ABHPlayerController>(Target->GetController()))
-		{
-			TargetPC->ClientSnapViewToFlatFocus(SpawnLocation + FVector(0.0f, 0.0f, 145.0f));
-		}
-		FreezeTargetForJumpscare(Target, HoldDuration);
-		CutLightsForJumpscare(TargetLocation, SpawnLocation, 0.0f, bPartyPace ? 9.0f : 10.25f);
+		Monster->ConfigureVariant(Variant);
 	}
+	SendMonsterChargeCue(SpawnLocation + FVector(0.0f, 0.0f, FocusHeight));
+	FreezeTargetForJumpscare(Target, HoldDuration);
+	CutLightsForJumpscare(TargetLocation, SpawnLocation, 0.0f, bPartyPace ? 9.0f : 10.25f);
 
 	LastMonsterChargeTime = GetWorld()->GetTimeSeconds();
 	Target->AddFear(38.0f);
@@ -5735,8 +8496,15 @@ void ABHGameMode::UpdateExitUnlockState()
 			}
 		}
 		BHGS->SetExitUnlocked(true);
+		if (IsFinalStage())
+		{
+			BHGS->SetPresenceState(100.0f, TEXT("Evacuation train authorized."), BHGS->PresencePulse + 1);
+			BroadcastStatus(TEXT("Physics mastery met. Final train unlocking."), 4.0f);
+			TriggerFinalEscapeIfNeeded();
+			return;
+		}
 		BHGS->SetPresenceState(FMath::Max(BHGS->PresenceLevel, 76.0f), bRevisionMode ? TEXT("The class passed. The Teacher is furious.") : TEXT("The exit woke up. So did everything else."), BHGS->PresencePulse + 1);
-		BroadcastStatus(bRevisionMode ? TEXT("Physics mastery met. Reach the active exit gate.") : TEXT("Exit power restored. Reach the active exit gate."), 4.0f);
+		BroadcastStatus(bRevisionMode ? TEXT("Physics mastery met. Reach the subway gate.") : TEXT("Exit power restored. Reach the active exit gate."), 4.0f);
 	}
 }
 
@@ -6137,6 +8905,15 @@ void ABHGameMode::AssignRoles()
 		}
 	}
 
+	TMap<ABHPlayerState*, EBHPlayerRole> PreviousRoles;
+	for (ABHPlayerState* BHPS : Players)
+	{
+		if (BHPS)
+		{
+			PreviousRoles.Add(BHPS, BHPS->PlayerRole);
+		}
+	}
+
 	if (Players.IsEmpty())
 	{
 		return;
@@ -6318,6 +9095,16 @@ void ABHGameMode::AssignRoles()
 		{
 			continue;
 		}
+		const EBHPlayerRole* PreviousRole = PreviousRoles.Find(BHPS);
+		const bool bRoleUnchanged = PreviousRole && *PreviousRole == BHPS->PlayerRole;
+		const ABHCharacter* ExistingCharacter = Controller->GetPawn<ABHCharacter>();
+		if (bRoleUnchanged
+			&& ExistingCharacter
+			&& ExistingCharacter->GetPlayerState<ABHPlayerState>() == BHPS
+			&& BHPS->LifeState == EBHPlayerLifeState::Alive)
+		{
+			continue;
+		}
 		RestartPlayer(Controller);
 	}
 }
@@ -6393,6 +9180,9 @@ void ABHGameMode::EndRound(EBHRoundPhase ResultPhase)
 		UE_LOG(LogTemp, Log, TEXT("BlackoutHunt revision round summary: result=%s %s"),
 			*StaticEnum<EBHRoundPhase>()->GetNameStringByValue(static_cast<int64>(ResultPhase)),
 			*GetRevisionStatusReport());
+		FString ExportMessage;
+		ExportRevisionReportToDisk(ResultPhase, true, ExportMessage);
+		UE_LOG(LogTemp, Display, TEXT("%s"), *ExportMessage);
 	}
 
 	if (UWorld* World = GetWorld())
@@ -6417,6 +9207,15 @@ void ABHGameMode::ResetRoundByTravel()
 {
 	if (GetWorld())
 	{
+		const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+		if (Settings && Settings->bUseTrainIntermissions && bRevisionMode && !bTrainIntermissionLevel && !bPracticeMode && !bTestMode)
+		{
+			const ABHGameState* BHGS = GetGameState<ABHGameState>();
+			TravelToTrainIntermission(BHGS ? BHGS->RoundPhase : EBHRoundPhase::Lobby);
+			return;
+		}
+
+		PersistPlayersForTravel();
 		const FString TravelLevelName = NextRuntimeLevelName.IsEmpty() ? RuntimeLevelName : NextRuntimeLevelName;
 		FString TravelURL = FString::Printf(TEXT("/Engine/Maps/Entry?listen?BHLevel=%s?BHFogPreset=%s"),
 			*TravelLevelName,
@@ -6447,6 +9246,266 @@ void ABHGameMode::ResetRoundByTravel()
 		}
 		GetWorld()->ServerTravel(TravelURL);
 	}
+}
+
+void ABHGameMode::TravelToTrainIntermission(EBHRoundPhase ResultPhase)
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+
+	ConvertMonitorsBackToSurvivors(TEXT("subway platform reached"));
+	PersistPlayersForTravel();
+	const FString TravelURL = BuildTravelOptionsForLevel(TEXT("TrainIntermission"), true, RuntimeStageIndex, ResultPhase);
+	GetWorld()->ServerTravel(TravelURL, true);
+}
+
+void ABHGameMode::CompleteTrainIntermission(const FString& NextMapName, bool bFinalRecap)
+{
+	if (!HasAuthority() || !GetWorld())
+	{
+		return;
+	}
+
+	ConvertMonitorsBackToSurvivors(TEXT("train departure"));
+	PersistPlayersForTravel();
+
+	UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>();
+	if (bFinalRecap)
+	{
+		if (BHGI)
+		{
+			BHGI->ClearQuestionAttemptHistory();
+			BHGI->SetPersistentStageIndex(0);
+		}
+		const FString TravelURL = BuildTravelOptionsForLevel(TEXT("Facility"), false, 0, EBHRoundPhase::Lobby);
+		GetWorld()->ServerTravel(TravelURL, true);
+		return;
+	}
+
+	const int32 NextStageIndex = FMath::Clamp(RuntimeStageIndex + 1, 0, 2);
+	if (BHGI)
+	{
+		BHGI->ClearQuestionAttemptHistory();
+		BHGI->SetPersistentStageIndex(NextStageIndex);
+	}
+
+	const FString Destination = NextMapName.IsEmpty() ? GetDefaultMapForStage(NextStageIndex) : NormalizeBHLevelName(NextMapName);
+	const FString TravelURL = BuildTravelOptionsForLevel(Destination, false, NextStageIndex, EBHRoundPhase::Lobby);
+	GetWorld()->ServerTravel(TravelURL, true);
+}
+
+void ABHGameMode::NotifyFinalEscapeExpired()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	BroadcastStatus(TEXT("The evacuation train departed without the class."), 4.5f);
+	EndRound(EBHRoundPhase::HunterWin);
+}
+
+void ABHGameMode::PersistPlayersForTravel()
+{
+	UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>();
+	if (!BHGI || !GameState)
+	{
+		return;
+	}
+
+	for (APlayerState* RawPS : GameState->PlayerArray)
+	{
+		if (ABHPlayerState* BHPS = Cast<ABHPlayerState>(RawPS))
+		{
+			BHGI->PersistTravelPlayerState(BHPS);
+		}
+	}
+}
+
+void ABHGameMode::RestorePlayersAfterTravel(AController* Controller)
+{
+	ABHPlayerState* BHPS = Controller ? Controller->GetPlayerState<ABHPlayerState>() : nullptr;
+	if (!BHPS)
+	{
+		return;
+	}
+
+	bool bRestored = false;
+	if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
+	{
+		bRestored = BHGI->RestoreTravelPlayerState(BHPS);
+	}
+
+	if (bTrainIntermissionLevel)
+	{
+		if (!bRestored || BHPS->PlayerRole == EBHPlayerRole::Unassigned || BHPS->PlayerRole == EBHPlayerRole::Spectator)
+		{
+			BHPS->SetRole(EBHPlayerRole::Survivor);
+			BHPS->SetDesiredRole(EBHPlayerRole::Survivor);
+			BHPS->SetLifeState(EBHPlayerLifeState::Alive);
+		}
+		if (BHPS->PlayerRole == EBHPlayerRole::FakeHunter)
+		{
+			BHPS->SetRole(EBHPlayerRole::Survivor);
+			BHPS->SetDesiredRole(EBHPlayerRole::Survivor);
+			BHPS->SetLifeState(EBHPlayerLifeState::Alive);
+		}
+		BHPS->SetHiddenInLocker(false);
+		BHPS->SetFakeHunterEligible(false);
+		BHPS->SetReady(true);
+	}
+}
+
+void ABHGameMode::ConvertMonitorsBackToSurvivors(const FString& Reason)
+{
+	if (!GameState)
+	{
+		return;
+	}
+
+	int32 ConvertedCount = 0;
+	for (APlayerState* RawPS : GameState->PlayerArray)
+	{
+		ABHPlayerState* BHPS = Cast<ABHPlayerState>(RawPS);
+		if (!BHPS || BHPS->PlayerRole != EBHPlayerRole::FakeHunter)
+		{
+			continue;
+		}
+
+		BHPS->SetRole(EBHPlayerRole::Survivor);
+		BHPS->SetDesiredRole(EBHPlayerRole::Survivor);
+		BHPS->SetLifeState(EBHPlayerLifeState::Alive);
+		BHPS->SetHiddenInLocker(false);
+		BHPS->SetFakeHunterEligible(false);
+		++ConvertedCount;
+	}
+
+	if (ConvertedCount > 0)
+	{
+		BroadcastStatus(FString::Printf(TEXT("%d hall monitor(s) returned as survivors for %s."), ConvertedCount, Reason.IsEmpty() ? TEXT("the subway transition") : *Reason), 4.0f);
+	}
+}
+
+void ABHGameMode::TriggerFinalEscapeIfNeeded()
+{
+	if (!HasAuthority() || !IsFinalStage())
+	{
+		return;
+	}
+
+	ABHGameState* BHGS = GetGameState<ABHGameState>();
+	if (!BHGS || BHGS->FinalEscapeState == EBHFinalEscapeState::Cutscene || BHGS->FinalEscapeState == EBHFinalEscapeState::EscapeActive || BHGS->FinalEscapeState == EBHFinalEscapeState::Departed)
+	{
+		return;
+	}
+
+	ConvertMonitorsBackToSurvivors(TEXT("final subway station"));
+	if (EscapeStationManagers.Num() > 0 && EscapeStationManagers[0])
+	{
+		EscapeStationManagers[0]->TriggerFinalEscape();
+		return;
+	}
+
+	BHGS->SetRoundPhase(EBHRoundPhase::FinalEscape);
+	BHGS->SetExitUnlocked(true);
+	BHGS->SetFinalEscapeState(EBHFinalEscapeState::EscapeActive, 0.0f, 0.0f, 0.0f);
+	BHGS->SetIntermissionLocks(false, false, false);
+	BroadcastStatus(TEXT("Evacuation train authorized. Reach the final platform."), 4.5f);
+}
+
+bool ABHGameMode::IsFinalStage() const
+{
+	return RuntimeStageIndex >= 2 || RuntimeLevelName.Equals(TEXT("Foggrounds"), ESearchCase::IgnoreCase);
+}
+
+int32 ABHGameMode::GetConfiguredStageIndex() const
+{
+	if (const UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
+	{
+		return FMath::Clamp(BHGI->GetPersistentStageIndex(), 0, 2);
+	}
+	return 0;
+}
+
+FString ABHGameMode::GetDefaultMapForStage(int32 StageIndex) const
+{
+	if (StageIndex <= 0)
+	{
+		return TEXT("Facility");
+	}
+	if (StageIndex == 1)
+	{
+		return TEXT("Substation");
+	}
+	return TEXT("Foggrounds");
+}
+
+FString ABHGameMode::GetNextMapAfterStage(int32 StageIndex) const
+{
+	if (StageIndex <= 0)
+	{
+		return TEXT("Substation");
+	}
+	if (StageIndex == 1)
+	{
+		return TEXT("Foggrounds");
+	}
+	return TEXT("Final");
+}
+
+FString ABHGameMode::BuildTravelOptionsForLevel(const FString& LevelName, bool bIntermission, int32 StageIndex, EBHRoundPhase ResultPhase) const
+{
+	const FString NormalizedLevel = bIntermission ? TEXT("TrainIntermission") : NormalizeBHLevelName(LevelName);
+	FString TravelURL = FString::Printf(TEXT("/Engine/Maps/Entry?listen?BHFogPreset=%s?BHStageIndex=%d"),
+		*FogPresetToString(NextFogPreset),
+		FMath::Clamp(StageIndex, 0, 2));
+
+	if (bIntermission)
+	{
+		TravelURL += FString::Printf(TEXT("?BHLevel=TrainIntermission?BHTrainIntermission=1?BHIntermissionResult=%s"), *RoundPhaseToUrlValue(ResultPhase));
+	}
+	else
+	{
+		TravelURL += FString::Printf(TEXT("?BHLevel=%s"), *NormalizedLevel);
+		if (StageIndex > 0 && bRevisionMode)
+		{
+			TravelURL += TEXT("?BHForceHunt=1");
+		}
+	}
+
+	if (bFogPresetOverride)
+	{
+		TravelURL += TEXT("?BHFogOverride=1");
+	}
+
+	if (bRevisionMode)
+	{
+		const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+		const int32 StageSeconds = StageIndex <= 0
+			? (Settings ? Settings->StageOneSeconds : 300)
+			: (StageIndex == 1 ? (Settings ? Settings->StageTwoSeconds : 420) : (Settings ? Settings->StageThreeSeconds : 600));
+		TravelURL += FString::Printf(TEXT("?BHRevisionMode=1?BHRevisionTopics=%d?BHRevisionDifficultyMix=%s?BHRevisionClassThreshold=%.0f?BHRevisionIndividualThreshold=%.0f?BHHuntSeconds=%d?BHScareIntensity=%d"),
+			RevisionTopicMask,
+			*RevisionDifficultyMixToString(RevisionDifficultyMix),
+			RevisionClassThreshold,
+			RevisionIndividualThreshold,
+			FMath::Clamp(StageSeconds, 60, 3600),
+			RevisionScareIntensity);
+	}
+	else if (bBotMode)
+	{
+		TravelURL += FString::Printf(TEXT("?BHBotMode=1?BHBotCount=%d?BHBotDifficulty=%s?BHHumanRole=Survivor"),
+			FMath::Clamp(TargetBotCount, 0, FMath::Max(0, MaxPlayers - 1)),
+			*BotDifficultyToString(BotDifficulty));
+	}
+	if (bTestMode && !bIntermission)
+	{
+		TravelURL += TEXT("?BHTestMode=1");
+	}
+
+	return TravelURL;
 }
 
 bool ABHGameMode::AreAllReady() const
@@ -6728,14 +9787,14 @@ FTransform ABHGameMode::GetSpawnTransformFor(AController* Controller) const
 	{
 		const float OffsetSign = PlayerIndex % 2 == 0 ? 1.0f : -1.0f;
 		const FVector SpawnOffset = BHPS->PlayerRole == EBHPlayerRole::FakeHunter
-			? FVector(-180.0f, OffsetSign * (160.0f + 70.0f * PlayerIndex), 0.0f)
+			? FVector(180.0f, OffsetSign * (160.0f + 70.0f * PlayerIndex), 0.0f)
 			: FVector(0.0f, OffsetSign * 80.0f * PlayerIndex, 0.0f);
-		return FTransform(FRotator(0.0f, 0.0f, 0.0f), HunterSpawn + SpawnOffset);
+		return FTransform(FRotator(0.0f, 0.0f, 0.0f), BHResolveSpawnLocation(GetWorld(), HunterSpawn + SpawnOffset, PlayerIndex));
 	}
 
 	const FVector SpawnLocation = SurvivorSpawns.IsValidIndex(PlayerIndex % FMath::Max(1, SurvivorSpawns.Num()))
 		? SurvivorSpawns[PlayerIndex % SurvivorSpawns.Num()]
 		: FVector(1000.0f, 0.0f, 120.0f);
 
-	return FTransform(FRotator(0.0f, 180.0f, 0.0f), SpawnLocation);
+	return FTransform(FRotator(0.0f, 180.0f, 0.0f), BHResolveSpawnLocation(GetWorld(), SpawnLocation, PlayerIndex));
 }

@@ -8,21 +8,24 @@ This guide is for live classroom use where one teacher machine hosts Blackout Hu
 - External Google/Microsoft login and backend sync are disabled by default.
 - Local username/password profiles remain available on each machine.
 - Network hosting, direct-IP join, and the Playit tunnel fallback remain available without requiring administrator rights.
+- The classroom package disables Unreal UDP Messaging and game-target Unreal Trace so the game does not open engine diagnostic sockets at launch.
+- Live Classroom hosts bind to `127.0.0.1` by default through `bClassroomLoopbackOnlyHost=True`, then publish the configured Playit endpoint. This avoids the Windows Defender Firewall public/private networks prompt on locked-down school PCs.
 - Session/admin controls are host-machine-only. Students can still play the in-game Teacher role when assigned, but that role does not grant admin controls.
 - Host force-start is disabled for classroom releases. Keep `bAllowHostForceStart=False` for live classes.
 - The Live Classroom menu buttons let the host choose Facility, Substation, or Foggrounds with the current Physics Classroom defaults: 10 minutes, adaptive questions, all topics, and Horror scare intensity.
 - The host can adjust Physics question focus, complexity mix, class/individual mastery targets, and scare intensity from the Classroom tab after Live Classroom starts.
 - Scare intensity levels are `Off`, `Low`, `Horror`, and `Chaos`. `Horror` is the default live-classroom level and is tuned for frequent automatic scares.
 - Every connected player must ready up before a normal live round starts. The listen-server host can soft-kick stuck or misjoined human players from the lobby roster; kicked students return to the main menu and may rejoin.
+- Caught students who return as Hall Monitors still count toward Physics Classroom participation, class mastery, and individual mastery. Their trap and hint tools stay locked until they meet the answer-team contribution target.
 - The host can open a projector-friendly classroom board from the Classroom tab or `B`. It shows phase, timer, the preferred join address, readiness, role mix, objective progress, and revision mastery without showing student locations or answer keys.
 
-## Teacher-Hosted LAN
+## Teacher-Hosted Classroom
 
 1. Extract the packaged Windows classroom zip and start `BlackoutHunt.exe` on the teacher machine. The classroom package includes app-local Windows runtime DLLs, so normal game launch should not require administrator rights or a separate VC++ Redistributable install.
 2. Choose the `LIVE CLASSROOM` button for the map you want from the Play menu, or host a normal map if you are not running Physics Classroom.
-3. The game shows the preferred classroom join address when the listen server is open. For the owned beta tunnel this is `blackouthunt.playit.plus:24761`; direct LAN still uses the teacher machine IP and UDP `7777`.
-4. Students enter an in-game lobby name if prompted, then choose the saved classroom endpoint or type the teacher address, for example `blackouthunt.playit.plus:24761` or `192.168.1.20:7777`.
-5. If no student reaches the host, the classroom preflight starts the verified bundled Playit agent and changes status to either `LAN blocked, tunnel ready` when a usable tunnel address is detected or `network setup required` when teacher setup is still needed.
+3. The game shows the preferred classroom join address when the listen server is open. For the owned beta tunnel this is `blackouthunt.playit.plus:24761`.
+4. Students enter an in-game lobby name if prompted, then choose the saved classroom endpoint or type `blackouthunt.playit.plus:24761`.
+5. If the Playit tunnel is not ready, the classroom preflight starts the verified bundled Playit agent and reports either the configured classroom endpoint or a clear setup-required status.
 6. Set the Physics question focus, complexity, mastery targets, and scare intensity from the Classroom tab if the default lesson profile needs changing.
 7. Use the host machine to assign roles, ask every student to ready up, and kick stuck/misjoined blockers from the roster if needed.
 8. The Live Classroom path opens the Classroom workflow automatically. You can also open the Classroom tab or press `B` on the host to launch the separate board window, then move that window to the projector/display.
@@ -51,11 +54,17 @@ Students may not:
 Use the Playit tunnel helper only from the host machine.
 
 1. Host the match with `LIVE CLASSROOM`.
-2. If direct LAN does not receive a student client, the game starts the verified bundled Playit agent automatically from the host machine.
+2. The game starts the verified bundled Playit agent automatically from the host machine when classroom tunnel support is enabled.
 3. If the status says `network setup required`, use the opened Playit page to create or select a Custom UDP tunnel to `127.0.0.1:7777`.
-4. When the game detects a usable tunnel allocation in the agent log, the host status changes to `LAN blocked, tunnel ready` and shows the join address. For the owned beta tunnel, students can use `blackouthunt.playit.plus:24761` from the saved join list. You can also put another allocation host/port in the menu and copy a `BH1:...` join code.
+4. When the game detects a usable tunnel allocation in the agent log, the host status shows the join address. For the owned beta tunnel, students can use `blackouthunt.playit.plus:24761` from the saved join list. You can also put another allocation host/port in the menu and copy a `BH1:...` join code.
 
 The game verifies the bundled `playit.exe` hash before launching it. If verification fails, the helper is not launched.
+
+## Direct LAN and Firewall Prompts
+
+The school-safe Live Classroom path is tunnel-only by default. It binds the listen server to `127.0.0.1`, so Windows should not ask a standard student or teacher account to allow inbound public/private network access.
+
+Direct LAN hosting still exists through `Host LAN`, normal direct-IP host commands, or by setting `bClassroomLoopbackOnlyHost=False` in an IT-managed build. Those paths listen on UDP `7777` on the teacher machine network interface and can trigger the Windows Firewall consent prompt. On school PCs, do not rely on the game to create that firewall rule; have IT pre-authorize the executable/port or use the default Playit classroom endpoint.
 
 ## Windows Hotspot
 
@@ -111,9 +120,10 @@ Native Linux validation is still a separate release task.
 - Confirm package verification passes.
 - On a clean Windows machine, confirm a standard user can extract the zip and launch `BlackoutHunt.exe` without administrator rights or VC++ Redistributable installation.
 - On low-spec or lab machines, confirm `Launch-BlackoutHunt-DX11.cmd` and `Launch-BlackoutHunt-DX11-Low.cmd` start the game. If the D3D11-compatible GPU error appears, confirm the machine is not using Microsoft Basic Display Adapter, hidden hardware acceleration through Remote Desktop, or a VM graphics path without Direct3D feature level 11.0.
-- Host a LAN lobby from the teacher machine.
-- Join with at least two student clients.
-- If direct LAN is blocked, confirm the Playit fallback reaches `LAN blocked, tunnel ready` or gives a clear `network setup required` status with agent log path.
+- Host a Live Classroom lobby from the teacher machine and confirm the join address is the configured Playit endpoint.
+- Join with at least two student clients through the saved classroom endpoint.
+- Confirm the classroom path does not show a Windows Firewall public/private networks prompt on a standard school account.
+- For IT-managed direct LAN builds only, confirm UDP `7777` is pre-authorized before testing LAN joins.
 - Confirm a remote student cannot run admin commands.
 - Confirm Live Classroom shows the join address, classroom board, and role roster.
 - Confirm students appear in the roster by their in-game lobby names.

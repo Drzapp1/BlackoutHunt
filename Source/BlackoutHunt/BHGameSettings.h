@@ -5,6 +5,8 @@
 #include "UObject/Object.h"
 #include "BHGameSettings.generated.h"
 
+class UStateTree;
+
 UCLASS(Config = Game, DefaultConfig)
 class BLACKOUTHUNT_API UBHGameSettings : public UObject
 {
@@ -44,6 +46,9 @@ public:
 	bool bAllowHotspotHelper;
 
 	UPROPERTY(Config, EditAnywhere, Category = "Classroom")
+	bool bClassroomLoopbackOnlyHost;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Classroom")
 	TArray<FString> ClassroomJoinEndpoints;
 
 	UPROPERTY(Config, EditAnywhere, Category = "Interaction")
@@ -64,6 +69,9 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Horror")
 	float BatteryRefillAmount;
 
+	UPROPERTY(Config, EditAnywhere, Category = "Horror")
+	TArray<FBHJumpscareVariant> JumpscareVariants;
+
 	UPROPERTY(Config, EditAnywhere, Category = "Audio", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float DefaultMasterVolume;
 
@@ -78,6 +86,12 @@ public:
 
 	UPROPERTY(Config, EditAnywhere, Category = "Bots")
 	EBHBotDifficulty DefaultBotDifficulty;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Bots")
+	bool bUseStateTreeAI;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Bots")
+	TSoftObjectPtr<UStateTree> HunterStateTreeAsset;
 
 	UPROPERTY(Config, EditAnywhere, Category = "Bots")
 	float BotThinkInterval;
@@ -102,4 +116,49 @@ public:
 
 	UPROPERTY(Config, EditAnywhere, Category = "Revision")
 	int32 RevisionScareIntensity;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Train")
+	bool bUseTrainIntermissions;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Train")
+	int32 TrainRecapSeconds;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Train")
+	int32 TrainBonusQuestionSeconds;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Train")
+	int32 TrainShopSeconds;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Train")
+	int32 TrainStationStopSeconds;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Train")
+	int32 TrainDepartureCountdownSeconds;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Train")
+	int32 StageOneSeconds;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Train")
+	int32 StageTwoSeconds;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Train")
+	int32 StageThreeSeconds;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Final Escape")
+	int32 FinalEscapeSeconds;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Final Escape")
+	float FinalEscapeCutsceneSeconds;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Final Escape")
+	float HunterReleaseDelaySeconds;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Final Escape")
+	float HunterAntiCampRadius;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Final Escape")
+	float HunterAntiCampGraceSeconds;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Final Escape")
+	float HunterAntiCampPenaltySeconds;
 };

@@ -10,6 +10,8 @@ class ABHObjectiveStation;
 class ABHPlayerState;
 class UCameraComponent;
 class UMaterialInstanceDynamic;
+class UBHPowerupComponent;
+class UPointLightComponent;
 class USceneComponent;
 class USkeletalMeshComponent;
 class UStaticMeshComponent;
@@ -25,6 +27,7 @@ public:
 
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaSeconds) override;
+	virtual void Landed(const FHitResult& Hit) override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual void PossessedBy(AController* NewController) override;
@@ -50,6 +53,7 @@ public:
 	bool BotUseHunterPower();
 	bool BotDropDecoyOrTrap();
 	bool BotSubmitAnswer(ABHObjectiveStation* Station, int32 AnswerIndex);
+	bool UsePowerupByType(EBHPowerupType Type);
 
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt")
 	bool IsHiddenInLocker() const;
@@ -108,6 +112,18 @@ protected:
 	void SubmitAnswerTwo();
 	void SubmitAnswerThree();
 	void SubmitAnswerFour();
+	void UsePowerupSlotOne();
+	void UsePowerupSlotTwo();
+	void UsePowerupSlotThree();
+	void UsePowerupSlotFour();
+	void UsePowerupSlotFive();
+	void UsePowerupSlotSix();
+	void TesterGrantTrainResources();
+	void TesterOpenTrainIntermission();
+	void TesterAdvanceTrainPhase();
+	void TesterLoadFinalStation();
+	void TesterTriggerFinalEscape();
+	void TesterForceFinalRecap();
 
 	bool CanAct() const;
 	bool TraceForInteractable(AActor*& OutActor) const;
@@ -124,11 +140,13 @@ protected:
 	bool UseHunterPowerAuthority(bool bShowFailureMessages);
 	bool DropDecoyAuthority(bool bShowFailureMessages);
 	bool SubmitAnswerAuthority(ABHObjectiveStation* Station, int32 AnswerIndex, bool bUseViewFallback, bool bShowFailureMessages);
+	void EmitFootstepStimulus(float Strength, const FString& Reason);
 	void UpdateViewFeel(float DeltaSeconds);
 	void UpdateFlashlightFeel(float DeltaSeconds);
 	void TryBHopJump();
 	void ApplyFlashlightState();
 	void ApplyHiddenState();
+	void UpdateHunterVisualCue();
 	void ConfigureLowPolyAvatar();
 	void UpdateLowPolyAvatar(float DeltaSeconds);
 	void UpdateRoleSkeletalAnimation(float Speed2D, float MoveAlpha, float SprintAlpha, bool bGrounded);
@@ -165,6 +183,9 @@ protected:
 	UFUNCTION(Server, Reliable)
 	void ServerSubmitAnswer(int32 AnswerIndex);
 
+	UFUNCTION(Server, Reliable)
+	void ServerUsePowerup(EBHPowerupType Type);
+
 	UFUNCTION(Client, Reliable)
 	void ClientReceiveScanResult(const FVector& TargetLocation, bool bTargetHidden, bool bFoundTarget);
 
@@ -182,6 +203,12 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<USpotLightComponent> Flashlight;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UPointLightComponent> HunterHueLight;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UBHPowerupComponent> PowerupComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UStaticMeshComponent> FlashlightBeamOuter;
@@ -394,10 +421,14 @@ protected:
 	float LastHunterPowerTime;
 	float LastDecoyTime;
 	float LastSprintNoiseTime;
+	float LastFootstepStimulusTime;
+	float FootstepStimulusDistanceAccumulator;
+	float StaminaRecoveryLockedUntil;
 	float LastStaminaWarningTime;
 	float LastHidingPanicMessageTime;
 	float LastLockerNoiseTime;
 	float LastForcedBreathNoiseTime;
+	float LastPanicBreathNoiseTime;
 	float LastDetentionNoiseTime;
 	float HiddenSeconds;
 	float DefaultCameraFOV;

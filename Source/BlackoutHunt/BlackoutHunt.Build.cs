@@ -26,10 +26,31 @@ public class BlackoutHunt : ModuleRules
 			"AIModule",
 			"NavigationSystem",
 			"GameplayTasks",
+			"GameplayTags",
+			"StateTreeModule",
+			"GameplayStateTreeModule",
 			"OnlineSubsystem",
 			"OnlineSubsystemUtils",
 			"OnlineBase"
 		});
+
+		if (Target.Platform == UnrealTargetPlatform.Win64)
+		{
+			PublicSystemLibraries.Add("bcrypt.lib");
+		}
+
+		if (Target.bBuildEditor)
+		{
+			PrivateDependencyModuleNames.AddRange(new string[]
+			{
+				"AssetRegistry",
+				"PropertyBindingUtils",
+				"PropertyBindingUtilsEditor",
+				"StructUtilsEditor",
+				"StateTreeEditorModule",
+				"UnrealEd"
+			});
+		}
 
 		string PlayitAgentPath = Path.Combine(ModuleDirectory, "..", "..", "ThirdParty", "Playit", "playit.exe");
 		if (File.Exists(PlayitAgentPath))

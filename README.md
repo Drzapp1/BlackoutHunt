@@ -6,7 +6,7 @@ One player hosts a listen server and friends join with `host-ip-or-domain:7777`.
 
 ## Beta Release
 
-Current beta target: `0.2.0-beta.4` Windows classroom build. See `D:\MainGame\Docs\BETA_RELEASE_NOTES_0.2.0-beta.4.md` for tester scope, known limits, and validation notes.
+Current beta target: `0.2.0-beta.5` Windows classroom build. See `D:\MainGame\Docs\BETA_RELEASE_NOTES_0.2.0-beta.5.md` for tester scope, known limits, and validation notes.
 
 ## Current Gameplay
 
@@ -16,7 +16,7 @@ Current beta target: `0.2.0-beta.4` Windows classroom build. See `D:\MainGame\Do
 - Survivors can hide in lockers, drop decoys, pull one-use map alarms, manage stamina, and scavenge batteries that restore flashlight, stamina, and nerve.
 - Anyone can toggle room lighting circuits and open central security shutters from terminals.
 - The Teacher can capture visible Survivors with `Mouse1`, search occupied lockers with `E`, use a heartbeat scan with `Q`, and trigger a blackout surge with `R` during the hunt phase.
-- Caught Survivors can return as Hall Monitors when the round still has active Survivors. Hall Monitors look like the Teacher, cannot capture, place alarm traps with `G`, send real hints with `Q`, and send false hints with `R`.
+- Caught Survivors can return as Hall Monitors when the round still has active Survivors. Hall Monitors look like the Teacher, cannot capture, place alarm traps with `G`, send real hints with `Q`, and send false hints with `R`. In Physics Classroom, monitors still count toward the 70/50 mastery goals and their tools stay locked until they meet the answer-team contribution target.
 - Survivor fear rises when the Teacher is close, when questions are answered wrong, or when scares/scans/cold-calls hit; wrong answers can add a temporary detention mark that makes movement noisier and Teacher scans more dangerous.
 - Correct answers clear detention marks, steady nerves, and give a small stamina/flashlight relief boost before the physical task.
 - The host can switch infection mode, slow/party pacing, Teacher count, and objective intensity from the Escape menu.
@@ -30,9 +30,10 @@ While a hosted game is still in the lobby, the listen-server host can open Escap
 
 ## Performance Modes
 
-- `Low 4GB`: 45 FPS cap, dynamic resolution, small texture pool, lower shadow/AO/reflection cost, no volumetric fog, and software/integrated-GPU friendly renderer settings.
+- `Low 4GB`: 45 FPS cap, dynamic resolution, small texture pool, lower shadow/reflection cost, no volumetric fog, and software/integrated-GPU friendly renderer settings while preserving the same dark horror tonemapping/AO baseline as higher modes.
 - `High 16GB`: 120 FPS cap, 1080p/100% render scale target, larger streaming pool, full-quality meshes/materials, and dynamic resolution only when needed.
 - `Ultra`: uncapped, no dynamic resolution, full streaming pool, max view/shadow/post settings, and no intentional graphics restrictions.
+- Startup graphics scan local CPU/RAM/GPU information and defaults to the safest matching preset. The Settings panel includes Auto, adaptive on/off, adaptive FPS goal, render scale, texture quality, shadows, effects, persistent resolution, and FPS-limit controls. Adaptive graphics is on by default and adjusts render scale plus high-cost shadow/effects work against the selected FPS goal.
 
 For machines without a dedicated GPU, use `Low 4GB` plus the 720p windowed button. Packaged Windows classroom builds default to D3D11 and also include `Launch-BlackoutHunt-DX11.cmd` plus `Launch-BlackoutHunt-DX11-Low.cmd`. If Windows still reports that a D3D11-compatible GPU is required, the machine is not exposing Direct3D feature level 11 / Shader Model 5 to Unreal; update the graphics driver, avoid Remote Desktop, or use a different GPU/VM configuration. Headless server/testing can still use Unreal's `-nullrhi` path when rendering is not needed.
 
@@ -46,7 +47,7 @@ For machines without a dedicated GPU, use `Low 4GB` plus the 720p windowed butto
 - `F10`: host-only force-start test shortcut when explicitly enabled
 - `F`: flashlight
 - `E`: interact / hold repair / exit locker
-- `1-4`: answer the active station question you are looking at
+- `1-4`: answer the active station question you are looking at; Physics Classroom Hall Monitors use this to unlock monitor tools
 - `Space`: jump / hold to bunny hop
 - `Shift`: sprint
 - `Left Ctrl`: crouch
@@ -108,7 +109,7 @@ Account progress is saved locally under `D:\MainGame\Saved\Account` and can sync
 
 The project defaults to a classroom-safe profile: local username/password profiles are enabled, external account login/backend sync are disabled, and session/admin controls are restricted to the listen-server host machine. Students can still play the in-game Teacher role when the host assigns it, but that role does not grant host/admin controls.
 
-Use one of the `LIVE CLASSROOM` map buttons from the Play menu for the LAN-first Physics Classroom flow: Facility, Substation, or Foggrounds, 10 minutes, adaptive questions, all topics, Horror scare intensity, classroom board, join address, and host roster. The host can adjust question focus, complexity, mastery targets, and scare intensity from the Classroom tab. Force-start stays disabled; the host removes blockers with the roster Kick button.
+Use one of the `LIVE CLASSROOM` map buttons from the Play menu for the school-safe Physics Classroom flow: Facility, Substation, or Foggrounds, 10 minutes, adaptive questions, all topics, Horror scare intensity, classroom board, join address, and host roster. Live Classroom binds the host to `127.0.0.1` and uses the configured Playit endpoint by default, which avoids the Windows Firewall public/private networks prompt on locked-down school PCs. Direct LAN remains available through Host LAN or an IT-managed build that sets `bClassroomLoopbackOnlyHost=False` and pre-authorizes UDP `7777`. The host can adjust question focus, complexity, mastery targets, and scare intensity from the Classroom tab. Force-start stays disabled; the host removes blockers with the roster Kick button.
 
 For live classroom packaging and operation, see `D:\MainGame\Docs\CLASSROOM_DEPLOYMENT.md`. The primary release command is:
 

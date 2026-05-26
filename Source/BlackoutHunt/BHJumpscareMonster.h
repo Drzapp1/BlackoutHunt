@@ -1,14 +1,21 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "BHTypes.h"
 #include "GameFramework/Actor.h"
 #include "BHJumpscareMonster.generated.h"
 
 class ABHCharacter;
+class UAnimSequence;
+class UChildActorComponent;
+class UMaterialInterface;
 class UPointLightComponent;
 class USceneComponent;
+class USoundBase;
 class USkeletalMeshComponent;
 class UStaticMeshComponent;
+class USkeletalMesh;
+class UStaticMesh;
 
 UCLASS()
 class BLACKOUTHUNT_API ABHJumpscareMonster : public AActor
@@ -19,13 +26,28 @@ public:
 	ABHJumpscareMonster();
 
 	virtual void Tick(float DeltaSeconds) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	void Configure(ABHCharacter* NewTarget, float NewSpeed = 2200.0f, float NewLifetime = 5.0f, float NewHoldSeconds = 0.0f);
+	void ConfigureScriptedPath(const TArray<FVector>& NewPathPoints, float NewSpeed = 3200.0f, float NewLifetime = 2.0f, AActor* NewLookAtTarget = nullptr, bool bNewFaceLookAtTarget = false, bool bNewPlayChargeEffects = true);
+	void ConfigurePresentation(USkeletalMesh* NewSkeletalMesh, UAnimSequence* NewRunAnimation, UStaticMesh* NewStaticMesh, UMaterialInterface* NewMaterial, USoundBase* NewLaunchSound, const FLinearColor& NewLightColor, float NewFocusHeight);
+	void ConfigureVariant(const FBHJumpscareVariant& NewVariant);
+	float GetCameraFocusHeight() const { return CameraFocusHeight; }
+	FName GetJumpscareVariantId() const { return JumpscareVariantId; }
 
 protected:
 	virtual void BeginPlay() override;
 
 	void ApplyVisuals();
+	void ApplyConfiguredPresentation();
+	void ApplyConfiguredVariant();
+	void SetProxyPartsVisible(bool bVisible);
+	void SetCloseupUpperBodyOnly();
+	void TriggerContactJumpscare();
+	void TickScriptedPath(float DeltaSeconds);
+
+	UFUNCTION()
+	void OnRep_JumpscareVariantId();
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<USceneComponent> Root;
@@ -75,6 +97,9 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPointLightComponent> CoreLight;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UChildActorComponent> VariantVisualActor;
+
 	void StartChargeEffects();
 	void SpawnLaunchScream();
 
@@ -84,5 +109,26 @@ protected:
 	float HoldSeconds;
 	float SpawnTime;
 	bool bChargeStarted;
+	bool bContactJumpscareTriggered;
+	bool bUseScriptedPath;
+	bool bScriptedFaceLookAtTarget;
+	bool bScriptedPlayChargeEffects;
+	int32 ScriptedPathIndex;
 	bool bUsingScpVisual;
+	float CameraFocusHeight;
+	TWeakObjectPtr<AActor> ScriptedLookAtTarget;
+	TArray<FVector> ScriptedPathPoints;
+	FLinearColor PresentationLightColor;
+	FVector PresentationVisualOffset;
+	FRotator PresentationVisualRotation;
+	FVector PresentationVisualScale;
+
+	UPROPERTY(ReplicatedUsing = OnRep_JumpscareVariantId)
+	FName JumpscareVariantId;
+
+	UPROPERTY(Transient)
+	FBHJumpscareVariant ActiveVariant;
+
+	UPROPERTY(Transient)
+	TObjectPtr<USoundBase> LaunchSound;
 };

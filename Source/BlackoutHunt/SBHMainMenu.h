@@ -34,12 +34,12 @@ public:
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 	virtual bool SupportsKeyboardFocus() const override;
 	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
-	virtual FReply OnPreviewMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 
 private:
 	enum class EBHMainMenuTab : uint8
 	{
 		Play = 0,
+		Guide,
 		Classroom,
 		Character,
 		Match,
@@ -51,6 +51,7 @@ private:
 
 	FReply OnStartClicked();
 	FReply OnStartAccountClicked();
+	FReply OnStartGuideClicked();
 	FReply OnToggleStartCredentialsClicked();
 	FReply OnHostClicked();
 	FReply OnHostSubstationClicked();
@@ -62,6 +63,8 @@ private:
 	FReply OnHostPhysicsClassroomClicked();
 	FReply OnHostLiveClassroomClicked();
 	FReply OnHostLiveClassroomMapClicked(FString LevelName);
+	FReply OnHostSelectedLiveClassroomClicked();
+	FReply OnSelectLiveClassroomMapClicked(FString LevelName);
 	FReply OnHostBotClicked();
 	FReply OnHostBotSubstationClicked();
 	FReply OnHostBotFoggroundsClicked();
@@ -111,6 +114,14 @@ private:
 	FReply OnPracticeModifierClicked(EBHRoundModifier NewModifier);
 	FReply OnPracticeRefreshClicked();
 	FReply OnPracticeJumpscareClicked();
+	FReply OnJumpscareVariantClicked(FString VariantToken);
+	FReply OnAtmosphereTestClicked(FString Command);
+	FReply OnTesterResourcesClicked();
+	FReply OnTesterTrainClicked();
+	FReply OnTesterTrainPhaseClicked();
+	FReply OnTesterFinalStationClicked();
+	FReply OnTesterFinalEscapeClicked();
+	FReply OnTesterFinalRecapClicked();
 	FReply OnAvatarClicked();
 	FReply OnAvatarPresetClicked(int32 AvatarIndex);
 	FReply OnAvatarColorClicked(int32 ColorIndex);
@@ -119,6 +130,13 @@ private:
 	FReply OnMenuTabClicked(EBHMainMenuTab NewTab);
 	FReply OnOpenClassroomBoardClicked();
 	FReply OnGraphicsPresetClicked(int32 Quality);
+	FReply OnAutoGraphicsClicked();
+	FReply OnAdaptiveGraphicsClicked(bool bEnabled);
+	FReply OnAdaptiveFrameRateGoalClicked(int32 FpsGoal);
+	FReply OnRenderScaleClicked(int32 Percent);
+	FReply OnTextureQualityClicked(int32 Quality);
+	FReply OnShadowQualityClicked(int32 Quality);
+	FReply OnEffectsQualityClicked(int32 Quality);
 	FReply OnResolutionClicked(int32 Width, int32 Height, bool bFullscreen);
 	FReply OnFrameRateClicked(int32 FrameRateLimit);
 	FReply OnRevisionTopicsClicked(int32 TopicMask);
@@ -127,6 +145,7 @@ private:
 	FReply OnRevisionScareIntensityClicked(int32 Intensity);
 	FReply OnForceReviewClicked();
 	FReply OnRevisionStatusClicked();
+	FReply OnExportRevisionReportClicked();
 	void OnMasterVolumeChanged(float Volume);
 	void OnMusicVolumeChanged(float Volume);
 	void OnUiVolumeChanged(float Volume);
@@ -163,14 +182,17 @@ private:
 	FText GetMasterVolumeText() const;
 	FText GetMusicVolumeText() const;
 	FText GetUiVolumeText() const;
+	FText GetGraphicsSummaryText() const;
 	EVisibility GetStartCredentialsVisibility() const;
 	const FSlateBrush* GetStartBackgroundBrush() const;
+	const FSlateBrush* GetGuideHudBrush() const;
 	int32 GetRootWidgetIndex() const;
 	bool CanJoinFirstOnlineSession() const;
 	bool IsInNetworkedGame() const;
 	bool IsPracticeMode() const;
 	bool IsTestMode() const;
 	bool CanEditRoles() const;
+	bool CanEditRevisionControls() const;
 	bool CanOpenClassroomBoard() const;
 	bool CanReadyFromMenu() const;
 	FString GetEnteredAddress() const;
@@ -179,6 +201,18 @@ private:
 	bool EnsureJoinDisplayName();
 	void SetJoinAddressFields(const FString& Address);
 	FString ResolvePreferredAddress() const;
+	FText GetLiveClassroomMapText() const;
+	FSlateColor GetLiveClassroomMapButtonColor(FString LevelName) const;
+	EVisibility GetRevisionControlsVisibility() const;
+	FText GetRevisionControlsSummaryText() const;
+	FSlateColor GetRevisionControlsSummaryColor() const;
+	FSlateColor GetRevisionTopicButtonColor(int32 TopicMask) const;
+	FSlateColor GetRevisionDifficultyButtonColor(EBHRevisionDifficultyMix DifficultyMix) const;
+	FSlateColor GetRevisionThresholdButtonColor(int32 ClassPercent, int32 IndividualPercent) const;
+	FSlateColor GetRevisionScareButtonColor(int32 Intensity) const;
+	FSlateColor GetGraphicsBoolOptionButtonColor(FName OptionName, bool bValue) const;
+	FSlateColor GetGraphicsOptionButtonColor(FName OptionName, int32 Value) const;
+	FSlateColor GetGraphicsResolutionButtonColor(int32 Width, int32 Height, bool bFullscreen) const;
 	void EnsureAvatarPreviewScene();
 	void UpdateAvatarPreviewMesh();
 	void DestroyAvatarPreviewScene();
@@ -196,9 +230,11 @@ private:
 	TSharedRef<SWidget> BuildRoundOptionsPanel();
 	TSharedRef<SWidget> BuildRevisionControlsPanel();
 	TSharedRef<SWidget> BuildClassroomPanel();
+	TSharedRef<SWidget> BuildGuidePanel();
 	TSharedRef<SWidget> BuildControlsPanel();
 	TSharedRef<SWidget> BuildGraphicsPanel();
 	TSharedRef<SWidget> BuildPracticePanel();
+	TSharedRef<SWidget> BuildTestCommandPanel();
 	TSharedRef<SWidget> BuildRoleAssignmentPanel();
 
 	void PlayMenuSelectionSound() const;
@@ -228,11 +264,15 @@ private:
 	TWeakObjectPtr<USceneCaptureComponent2D> AvatarPreviewCaptureComponent;
 	TStrongObjectPtr<UTextureRenderTarget2D> AvatarPreviewRenderTarget;
 	TStrongObjectPtr<UTexture2D> StartBackgroundTexture;
+	TStrongObjectPtr<UTexture2D> GuideHudTexture;
 	FSlateBrush StartBackgroundBrush;
 	FSlateBrush StartBackgroundFallbackBrush;
+	FSlateBrush GuideHudBrush;
+	FSlateBrush GuideHudFallbackBrush;
 	FSlateBrush AvatarPreviewBrush;
 	FText StatusText;
 	FString SuggestedAddress;
+	FString SelectedLiveClassroomMap = TEXT("Facility");
 	FString LastAvatarPreviewMeshPath;
 	FLinearColor LastAvatarPreviewColor = FLinearColor::Transparent;
 	int32 LastAvatarPreviewHeadwearIndex = INDEX_NONE;

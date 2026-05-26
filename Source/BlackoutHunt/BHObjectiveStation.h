@@ -95,6 +95,7 @@ public:
 protected:
 	void CompleteObjective();
 	void ConfigureQuestion();
+	void QueueAdaptiveQuestionForParticipants(const TArray<ABHCharacter*>& Participants, bool bLastAnswerCorrect);
 	int32 ResolveRevisionQuestionTarget() const;
 	FString GetActionVerb() const;
 	FString GetStationName() const;
@@ -209,6 +210,9 @@ protected:
 	TMap<int32, int32> RevisionTeamVotes;
 	TSet<int32> RevisionTeamPlayerIds;
 	TSet<TWeakObjectPtr<ABHCharacter>> PendingCorrectionCharacters;
+	bool bUseAdaptiveQuestionOverride;
+	EBHPhysicsTopic AdaptiveQuestionTopic;
+	EBHQuestionDifficulty AdaptiveQuestionDifficulty;
 	float LastNoiseTime;
 	float LastAnswerTime;
 };

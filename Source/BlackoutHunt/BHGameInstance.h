@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "BHAutomationSupport.h"
+#include "BHTypes.h"
 #include "Engine/GameInstance.h"
 #include "Interfaces/OnlineSessionInterface.h"
 #include "OnlineSessionSettings.h"
@@ -19,6 +20,22 @@ struct FBHOnlineSessionSummary
 	int32 CurrentPlayers = 0;
 	int32 MaxPlayers = 0;
 	int32 PingMs = 0;
+};
+
+class ABHPlayerState;
+
+struct FBHTravelPlayerProgress
+{
+	FString StableId;
+	FString PlayerName;
+	EBHPlayerRole PlayerRole = EBHPlayerRole::Unassigned;
+	EBHPlayerRole DesiredRole = EBHPlayerRole::Unassigned;
+	EBHPlayerLifeState LifeState = EBHPlayerLifeState::Alive;
+	bool bFakeHunterEligible = false;
+	FBHPlayerRevisionStats RevisionStats;
+	int32 QuestionPoints = 0;
+	int32 LifetimeQuestionPoints = 0;
+	TArray<FBHPowerupInventoryEntry> Powerups;
 };
 
 UCLASS()
@@ -95,6 +112,8 @@ public:
 	const FString& GetLastNetworkMessage() const;
 	const FString& GetPublicJoinAddress() const;
 	FString GetPreferredJoinAddress(int32 LocalPort = 7777) const;
+	FString GetConfiguredClassroomJoinAddress(int32 LocalPort = 7777) const;
+	FString GetPreferredClassroomJoinAddress(int32 LocalPort = 7777) const;
 	void SetPublicJoinAddress(const FString& Address);
 	const FBHAutomationConfig& GetAutomationConfig() const;
 	bool IsAutomationEnabled() const;
@@ -107,6 +126,17 @@ public:
 	void LogAutomationMarker(const FString& Marker) const;
 	bool LogAutomationMarkerOnce(const FString& Marker);
 	void RequestCleanExit(const FString& Reason);
+	void PersistTravelPlayerState(const ABHPlayerState* PlayerState);
+	bool RestoreTravelPlayerState(ABHPlayerState* PlayerState) const;
+	void RecordQuestionAttempt(const FBHQuestionAttemptRecord& Attempt);
+	const TArray<FBHQuestionAttemptRecord>& GetQuestionAttemptHistory() const;
+	void ClearQuestionAttemptHistory();
+	void SetPersistentStageIndex(int32 NewStageIndex);
+	int32 GetPersistentStageIndex() const;
+	FString BuildTrainRecapOverview() const;
+	FString BuildTrainRecapTopics() const;
+	FString BuildTrainRecapMissedQuestions() const;
+	FString BuildTrainRecapTips(const FString& NextDestination) const;
 
 private:
 	IOnlineSessionPtr GetOnlineSessionInterface(FString& OutMessage) const;
@@ -141,4 +171,7 @@ private:
 	bool bAutomationHostConsumed = false;
 	bool bAutomationJoinConsumed = false;
 	TSet<FString> AutomationMarkersLogged;
+	TArray<FBHTravelPlayerProgress> TravelPlayerProgress;
+	TArray<FBHQuestionAttemptRecord> QuestionAttemptHistory;
+	int32 PersistentStageIndex = 0;
 };

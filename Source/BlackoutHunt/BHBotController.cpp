@@ -14,6 +14,14 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Navigation/PathFollowingComponent.h"
 #include "NavigationSystem.h"
+#include "Perception/AIPerceptionComponent.h"
+#include "Perception/AISense.h"
+#include "Perception/AISense_Hearing.h"
+#include "Perception/AISense_Sight.h"
+#include "Perception/AISenseConfig_Hearing.h"
+#include "Perception/AISenseConfig_Sight.h"
+#include "Components/StateTreeAIComponent.h"
+#include "StateTree.h"
 
 namespace
 {
@@ -57,11 +65,61 @@ ABHBotController::ABHBotController()
 	PrimaryActorTick.bCanEverTick = true;
 	bWantsPlayerState = true;
 
+	StateTreeAIComponent = CreateDefaultSubobject<UStateTreeAIComponent>(TEXT("StateTreeAI"));
+	if (StateTreeAIComponent)
+	{
+		StateTreeAIComponent->SetStartLogicAutomatically(false);
+	}
+
+	BotPerceptionComponent = CreateDefaultSubobject<UAIPerceptionComponent>(TEXT("BotPerception"));
+	SightSenseConfig = CreateDefaultSubobject<UAISenseConfig_Sight>(TEXT("SightSenseConfig"));
+	HearingSenseConfig = CreateDefaultSubobject<UAISenseConfig_Hearing>(TEXT("HearingSenseConfig"));
+	if (SightSenseConfig)
+	{
+		SightSenseConfig->SightRadius = 2800.0f;
+		SightSenseConfig->LoseSightRadius = 3400.0f;
+		SightSenseConfig->PeripheralVisionAngleDegrees = 76.0f;
+		SightSenseConfig->DetectionByAffiliation.bDetectEnemies = true;
+		SightSenseConfig->DetectionByAffiliation.bDetectFriendlies = true;
+		SightSenseConfig->DetectionByAffiliation.bDetectNeutrals = true;
+	}
+	if (HearingSenseConfig)
+	{
+		HearingSenseConfig->HearingRange = 3600.0f;
+		HearingSenseConfig->DetectionByAffiliation.bDetectEnemies = true;
+		HearingSenseConfig->DetectionByAffiliation.bDetectFriendlies = true;
+		HearingSenseConfig->DetectionByAffiliation.bDetectNeutrals = true;
+	}
+	if (BotPerceptionComponent)
+	{
+		if (SightSenseConfig)
+		{
+			BotPerceptionComponent->ConfigureSense(*SightSenseConfig);
+		}
+		if (HearingSenseConfig)
+		{
+			BotPerceptionComponent->ConfigureSense(*HearingSenseConfig);
+		}
+		BotPerceptionComponent->SetDominantSense(UAISense_Sight::StaticClass());
+		SetPerceptionComponent(*BotPerceptionComponent);
+	}
+
 	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	bUseStateTreeAI = Settings ? Settings->bUseStateTreeAI : true;
+	bStateTreeBrainRunning = false;
 	ThinkInterval = Settings ? FMath::Max(0.05f, Settings->BotThinkInterval) : 0.25f;
 	SightRange = Settings ? FMath::Max(800.0f, Settings->BotSightRange) : 2800.0f;
 	HearingMemorySeconds = Settings ? FMath::Max(1.0f, Settings->BotHearingMemorySeconds) : 12.0f;
 	StuckSeconds = Settings ? FMath::Max(1.0f, Settings->BotStuckSeconds) : 6.0f;
+	if (SightSenseConfig)
+	{
+		SightSenseConfig->SightRadius = SightRange;
+		SightSenseConfig->LoseSightRadius = SightRange + 650.0f;
+	}
+	if (HearingSenseConfig)
+	{
+		HearingSenseConfig->HearingRange = SightRange * 1.15f;
+	}
 	NextThinkTime = 0.0f;
 	LastAnswerAttemptTime = -999.0f;
 	LastTrapAttemptTime = -999.0f;
@@ -80,6 +138,9 @@ ABHBotController::ABHBotController()
 	Personality = EBHBotPersonality::Objective;
 	bPersonalityChosen = false;
 	CurrentIntent = EBHBotIntent::None;
+	LastStateTreeIntent = EBHBotIntent::None;
+	LastStateTreeIntentLocation = FVector::ZeroVector;
+	LastStateTreeIntentTime = -999.0f;
 	CurrentPatrolDestination = FVector::ZeroVector;
 	CurrentPatrolDestinationExpireTime = -999.0f;
 	bHasPatrolDestination = false;
@@ -90,6 +151,10 @@ void ABHBotController::BeginPlay()
 	Super::BeginPlay();
 	LastProgressTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	LastProgressLocation = GetPawn() ? GetPawn()->GetActorLocation() : FVector::ZeroVector;
+	if (BotPerceptionComponent)
+	{
+		BotPerceptionComponent->OnTargetPerceptionUpdated.AddDynamic(this, &ABHBotController::OnTargetPerceptionUpdated);
+	}
 }
 
 void ABHBotController::Tick(float DeltaSeconds)
@@ -105,7 +170,10 @@ void ABHBotController::Tick(float DeltaSeconds)
 	if (Now >= NextThinkTime)
 	{
 		NextThinkTime = Now + ThinkInterval;
-		Think();
+		if (!ShouldUseStateTreeBrain())
+		{
+			Think();
+		}
 	}
 }
 
@@ -115,10 +183,28 @@ FString ABHBotController::GetBotDebugLine() const
 	const APawn* ControlledPawn = GetPawn();
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	const float LastSeenAge = LastKnownSurvivorTime <= -900.0f ? -1.0f : Now - LastKnownSurvivorTime;
-	return FString::Printf(TEXT("%s role=%s personality=%s intent=%s target=%s claim=%s lastSeen=%.1fs decisions=%d switches=%d last=%s pos=(%.0f,%.0f,%.0f)"),
+	FString Brain = (bUseStateTreeAI && BotPS && BotPS->PlayerRole == EBHPlayerRole::Hunter) ? TEXT("StateTreeMissingAsset") : TEXT("Policy");
+	if (StateTreeAIComponent && StateTreeAIComponent->IsRunning())
+	{
+		Brain = TEXT("StateTree");
+#if WITH_GAMEPLAY_DEBUGGER
+		const TArray<FName> ActiveStates = StateTreeAIComponent->GetActiveStateNames();
+		if (!ActiveStates.IsEmpty())
+		{
+			TArray<FString> ActiveStateStrings;
+			for (const FName ActiveState : ActiveStates)
+			{
+				ActiveStateStrings.Add(ActiveState.ToString());
+			}
+			Brain += FString::Printf(TEXT("[%s]"), *FString::Join(ActiveStateStrings, TEXT(">")));
+		}
+#endif
+	}
+	return FString::Printf(TEXT("%s role=%s personality=%s brain=%s intent=%s target=%s claim=%s lastSeen=%.1fs decisions=%d switches=%d last=%s pos=(%.0f,%.0f,%.0f)"),
 		*GetNameSafe(BotPS),
 		BotPS ? *StaticEnum<EBHPlayerRole>()->GetNameStringByValue(static_cast<int64>(BotPS->PlayerRole)) : TEXT("None"),
 		*BHBotPersonalityName(Personality),
+		*Brain,
 		*BHBotIntentName(CurrentIntent),
 		*GetNameSafe(CurrentInteractTarget.Get()),
 		*GetNameSafe(CurrentClaimTarget.Get()),
@@ -158,6 +244,240 @@ void ABHBotController::OnPossess(APawn* InPawn)
 		Personality = ChoosePersonality(BotPS);
 		bPersonalityChosen = true;
 	}
+	StartStateTreeIfAvailable();
+}
+
+bool ABHBotController::RunStateTreeIntent(EBHBotIntent Intent, AActor* Target, const FVector& Location, float AcceptanceRadius)
+{
+	ABHCharacter* BotCharacter = GetBHCharacter();
+	ABHPlayerState* BotPS = GetBHPlayerState();
+	ABHGameState* BHGS = GetBHGameState();
+	if (!BotCharacter || !BotPS || !BHGS || !GetWorld() || BotPS->LifeState != EBHPlayerLifeState::Alive)
+	{
+		return false;
+	}
+
+	if (ABHGameMode* BHGM = GetBHGameMode())
+	{
+		BHGM->GetBotWorldMemorySnapshot(LocalMemory, HearingMemorySeconds + 8.0f);
+	}
+
+	AActor* ResolvedTarget = Target;
+	FVector ResolvedLocation = Location;
+	if (!ResolvedTarget && ResolvedLocation.IsNearlyZero())
+	{
+		switch (Intent)
+		{
+		case EBHBotIntent::Patrol:
+			ResolvedLocation = GetStablePatrolPoint(BotCharacter);
+			break;
+		case EBHBotIntent::Chase:
+			ResolvedTarget = LocalMemory.LastSeenSurvivor.Get();
+			if (!ResolvedTarget)
+			{
+				ResolvedTarget = FindVisibleSurvivor(SightRange, false);
+			}
+			ResolvedLocation = ResolvedTarget ? ResolvedTarget->GetActorLocation() : LastKnownSurvivorLocation;
+			break;
+		case EBHBotIntent::InvestigateNoise:
+			if (!GetBHGameMode() || !GetBHGameMode()->GetLatestBotNoiseLocation(HearingMemorySeconds, ResolvedLocation))
+			{
+				ResolvedLocation = LocalMemory.LastHeardLocation;
+			}
+			break;
+		case EBHBotIntent::InvestigateLastSeen:
+			ResolvedLocation = LastKnownSurvivorTime > -900.0f ? LastKnownSurvivorLocation : LocalMemory.LastSeenSurvivorLocation;
+			break;
+		case EBHBotIntent::SearchLocker:
+			ResolvedTarget = FindSuspiciousLocker(
+				LastKnownSurvivorTime > -900.0f ? LastKnownSurvivorLocation : BotCharacter->GetActorLocation(),
+				1100.0f,
+				true);
+			ResolvedLocation = ResolvedTarget ? ResolvedTarget->GetActorLocation() : BotCharacter->GetActorLocation();
+			break;
+		case EBHBotIntent::AmbushObjective:
+			ResolvedTarget = FindHunterPatrolObjective();
+			ResolvedLocation = ResolvedTarget
+				? BuildAmbushLocation(LastKnownSurvivorTime > -900.0f ? LastKnownSurvivorLocation : BotCharacter->GetActorLocation(), ResolvedTarget->GetActorLocation())
+				: GetStablePatrolPoint(BotCharacter);
+			break;
+		case EBHBotIntent::UseScan:
+		case EBHBotIntent::UsePower:
+			ResolvedTarget = LocalMemory.LastSeenSurvivor.Get();
+			ResolvedLocation = ResolvedTarget ? ResolvedTarget->GetActorLocation() : (LastKnownSurvivorTime > -900.0f ? LastKnownSurvivorLocation : BotCharacter->GetActorLocation());
+			break;
+		default:
+			ResolvedLocation = BotCharacter->GetActorLocation();
+			break;
+		}
+	}
+
+	FBHBotDecisionCandidate Decision;
+	Decision.Intent = Intent;
+	Decision.Target = ResolvedTarget;
+	Decision.Location = ResolvedLocation;
+	Decision.Distance = GetPawn() ? FVector::Dist2D(GetPawn()->GetActorLocation(), ResolvedTarget ? ResolvedTarget->GetActorLocation() : ResolvedLocation) : 0.0f;
+	Decision.BaseScore = 1.0f;
+	Decision.Risk = 0.0f;
+	Decision.Urgency = 1.0f;
+	Decision.DebugLabel = FString::Printf(TEXT("state tree %s"), *BHBotIntentName(Intent));
+
+	const float Now = GetWorld()->GetTimeSeconds();
+	const bool bSameTarget = LastStateTreeIntentTarget.Get() == ResolvedTarget;
+	const bool bSameIntent = LastStateTreeIntent == Intent;
+	const bool bSameLocation = ResolvedLocation.IsNearlyZero()
+		? LastStateTreeIntentLocation.IsNearlyZero()
+		: FVector::DistSquared2D(LastStateTreeIntentLocation, ResolvedLocation) <= FMath::Square(Intent == EBHBotIntent::Chase ? 110.0f : 220.0f);
+	const float MinCommitInterval = Intent == EBHBotIntent::Chase ? 0.22f : 0.65f;
+	if (bSameIntent && bSameTarget && bSameLocation && Now - LastStateTreeIntentTime < MinCommitInterval)
+	{
+		return true;
+	}
+
+	LastStateTreeIntent = Intent;
+	LastStateTreeIntentTarget = ResolvedTarget;
+	LastStateTreeIntentLocation = ResolvedLocation;
+	LastStateTreeIntentTime = Now;
+	CommitDecision(BotCharacter, BotPS, BHGS, Decision);
+	return true;
+}
+
+bool ABHBotController::HasRecentStateTreeStimulus(EBHBotStimulusType Type, float MaxAgeSeconds, FVector& OutLocation) const
+{
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	const float AgeLimit = FMath::Max(0.0f, MaxAgeSeconds);
+	FBHBotMemory Memory = LocalMemory;
+	if (ABHGameMode* BHGM = GetBHGameMode())
+	{
+		BHGM->GetBotWorldMemorySnapshot(Memory, AgeLimit + 1.0f);
+	}
+	for (int32 Index = Memory.RecentStimuli.Num() - 1; Index >= 0; --Index)
+	{
+		const FBHBotStimulus& Stimulus = Memory.RecentStimuli[Index];
+		if (Stimulus.Type == Type && Now - Stimulus.TimeSeconds <= AgeLimit)
+		{
+			OutLocation = Stimulus.Location;
+			return true;
+		}
+	}
+	if (Type == EBHBotStimulusType::Sight && Now - Memory.LastSeenSurvivorTime <= AgeLimit)
+	{
+		OutLocation = Memory.LastSeenSurvivorLocation;
+		return true;
+	}
+	if (Type == EBHBotStimulusType::Noise && Now - Memory.LastHeardTime <= AgeLimit)
+	{
+		OutLocation = Memory.LastHeardLocation;
+		return true;
+	}
+	return false;
+}
+
+void ABHBotController::StartStateTreeIfAvailable()
+{
+	bStateTreeBrainRunning = false;
+	if (!HasAuthority() || !bUseStateTreeAI || !StateTreeAIComponent)
+	{
+		return;
+	}
+
+	const ABHPlayerState* BotPS = GetBHPlayerState();
+	if (!BotPS || BotPS->PlayerRole != EBHPlayerRole::Hunter)
+	{
+		LastDecisionDebugLabel = TEXT("state tree disabled for non-hunter bot");
+		return;
+	}
+
+	UStateTree* StateTreeAsset = HunterStateTreeAsset.Get();
+	if (!StateTreeAsset)
+	{
+		const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+		if (Settings)
+		{
+			TSoftObjectPtr<UStateTree> ConfiguredStateTree = Settings->HunterStateTreeAsset;
+			StateTreeAsset = ConfiguredStateTree.LoadSynchronous();
+		}
+	}
+	if (!StateTreeAsset)
+	{
+		LastDecisionDebugLabel = TEXT("state tree asset missing; policy fallback");
+		return;
+	}
+
+	if (StateTreeAIComponent->IsRunning())
+	{
+		bStateTreeBrainRunning = true;
+		if (!ActiveStateTreeAsset)
+		{
+			ActiveStateTreeAsset = StateTreeAsset;
+		}
+		LastDecisionDebugLabel = ActiveStateTreeAsset == StateTreeAsset
+			? TEXT("state tree hunter brain")
+			: TEXT("state tree already running; deferred asset change");
+		return;
+	}
+	StateTreeAIComponent->SetStateTree(StateTreeAsset);
+	StateTreeAIComponent->StartLogic();
+	bStateTreeBrainRunning = StateTreeAIComponent->IsRunning();
+	ActiveStateTreeAsset = bStateTreeBrainRunning ? StateTreeAsset : nullptr;
+	LastDecisionDebugLabel = bStateTreeBrainRunning ? TEXT("state tree hunter brain") : TEXT("state tree failed to start; policy fallback");
+}
+
+bool ABHBotController::ShouldUseStateTreeBrain() const
+{
+	return bUseStateTreeAI && bStateTreeBrainRunning && StateTreeAIComponent && StateTreeAIComponent->IsRunning();
+}
+
+void ABHBotController::OnTargetPerceptionUpdated(AActor* Actor, FAIStimulus Stimulus)
+{
+	if (!HasAuthority() || !Actor || !Stimulus.WasSuccessfullySensed())
+	{
+		return;
+	}
+
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	const FVector StimulusLocation = Stimulus.StimulusLocation.IsNearlyZero() ? Actor->GetActorLocation() : Stimulus.StimulusLocation;
+	const bool bSightStimulus = Stimulus.Type == UAISense::GetSenseID<UAISense_Sight>();
+	const bool bHearingStimulus = Stimulus.Type == UAISense::GetSenseID<UAISense_Hearing>();
+
+	if (const ABHCharacter* SeenCharacter = Cast<ABHCharacter>(Actor))
+	{
+		const ABHPlayerState* SeenPS = SeenCharacter->GetPlayerState<ABHPlayerState>();
+		if (SeenPS && SeenPS->IsAliveSurvivor())
+		{
+			LastKnownSurvivorLocation = StimulusLocation;
+			LastKnownSurvivorTime = Now;
+			LocalMemory.LastSeenSurvivorLocation = StimulusLocation;
+			LocalMemory.LastSeenSurvivorTime = Now;
+			LocalMemory.LastSeenSurvivor = const_cast<ABHCharacter*>(SeenCharacter);
+			if (bSightStimulus)
+			{
+				RecordStimulus(EBHBotStimulusType::Sight, Actor, StimulusLocation, TEXT("bot perception survivor sight"), 1.0f);
+			}
+		}
+		else if (SeenPS && SeenPS->IsAliveHunter())
+		{
+			LocalMemory.LastSeenHunterLocation = StimulusLocation;
+			LocalMemory.LastSeenHunterTime = Now;
+			LocalMemory.LastSeenHunter = const_cast<ABHCharacter*>(SeenCharacter);
+			if (bSightStimulus)
+			{
+				RecordStimulus(EBHBotStimulusType::Sight, Actor, StimulusLocation, TEXT("bot perception hunter sight"), 1.0f);
+			}
+		}
+	}
+
+	if (bHearingStimulus)
+	{
+		LocalMemory.LastHeardLocation = StimulusLocation;
+		LocalMemory.LastHeardTime = Now;
+		RecordStimulus(EBHBotStimulusType::Noise, Actor, StimulusLocation, TEXT("bot perception hearing"), 0.8f);
+	}
+}
+
+void ABHBotController::ReportStateTreeDebugState(const FString& InStateName)
+{
+	LastDecisionDebugLabel = FString::Printf(TEXT("state tree %s"), *InStateName);
 }
 
 ABHCharacter* ABHBotController::GetBHCharacter() const
@@ -666,14 +986,10 @@ void ABHBotController::CommitDecision(ABHCharacter* BotCharacter, ABHPlayerState
 		}
 		break;
 	case EBHBotIntent::SearchLocker:
-		if (Target && IsCloseTo(Target, 260.0f))
+		ClearInteraction();
+		if (Target)
 		{
-			HoldInteraction(Target);
-		}
-		else if (Target)
-		{
-			ClearInteraction();
-			MoveTowardActor(Target, 180.0f);
+			MoveTowardActor(Target, 230.0f);
 		}
 		break;
 	case EBHBotIntent::AmbushObjective:

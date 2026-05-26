@@ -1,5 +1,6 @@
 #include "BHCharacter.h"
 #include "BHAlarmTrap.h"
+#include "BHEscapeStationManager.h"
 #include "BHGameMode.h"
 #include "BHGameSettings.h"
 #include "BHGameState.h"
@@ -9,12 +10,15 @@
 #include "BHObjectiveStation.h"
 #include "BHPlayerController.h"
 #include "BHPlayerState.h"
+#include "BHPowerupComponent.h"
 #include "BHPropVisuals.h"
+#include "BHTrainBonusQuestionTerminal.h"
 #include "Animation/AnimSequence.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/InputComponent.h"
 #include "Components/MeshComponent.h"
+#include "Components/PointLightComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SpotLightComponent.h"
@@ -29,6 +33,7 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 #include "Net/UnrealNetwork.h"
+#include "Perception/AISense_Hearing.h"
 #include "EngineUtils.h"
 
 namespace
@@ -37,6 +42,9 @@ constexpr float BHKeyboardTurnInputPerSecond = 48.0f;
 constexpr float BHKeyboardLookInputPerSecond = 36.0f;
 constexpr float BHHorrorThreatRange = 3600.0f;
 constexpr float BHHorrorCloseThreatRange = 950.0f;
+constexpr float BHHunterHueLightIntensity = 185.0f;
+constexpr float BHHunterHueLightRadius = 320.0f;
+constexpr float BHPostLandingStaminaRecoveryLockSeconds = 0.18f;
 
 FString BHCompassFromDelta(const FVector& Delta)
 {
@@ -377,6 +385,95 @@ float BHRoleSprintDrainMultiplier(const ABHPlayerState* BHPS)
 {
 	return BHUsesHunterMovementProfile(BHPS) ? 1.75f : 1.0f;
 }
+
+float BHHorrorThresholdAlpha(float Value, float Threshold, float FullValue)
+{
+	return FMath::Clamp((Value - Threshold) / FMath::Max(1.0f, FullValue - Threshold), 0.0f, 1.0f);
+}
+
+float BHFearPanicAlpha(const ABHCharacter* Character)
+{
+	return Character ? BHHorrorThresholdAlpha(Character->GetFear(), 55.0f, 100.0f) : 0.0f;
+}
+
+float BHDreadStrainAlpha(const ABHCharacter* Character)
+{
+	return Character ? BHHorrorThresholdAlpha(Character->GetDread(), 62.0f, 100.0f) : 0.0f;
+}
+
+float BHHorrorWalkSpeedMultiplier(const ABHCharacter* Character, const ABHPlayerState* BHPS)
+{
+	if (!Character || !BHPS || !BHPS->IsAliveSurvivor())
+	{
+		return 1.0f;
+	}
+
+	const float FearPenalty = BHHorrorThresholdAlpha(Character->GetFear(), 78.0f, 100.0f) * 0.07f;
+	const float DreadPenalty = BHDreadStrainAlpha(Character) * 0.10f;
+	return FMath::Clamp(1.0f - FearPenalty - DreadPenalty, 0.82f, 1.0f);
+}
+
+float BHHorrorSprintSpeedMultiplier(const ABHCharacter* Character, const ABHPlayerState* BHPS)
+{
+	if (!Character || !BHPS || !BHPS->IsAliveSurvivor())
+	{
+		return 1.0f;
+	}
+
+	const float FearPenalty = BHFearPanicAlpha(Character) * 0.16f;
+	const float DreadPenalty = BHDreadStrainAlpha(Character) * 0.08f;
+	return FMath::Clamp(1.0f - FearPenalty - DreadPenalty, 0.76f, 1.0f);
+}
+
+float BHHorrorStaminaDrainMultiplier(const ABHCharacter* Character, const ABHPlayerState* BHPS)
+{
+	if (!Character || !BHPS || !BHPS->IsAliveSurvivor())
+	{
+		return 1.0f;
+	}
+
+	return 1.0f + BHFearPanicAlpha(Character) * 0.36f + BHDreadStrainAlpha(Character) * 0.22f;
+}
+
+float BHHorrorStaminaRecoveryMultiplier(const ABHCharacter* Character, const ABHPlayerState* BHPS)
+{
+	if (!Character || !BHPS || !BHPS->IsAliveSurvivor())
+	{
+		return 1.0f;
+	}
+
+	const float FearAlpha = FMath::Clamp(Character->GetFear() / 100.0f, 0.0f, 1.0f);
+	return FMath::Lerp(1.0f, 0.55f, FearAlpha) * FMath::Lerp(1.0f, 0.78f, BHDreadStrainAlpha(Character));
+}
+
+float BHHorrorNoiseMultiplier(const ABHCharacter* Character, const ABHPlayerState* BHPS)
+{
+	if (!Character || !BHPS || !BHPS->IsAliveSurvivor())
+	{
+		return 1.0f;
+	}
+
+	return 1.0f + BHHorrorThresholdAlpha(Character->GetFear(), 45.0f, 100.0f) * 0.42f + BHHorrorThresholdAlpha(Character->GetDread(), 70.0f, 100.0f) * 0.28f;
+}
+
+bool BHFinalEscapeHunterPenaltyActive(UWorld* World, const ABHCharacter* Character)
+{
+	const ABHPlayerState* BHPS = Character ? Character->GetBHPlayerState() : nullptr;
+	if (!World || !BHPS || !BHPS->IsAliveHunter())
+	{
+		return false;
+	}
+
+	for (TActorIterator<ABHEscapeStationManager> It(World); It; ++It)
+	{
+		const ABHEscapeStationManager* Manager = *It;
+		if (Manager && Manager->IsHunterPenaltyActive(Character))
+		{
+			return true;
+		}
+	}
+	return false;
+}
 }
 
 ABHCharacter::ABHCharacter()
@@ -482,6 +579,20 @@ ABHCharacter::ABHCharacter()
 	Flashlight->SetVolumetricScatteringIntensity(5.0f);
 	Flashlight->SetVisibility(false);
 
+	HunterHueLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("HunterHueLight"));
+	HunterHueLight->SetupAttachment(GetCapsuleComponent());
+	HunterHueLight->SetRelativeLocation(FVector(0.0f, 0.0f, 34.0f));
+	HunterHueLight->SetLightColor(FLinearColor(1.0f, 0.12f, 0.055f, 1.0f));
+	HunterHueLight->SetIntensity(0.0f);
+	HunterHueLight->SetAttenuationRadius(BHHunterHueLightRadius);
+	HunterHueLight->SetSourceRadius(96.0f);
+	HunterHueLight->SetSoftSourceRadius(180.0f);
+	HunterHueLight->SetCastShadows(false);
+	HunterHueLight->SetVolumetricScatteringIntensity(0.22f);
+	HunterHueLight->SetVisibility(false);
+
+	PowerupComponent = CreateDefaultSubobject<UBHPowerupComponent>(TEXT("PowerupComponent"));
+
 	UStaticMesh* BeamMeshOuter = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/EngineVolumetrics/LightBeam/Mesh/S_EV_SimpleLightBeam_03_cross.S_EV_SimpleLightBeam_03_cross"));
 	UStaticMesh* BeamMeshCore = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/EngineVolumetrics/LightBeam/Mesh/S_EV_SimpleLightBeam_01.S_EV_SimpleLightBeam_01"));
 	if (!BeamMeshOuter)
@@ -546,10 +657,14 @@ ABHCharacter::ABHCharacter()
 	LastHunterPowerTime = -999.0f;
 	LastDecoyTime = -999.0f;
 	LastSprintNoiseTime = -999.0f;
+	LastFootstepStimulusTime = -999.0f;
+	FootstepStimulusDistanceAccumulator = 0.0f;
+	StaminaRecoveryLockedUntil = -999.0f;
 	LastStaminaWarningTime = -999.0f;
 	LastHidingPanicMessageTime = -999.0f;
 	LastLockerNoiseTime = -999.0f;
 	LastForcedBreathNoiseTime = -999.0f;
+	LastPanicBreathNoiseTime = -999.0f;
 	LastDetentionNoiseTime = -999.0f;
 	HiddenSeconds = 0.0f;
 	DefaultCameraFOV = 90.0f;
@@ -668,6 +783,33 @@ void ABHCharacter::Tick(float DeltaSeconds)
 		const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
 		if (BHPS && BHPS->IsAliveSurvivor() && BHGS && BHGS->RoundPhase == EBHRoundPhase::Hunt)
 		{
+			const float Speed2D = GetVelocity().Size2D();
+			const float StressNoiseAlpha = FMath::Max(BHFearPanicAlpha(this), BHDreadStrainAlpha(this));
+			if (!bHiddenInLocker && GetCharacterMovement() && GetCharacterMovement()->IsMovingOnGround() && Speed2D > 120.0f)
+			{
+				FootstepStimulusDistanceAccumulator += Speed2D * DeltaSeconds;
+				const bool bLikelySprinting = Speed2D > WalkSpeed * 1.18f;
+				const float StepDistance = (bLikelySprinting ? 275.0f : 420.0f) / FMath::Lerp(1.0f, 1.22f, StressNoiseAlpha);
+				const float StepCooldown = (bLikelySprinting ? 0.72f : 1.45f) / FMath::Lerp(1.0f, 1.18f, StressNoiseAlpha);
+				const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+				if (FootstepStimulusDistanceAccumulator >= StepDistance && Now - LastFootstepStimulusTime >= StepCooldown)
+				{
+					FootstepStimulusDistanceAccumulator = 0.0f;
+					LastFootstepStimulusTime = Now;
+					const float StepStrength = (bLikelySprinting ? 1.0f : 0.42f) * BHHorrorNoiseMultiplier(this, BHPS);
+					const bool bPanickedStep = StressNoiseAlpha >= 0.55f;
+					EmitFootstepStimulus(
+						StepStrength,
+						bPanickedStep
+							? (bLikelySprinting ? TEXT("panicked running footstep") : TEXT("unsteady footstep"))
+							: (bLikelySprinting ? TEXT("running footstep") : TEXT("careful footstep")));
+				}
+			}
+			else
+			{
+				FootstepStimulusDistanceAccumulator = 0.0f;
+			}
+
 			if (bHiddenInLocker)
 			{
 				HiddenSeconds += DeltaSeconds;
@@ -724,6 +866,24 @@ void ABHCharacter::Tick(float DeltaSeconds)
 				Dread = FMath::Max(0.0f, Dread - HiddenDecay * DeltaSeconds);
 			}
 
+			const int32 ObjectiveRequired = FMath::Max(1, BHGS->BreakersRequired + BHGS->SideObjectivesRequired);
+			const int32 ObjectiveCompleted = BHGS->BreakersCompleted + BHGS->SideObjectivesCompleted;
+			const float ObjectivePressureAlpha = FMath::Clamp(static_cast<float>(ObjectiveCompleted) / static_cast<float>(ObjectiveRequired), 0.0f, 1.0f);
+			const float PresenceStressAlpha = BHHorrorThresholdAlpha(BHGS->PresenceLevel, 42.0f, 100.0f);
+			const float TimerStressAlpha = BHGS->RemainingTime > 0 ? BHHorrorThresholdAlpha(180.0f - static_cast<float>(BHGS->RemainingTime), 0.0f, 180.0f) : 0.0f;
+			const float DarknessStress = (!bFlashlightOn && !bHiddenInLocker) ? 0.95f : 0.0f;
+			const float ExitStress = BHGS->bExitUnlocked ? 2.2f : 0.0f;
+			const float AmbientDreadPerSecond =
+				PresenceStressAlpha * 2.7f
+				+ ObjectivePressureAlpha * 0.75f
+				+ TimerStressAlpha * 1.45f
+				+ DarknessStress
+				+ ExitStress;
+			if (AmbientDreadPerSecond > 0.0f)
+			{
+				Dread = FMath::Clamp(Dread + AmbientDreadPerSecond * DeltaSeconds, 0.0f, 100.0f);
+			}
+
 			if (bHiddenInLocker && HiddenSeconds > 12.0f)
 			{
 				const float LongHideAlpha = FMath::Clamp((HiddenSeconds - 12.0f) / 34.0f, 0.0f, 1.0f);
@@ -757,6 +917,22 @@ void ABHCharacter::Tick(float DeltaSeconds)
 					}
 				}
 			}
+
+			const float PanicBreathAlpha = FMath::Max(BHHorrorThresholdAlpha(Fear, 74.0f, 100.0f), BHHorrorThresholdAlpha(Dread, 82.0f, 100.0f));
+			if (!bHiddenInLocker && Speed2D > 150.0f && PanicBreathAlpha > 0.0f)
+			{
+				const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+				const float BreathCooldown = FMath::Lerp(18.0f, 9.0f, PanicBreathAlpha);
+				if (Now - LastPanicBreathNoiseTime > BreathCooldown)
+				{
+					LastPanicBreathNoiseTime = Now;
+					SendStatusMessage(TEXT("Your breathing gives you away."));
+					if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+					{
+						BHGM->NotifyLoudNoise(GetActorLocation(), TEXT("panicked breathing"));
+					}
+				}
+			}
 		}
 		else
 		{
@@ -780,11 +956,24 @@ void ABHCharacter::Tick(float DeltaSeconds)
 	{
 		UCharacterMovementComponent* Movement = GetCharacterMovement();
 		const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
-		const float CurrentWalkSpeed = BHRoleWalkSpeed(BHPS, WalkSpeed);
-		const float CurrentSprintSpeed = BHRoleSprintSpeed(BHPS, SprintSpeed);
+		const float HunterPenaltyMultiplier = BHFinalEscapeHunterPenaltyActive(GetWorld(), this) ? 0.72f : 1.0f;
+		const float HorrorWalkMultiplier = BHHorrorWalkSpeedMultiplier(this, BHPS);
+		const float CurrentWalkSpeed = BHRoleWalkSpeed(BHPS, WalkSpeed) * HunterPenaltyMultiplier * HorrorWalkMultiplier;
+		const float CurrentSprintSpeed = BHRoleSprintSpeed(BHPS, SprintSpeed)
+			* (PowerupComponent ? PowerupComponent->GetSprintSpeedMultiplier() : 1.0f)
+			* HunterPenaltyMultiplier
+			* BHHorrorSprintSpeedMultiplier(this, BHPS);
+		if (Movement)
+		{
+			Movement->MaxWalkSpeedCrouched = 205.0f * HorrorWalkMultiplier;
+		}
 		if (Movement && IsPlayerControlled() && Movement->MaxWalkSpeed <= FMath::Max(WalkSpeed, CurrentWalkSpeed) + 1.0f)
 		{
 			Movement->MaxWalkSpeed = CurrentWalkSpeed;
+		}
+		else if (Movement && IsPlayerControlled() && Movement->MaxWalkSpeed > CurrentWalkSpeed + 1.0f && Movement->MaxWalkSpeed > CurrentSprintSpeed + 1.0f)
+		{
+			Movement->MaxWalkSpeed = CurrentSprintSpeed;
 		}
 
 		const bool bTryingToSprint = Movement
@@ -794,7 +983,9 @@ void ABHCharacter::Tick(float DeltaSeconds)
 		{
 			if (bTryingToSprint)
 			{
-				const float DrainMultiplier = BHRoleSprintDrainMultiplier(BHPS);
+				const float DrainMultiplier = BHRoleSprintDrainMultiplier(BHPS)
+					* (PowerupComponent ? PowerupComponent->GetStaminaDrainMultiplier() : 1.0f)
+					* BHHorrorStaminaDrainMultiplier(this, BHPS);
 				Stamina = FMath::Max(0.0f, Stamina - StaminaDrainPerSecond * DrainMultiplier * DeltaSeconds);
 				if (Stamina <= 0.0f)
 				{
@@ -810,10 +1001,15 @@ void ABHCharacter::Tick(float DeltaSeconds)
 					}
 				}
 			}
-			else
+			else if (Movement && Movement->IsMovingOnGround())
 			{
-				const float RecoveryMultiplier = FMath::Lerp(1.0f, 0.65f, FMath::Clamp(Fear / 100.0f, 0.0f, 1.0f));
-				Stamina = FMath::Min(MaxStamina, Stamina + StaminaRecoveryPerSecond * RecoveryMultiplier * DeltaSeconds);
+				const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+				if (Now >= StaminaRecoveryLockedUntil)
+				{
+					const float RecoveryMultiplier = BHHorrorStaminaRecoveryMultiplier(this, BHPS)
+						* (PowerupComponent ? PowerupComponent->GetStaminaRecoveryMultiplier() : 1.0f);
+					Stamina = FMath::Min(MaxStamina, Stamina + StaminaRecoveryPerSecond * RecoveryMultiplier * DeltaSeconds);
+				}
 			}
 		}
 		else if (Stamina <= 0.0f && Movement && Movement->MaxWalkSpeed >= CurrentSprintSpeed - 1.0f)
@@ -835,6 +1031,25 @@ void ABHCharacter::Tick(float DeltaSeconds)
 		{
 			ApplyAvatarStyle();
 		}
+	}
+}
+
+void ABHCharacter::Landed(const FHitResult& Hit)
+{
+	Super::Landed(Hit);
+
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	StaminaRecoveryLockedUntil = (GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f) + BHPostLandingStaminaRecoveryLockSeconds;
+
+	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	if (BHPS && BHPS->IsAliveSurvivor() && BHGS && BHGS->RoundPhase == EBHRoundPhase::Hunt)
+	{
+		EmitFootstepStimulus(0.95f * BHHorrorNoiseMultiplier(this, BHPS), TEXT("hard landing"));
 	}
 }
 
@@ -868,6 +1083,24 @@ void ABHCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCompone
 	PlayerInputComponent->BindAction(TEXT("Scan"), IE_Pressed, this, &ABHCharacter::UseScan);
 	PlayerInputComponent->BindAction(TEXT("HunterPower"), IE_Pressed, this, &ABHCharacter::UseHunterPower);
 	PlayerInputComponent->BindAction(TEXT("Decoy"), IE_Pressed, this, &ABHCharacter::DropDecoy);
+	PlayerInputComponent->BindKey(EKeys::F1, IE_Pressed, this, &ABHCharacter::UsePowerupSlotOne);
+	PlayerInputComponent->BindKey(EKeys::F2, IE_Pressed, this, &ABHCharacter::UsePowerupSlotTwo);
+	PlayerInputComponent->BindKey(EKeys::F3, IE_Pressed, this, &ABHCharacter::UsePowerupSlotThree);
+	PlayerInputComponent->BindKey(EKeys::F4, IE_Pressed, this, &ABHCharacter::UsePowerupSlotFour);
+	PlayerInputComponent->BindKey(EKeys::F5, IE_Pressed, this, &ABHCharacter::UsePowerupSlotFive);
+	PlayerInputComponent->BindKey(EKeys::F6, IE_Pressed, this, &ABHCharacter::UsePowerupSlotSix);
+	PlayerInputComponent->BindKey(EKeys::Insert, IE_Pressed, this, &ABHCharacter::TesterGrantTrainResources);
+	PlayerInputComponent->BindKey(EKeys::Home, IE_Pressed, this, &ABHCharacter::TesterOpenTrainIntermission);
+	PlayerInputComponent->BindKey(EKeys::PageUp, IE_Pressed, this, &ABHCharacter::TesterAdvanceTrainPhase);
+	PlayerInputComponent->BindKey(EKeys::End, IE_Pressed, this, &ABHCharacter::TesterLoadFinalStation);
+	PlayerInputComponent->BindKey(EKeys::PageDown, IE_Pressed, this, &ABHCharacter::TesterTriggerFinalEscape);
+	PlayerInputComponent->BindKey(EKeys::Delete, IE_Pressed, this, &ABHCharacter::TesterForceFinalRecap);
+	PlayerInputComponent->BindKey(EKeys::NumPadFive, IE_Pressed, this, &ABHCharacter::TesterGrantTrainResources);
+	PlayerInputComponent->BindKey(EKeys::NumPadSix, IE_Pressed, this, &ABHCharacter::TesterOpenTrainIntermission);
+	PlayerInputComponent->BindKey(EKeys::NumPadSeven, IE_Pressed, this, &ABHCharacter::TesterAdvanceTrainPhase);
+	PlayerInputComponent->BindKey(EKeys::NumPadEight, IE_Pressed, this, &ABHCharacter::TesterLoadFinalStation);
+	PlayerInputComponent->BindKey(EKeys::NumPadNine, IE_Pressed, this, &ABHCharacter::TesterTriggerFinalEscape);
+	PlayerInputComponent->BindKey(EKeys::NumPadZero, IE_Pressed, this, &ABHCharacter::TesterForceFinalRecap);
 	PlayerInputComponent->BindKey(EKeys::One, IE_Pressed, this, &ABHCharacter::SubmitAnswerOne);
 	PlayerInputComponent->BindKey(EKeys::Two, IE_Pressed, this, &ABHCharacter::SubmitAnswerTwo);
 	PlayerInputComponent->BindKey(EKeys::Three, IE_Pressed, this, &ABHCharacter::SubmitAnswerThree);
@@ -936,6 +1169,7 @@ void ABHCharacter::ExitLocker()
 			if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
 			{
 				BHGM->NotifyLoudNoise(ExitLocation, TEXT("locker door"));
+				BHGM->ReportAtmosphereStimulus(EBHAtmosphereStimulusType::Locker, ExitLocation, this, this, 0.9f, TEXT("locker door"));
 			}
 		}
 	}
@@ -1264,7 +1498,11 @@ void ABHCharacter::StartSprint()
 	if (Stamina > MaxStamina * 0.08f)
 	{
 		const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
-		GetCharacterMovement()->MaxWalkSpeed = BHRoleSprintSpeed(BHPS, SprintSpeed);
+		const float HunterPenaltyMultiplier = BHFinalEscapeHunterPenaltyActive(GetWorld(), this) ? 0.72f : 1.0f;
+		GetCharacterMovement()->MaxWalkSpeed = BHRoleSprintSpeed(BHPS, SprintSpeed)
+			* (PowerupComponent ? PowerupComponent->GetSprintSpeedMultiplier() : 1.0f)
+			* HunterPenaltyMultiplier
+			* BHHorrorSprintSpeedMultiplier(this, BHPS);
 		ServerSetSprinting(true);
 	}
 	else
@@ -1276,7 +1514,8 @@ void ABHCharacter::StartSprint()
 void ABHCharacter::StopSprint()
 {
 	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
-	GetCharacterMovement()->MaxWalkSpeed = BHRoleWalkSpeed(BHPS, WalkSpeed);
+	const float HunterPenaltyMultiplier = BHFinalEscapeHunterPenaltyActive(GetWorld(), this) ? 0.72f : 1.0f;
+	GetCharacterMovement()->MaxWalkSpeed = BHRoleWalkSpeed(BHPS, WalkSpeed) * HunterPenaltyMultiplier * BHHorrorWalkSpeedMultiplier(this, BHPS);
 	ServerSetSprinting(false);
 }
 
@@ -1344,10 +1583,96 @@ void ABHCharacter::SubmitAnswerFour()
 	SubmitAnswer(3);
 }
 
+bool ABHCharacter::UsePowerupByType(EBHPowerupType Type)
+{
+	ServerUsePowerup(Type);
+	return true;
+}
+
+void ABHCharacter::UsePowerupSlotOne()
+{
+	UsePowerupByType(EBHPowerupType::StaminaBoost);
+}
+
+void ABHCharacter::UsePowerupSlotTwo()
+{
+	UsePowerupByType(EBHPowerupType::SprintBurst);
+}
+
+void ABHCharacter::UsePowerupSlotThree()
+{
+	UsePowerupByType(EBHPowerupType::FlashlightBoost);
+}
+
+void ABHCharacter::UsePowerupSlotFour()
+{
+	UsePowerupByType(EBHPowerupType::QuestionHint);
+}
+
+void ABHCharacter::UsePowerupSlotFive()
+{
+	UsePowerupByType(EBHPowerupType::DecoySound);
+}
+
+void ABHCharacter::UsePowerupSlotSix()
+{
+	UsePowerupByType(EBHPowerupType::DoorRush);
+}
+
+void ABHCharacter::TesterGrantTrainResources()
+{
+	if (ABHPlayerController* BHPC = Cast<ABHPlayerController>(Controller))
+	{
+		BHPC->TesterGrantTrainResources();
+	}
+}
+
+void ABHCharacter::TesterOpenTrainIntermission()
+{
+	if (ABHPlayerController* BHPC = Cast<ABHPlayerController>(Controller))
+	{
+		BHPC->TesterOpenTrainIntermission();
+	}
+}
+
+void ABHCharacter::TesterAdvanceTrainPhase()
+{
+	if (ABHPlayerController* BHPC = Cast<ABHPlayerController>(Controller))
+	{
+		BHPC->TesterAdvanceTrainPhase();
+	}
+}
+
+void ABHCharacter::TesterLoadFinalStation()
+{
+	if (ABHPlayerController* BHPC = Cast<ABHPlayerController>(Controller))
+	{
+		BHPC->TesterLoadFinalStation();
+	}
+}
+
+void ABHCharacter::TesterTriggerFinalEscape()
+{
+	if (ABHPlayerController* BHPC = Cast<ABHPlayerController>(Controller))
+	{
+		BHPC->TesterTriggerFinalEscape();
+	}
+}
+
+void ABHCharacter::TesterForceFinalRecap()
+{
+	if (ABHPlayerController* BHPC = Cast<ABHPlayerController>(Controller))
+	{
+		BHPC->TesterForceFinalRecap();
+	}
+}
+
 bool ABHCharacter::CanAct() const
 {
 	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
-	return !bHiddenInLocker && !bOutOfPlay && (!BHPS || BHPS->LifeState == EBHPlayerLifeState::Alive);
+	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	const bool bFrozenByFinalEscape = BHGS && (BHGS->bPlayerInputFrozen || (BHGS->bHunterInputFrozen && BHPS && BHPS->IsAliveHunter()));
+	return !bFrozenByFinalEscape && !bHiddenInLocker && !bOutOfPlay && (!BHPS || BHPS->LifeState == EBHPlayerLifeState::Alive);
 }
 
 bool ABHCharacter::TraceForInteractable(AActor*& OutActor) const
@@ -1991,10 +2316,13 @@ void ABHCharacter::UpdateViewFeel(float DeltaSeconds)
 	}
 
 	const float HorrorAlpha = FMath::Clamp(FMath::Max(Fear, Dread) / 100.0f, 0.0f, 1.0f);
+	const float FearPanicAlpha = BHFearPanicAlpha(this);
+	const float DreadStrainAlpha = BHDreadStrainAlpha(this);
 	const float BobScale = SmoothedMoveAlpha * (bIsCrouched ? 0.44f : 1.0f);
 	const float BobZ = FMath::Sin(CameraBobTime * 2.0f) * FMath::Lerp(0.8f, 1.85f, SmoothedSprintAlpha) * BobScale;
 	const float BobY = FMath::Sin(CameraBobTime) * FMath::Lerp(0.45f, 1.05f, SmoothedSprintAlpha) * BobScale;
-	const float StressTremor = (FMath::Sin(FlashlightPulseTime * 13.0f) + FMath::Sin(FlashlightPulseTime * 19.7f) * 0.45f) * HorrorAlpha * 0.42f;
+	const float StressTremor = (FMath::Sin(FlashlightPulseTime * 13.0f) + FMath::Sin(FlashlightPulseTime * 19.7f) * 0.45f)
+		* (FearPanicAlpha * 0.82f + DreadStrainAlpha * 0.34f);
 	const float CrouchOffset = bIsCrouched ? -14.0f : 0.0f;
 	const FVector TargetCameraLocation = DefaultCameraLocation
 		+ FVector(0.0f, BobY - SmoothedStrafeAlpha * 1.65f, CrouchOffset + BobZ + StressTremor);
@@ -2039,6 +2367,8 @@ void ABHCharacter::UpdateFlashlightFeel(float DeltaSeconds)
 	const float BatteryAlpha = FMath::Clamp(FlashlightBattery / 100.0f, 0.0f, 1.0f);
 	const float LowBatteryAlpha = FMath::Clamp((32.0f - FlashlightBattery) / 32.0f, 0.0f, 1.0f);
 	const float HorrorAlpha = FMath::Clamp(FMath::Max(Fear, Dread) / 100.0f, 0.0f, 1.0f);
+	const float FearPanicAlpha = BHFearPanicAlpha(this);
+	const float DreadStrainAlpha = BHDreadStrainAlpha(this);
 	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
 	const EBHFogPreset ActiveFogPreset = BHGS ? BHGS->ActiveFogPreset : EBHFogPreset::Heavy;
 	const bool bFoggroundsActive = BHGS && BHGS->ActiveLevelName.Equals(TEXT("Foggrounds"), ESearchCase::IgnoreCase);
@@ -2051,13 +2381,20 @@ void ABHCharacter::UpdateFlashlightFeel(float DeltaSeconds)
 
 	const float UnevenPulse = 1.0f
 		+ FMath::Sin(FlashlightPulseTime * FMath::Lerp(5.8f, 13.0f, LowBatteryAlpha)) * (0.018f + LowBatteryAlpha * 0.045f)
-		+ FMath::Sin(FlashlightPulseTime * 23.0f) * (HorrorAlpha * 0.018f);
-	const float Cutout = 1.0f - LowBatteryAlpha * (0.09f + 0.12f * FMath::Square(FMath::Max(0.0f, FMath::Sin(FlashlightPulseTime * 37.0f))));
+		+ FMath::Sin(FlashlightPulseTime * 23.0f) * (HorrorAlpha * 0.018f + FearPanicAlpha * 0.040f + DreadStrainAlpha * 0.026f);
+	const float Cutout = 1.0f
+		- LowBatteryAlpha * (0.09f + 0.12f * FMath::Square(FMath::Max(0.0f, FMath::Sin(FlashlightPulseTime * 37.0f))))
+		- FearPanicAlpha * 0.075f * FMath::Square(FMath::Max(0.0f, FMath::Sin(FlashlightPulseTime * 29.0f)))
+		- DreadStrainAlpha * 0.045f * FMath::Square(FMath::Max(0.0f, FMath::Sin(FlashlightPulseTime * 17.0f)));
 	const float NormalIntensity = FMath::Clamp(9200.0f * FMath::Lerp(0.52f, 1.0f, BatteryAlpha) * UnevenPulse * Cutout, 1800.0f, 11500.0f);
-	const float NormalRadius = FMath::Lerp(1300.0f, 2200.0f, BatteryAlpha) * FMath::Lerp(1.0f, 0.94f, HorrorAlpha);
+	const float NormalRadius = FMath::Lerp(1300.0f, 2200.0f, BatteryAlpha)
+		* FMath::Lerp(1.0f, 0.94f, HorrorAlpha)
+		* FMath::Lerp(1.0f, 0.88f, DreadStrainAlpha)
+		* FMath::Lerp(1.0f, 0.95f, FearPanicAlpha);
 
-	const float EffectiveIntensity = bExtremeFog ? FMath::Min(NormalIntensity, 9500.0f) : (bHeavyFog ? FMath::Min(NormalIntensity, 8600.0f) : NormalIntensity);
-	const float EffectiveRadius = bExtremeFog ? FMath::Min(NormalRadius, 650.0f) : (bHeavyFog ? FMath::Min(NormalRadius, 950.0f) : NormalRadius);
+	const float LightBoostMultiplier = PowerupComponent ? PowerupComponent->GetFlashlightMultiplier() : 1.0f;
+	const float EffectiveIntensity = (bExtremeFog ? FMath::Min(NormalIntensity, 9500.0f) : (bHeavyFog ? FMath::Min(NormalIntensity, 8600.0f) : NormalIntensity)) * LightBoostMultiplier;
+	const float EffectiveRadius = (bExtremeFog ? FMath::Min(NormalRadius, 650.0f) : (bHeavyFog ? FMath::Min(NormalRadius, 950.0f) : NormalRadius)) * FMath::Lerp(1.0f, 1.20f, LightBoostMultiplier - 1.0f);
 	const float EffectiveInnerConeAngle = bExtremeFog ? 16.0f : (bHeavyFog ? 16.0f : 18.0f);
 	const float EffectiveOuterConeAngle = bExtremeFog ? 30.0f : (bHeavyFog ? 32.0f : (34.0f + LowBatteryAlpha * 2.5f + HorrorAlpha * 1.8f));
 
@@ -2153,6 +2490,25 @@ void ABHCharacter::ApplyHiddenState()
 			GetCharacterMovement()->SetMovementMode(MOVE_Walking);
 		}
 	}
+
+	UpdateHunterVisualCue();
+}
+
+void ABHCharacter::UpdateHunterVisualCue()
+{
+	if (!HunterHueLight)
+	{
+		return;
+	}
+
+	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	const bool bHunterHueVisible = !bHiddenInLocker
+		&& !bOutOfPlay
+		&& BHPS
+		&& BHPS->PlayerRole == EBHPlayerRole::Hunter
+		&& BHPS->LifeState == EBHPlayerLifeState::Alive;
+	HunterHueLight->SetVisibility(bHunterHueVisible);
+	HunterHueLight->SetIntensity(bHunterHueVisible ? BHHunterHueLightIntensity : 0.0f);
 }
 
 void ABHCharacter::ApplyAvatarStyle()
@@ -2163,6 +2519,7 @@ void ABHCharacter::ApplyAvatarStyle()
 	}
 
 	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	UpdateHunterVisualCue();
 	const int32 AvatarIndex = BHPS ? FMath::Abs(BHPS->AvatarIndex) : 0;
 	FLinearColor ShirtColor = BHPS ? BHPS->AvatarColor : FLinearColor(0.22f, 0.58f, 0.74f, 1.0f);
 	static const FVector AvatarScales[] = {
@@ -2423,6 +2780,28 @@ bool ABHCharacter::BotSubmitAnswer(ABHObjectiveStation* Station, int32 AnswerInd
 	return SubmitAnswerAuthority(Station, AnswerIndex, false, false);
 }
 
+void ABHCharacter::EmitFootstepStimulus(float Strength, const FString& Reason)
+{
+	if (!HasAuthority() || !GetWorld())
+	{
+		return;
+	}
+
+	const float ClampedStrength = FMath::Clamp(Strength, 0.0f, 1.5f);
+	UAISense_Hearing::ReportNoiseEvent(
+		GetWorld(),
+		GetActorLocation(),
+		ClampedStrength,
+		this,
+		1800.0f + ClampedStrength * 1800.0f,
+		FName(*Reason));
+	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+	{
+		BHGM->ReportBotStimulus(EBHBotStimulusType::Noise, GetActorLocation(), this, this, Reason, ClampedStrength);
+		BHGM->ReportAtmosphereStimulus(EBHAtmosphereStimulusType::Footstep, GetActorLocation(), this, this, ClampedStrength, Reason);
+	}
+}
+
 void ABHCharacter::ServerSetFlashlight_Implementation(bool bNewOn)
 {
 	if (CanAct())
@@ -2536,8 +2915,12 @@ void ABHCharacter::ExitCurrentLockerAuthority()
 void ABHCharacter::ServerSetSprinting_Implementation(bool bNewSprinting)
 {
 	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
-	const float CurrentWalkSpeed = BHRoleWalkSpeed(BHPS, WalkSpeed);
-	const float CurrentSprintSpeed = BHRoleSprintSpeed(BHPS, SprintSpeed);
+	const float HunterPenaltyMultiplier = BHFinalEscapeHunterPenaltyActive(GetWorld(), this) ? 0.72f : 1.0f;
+	const float CurrentWalkSpeed = BHRoleWalkSpeed(BHPS, WalkSpeed) * HunterPenaltyMultiplier * BHHorrorWalkSpeedMultiplier(this, BHPS);
+	const float CurrentSprintSpeed = BHRoleSprintSpeed(BHPS, SprintSpeed)
+		* (PowerupComponent ? PowerupComponent->GetSprintSpeedMultiplier() : 1.0f)
+		* HunterPenaltyMultiplier
+		* BHHorrorSprintSpeedMultiplier(this, BHPS);
 	if (bNewSprinting && Stamina <= MaxStamina * 0.05f)
 	{
 		GetCharacterMovement()->MaxWalkSpeed = CurrentWalkSpeed;
@@ -2581,11 +2964,20 @@ bool ABHCharacter::TryCaptureAuthority(bool bShowFailureMessages)
 		return false;
 	}
 
-	if (!BHGS || BHGS->RoundPhase != EBHRoundPhase::Hunt)
+	if (!BHGS || (BHGS->RoundPhase != EBHRoundPhase::Hunt && BHGS->RoundPhase != EBHRoundPhase::FinalEscape))
 	{
 		if (bShowFailureMessages)
 		{
 			SendStatusMessage(TEXT("Capture unlocks when the Hunt phase begins."));
+		}
+		return false;
+	}
+
+	if (BHGS->bCaptureDisabled || BHGS->bHunterInputFrozen || BHFinalEscapeHunterPenaltyActive(GetWorld(), this))
+	{
+		if (bShowFailureMessages)
+		{
+			SendStatusMessage(TEXT("Capture disrupted by the evacuation system."));
 		}
 		return false;
 	}
@@ -2636,6 +3028,19 @@ bool ABHCharacter::UseScanAuthority(bool bShowFailureMessages)
 				SendStatusMessage(TEXT("Hall monitor hints unlock when the Hunt phase begins."));
 			}
 			return false;
+		}
+
+		FString MonitorBlockReason;
+		if (const ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
+		{
+			if (!BHGM->CanUseHallMonitorTools(HunterPS, MonitorBlockReason))
+			{
+				if (bShowFailureMessages)
+				{
+					SendStatusMessage(MonitorBlockReason);
+				}
+				return false;
+			}
 		}
 
 		const float Now = GetWorld()->GetTimeSeconds();
@@ -2773,6 +3178,19 @@ bool ABHCharacter::UseHunterPowerAuthority(bool bShowFailureMessages)
 
 	if (BHPS->PlayerRole == EBHPlayerRole::FakeHunter)
 	{
+		FString MonitorBlockReason;
+		if (const ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
+		{
+			if (!BHGM->CanUseHallMonitorTools(BHPS, MonitorBlockReason))
+			{
+				if (bShowFailureMessages)
+				{
+					SendStatusMessage(MonitorBlockReason);
+				}
+				return false;
+			}
+		}
+
 		const float FakeHintCooldown = 18.0f;
 		if (Now - LastHunterPowerTime < FakeHintCooldown)
 		{
@@ -2806,6 +3224,22 @@ bool ABHCharacter::DropDecoyAuthority(bool bShowFailureMessages)
 	if (!BHPS || BHPS->LifeState != EBHPlayerLifeState::Alive)
 	{
 		return false;
+	}
+
+	if (BHPS->PlayerRole == EBHPlayerRole::FakeHunter)
+	{
+		FString MonitorBlockReason;
+		if (const ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
+		{
+			if (!BHGM->CanUseHallMonitorTools(BHPS, MonitorBlockReason))
+			{
+				if (bShowFailureMessages)
+				{
+					SendStatusMessage(MonitorBlockReason);
+				}
+				return false;
+			}
+		}
 	}
 
 	const float Now = GetWorld()->GetTimeSeconds();
@@ -2859,6 +3293,20 @@ void ABHCharacter::ServerSubmitAnswer_Implementation(int32 AnswerIndex)
 	SubmitAnswerAuthority(nullptr, AnswerIndex, true, true);
 }
 
+void ABHCharacter::ServerUsePowerup_Implementation(EBHPowerupType Type)
+{
+	if (!CanAct())
+	{
+		SendStatusMessage(TEXT("You cannot use a powerup right now."));
+		return;
+	}
+
+	if (!PowerupComponent || !PowerupComponent->ServerUsePowerup(Type))
+	{
+		SendStatusMessage(TEXT("Powerup unavailable."));
+	}
+}
+
 bool ABHCharacter::SubmitAnswerAuthority(ABHObjectiveStation* Station, int32 AnswerIndex, bool bUseViewFallback, bool bShowFailureMessages)
 {
 	if (!CanAct())
@@ -2878,11 +3326,29 @@ bool ABHCharacter::SubmitAnswerAuthority(ABHObjectiveStation* Station, int32 Ans
 	}
 	if (!Station)
 	{
+		if (ABHTrainBonusQuestionTerminal* BonusTerminal = Cast<ABHTrainBonusQuestionTerminal>(Target))
+		{
+			return BonusTerminal->SubmitAnswer(this, AnswerIndex);
+		}
+	}
+	if (!Station)
+	{
 		if (bShowFailureMessages)
 		{
 			SendStatusMessage(TEXT("Aim at a question station and press 1-4."));
 		}
 		return false;
+	}
+
+	if (PowerupComponent && PowerupComponent->HasActiveQuestionHint() && bShowFailureMessages && Station)
+	{
+		const FString HintText = Station->GetQuestionExplanation().IsEmpty()
+			? Station->GetQuestionSubtopic()
+			: Station->GetQuestionExplanation();
+		if (!HintText.IsEmpty())
+		{
+			SendStatusMessage(FString::Printf(TEXT("Hint: %s"), *HintText.Left(160)));
+		}
 	}
 
 	if (!IsValidInteractionTarget(Station))

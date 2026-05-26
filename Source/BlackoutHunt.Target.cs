@@ -8,6 +8,8 @@ public class BlackoutHuntTarget : TargetRules
 		Type = TargetType.Game;
 		DefaultBuildSettings = BuildSettingsVersion.Latest;
 		IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
+		bOverrideBuildEnvironment = true;
+		bEnableTrace = false;
 		ExtraModuleNames.Add("BlackoutHunt");
 	}
 }

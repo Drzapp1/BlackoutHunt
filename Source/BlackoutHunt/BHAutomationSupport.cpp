@@ -42,6 +42,44 @@ namespace
 		Value.TrimStartAndEndInline();
 		return Value;
 	}
+
+	FString ParseTokenValue(const TCHAR* CommandLine, const TCHAR* KeyName)
+	{
+		const FString SafeCommandLine(CommandLine ? CommandLine : TEXT(""));
+		const FString ValuePrefix = FString::Printf(TEXT("%s="), KeyName);
+		const int32 PrefixIndex = SafeCommandLine.Find(ValuePrefix, ESearchCase::IgnoreCase);
+		if (PrefixIndex == INDEX_NONE)
+		{
+			return FString();
+		}
+
+		int32 ValueStart = PrefixIndex + ValuePrefix.Len();
+		if (!SafeCommandLine.IsValidIndex(ValueStart))
+		{
+			return FString();
+		}
+
+		const bool bQuoted = SafeCommandLine[ValueStart] == TEXT('"');
+		if (bQuoted)
+		{
+			++ValueStart;
+		}
+
+		int32 ValueEnd = ValueStart;
+		while (SafeCommandLine.IsValidIndex(ValueEnd))
+		{
+			const TCHAR Character = SafeCommandLine[ValueEnd];
+			if ((bQuoted && Character == TEXT('"')) || (!bQuoted && FChar::IsWhitespace(Character)))
+			{
+				break;
+			}
+			++ValueEnd;
+		}
+
+		FString Value = SafeCommandLine.Mid(ValueStart, ValueEnd - ValueStart);
+		Value.TrimStartAndEndInline();
+		return Value;
+	}
 }
 
 FBHAutomationConfig FBHAutomationSupport::ParseCommandLine(const TCHAR* CommandLine)
@@ -78,6 +116,7 @@ FBHAutomationConfig FBHAutomationSupport::ParseCommandLine(const TCHAR* CommandL
 
 	Config.AutoHost = NormalizeHostMode(ParseStringValue(SafeCommandLine, TEXT("BHAutoHost")));
 	Config.AutoJoin = ParseStringValue(SafeCommandLine, TEXT("BHAutoJoin"));
+	Config.AutoAtmosphereTests = ParseTokenValue(SafeCommandLine, TEXT("BHAutoAtmosphereTests"));
 	Config.Tag = ParseStringValue(SafeCommandLine, TEXT("BHAutomationTag"));
 
 	int32 ParsedMinPlayers = 0;
@@ -110,6 +149,29 @@ FString FBHAutomationSupport::NormalizeHostMode(FString HostMode)
 		return TEXT("LiveClassroom");
 	}
 
+	if (HostMode.Equals(TEXT("LiveFacility"), ESearchCase::IgnoreCase)
+		|| HostMode.Equals(TEXT("ClassroomFacility"), ESearchCase::IgnoreCase)
+		|| HostMode.Equals(TEXT("LiveClassroomFacility"), ESearchCase::IgnoreCase))
+	{
+		return TEXT("LiveFacility");
+	}
+
+	if (HostMode.Equals(TEXT("LiveSubstation"), ESearchCase::IgnoreCase)
+		|| HostMode.Equals(TEXT("ClassroomSubstation"), ESearchCase::IgnoreCase)
+		|| HostMode.Equals(TEXT("LiveClassroomSubstation"), ESearchCase::IgnoreCase))
+	{
+		return TEXT("LiveSubstation");
+	}
+
+	if (HostMode.Equals(TEXT("LiveFoggrounds"), ESearchCase::IgnoreCase)
+		|| HostMode.Equals(TEXT("LiveFog"), ESearchCase::IgnoreCase)
+		|| HostMode.Equals(TEXT("ClassroomFoggrounds"), ESearchCase::IgnoreCase)
+		|| HostMode.Equals(TEXT("ClassroomFog"), ESearchCase::IgnoreCase)
+		|| HostMode.Equals(TEXT("LiveClassroomFoggrounds"), ESearchCase::IgnoreCase))
+	{
+		return TEXT("LiveFoggrounds");
+	}
+
 	if (HostMode.Equals(TEXT("Substation"), ESearchCase::IgnoreCase))
 	{
 		return TEXT("Substation");
@@ -132,6 +194,9 @@ FString FBHAutomationSupport::NormalizeHostMode(FString HostMode)
 bool FBHAutomationSupport::IsKnownHostMode(const FString& HostMode)
 {
 	return HostMode.Equals(TEXT("LiveClassroom"), ESearchCase::CaseSensitive)
+		|| HostMode.Equals(TEXT("LiveFacility"), ESearchCase::CaseSensitive)
+		|| HostMode.Equals(TEXT("LiveSubstation"), ESearchCase::CaseSensitive)
+		|| HostMode.Equals(TEXT("LiveFoggrounds"), ESearchCase::CaseSensitive)
 		|| HostMode.Equals(TEXT("Facility"), ESearchCase::CaseSensitive)
 		|| HostMode.Equals(TEXT("Substation"), ESearchCase::CaseSensitive)
 		|| HostMode.Equals(TEXT("Foggrounds"), ESearchCase::CaseSensitive);

@@ -21,6 +21,14 @@ bool FBHNetworkSupportNormalizeJoinAddressTest::RunTest(const FString& Parameter
 		FBHNetworkSupport::NormalizeJoinAddress(TEXT("blackouthunt.playit.plus:24761")),
 		FString(TEXT("blackouthunt.playit.plus:24761")));
 
+	TArray<FString> ClassroomEndpoints;
+	ClassroomEndpoints.Add(TEXT(""));
+	ClassroomEndpoints.Add(TEXT("blackouthunt.playit.plus:24761"));
+	ClassroomEndpoints.Add(TEXT("192.168.1.20:7777"));
+	TestEqual(TEXT("Preferred classroom endpoint uses the first configured Playit endpoint"),
+		FBHNetworkSupport::NormalizePreferredJoinEndpoint(ClassroomEndpoints),
+		FString(TEXT("blackouthunt.playit.plus:24761")));
+
 	TestEqual(TEXT("Bracketed IPv6 and port are preserved"),
 		FBHNetworkSupport::NormalizeJoinAddress(TEXT("[2001:db8::1]:7777")),
 		FString(TEXT("[2001:db8::1]:7777")));

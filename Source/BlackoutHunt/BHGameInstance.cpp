@@ -1,6 +1,9 @@
 #include "BHGameInstance.h"
 #include "BHGameSettings.h"
 #include "BHNetworkSupport.h"
+#include "BHPlayerController.h"
+#include "BHPlayerState.h"
+#include "BHRevisionQuestionBank.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/FileManager.h"
@@ -16,7 +19,7 @@ namespace
 {
 	const FName BHOnlineLevelSetting(TEXT("BHLEVEL"));
 	const FName BHOnlineBuildSetting(TEXT("BHBUILD"));
-	const FString BHOnlineBuildId(TEXT("BlackoutHunt-0.2.0-beta.4"));
+	const FString BHOnlineBuildId(TEXT("BlackoutHunt-0.2.0-beta.5"));
 	constexpr int32 BHOnlineMaxSearchResults = 25;
 
 	FString NormalizeRuntimeLevelName(FString LevelName)
@@ -32,6 +35,44 @@ namespace
 	FString MakeListenOptions(const FString& LevelName)
 	{
 		return FString::Printf(TEXT("listen?BHLevel=%s?BHFogPreset=Heavy"), *NormalizeRuntimeLevelName(LevelName));
+	}
+
+	void ShowTravelLoadingScreen(UWorld* World, const FString& Title, const FString& Detail)
+	{
+		if (ABHPlayerController* PC = World ? Cast<ABHPlayerController>(World->GetFirstPlayerController()) : nullptr)
+		{
+			PC->ShowTravelLoadingScreen(Title, Detail);
+		}
+	}
+
+	FString TravelStableIdForPlayerState(const APlayerState* PlayerState)
+	{
+		if (!PlayerState)
+		{
+			return TEXT("");
+		}
+
+		const FString UniqueId = PlayerState->GetUniqueId().IsValid() ? PlayerState->GetUniqueId()->ToString() : FString();
+		if (!UniqueId.IsEmpty())
+		{
+			return UniqueId;
+		}
+
+		return PlayerState->GetPlayerName();
+	}
+
+	int32 PointsForDifficulty(EBHQuestionDifficulty Difficulty)
+	{
+		switch (Difficulty)
+		{
+		case EBHQuestionDifficulty::Hard:
+			return 18;
+		case EBHQuestionDifficulty::Medium:
+			return 12;
+		case EBHQuestionDifficulty::Easy:
+		default:
+			return 8;
+		}
 	}
 }
 
@@ -100,6 +141,10 @@ void UBHGameInstance::JoinGame(const FString& Address)
 	{
 		if (APlayerController* PC = World->GetFirstPlayerController())
 		{
+			if (ABHPlayerController* BHPC = Cast<ABHPlayerController>(PC))
+			{
+				BHPC->ShowTravelLoadingScreen(TEXT("JOINING GAME"), FString::Printf(TEXT("Connecting to %s."), *NormalizedAddress));
+			}
 			PC->ClientTravel(NormalizedAddress, TRAVEL_Absolute);
 		}
 	}
@@ -541,6 +586,33 @@ FString UBHGameInstance::GetPreferredJoinAddress(int32 LocalPort) const
 	return FBHNetworkSupport::ResolveLocalJoinAddress(LocalPort);
 }
 
+FString UBHGameInstance::GetConfiguredClassroomJoinAddress(int32 LocalPort) const
+{
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	if (!Settings)
+	{
+		return FString();
+	}
+
+	return FBHNetworkSupport::NormalizePreferredJoinEndpoint(Settings->ClassroomJoinEndpoints, LocalPort);
+}
+
+FString UBHGameInstance::GetPreferredClassroomJoinAddress(int32 LocalPort) const
+{
+	if (!PublicJoinAddress.IsEmpty())
+	{
+		return PublicJoinAddress;
+	}
+
+	const FString ConfiguredEndpoint = GetConfiguredClassroomJoinAddress(LocalPort);
+	if (!ConfiguredEndpoint.IsEmpty())
+	{
+		return ConfiguredEndpoint;
+	}
+
+	return FBHNetworkSupport::ResolveLocalJoinAddress(LocalPort);
+}
+
 void UBHGameInstance::SetPublicJoinAddress(const FString& Address)
 {
 	PublicJoinAddress = FBHNetworkSupport::NormalizeJoinAddress(Address);
@@ -649,6 +721,220 @@ void UBHGameInstance::RequestCleanExit(const FString& Reason)
 	FPlatformMisc::RequestExit(false);
 }
 
+void UBHGameInstance::PersistTravelPlayerState(const ABHPlayerState* PlayerState)
+{
+	if (!PlayerState)
+	{
+		return;
+	}
+
+	const FString StableId = TravelStableIdForPlayerState(PlayerState);
+	const FString PlayerName = PlayerState->GetPlayerName();
+	if (StableId.IsEmpty() && PlayerName.IsEmpty())
+	{
+		return;
+	}
+
+	FBHTravelPlayerProgress* Existing = TravelPlayerProgress.FindByPredicate([&](const FBHTravelPlayerProgress& Progress)
+	{
+		return (!StableId.IsEmpty() && Progress.StableId == StableId)
+			|| (!PlayerName.IsEmpty() && Progress.PlayerName == PlayerName);
+	});
+
+	FBHTravelPlayerProgress& Progress = Existing ? *Existing : TravelPlayerProgress.AddDefaulted_GetRef();
+	Progress.StableId = StableId;
+	Progress.PlayerName = PlayerName;
+	Progress.PlayerRole = PlayerState->PlayerRole;
+	Progress.DesiredRole = PlayerState->DesiredRole;
+	Progress.LifeState = PlayerState->LifeState;
+	Progress.bFakeHunterEligible = PlayerState->bFakeHunterEligible;
+	Progress.RevisionStats = PlayerState->RevisionStats;
+	Progress.QuestionPoints = PlayerState->QuestionPoints;
+	Progress.LifetimeQuestionPoints = PlayerState->LifetimeQuestionPoints;
+	Progress.Powerups = PlayerState->Powerups;
+}
+
+bool UBHGameInstance::RestoreTravelPlayerState(ABHPlayerState* PlayerState) const
+{
+	if (!PlayerState)
+	{
+		return false;
+	}
+
+	const FString StableId = TravelStableIdForPlayerState(PlayerState);
+	const FString PlayerName = PlayerState->GetPlayerName();
+	const FBHTravelPlayerProgress* Existing = TravelPlayerProgress.FindByPredicate([&](const FBHTravelPlayerProgress& Progress)
+	{
+		return (!StableId.IsEmpty() && Progress.StableId == StableId)
+			|| (!PlayerName.IsEmpty() && Progress.PlayerName == PlayerName);
+	});
+
+	if (!Existing)
+	{
+		return false;
+	}
+
+	PlayerState->SetRole(Existing->PlayerRole);
+	PlayerState->SetDesiredRole(Existing->DesiredRole);
+	PlayerState->SetLifeState(Existing->LifeState == EBHPlayerLifeState::Escaped ? EBHPlayerLifeState::Alive : Existing->LifeState);
+	PlayerState->SetFakeHunterEligible(Existing->bFakeHunterEligible);
+	PlayerState->RevisionStats = Existing->RevisionStats;
+	PlayerState->QuestionPoints = FMath::Max(0, Existing->QuestionPoints);
+	PlayerState->LifetimeQuestionPoints = FMath::Max(PlayerState->QuestionPoints, Existing->LifetimeQuestionPoints);
+	PlayerState->Powerups = Existing->Powerups;
+	return true;
+}
+
+void UBHGameInstance::RecordQuestionAttempt(const FBHQuestionAttemptRecord& Attempt)
+{
+	QuestionAttemptHistory.Add(Attempt);
+	if (QuestionAttemptHistory.Num() > 4096)
+	{
+		QuestionAttemptHistory.RemoveAt(0, QuestionAttemptHistory.Num() - 4096);
+	}
+}
+
+const TArray<FBHQuestionAttemptRecord>& UBHGameInstance::GetQuestionAttemptHistory() const
+{
+	return QuestionAttemptHistory;
+}
+
+void UBHGameInstance::ClearQuestionAttemptHistory()
+{
+	QuestionAttemptHistory.Reset();
+}
+
+void UBHGameInstance::SetPersistentStageIndex(int32 NewStageIndex)
+{
+	PersistentStageIndex = FMath::Max(0, NewStageIndex);
+}
+
+int32 UBHGameInstance::GetPersistentStageIndex() const
+{
+	return PersistentStageIndex;
+}
+
+FString UBHGameInstance::BuildTrainRecapOverview() const
+{
+	int32 Attempts = 0;
+	int32 Correct = 0;
+	int32 Points = 0;
+	for (const FBHQuestionAttemptRecord& Attempt : QuestionAttemptHistory)
+	{
+		++Attempts;
+		if (Attempt.bCorrect)
+		{
+			++Correct;
+		}
+		Points += FMath::Max(0, Attempt.PointsEarned);
+	}
+
+	float ClassAverage = Attempts > 0 ? (100.0f * static_cast<float>(Correct) / static_cast<float>(Attempts)) : 0.0f;
+	if (TravelPlayerProgress.Num() > 0)
+	{
+		float MasterySum = 0.0f;
+		int32 MasteryCount = 0;
+		for (const FBHTravelPlayerProgress& Progress : TravelPlayerProgress)
+		{
+			if (Progress.PlayerRole == EBHPlayerRole::Survivor || Progress.PlayerRole == EBHPlayerRole::FakeHunter)
+			{
+				MasterySum += Progress.RevisionStats.MasteryPercent;
+				++MasteryCount;
+			}
+		}
+		if (MasteryCount > 0)
+		{
+			ClassAverage = MasterySum / MasteryCount;
+		}
+	}
+
+	return FString::Printf(TEXT("CLASS REVIEW\nAverage: %.0f%% (%s 70%% threshold)\nQuestions answered: %d\nCorrect answers: %d\nQuestion points earned: %d\nStation integrity: %s"),
+		ClassAverage,
+		ClassAverage >= 70.0f ? TEXT("met") : TEXT("below"),
+		Attempts,
+		Correct,
+		Points,
+		ClassAverage >= 70.0f ? TEXT("boarding approved") : TEXT("remediation route selected"));
+}
+
+FString UBHGameInstance::BuildTrainRecapTopics() const
+{
+	struct FTopicRollup
+	{
+		int32 Attempts = 0;
+		int32 Correct = 0;
+	};
+
+	FTopicRollup Topics[4];
+	for (const FBHQuestionAttemptRecord& Attempt : QuestionAttemptHistory)
+	{
+		const int32 TopicIndex = FMath::Clamp(static_cast<int32>(Attempt.Topic), 0, 3);
+		++Topics[TopicIndex].Attempts;
+		if (Attempt.bCorrect)
+		{
+			++Topics[TopicIndex].Correct;
+		}
+	}
+
+	int32 WeakIndex = 0;
+	int32 StrongIndex = 0;
+	float WeakScore = 101.0f;
+	float StrongScore = -1.0f;
+	for (int32 Index = 0; Index < 4; ++Index)
+	{
+		const float Score = Topics[Index].Attempts > 0 ? 100.0f * Topics[Index].Correct / Topics[Index].Attempts : 50.0f;
+		if (Score < WeakScore)
+		{
+			WeakScore = Score;
+			WeakIndex = Index;
+		}
+		if (Score > StrongScore)
+		{
+			StrongScore = Score;
+			StrongIndex = Index;
+		}
+	}
+
+	return FString::Printf(TEXT("TOPIC DIAGNOSTICS\nStrong area: %s (%.0f%%)\nWeak area: %s (%.0f%%)\nForces %d/%d  Electricity %d/%d\nWaves %d/%d  Energy %d/%d"),
+		*FBHRevisionQuestionBank::TopicToString(static_cast<EBHPhysicsTopic>(StrongIndex)),
+		StrongScore,
+		*FBHRevisionQuestionBank::TopicToString(static_cast<EBHPhysicsTopic>(WeakIndex)),
+		WeakScore,
+		Topics[0].Correct, Topics[0].Attempts,
+		Topics[1].Correct, Topics[1].Attempts,
+		Topics[2].Correct, Topics[2].Attempts,
+		Topics[3].Correct, Topics[3].Attempts);
+}
+
+FString UBHGameInstance::BuildTrainRecapMissedQuestions() const
+{
+	TArray<FString> Lines;
+	for (int32 Index = QuestionAttemptHistory.Num() - 1; Index >= 0 && Lines.Num() < 3; --Index)
+	{
+		const FBHQuestionAttemptRecord& Attempt = QuestionAttemptHistory[Index];
+		if (!Attempt.bCorrect)
+		{
+			Lines.Add(FString::Printf(TEXT("%s\nAnswer: %s\nWhy: %s"),
+				*Attempt.QuestionText.Left(118),
+				*Attempt.CorrectAnswer.Left(80),
+				*Attempt.Explanation.Left(120)));
+		}
+	}
+
+	if (Lines.IsEmpty())
+	{
+		return TEXT("MISSED QUESTIONS\nNo missed question data yet.\nThe recap boards will fill after students answer revision nodes or train bonus questions.");
+	}
+
+	return FString::Printf(TEXT("MISSED QUESTIONS\n%s"), *FString::Join(Lines, TEXT("\n\n")));
+}
+
+FString UBHGameInstance::BuildTrainRecapTips(const FString& NextDestination) const
+{
+	return FString::Printf(TEXT("NEXT ROUTE\nDestination: %s\nClass performance review in progress.\nWeak areas detected. Bonus questions target the weakest topic.\nMonitors may provide unreliable guidance.\nSpend points before the doors close."),
+		NextDestination.IsEmpty() ? TEXT("Next Station") : *NextDestination);
+}
+
 IOnlineSessionPtr UBHGameInstance::GetOnlineSessionInterface(FString& OutMessage) const
 {
 	IOnlineSubsystem* OnlineSubsystem = IOnlineSubsystem::Get();
@@ -699,6 +985,7 @@ void UBHGameInstance::SetLastNetworkMessage(const FString& Message)
 
 void UBHGameInstance::OpenListenLevel(const FString& LevelName)
 {
+	ShowTravelLoadingScreen(GetWorld(), FString::Printf(TEXT("LOADING %s"), *NormalizeRuntimeLevelName(LevelName).ToUpper()), TEXT("Opening online lobby."));
 	UGameplayStatics::OpenLevel(this, FName(TEXT("/Engine/Maps/Entry")), true, MakeListenOptions(LevelName));
 }
 
@@ -909,6 +1196,10 @@ void UBHGameInstance::OnJoinOnlineSessionComplete(FName SessionName, EOnJoinSess
 	}
 
 	SetLastNetworkMessage(FString::Printf(TEXT("Joined online session. Traveling to %s"), *ConnectString));
+	if (ABHPlayerController* BHPC = Cast<ABHPlayerController>(PC))
+	{
+		BHPC->ShowTravelLoadingScreen(TEXT("JOINING ONLINE"), TEXT("Connecting to lobby host."));
+	}
 	PC->ClientTravel(ConnectString, TRAVEL_Absolute);
 }
 
