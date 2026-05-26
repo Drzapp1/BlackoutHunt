@@ -8,6 +8,7 @@ struct FBHAutomationConfig
 	bool bAutoReady = false;
 	bool bVirtualBoxSafeRequested = false;
 	bool bVirtualBoxSafeDetected = false;
+	int32 AutoMinPlayers = 0;
 	float AutoQuitSeconds = 0.0f;
 	FString AutoHost;
 	FString AutoJoin;
@@ -26,6 +27,11 @@ struct FBHAutomationConfig
 	bool ShouldAutoReady() const
 	{
 		return bEnabled && bAutoReady;
+	}
+
+	int32 GetAutoMinPlayers() const
+	{
+		return bEnabled ? AutoMinPlayers : 0;
 	}
 
 	bool ShouldAutoQuit() const

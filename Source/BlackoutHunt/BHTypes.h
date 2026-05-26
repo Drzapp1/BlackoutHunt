@@ -157,7 +157,7 @@ enum class EBHQuestionType : uint8
 	MultipleChoice UMETA(DisplayName = "Multiple Choice"),
 	TrueFalse UMETA(DisplayName = "True/False"),
 	Calculation UMETA(DisplayName = "Calculation"),
-	FormulaFill UMETA(DisplayName = "Formula Fill"),
+	FormulaFill UMETA(DisplayName = "IGCSE Skill"),
 	GraphReading UMETA(DisplayName = "Graph Reading"),
 	DragDropMatching UMETA(DisplayName = "Drag/Drop Matching"),
 	Ordering UMETA(DisplayName = "Ordering")

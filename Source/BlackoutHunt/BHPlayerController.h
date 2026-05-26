@@ -454,6 +454,7 @@ private:
 	void ScheduleAutomation();
 	void RunAutomationStartup();
 	void TickAutomation();
+	void HandleRoundPhaseUiState();
 	void RunClassroomNetworkPreflight();
 	void RunClassroomFallbackCheck();
 	void RequestCleanQuit(FString Reason);
@@ -486,8 +487,10 @@ private:
 	bool bAutomationRoundStartedLogged = false;
 	bool bClassroomPreflightReported = false;
 	bool bClassroomFallbackStarted = false;
+	bool bRoundPhaseObserved = false;
 	bool bGameWindowCloseOverrideBound = false;
 	bool bCleanQuitRequested = false;
+	EBHRoundPhase LastObservedRoundPhase = EBHRoundPhase::Lobby;
 	float AutomationJoinAttemptTime = -1.0f;
 	FTimerHandle AutomationStartupTimerHandle;
 	FTimerHandle AutomationQuitTimerHandle;

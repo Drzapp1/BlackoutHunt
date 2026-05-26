@@ -28,6 +28,10 @@ bool FBHAutomationCommandLineTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Automation tag is captured."), EnabledConfig.Tag, FString(TEXT("student-01")));
 	TestTrue(TEXT("VirtualBox-safe mode can be forced independently."), EnabledConfig.ShouldUseVirtualBoxSafeMode());
 
+	const FBHAutomationConfig MinPlayersConfig = FBHAutomationSupport::ParseCommandLine(
+		TEXT("-BHAutomation=1 -BHAutoReady=1 -BHAutoMinPlayers=3"));
+	TestEqual(TEXT("Auto min players can delay host ready for multi-client validation."), MinPlayersConfig.GetAutoMinPlayers(), 3);
+
 	const FBHAutomationConfig VirtualBoxOnlyConfig = FBHAutomationSupport::ParseCommandLine(TEXT("-BHVirtualBoxSafe"));
 	TestFalse(TEXT("VirtualBox safe mode does not enable automation."), VirtualBoxOnlyConfig.bEnabled);
 	TestTrue(TEXT("VirtualBox safe mode can be requested without automation."), VirtualBoxOnlyConfig.ShouldUseVirtualBoxSafeMode());

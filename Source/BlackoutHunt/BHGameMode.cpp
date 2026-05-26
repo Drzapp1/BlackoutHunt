@@ -634,7 +634,7 @@ void ABHGameMode::NotifyObjectiveStationCompleted(ABHObjectiveStation* Station)
 	if (bRevisionMode)
 	{
 		RevisionReviewTimeRemaining = 60;
-		UpdateRevisionSummary(FString::Printf(TEXT("Stage review %d/%d: discuss the explanation, formula, and weakest topic before moving."), NewCompleted, RequiredSideObjectives));
+		UpdateRevisionSummary(FString::Printf(TEXT("Stage review %d/%d: discuss the explanation, exam method, and weakest topic before moving."), NewCompleted, RequiredSideObjectives));
 	}
 	if (bPartyPace || BHGS->RoundModifier == EBHRoundModifier::PanicSurge)
 	{
@@ -1544,7 +1544,7 @@ void ABHGameMode::ForceReview(ABHPlayerController* RequestingController)
 	}
 
 	RevisionReviewTimeRemaining = 60;
-	UpdateRevisionSummary(TEXT("Review forced: discuss weak topics, formulas, and corrected mistakes."));
+	UpdateRevisionSummary(TEXT("Review forced: discuss weak topics, exam methods, and corrected mistakes."));
 	BroadcastStatus(TEXT("Physics review screen forced for 60 seconds."), 3.5f);
 }
 
@@ -5070,7 +5070,7 @@ void ABHGameMode::TriggerRevisionThemedAmbientScare(ABHCharacter* Target)
 	switch (Variant)
 	{
 	case 0:
-		Message = TEXT("Blackboard slam: the correct formula appears too close.");
+		Message = TEXT("Blackboard slam: the examiner's method appears too close.");
 		Frequency = 185.0f;
 		Pulse = 6.4f;
 		break;
@@ -5095,7 +5095,7 @@ void ABHGameMode::TriggerRevisionThemedAmbientScare(ABHCharacter* Target)
 		Pulse = 4.9f;
 		break;
 	case 5:
-		Message = TEXT("Formula whisper: rearrange it before it screams.");
+		Message = TEXT("Method whisper: justify it before it screams.");
 		Frequency = 230.0f;
 		Pulse = 5.2f;
 		break;
@@ -6310,7 +6310,7 @@ void ABHGameMode::EndRound(EBHRoundPhase ResultPhase)
 	if (bRevisionMode)
 	{
 		RevisionReviewTimeRemaining = 60;
-		UpdateRevisionSummary(TEXT("Final review: check weak topics, corrected mistakes, and formula gaps before the next round."));
+		UpdateRevisionSummary(TEXT("Final review: check weak topics, corrected mistakes, and exam-method gaps before the next round."));
 		UE_LOG(LogTemp, Log, TEXT("BlackoutHunt revision round summary: result=%s %s"),
 			*StaticEnum<EBHRoundPhase>()->GetNameStringByValue(static_cast<int64>(ResultPhase)),
 			*GetRevisionStatusReport());

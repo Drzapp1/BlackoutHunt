@@ -155,6 +155,7 @@ private:
 	FSlateColor GetAvatarPreviewAccentColor() const;
 	FSlateColor GetMenuTabColor(EBHMainMenuTab Tab) const;
 	FSlateColor GetMenuTabTextColor(EBHMainMenuTab Tab) const;
+	static int32 MenuTabToWidgetIndex(EBHMainMenuTab Tab);
 	float GetMasterVolumeValue() const;
 	float GetMusicVolumeValue() const;
 	float GetUiVolumeValue() const;

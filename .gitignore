@@ -1,5 +1,9 @@
 Binaries/
-Build/
+Build/*
+!Build/Windows/
+Build/Windows/*
+!Build/Windows/Application.ico
+!Build/Windows/ApplicationIcon_Source.png
 Builds/
 DerivedDataCache/
 Intermediate/

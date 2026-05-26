@@ -1262,7 +1262,7 @@ void ABHHUD::DrawRevisionDiagram(const ABHObjectiveStation* Station, float X, fl
 
 	if (!Station->GetQuestionFormula().IsEmpty())
 	{
-		DrawRightAlignedText(FString::Printf(TEXT("Formula hint: %s"), *Station->GetQuestionFormula()), X + W - 10.0f, Y + H - 18.0f, FLinearColor(0.95f, 0.84f, 0.45f, 1.0f), GEngine->GetSmallFont(), 0.66f);
+		DrawRightAlignedText(FString::Printf(TEXT("Key idea: %s"), *Station->GetQuestionFormula()), X + W - 10.0f, Y + H - 18.0f, FLinearColor(0.95f, 0.84f, 0.45f, 1.0f), GEngine->GetSmallFont(), 0.66f);
 	}
 }
 

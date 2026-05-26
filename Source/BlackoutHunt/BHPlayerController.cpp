@@ -320,6 +320,7 @@ void ABHPlayerController::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 	UpdateAmbientMusic();
+	HandleRoundPhaseUiState();
 	TickAutomation();
 }
 
@@ -1955,6 +1956,48 @@ void ABHPlayerController::ApplyGameplayInputMode()
 	bShowMouseCursor = false;
 }
 
+void ABHPlayerController::HandleRoundPhaseUiState()
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	const UWorld* World = GetWorld();
+	const ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
+	if (!BHGS)
+	{
+		return;
+	}
+
+	const EBHRoundPhase CurrentPhase = BHGS->RoundPhase;
+	if (!bRoundPhaseObserved)
+	{
+		LastObservedRoundPhase = CurrentPhase;
+		bRoundPhaseObserved = true;
+		return;
+	}
+
+	if (LastObservedRoundPhase == EBHRoundPhase::Lobby && CurrentPhase != EBHRoundPhase::Lobby)
+	{
+		if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
+		{
+			BHGI->LogAutomationMarkerOnce(TEXT("ROUND_UI_CLOSED"));
+		}
+		if (MainMenuWidget.IsValid())
+		{
+			HideMainMenu();
+		}
+		if (ClassroomBoardWindow.IsValid())
+		{
+			HideClassroomBoard();
+		}
+		ShowLocalStatusMessage(TEXT("Round started. Gameplay controls are active. Press Escape for menu or B for board."), 4.0f);
+	}
+
+	LastObservedRoundPhase = CurrentPhase;
+}
+
 void ABHPlayerController::EnsureAudioPreferencesLoaded()
 {
 	if (bAudioPreferencesLoaded)
@@ -2306,8 +2349,6 @@ void ABHPlayerController::ApplyVirtualBoxSafeModeIfNeeded()
 
 	static const FBHConsoleVariableSetting VirtualBoxSafeSettings[] = {
 		{ TEXT("r.MotionBlurQuality"), TEXT("0") },
-		{ TEXT("r.GPUCrashDebugging"), TEXT("0") },
-		{ TEXT("r.D3D12.GPUTimeout"), TEXT("0") },
 		{ TEXT("r.RHICmdBypass"), TEXT("0") },
 		{ TEXT("r.DynamicRes.OperationMode"), TEXT("0") },
 		{ TEXT("r.ScreenPercentage"), TEXT("60") },
@@ -2462,6 +2503,15 @@ void ABHPlayerController::TickAutomation()
 	ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
 	if (BHGI->ShouldAutoReady() && BHGS && BHPS && BHGS->RoundPhase == EBHRoundPhase::Lobby && !BHPS->bReady)
 	{
+		const int32 AutoMinPlayers = BHGI->GetAutomationMinReadyPlayers();
+		const AGameStateBase* BaseGameState = World->GetGameState();
+		const int32 CurrentPlayers = BaseGameState ? BaseGameState->PlayerArray.Num() : 0;
+		if (AutoMinPlayers > 0 && NetMode == NM_ListenServer && CurrentPlayers < AutoMinPlayers)
+		{
+			BHGI->LogAutomationMarkerOnce(FString::Printf(TEXT("WAITING_FOR_PLAYERS:%d/%d"), CurrentPlayers, AutoMinPlayers));
+			return;
+		}
+
 		ServerSetReady(true);
 		bAutomationReadyLogged = true;
 		BHGI->LogAutomationMarkerOnce(TEXT("READY_SET"));
@@ -2482,8 +2532,12 @@ void ABHPlayerController::RunClassroomNetworkPreflight()
 	}
 
 	bClassroomPreflightReported = true;
-	const UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>();
+	UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>();
 	const FString JoinAddress = BHGI ? BHGI->GetPreferredJoinAddress(7777) : FBHNetworkSupport::ResolveLocalJoinAddress(7777);
+	if (BHGI && BHGI->IsAutomationEnabled())
+	{
+		BHGI->LogAutomationMarkerOnce(FString::Printf(TEXT("JOIN_ADDRESS:%s"), *JoinAddress));
+	}
 	const FString Status = FString::Printf(
 		TEXT("Classroom join address: %s. Direct LAN uses UDP 7777; if nobody connects, tunnel fallback starts automatically."),
 		*JoinAddress);

@@ -9,6 +9,7 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Resolve-Path "$PSScriptRoot\.."
 $project = Resolve-Path "$projectRoot\BlackoutHunt.uproject"
 $archive = Join-Path $projectRoot "Builds\Windows"
+$packageDdc = Join-Path $projectRoot "Builds\DerivedDataCache"
 $unreal = & "$PSScriptRoot\Find-Unreal.ps1"
 $appLocalDependencies = Join-Path $unreal.Root "Engine\Binaries\ThirdParty\AppLocalDependencies"
 $appLocalDependenciesX64 = Join-Path $appLocalDependencies "Win64\x64"
@@ -61,10 +62,13 @@ if ($Classroom) {
 }
 
 New-Item -ItemType Directory -Force -Path $archive | Out-Null
+New-Item -ItemType Directory -Force -Path $packageDdc | Out-Null
 
 $uatDir = Split-Path $unreal.RunUAT
+$previousLocalDataCachePath = (Get-Item -Path "Env:\UE-LocalDataCachePath" -ErrorAction SilentlyContinue).Value
 Push-Location $uatDir
 try {
+    Set-Item -Path "Env:\UE-LocalDataCachePath" -Value $packageDdc
     $uatArgs = @(
         "BuildCookRun",
         "-project=$project",
@@ -74,6 +78,7 @@ try {
         "-clientconfig=$Configuration",
         "-serverconfig=$Configuration",
         "-cook",
+        "-ddc=InstalledNoZenLocalFallback",
         "-map=/Engine/Maps/Entry",
         "-build",
         "-noxge",
@@ -95,6 +100,12 @@ try {
 }
 finally {
     Pop-Location
+    if ($null -ne $previousLocalDataCachePath) {
+        Set-Item -Path "Env:\UE-LocalDataCachePath" -Value $previousLocalDataCachePath
+    }
+    else {
+        Remove-Item -Path "Env:\UE-LocalDataCachePath" -ErrorAction SilentlyContinue
+    }
 }
 
 if ($Classroom) {

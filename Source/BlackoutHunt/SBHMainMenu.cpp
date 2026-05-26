@@ -1092,7 +1092,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 				.FillHeight(1.0f)
 				[
 					SAssignNew(MainTabSwitcher, SWidgetSwitcher)
-					.WidgetIndex(static_cast<int32>(ActiveMenuTab))
+					.WidgetIndex(MenuTabToWidgetIndex(ActiveMenuTab))
 					+ SWidgetSwitcher::Slot()
 					[
 						SNew(SBorder)
@@ -1463,7 +1463,7 @@ FReply SBHMainMenu::OnMenuTabClicked(EBHMainMenuTab NewTab)
 	ActiveMenuTab = NewTab;
 	if (MainTabSwitcher.IsValid())
 	{
-		MainTabSwitcher->SetActiveWidgetIndex(static_cast<int32>(NewTab));
+		MainTabSwitcher->SetActiveWidgetIndex(MenuTabToWidgetIndex(NewTab));
 	}
 
 	return FReply::Handled();
@@ -1504,6 +1504,30 @@ FSlateColor SBHMainMenu::GetMenuTabTextColor(EBHMainMenuTab Tab) const
 	return ActiveMenuTab == Tab
 		? FSlateColor(FLinearColor(0.90f, 1.0f, 0.96f, 1.0f))
 		: FSlateColor(FLinearColor(0.62f, 0.70f, 0.70f, 1.0f));
+}
+
+int32 SBHMainMenu::MenuTabToWidgetIndex(EBHMainMenuTab Tab)
+{
+	switch (Tab)
+	{
+	case EBHMainMenuTab::Play:
+		return 0;
+	case EBHMainMenuTab::Classroom:
+		return 1;
+	case EBHMainMenuTab::Controls:
+		return 2;
+	case EBHMainMenuTab::Character:
+		return 3;
+	case EBHMainMenuTab::Match:
+		return 4;
+	case EBHMainMenuTab::Network:
+		return 5;
+	case EBHMainMenuTab::Account:
+		return 6;
+	case EBHMainMenuTab::Settings:
+	default:
+		return 7;
+	}
 }
 
 float SBHMainMenu::GetMasterVolumeValue() const

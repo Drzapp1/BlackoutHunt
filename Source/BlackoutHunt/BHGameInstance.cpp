@@ -538,18 +538,6 @@ FString UBHGameInstance::GetPreferredJoinAddress(int32 LocalPort) const
 		return PublicJoinAddress;
 	}
 
-	if (const UBHGameSettings* Settings = GetDefault<UBHGameSettings>())
-	{
-		for (const FString& Endpoint : Settings->ClassroomJoinEndpoints)
-		{
-			const FString NormalizedEndpoint = FBHNetworkSupport::NormalizeJoinAddress(Endpoint, LocalPort);
-			if (!NormalizedEndpoint.IsEmpty())
-			{
-				return NormalizedEndpoint;
-			}
-		}
-	}
-
 	return FBHNetworkSupport::ResolveLocalJoinAddress(LocalPort);
 }
 
@@ -600,6 +588,11 @@ bool UBHGameInstance::ConsumeAutomationJoin(FString& OutAddress)
 bool UBHGameInstance::ShouldAutoReady() const
 {
 	return AutomationConfig.ShouldAutoReady();
+}
+
+int32 UBHGameInstance::GetAutomationMinReadyPlayers() const
+{
+	return AutomationConfig.GetAutoMinPlayers();
 }
 
 float UBHGameInstance::GetAutomationQuitSeconds() const

@@ -748,20 +748,18 @@ FBHInternetTunnelResult FBHNetworkSupport::StartInternetTunnel(int32 LocalPort)
 		}
 
 		Result.Message = FString::Printf(
-			TEXT("Internet tunnel agent is already running. Create or select a Custom UDP tunnel to local 127.0.0.1:%d, then copy a join code from the menu. Agent path: %s. Agent log: %s"),
+			TEXT("Internet tunnel agent is already running, but no usable allocation was found yet. Use OPEN TUNNEL SETUP only if you need to change the playit tunnel. It must be Custom UDP to local 127.0.0.1:%d. Agent path: %s. Agent log: %s"),
 			Result.LocalPort,
 			Result.AgentPath.IsEmpty() ? TEXT("already running") : *Result.AgentPath,
 			*Result.LogPath);
-		OpenExternalUrl(PlayitTunnelSetupUrl());
 		return Result;
 	}
 
 	FString AgentLookupMessage;
 	if (!TryFindVerifiedPlayitExecutable(Result.AgentPath, AgentLookupMessage))
 	{
-		OpenExternalUrl(PlayitDownloadUrl());
 		Result.Message = FString::Printf(
-			TEXT("%s Opened the official download page. Use the signed playit agent, create a Custom UDP tunnel to local 127.0.0.1:%d, then share the tunnel address with players."),
+			TEXT("%s No browser was opened automatically. Use OPEN TUNNEL SETUP only if this host needs Playit; otherwise share the LAN address. Playit tunnel should be Custom UDP to local 127.0.0.1:%d."),
 			*AgentLookupMessage,
 			Result.LocalPort);
 		return Result;
@@ -782,9 +780,8 @@ FBHInternetTunnelResult FBHNetworkSupport::StartInternetTunnel(int32 LocalPort)
 
 	if (!PlayitAgentProcess.IsValid())
 	{
-		OpenExternalUrl(PlayitDownloadUrl());
 		Result.Message = FString::Printf(
-			TEXT("Could not start the playit tunnel agent at %s. Opened the official download page. Create a Custom UDP tunnel to local 127.0.0.1:%d. Agent log: %s"),
+			TEXT("Could not start the playit tunnel agent at %s. No browser was opened automatically. Use OPEN TUNNEL SETUP only if this host needs Playit; tunnel should be Custom UDP to local 127.0.0.1:%d. Agent log: %s"),
 			*Result.AgentPath,
 			Result.LocalPort,
 			*Result.LogPath);
@@ -796,15 +793,13 @@ FBHInternetTunnelResult FBHNetworkSupport::StartInternetTunnel(int32 LocalPort)
 	UE_LOG(LogTemp, Display, TEXT("BlackoutHunt tunnel agent path: %s"), *Result.AgentPath);
 	UE_LOG(LogTemp, Display, TEXT("BlackoutHunt tunnel agent log path: %s"), *Result.LogPath);
 	UE_LOG(LogTemp, Display, TEXT("BlackoutHunt tunnel startup result: started"));
-	OpenExternalUrl(PlayitTunnelSetupUrl());
 	Result.Message = FString::Printf(
-		TEXT("Internet tunnel agent started. In the browser, create a Custom UDP tunnel to local 127.0.0.1:%d. Put the allocation host/port in the menu, then copy a join code. Agent path: %s. Agent log: %s"),
+		TEXT("Internet tunnel agent started. Waiting for a Custom UDP allocation to local 127.0.0.1:%d. If setup is needed, press OPEN TUNNEL SETUP manually. Agent path: %s. Agent log: %s"),
 		Result.LocalPort,
 		*Result.AgentPath,
 		*Result.LogPath);
 #else
-	OpenExternalUrl(PlayitDownloadUrl());
-	Result.Message = TEXT("Internet tunnel helper is currently wired for Windows builds. Opened the tunnel provider download page.");
+	Result.Message = TEXT("Internet tunnel helper is currently wired for Windows builds. No browser was opened automatically.");
 #endif
 
 	return Result;

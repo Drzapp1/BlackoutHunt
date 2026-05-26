@@ -102,6 +102,7 @@ public:
 	bool ConsumeAutomationHost(FString& OutHostMode);
 	bool ConsumeAutomationJoin(FString& OutAddress);
 	bool ShouldAutoReady() const;
+	int32 GetAutomationMinReadyPlayers() const;
 	float GetAutomationQuitSeconds() const;
 	void LogAutomationMarker(const FString& Marker) const;
 	bool LogAutomationMarkerOnce(const FString& Marker);

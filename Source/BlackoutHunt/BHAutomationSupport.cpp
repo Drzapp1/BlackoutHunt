@@ -80,6 +80,12 @@ FBHAutomationConfig FBHAutomationSupport::ParseCommandLine(const TCHAR* CommandL
 	Config.AutoJoin = ParseStringValue(SafeCommandLine, TEXT("BHAutoJoin"));
 	Config.Tag = ParseStringValue(SafeCommandLine, TEXT("BHAutomationTag"));
 
+	int32 ParsedMinPlayers = 0;
+	if (FParse::Value(SafeCommandLine, TEXT("BHAutoMinPlayers="), ParsedMinPlayers))
+	{
+		Config.AutoMinPlayers = FMath::Clamp(ParsedMinPlayers, 0, 32);
+	}
+
 	float ParsedQuitSeconds = 0.0f;
 	if (FParse::Value(SafeCommandLine, TEXT("BHAutoQuitSeconds="), ParsedQuitSeconds))
 	{
