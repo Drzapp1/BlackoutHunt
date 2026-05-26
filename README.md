@@ -6,7 +6,7 @@ One player hosts a listen server and friends join with `host-ip-or-domain:7777`.
 
 ## Beta Release
 
-Current beta target: `0.2.0-beta.3` Windows classroom build. See `D:\MainGame\Docs\BETA_RELEASE_NOTES_0.2.0-beta.3.md` for tester scope, known limits, and validation notes.
+Current beta target: `0.2.0-beta.4` Windows classroom build. See `D:\MainGame\Docs\BETA_RELEASE_NOTES_0.2.0-beta.4.md` for tester scope, known limits, and validation notes.
 
 ## Current Gameplay
 
