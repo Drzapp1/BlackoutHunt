@@ -44,6 +44,7 @@ constexpr float BHHorrorThreatRange = 3600.0f;
 constexpr float BHHorrorCloseThreatRange = 950.0f;
 constexpr float BHHunterHueLightIntensity = 185.0f;
 constexpr float BHHunterHueLightRadius = 320.0f;
+constexpr float BHBHopJumpBufferSeconds = 0.16f;
 constexpr float BHPostLandingStaminaRecoveryLockSeconds = 0.18f;
 
 FString BHCompassFromDelta(const FVector& Delta)
@@ -678,11 +679,12 @@ ABHCharacter::ABHCharacter()
 	SmoothedStrafeAlpha = 0.0f;
 	SmoothedSprintAlpha = 0.0f;
 	FlashlightPulseTime = 0.0f;
+	LastBHopJumpInputTime = -999.0f;
 	bKeyboardLookLeft = false;
 	bKeyboardLookRight = false;
 	bKeyboardLookUp = false;
 	bKeyboardLookDown = false;
-	bBHopJumpHeld = false;
+	bBHopJumpQueued = false;
 	bUsingRoleModel = false;
 	LastRoleAnimationName = NAME_None;
 	LastAppliedAvatarIndex = INDEX_NONE;
@@ -947,7 +949,7 @@ void ABHCharacter::Tick(float DeltaSeconds)
 	UpdateFlashlightFeel(DeltaSeconds);
 	UpdateLowPolyAvatar(DeltaSeconds);
 
-	if (bBHopJumpHeld)
+	if (bBHopJumpQueued)
 	{
 		TryBHopJump();
 	}
@@ -1408,12 +1410,21 @@ void ABHCharacter::TryBHopJump()
 	if (!CanAct())
 	{
 		StopJumping();
+		bBHopJumpQueued = false;
+		return;
+	}
+
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	if (!bBHopJumpQueued || Now - LastBHopJumpInputTime > BHBHopJumpBufferSeconds)
+	{
+		bBHopJumpQueued = false;
 		return;
 	}
 
 	const UCharacterMovementComponent* Movement = GetCharacterMovement();
 	if (Movement && Movement->IsMovingOnGround())
 	{
+		bBHopJumpQueued = false;
 		Jump();
 	}
 }
@@ -1478,13 +1489,13 @@ void ABHCharacter::ToggleFlashlight()
 
 void ABHCharacter::StartJump()
 {
-	bBHopJumpHeld = true;
+	bBHopJumpQueued = true;
+	LastBHopJumpInputTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	TryBHopJump();
 }
 
 void ABHCharacter::StopJump()
 {
-	bBHopJumpHeld = false;
 	StopJumping();
 }
 

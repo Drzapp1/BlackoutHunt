@@ -442,11 +442,12 @@ protected:
 	float SmoothedStrafeAlpha;
 	float SmoothedSprintAlpha;
 	float FlashlightPulseTime;
+	float LastBHopJumpInputTime;
 	bool bKeyboardLookLeft;
 	bool bKeyboardLookRight;
 	bool bKeyboardLookUp;
 	bool bKeyboardLookDown;
-	bool bBHopJumpHeld;
+	bool bBHopJumpQueued;
 	bool bUsingRoleModel;
 	FName LastRoleAnimationName;
 	int32 LastAppliedAvatarIndex;

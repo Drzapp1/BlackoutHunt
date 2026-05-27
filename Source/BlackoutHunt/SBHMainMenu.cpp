@@ -361,7 +361,7 @@ namespace
 				.IsFocusable(InArgs._IsFocusable)
 				.PressedSoundOverride(FSlateSound())
 				.ClickedSoundOverride(FSlateSound())
-				.HoveredSoundOverride(InArgs._HoveredSoundOverride)
+				.HoveredSoundOverride(FSlateSound())
 				.RenderTransform(TAttribute<TOptional<FSlateRenderTransform>>::Create(
 					TAttribute<TOptional<FSlateRenderTransform>>::FGetter::CreateLambda([bPressed, bHovered]()
 					{

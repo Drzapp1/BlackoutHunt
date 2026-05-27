@@ -241,6 +241,11 @@ ABHHUD::ABHHUD()
 	PhaseBannerEndTime = 0.0f;
 	LastSeenPresencePulse = 0;
 	PresencePulseEndTime = 0.0f;
+	bHasVisibleHunterCue = false;
+	LastVisibleHunterLocation = FVector::ZeroVector;
+	LastVisibleHunterDistanceCm = 0.0f;
+	VisibleHunterCueUntilTime = 0.0f;
+	SmoothedVisibleHunterArrowX = 0.0f;
 }
 
 void ABHHUD::DrawHUD()
@@ -386,9 +391,31 @@ void ABHHUD::DrawHUD()
 		DrawRawMeter(TEXT("FEAR"), Character->GetFear(), SafePad, VitalsY + 86.0f, MeterW, FLinearColor(0.92f, 0.28f, 0.20f, 0.88f), true);
 		DrawRawMeter(TEXT("DREAD"), Character->GetDread(), SafePad, VitalsY + 104.0f, MeterW, FLinearColor(0.84f, 0.18f, 0.14f, 0.90f), true);
 
-		if (TeacherProximity.bFound && TeacherProximity.bLineOfSight)
+		if (!bShowSurvivorWarnings)
 		{
-			DrawVisibleHunterArrow(Character, TeacherProximity.TeacherLocation, TeacherProximity.DistanceCm);
+			bHasVisibleHunterCue = false;
+			SmoothedVisibleHunterArrowX = 0.0f;
+		}
+		else if (TeacherProximity.bFound && TeacherProximity.bLineOfSight)
+		{
+			bHasVisibleHunterCue = true;
+			LastVisibleHunterLocation = TeacherProximity.TeacherLocation;
+			LastVisibleHunterDistanceCm = TeacherProximity.DistanceCm;
+			VisibleHunterCueUntilTime = Now + 0.34f;
+		}
+
+		if (bHasVisibleHunterCue)
+		{
+			const float CueStrength = FMath::Clamp((VisibleHunterCueUntilTime - Now) / 0.34f, 0.0f, 1.0f);
+			if (CueStrength > 0.02f)
+			{
+				DrawVisibleHunterArrow(Character, LastVisibleHunterLocation, LastVisibleHunterDistanceCm, CueStrength);
+			}
+			else
+			{
+				bHasVisibleHunterCue = false;
+				SmoothedVisibleHunterArrowX = 0.0f;
+			}
 		}
 	}
 
@@ -715,9 +742,15 @@ void ABHHUD::DrawProgressBar(const FString& Label, float Value, float X, float Y
 	}
 }
 
-void ABHHUD::DrawVisibleHunterArrow(const ABHCharacter* Character, const FVector& HunterLocation, float DistanceCm)
+void ABHHUD::DrawVisibleHunterArrow(const ABHCharacter* Character, const FVector& HunterLocation, float DistanceCm, float CueStrength)
 {
 	if (!Canvas || !GEngine || !PlayerOwner || !Character)
+	{
+		return;
+	}
+
+	const float Strength = FMath::Clamp(CueStrength, 0.0f, 1.0f);
+	if (Strength <= 0.01f)
 	{
 		return;
 	}
@@ -737,18 +770,28 @@ void ABHHUD::DrawVisibleHunterArrow(const ABHCharacter* Character, const FVector
 	}
 
 	const float EdgePadX = FMath::Min(FMath::Clamp(Canvas->ClipX * 0.18f, 130.0f, 260.0f), Canvas->ClipX * 0.42f);
-	const float ArrowX = FMath::Clamp(ScreenPosition.X, EdgePadX, Canvas->ClipX - EdgePadX);
+	const float TargetArrowX = FMath::Clamp(ScreenPosition.X, EdgePadX, Canvas->ClipX - EdgePadX);
+	if (SmoothedVisibleHunterArrowX <= 0.0f || SmoothedVisibleHunterArrowX < EdgePadX || SmoothedVisibleHunterArrowX > Canvas->ClipX - EdgePadX || FMath::Abs(SmoothedVisibleHunterArrowX - TargetArrowX) > Canvas->ClipX * 0.36f)
+	{
+		SmoothedVisibleHunterArrowX = TargetArrowX;
+	}
+	else
+	{
+		const float DeltaSeconds = GetWorld() ? GetWorld()->GetDeltaSeconds() : 1.0f / 60.0f;
+		SmoothedVisibleHunterArrowX = FMath::FInterpTo(SmoothedVisibleHunterArrowX, TargetArrowX, DeltaSeconds, 14.0f);
+	}
+	const float ArrowX = SmoothedVisibleHunterArrowX;
 	const float DistanceAlpha = 1.0f - FMath::Clamp(DistanceCm / 6000.0f, 0.0f, 1.0f);
 	const float Pulse = GetWorld() ? 0.5f + 0.5f * FMath::Sin(GetWorld()->GetTimeSeconds() * 8.0f) : 1.0f;
-	const float CueAlpha = FMath::Lerp(0.74f, 0.98f, DistanceAlpha);
+	const float CueAlpha = FMath::Lerp(0.74f, 0.98f, DistanceAlpha) * Strength;
 	const float ArrowY = FMath::Max(17.0f, Canvas->ClipY * 0.020f) + Pulse * 1.5f;
 	const float ArrowH = FMath::Clamp(Canvas->ClipY * 0.025f, 17.0f, 26.0f);
 	const float ArrowW = ArrowH * 0.62f;
 	const float TailH = FMath::Clamp(Canvas->ClipY * 0.011f, 7.0f, 11.0f);
 
-	const FLinearColor ShadowColor(0.0f, 0.0f, 0.0f, 0.76f);
+	const FLinearColor ShadowColor(0.0f, 0.0f, 0.0f, 0.76f * Strength);
 	const FLinearColor ArrowColor(1.0f, 0.11f, 0.05f, CueAlpha);
-	const FLinearColor HotColor(1.0f, 0.32f, 0.18f, FMath::Clamp(CueAlpha + Pulse * 0.10f, 0.0f, 1.0f));
+	const FLinearColor HotColor(1.0f, 0.32f, 0.18f, FMath::Clamp(CueAlpha + Pulse * 0.10f * Strength, 0.0f, 1.0f));
 
 	if (bProjectedOnScreen && ScreenPosition.Y > Canvas->ClipY * 0.10f && ScreenPosition.Y < Canvas->ClipY * 0.88f)
 	{
@@ -759,13 +802,13 @@ void ABHHUD::DrawVisibleHunterArrow(const ABHCharacter* Character, const FVector
 		const float MarkerPulse = 0.5f + 0.5f * FMath::Sin((GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f) * 6.5f);
 		DrawCornerBrackets(MarkerX + 1.0f, MarkerY + 1.0f, BracketW, BracketH, FLinearColor(0.0f, 0.0f, 0.0f, 0.72f), 8.0f, 2.4f);
 		DrawCornerBrackets(MarkerX, MarkerY, BracketW, BracketH, FLinearColor(1.0f, 0.10f, 0.04f, CueAlpha), 8.0f, 1.8f);
-		DrawCircle(ScreenPosition.X, ScreenPosition.Y, FMath::Lerp(6.0f, 10.0f, DistanceAlpha) + MarkerPulse * 1.5f, FLinearColor(1.0f, 0.12f, 0.05f, 0.18f + MarkerPulse * 0.12f), 1.2f, 24);
-		DrawLine(MarkerX + BracketW * 0.28f, MarkerY + BracketH + 4.0f, MarkerX + BracketW * 0.72f, MarkerY + BracketH + 4.0f, FLinearColor(1.0f, 0.16f, 0.08f, 0.42f + MarkerPulse * 0.20f), 1.6f);
+		DrawCircle(ScreenPosition.X, ScreenPosition.Y, FMath::Lerp(6.0f, 10.0f, DistanceAlpha) + MarkerPulse * 1.5f, FLinearColor(1.0f, 0.12f, 0.05f, (0.18f + MarkerPulse * 0.12f) * Strength), 1.2f, 24);
+		DrawLine(MarkerX + BracketW * 0.28f, MarkerY + BracketH + 4.0f, MarkerX + BracketW * 0.72f, MarkerY + BracketH + 4.0f, FLinearColor(1.0f, 0.16f, 0.08f, (0.42f + MarkerPulse * 0.20f) * Strength), 1.6f);
 	}
 
-	DrawRect(FLinearColor(1.0f, 0.04f, 0.02f, 0.12f + Pulse * 0.10f), ArrowX - ArrowW * 2.1f, 0.0f, ArrowW * 4.2f, 3.0f);
-	DrawLine(ArrowX - ArrowW * 1.65f, ArrowY - 2.0f, ArrowX - ArrowW * 0.65f, ArrowY - 2.0f, FLinearColor(1.0f, 0.08f, 0.04f, 0.30f), 1.5f);
-	DrawLine(ArrowX + ArrowW * 0.65f, ArrowY - 2.0f, ArrowX + ArrowW * 1.65f, ArrowY - 2.0f, FLinearColor(1.0f, 0.08f, 0.04f, 0.30f), 1.5f);
+	DrawRect(FLinearColor(1.0f, 0.04f, 0.02f, (0.12f + Pulse * 0.10f) * Strength), ArrowX - ArrowW * 2.1f, 0.0f, ArrowW * 4.2f, 3.0f);
+	DrawLine(ArrowX - ArrowW * 1.65f, ArrowY - 2.0f, ArrowX - ArrowW * 0.65f, ArrowY - 2.0f, FLinearColor(1.0f, 0.08f, 0.04f, 0.30f * Strength), 1.5f);
+	DrawLine(ArrowX + ArrowW * 0.65f, ArrowY - 2.0f, ArrowX + ArrowW * 1.65f, ArrowY - 2.0f, FLinearColor(1.0f, 0.08f, 0.04f, 0.30f * Strength), 1.5f);
 	DrawLine(ArrowX + 1.0f, ArrowY + ArrowH + 1.0f, ArrowX - ArrowW + 1.0f, ArrowY + 1.0f, ShadowColor, 4.5f);
 	DrawLine(ArrowX + 1.0f, ArrowY + ArrowH + 1.0f, ArrowX + ArrowW + 1.0f, ArrowY + 1.0f, ShadowColor, 4.5f);
 	DrawLine(ArrowX + 1.0f, ArrowY + ArrowH + 1.0f, ArrowX + 1.0f, ArrowY + ArrowH + TailH + 1.0f, ShadowColor, 3.5f);
@@ -773,7 +816,7 @@ void ABHHUD::DrawVisibleHunterArrow(const ABHCharacter* Character, const FVector
 	DrawLine(ArrowX, ArrowY + ArrowH, ArrowX + ArrowW, ArrowY, ArrowColor, 3.0f);
 	DrawLine(ArrowX, ArrowY + ArrowH, ArrowX, ArrowY + ArrowH + TailH, HotColor, 2.0f);
 
-	const FString Label = FString::Printf(TEXT("TEACHER %.0fm"), DistanceCm / 100.0f);
+	const FString Label = FString::Printf(TEXT("TEACHER VISIBLE %.0fm"), DistanceCm / 100.0f);
 	float TextW = 0.0f;
 	float TextH = 0.0f;
 	const float TextScale = 0.58f;
@@ -781,7 +824,7 @@ void ABHHUD::DrawVisibleHunterArrow(const ABHCharacter* Character, const FVector
 	const float TextMaxX = FMath::Max(12.0f, Canvas->ClipX - TextW - 12.0f);
 	const float TextX = FMath::Clamp(ArrowX - TextW * 0.5f, 12.0f, TextMaxX);
 	const float TextY = ArrowY + ArrowH + TailH + 5.0f;
-	DrawHudText(Label, TextX + 1.0f, TextY + 1.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.72f), GEngine->GetSmallFont(), TextScale);
+	DrawHudText(Label, TextX + 1.0f, TextY + 1.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.72f * Strength), GEngine->GetSmallFont(), TextScale);
 	DrawHudText(Label, TextX, TextY, FLinearColor(1.0f, 0.34f, 0.22f, CueAlpha), GEngine->GetSmallFont(), TextScale);
 }
 

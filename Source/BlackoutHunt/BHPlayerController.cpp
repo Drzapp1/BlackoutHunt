@@ -60,6 +60,61 @@ FSlateFontInfo BHUiFont(const int32 Size, const FName Typeface = FName(TEXT("Reg
 	return FCoreStyle::GetDefaultFontStyle(Typeface, Size);
 }
 
+FLinearColor BHLoadingAccentForTitle(const FString& DisplayTitle)
+{
+	if (DisplayTitle.Contains(TEXT("JOIN")))
+	{
+		return FLinearColor(0.28f, 0.70f, 1.0f, 1.0f);
+	}
+
+	if (DisplayTitle.Contains(TEXT("PRACTICE")) || DisplayTitle.Contains(TEXT("TEST")))
+	{
+		return FLinearColor(0.42f, 0.95f, 0.58f, 1.0f);
+	}
+
+	if (DisplayTitle.Contains(TEXT("BOT")))
+	{
+		return FLinearColor(0.78f, 0.58f, 1.0f, 1.0f);
+	}
+
+	if (DisplayTitle.Contains(TEXT("MAIN MENU")))
+	{
+		return FLinearColor(1.0f, 0.56f, 0.30f, 1.0f);
+	}
+
+	return FLinearColor(0.22f, 0.82f, 0.74f, 1.0f);
+}
+
+FString BHLoadingStatusForTitle(const FString& DisplayTitle)
+{
+	if (DisplayTitle.Contains(TEXT("JOIN")))
+	{
+		return TEXT("NETWORK HANDSHAKE");
+	}
+
+	if (DisplayTitle.Contains(TEXT("PRACTICE")) || DisplayTitle.Contains(TEXT("TEST")))
+	{
+		return TEXT("SANDBOX ROUTE");
+	}
+
+	if (DisplayTitle.Contains(TEXT("CLASSROOM")))
+	{
+		return TEXT("CLASSROOM SESSION");
+	}
+
+	if (DisplayTitle.Contains(TEXT("BOT")))
+	{
+		return TEXT("OFFLINE ROUTE");
+	}
+
+	if (DisplayTitle.Contains(TEXT("MAIN MENU")))
+	{
+		return TEXT("RETURNING");
+	}
+
+	return TEXT("LOADING ROUTE");
+}
+
 struct FBHConsoleVariableSetting
 {
 	const TCHAR* Name;
@@ -1269,6 +1324,8 @@ void ABHPlayerController::ShowTravelLoadingScreen(const FString& Title, const FS
 
 	const FString DisplayTitle = Title.IsEmpty() ? FString(TEXT("LOADING")) : Title.ToUpper();
 	const FString DisplayDetail = Detail.IsEmpty() ? FString(TEXT("Preparing session.")) : Detail;
+	const FString DisplayStatus = BHLoadingStatusForTitle(DisplayTitle);
+	const FLinearColor LoadingAccent = BHLoadingAccentForTitle(DisplayTitle);
 
 	SAssignNew(TravelLoadingScreenWidget, SOverlay)
 		+ SOverlay::Slot()
@@ -1286,7 +1343,7 @@ void ABHPlayerController::ShowTravelLoadingScreen(const FString& Title, const FS
 			[
 				SNew(SBorder)
 				.BorderImage(BHUiWhiteBrush())
-				.BorderBackgroundColor(FLinearColor(0.22f, 0.82f, 0.74f, 0.78f))
+				.BorderBackgroundColor(FLinearColor(LoadingAccent.R, LoadingAccent.G, LoadingAccent.B, 0.78f))
 			]
 		]
 		+ SOverlay::Slot()
@@ -1305,35 +1362,56 @@ void ABHPlayerController::ShowTravelLoadingScreen(const FString& Title, const FS
 		.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)
 		[
-			SNew(SVerticalBox)
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.HAlign(HAlign_Center)
+			SNew(SBox)
+			.MaxDesiredWidth(760.0f)
 			[
-				SNew(STextBlock)
-				.Font(BHUiFont(30, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.86f, 1.0f, 0.95f, 1.0f))
-				.ShadowOffset(FVector2D(2.0f, 2.0f))
-				.ShadowColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, 0.85f))
-				.Text(FText::FromString(DisplayTitle))
-			]
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.HAlign(HAlign_Center)
-			.Padding(0.0f, 8.0f, 0.0f, 18.0f)
-			[
-				SNew(STextBlock)
-				.Font(BHUiFont(12))
-				.ColorAndOpacity(FLinearColor(0.62f, 0.74f, 0.74f, 1.0f))
-				.Text(FText::FromString(DisplayDetail))
-			]
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.HAlign(HAlign_Center)
-			[
-				SNew(SThrobber)
-				.NumPieces(4)
-				.Animate(SThrobber::All)
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.HAlign(HAlign_Center)
+				.Padding(0.0f, 0.0f, 0.0f, 10.0f)
+				[
+					SNew(STextBlock)
+					.Font(BHUiFont(10, FName(TEXT("Bold"))))
+					.ColorAndOpacity(FLinearColor(LoadingAccent.R, LoadingAccent.G, LoadingAccent.B, 0.90f))
+					.Justification(ETextJustify::Center)
+					.Text(FText::FromString(DisplayStatus))
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.HAlign(HAlign_Center)
+				[
+					SNew(STextBlock)
+					.Font(BHUiFont(30, FName(TEXT("Bold"))))
+					.ColorAndOpacity(FLinearColor(0.86f, 1.0f, 0.95f, 1.0f))
+					.Justification(ETextJustify::Center)
+					.AutoWrapText(true)
+					.WrapTextAt(720.0f)
+					.ShadowOffset(FVector2D(2.0f, 2.0f))
+					.ShadowColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, 0.85f))
+					.Text(FText::FromString(DisplayTitle))
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.HAlign(HAlign_Center)
+				.Padding(0.0f, 8.0f, 0.0f, 18.0f)
+				[
+					SNew(STextBlock)
+					.Font(BHUiFont(12))
+					.ColorAndOpacity(FLinearColor(0.62f, 0.74f, 0.74f, 1.0f))
+					.Justification(ETextJustify::Center)
+					.AutoWrapText(true)
+					.WrapTextAt(720.0f)
+					.Text(FText::FromString(DisplayDetail))
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.HAlign(HAlign_Center)
+				[
+					SNew(SThrobber)
+					.NumPieces(4)
+					.Animate(SThrobber::All)
+				]
 			]
 		];
 
