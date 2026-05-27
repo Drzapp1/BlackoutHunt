@@ -291,7 +291,7 @@ FBHGraphicsHardwareProfile BHScanGraphicsHardwareProfile()
 	return Profile;
 }
 
-bool BHSoftObjectPathExists(const FSoftObjectPath& ObjectPath)
+bool BHPlayerControllerSoftObjectPathExists(const FSoftObjectPath& ObjectPath)
 {
 	if (ObjectPath.IsNull())
 	{
@@ -4730,7 +4730,7 @@ void ABHPlayerController::ClientPlayHorrorCue_Implementation(const FBHClientHorr
 
 	if (!Cue.AudioAsset.IsNull())
 	{
-		if (BHSoftObjectPathExists(Cue.AudioAsset.ToSoftObjectPath()))
+		if (BHPlayerControllerSoftObjectPathExists(Cue.AudioAsset.ToSoftObjectPath()))
 		{
 			if (USoundBase* Sound = Cue.AudioAsset.LoadSynchronous())
 			{
@@ -4745,7 +4745,7 @@ void ABHPlayerController::ClientPlayHorrorCue_Implementation(const FBHClientHorr
 
 	if (!Cue.VisualActorClass.IsNull())
 	{
-		if (BHSoftObjectPathExists(Cue.VisualActorClass.ToSoftObjectPath()))
+		if (BHPlayerControllerSoftObjectPathExists(Cue.VisualActorClass.ToSoftObjectPath()))
 		{
 			if (UClass* VisualClass = Cue.VisualActorClass.LoadSynchronous())
 			{
