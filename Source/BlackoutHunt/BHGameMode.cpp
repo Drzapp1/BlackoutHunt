@@ -3151,12 +3151,12 @@ void ABHGameMode::GetAdaptiveRevisionPlan(const ABHPlayerState* PlayerState, boo
 		*FBHRevisionQuestionBank::DifficultyToString(OutDifficulty));
 }
 
-void ABHGameMode::RecordRevisionAnswer(ABHCharacter* Character, const FBHRevisionQuestion& Question, bool bCorrect, bool bCorrection, const FString& SelectedAnswer, const FString& TeamSummary, bool bCountsAsContribution)
+int32 ABHGameMode::RecordRevisionAnswer(ABHCharacter* Character, const FBHRevisionQuestion& Question, bool bCorrect, bool bCorrection, const FString& SelectedAnswer, const FString& TeamSummary, bool bCountsAsContribution, bool bBonusPoints)
 {
 	ABHPlayerState* BHPS = Character ? Character->GetPlayerState<ABHPlayerState>() : nullptr;
 	if (!bRevisionMode || !IsRevisionParticipantState(BHPS))
 	{
-		return;
+		return 0;
 	}
 
 	FBHPlayerRevisionStats Stats = BHPS->RevisionStats;
@@ -3178,7 +3178,7 @@ void ABHGameMode::RecordRevisionAnswer(ABHCharacter* Character, const FBHRevisio
 		}
 		// First-time-correct pays full shop points; recovering a previously-missed question pays
 		// half (you earn full value by knowing it first time) but still grants full mastery.
-		const int32 BasePoints = FBHPowerupLibrary::QuestionPointValue(Question.Difficulty, false);
+		const int32 BasePoints = FBHPowerupLibrary::QuestionPointValue(Question.Difficulty, bBonusPoints);
 		PointsEarned = bCorrection ? FMath::Max(1, BasePoints / 2) : BasePoints;
 		BHPS->AddQuestionPoints(PointsEarned);
 		if (bCorrection)
@@ -3290,6 +3290,7 @@ void ABHGameMode::RecordRevisionAnswer(ABHCharacter* Character, const FBHRevisio
 		? FString::Printf(TEXT("%s banked %s mastery."), *BHPS->GetPlayerName(), *Question.TopicName)
 		: FString::Printf(TEXT("%s needs a correction in %s."), *BHPS->GetPlayerName(), *Question.TopicName));
 	UpdateDirectorGameState(GetRevisionObjectiveText());
+	return PointsEarned;
 }
 
 bool ABHGameMode::BuildRevisionAnswerTeam(ABHObjectiveStation* Station, ABHCharacter* RequestingCharacter, TSet<int32>& OutPlayerIds, FString& OutSummary) const

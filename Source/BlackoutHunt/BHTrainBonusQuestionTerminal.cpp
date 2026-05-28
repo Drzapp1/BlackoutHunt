@@ -147,6 +147,17 @@ bool ABHTrainBonusQuestionTerminal::SubmitAnswer(ABHCharacter* Character, int32 
 	}
 	LastAnswerServerTime = Now;
 
+	// Anti-gaming correction hold: after a wrong answer, block resubmission for a few seconds so
+	// the student reads the correction instead of cycling 1-4. Input-only; never pins the player.
+	if (Now < CorrectionHoldUntil)
+	{
+		if (PC)
+		{
+			PC->ClientShowStatusMessage(FString::Printf(TEXT("Read the correction first. Retry in %.0fs."), FMath::Max(0.0f, CorrectionHoldUntil - Now) + 0.5f), 2.0f);
+		}
+		return false;
+	}
+
 	if (!Question.Answer.Choices.IsValidIndex(Question.Answer.CorrectChoiceIndex))
 	{
 		FeedbackText = TEXT("Bonus question data was incomplete. Reloading terminal.");

@@ -100,9 +100,12 @@ public:
 	static int32 ResolveRevisionQuestionTargetFor(int32 StudentCount, int32 StageIndex);
 	static int32 ResolveRevisionNodeTargetFor(int32 StudentCount, int32 StageIndex, int32 StationCount);
 	static FVector ResolveFoggroundsDoorFrameOrigin(const FVector& DoorLocation);
+	// Records a revision answer (mastery, spaced-repetition queue, telemetry) and returns the
+	// shop points awarded for the answer (0 when wrong or when not in revision mode).
 	// bCountsAsContribution: team-station answers count toward the hall-monitor tool gate;
-	// bonus-terminal answers pass false so they build mastery but do not satisfy that gate.
-	void RecordRevisionAnswer(ABHCharacter* Character, const FBHRevisionQuestion& Question, bool bCorrect, bool bCorrection, const FString& SelectedAnswer = FString(), const FString& TeamSummary = FString(), bool bCountsAsContribution = true);
+	//   bonus-terminal answers pass false so they build mastery but do not satisfy that gate.
+	// bBonusPoints: award the 1.25x "bonus question" point value (train bonus terminals).
+	int32 RecordRevisionAnswer(ABHCharacter* Character, const FBHRevisionQuestion& Question, bool bCorrect, bool bCorrection, const FString& SelectedAnswer = FString(), const FString& TeamSummary = FString(), bool bCountsAsContribution = true, bool bBonusPoints = false);
 	void GetAdaptiveRevisionPlan(const ABHPlayerState* PlayerState, bool bLastAnswerCorrect, EBHPhysicsTopic& OutTopic, EBHQuestionDifficulty& OutDifficulty, FString& OutReason) const;
 	bool BuildRevisionAnswerTeam(ABHObjectiveStation* Station, ABHCharacter* RequestingCharacter, TSet<int32>& OutPlayerIds, FString& OutSummary) const;
 	void TriggerTeacherCounterJumpscare(ABHObjectiveStation* Station, EBHRevisionCounterNodeType CounterType);
