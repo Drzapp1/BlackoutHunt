@@ -111,3 +111,44 @@ When a revision participant (Survivor or Hall Monitor) answers a question incorr
 - The queue is server-authoritative and per-player; it resets with the player's revision stats at round/stage reset.
 - It is a *priority*, not a hard gate: round and objective completion are never blocked by a non-empty queue.
 - The backlog is capped (currently `8`, the `BHMaxRevisionReviewQueue` constant in `BHPlayerState.cpp`) so a long session re-tests recent misses without the queue growing without bound. Change the constant and rebuild to tune the cap.
+
+## Mastery Scoring — "Demonstrated and Durable"
+
+Mastery is designed so students earn it by genuinely revising, not by guessing. All of the
+constants below live in `ABHGameMode::RecordRevisionAnswer` (`BHGameMode.cpp`); change and
+rebuild to tune. See `Docs/REVISION_QUALITY_PLAN.md` for the rationale.
+
+- **Per-topic gain on a correct answer** = `15.0 * DiffMult * Headroom`, where `DiffMult` is the
+  question's `MasteryWeight` (Easy `1.0` / Medium `1.2` / Hard `1.5`) and
+  `Headroom = max(1 - (topicMastery/100) * 0.6, 0.25)`. The headroom term gives **diminishing
+  returns** — a topic climbs to ~70% in roughly 6–7 easy correct answers (fewer with harder
+  questions) but 90–100% is asymptotic, so a topic can no longer be "capped" by a handful of
+  lucky answers. Harder questions move the needle most, which rewards attempting them.
+- **Decay on a wrong answer** = `7.0 * MissDiffMult` subtracted from the topic (Easy `1.2` /
+  Medium `1.0` / Hard `0.8` — a careless easy miss costs the most). At 25% multiple-choice odds,
+  blind guessing trends *negative*; knowing the material still climbs steadily.
+- **Review-gated ceiling:** a topic is held at **≤ 80%** while the student still has an
+  unresolved missed question in it (an entry in the spaced-repetition queue above). Clearing
+  your own mistakes is required to fully master a topic.
+- **Overall `MasteryPercent`** is the mean of the **enabled** topics' mastery (`RevisionTopicMask`).
+  A class focused on one topic is scored only on that topic. This is the number the exit gate
+  and HUD use; the default escape thresholds (class 70% / individual 50%) are unchanged and
+  remain configurable per lesson preset (lower them if a class is short on time).
+- **Points:** a first-time-correct answer pays full shop points; recovering a previously-missed
+  question (a correction) pays **half** points but still grants full mastery — so knowing it the
+  first time is the most rewarding, while recovery is still worthwhile.
+
+## Anti-Gaming Answer Locks
+
+To stop spam-guessing and to make students read corrections, a wrong answer now applies a short
+**correction hold** before the next answer can be submitted. The hold only delays *input* — the
+player is never frozen and can always walk away from the station and return.
+
+- **Objective stations** (`BHObjectiveStation.cpp`): after a wrong answer the station holds
+  resubmission for `clamp(3 + 1.5 * (consecutiveWrong - 1), 3, 9)` seconds and **reloads a fresh
+  eased question** (the missed one goes to the spaced-repetition queue) so the just-revealed
+  answer cannot simply be re-entered. The detention mark also scales with consecutive misses.
+- **Train bonus terminals** (`BHTrainBonusQuestionTerminal.cpp`): a flat `4`-second correction
+  hold on top of the existing `0.35`s anti-spam cooldown. Bonus answers now build topic and
+  overall mastery (and so count toward escape) but do **not** satisfy the team-station
+  contribution gate that unlocks Hall Monitor tools.
