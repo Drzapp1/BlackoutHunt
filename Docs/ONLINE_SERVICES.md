@@ -4,7 +4,7 @@ Blackout Hunt now has two network paths:
 
 - Direct IP: `HostGame` / `JoinGame host:7777`. This still needs UDP `7777` to reach the host.
 - Online sessions: `HostOnlineGame`, `HostOnlineSubstationGame`, `FindOnlineGames`, and `JoinOnlineGame <index>`. This uses Unreal's configured OnlineSubsystem.
-- Internet tunnel fallback: `StartInternetTunnel` verifies and launches the bundled Playit agent on Windows, writes the agent log path, and opens tunnel setup. Create a Custom UDP tunnel to `127.0.0.1:7777`, then copy a `BH1:...` join code from the menu or let clients join the allocation address through the normal direct-IP path. The beta.5 classroom package also ships the owned endpoint `blackouthunt.playit.plus:24761` in the saved join list.
+- Internet tunnel fallback: `StartInternetTunnel` verifies and launches the bundled Playit agent on Windows, writes the agent log path, and opens tunnel setup. Create a Custom UDP tunnel to `127.0.0.1:7777`, then copy a `BH1:...` join code from the menu or let clients join the allocation address through the normal direct-IP path. The beta.6 classroom package also ships the owned endpoint `blackouthunt.playit.plus:24761` in the saved join list.
 
 The checked-in default is:
 
@@ -53,4 +53,37 @@ EOS still needs a valid login flow for the local user before online sessions can
 
 ## Steam Deployment Notes
 
-Enable `OnlineSubsystemSteam`, set `DefaultPlatformService=Steam`, add the Steam App ID config, and use Steam's lobby/socket support. The C++ session path is provider-agnostic, so the same `HostOnline*`, `FindOnlineGames`, and `JoinOnlineGame` commands remain the entry points.
+Steam is wired as a separate Windows package profile so classroom builds stay on `OnlineSubsystemNull` plus Playit/direct-IP unless the Steam package script is used.
+
+The value-drop file is:
+
+```ini
+; Config\Steam\SteamValues.local.ini
+[Steam]
+SteamAppId=480
+IncludeSteamAppIdTxtForLocalTesting=true
+```
+
+Copy `Config\Steam\SteamValues.example.ini` to `Config\Steam\SteamValues.local.ini`, then replace `SteamAppId` with the real numeric Steam App ID when one exists. Keep `IncludeSteamAppIdTxtForLocalTesting=false` for Steam depot/upload packages.
+
+Build a development Steam smoke package with:
+
+```powershell
+.\Tools\Package-Windows-Steam.ps1 -Configuration Development
+```
+
+Build a real Steam shipping candidate with:
+
+```powershell
+.\Tools\Package-Windows-Steam.ps1 -Configuration Shipping
+```
+
+`Tools\Package-Windows-Steam.ps1` temporarily appends Steam OnlineSubsystem settings to `Config\DefaultEngine.ini`, sets the compile-time Steam shipping App ID from the values file, archives to `Builds\WindowsSteam`, optionally writes `steam_appid.txt` for local development testing, verifies the package, then restores `DefaultEngine.ini`.
+
+Shipping packages reject App ID `480` unless `-AllowSpacewarShipping` is passed for an explicit smoke test. Steam depot packages must not include `steam_appid.txt`; verify that mode with:
+
+```powershell
+.\Tools\Verify-SteamPackage.ps1 -PackageRoot .\Builds\WindowsSteam -ForSteamDepot
+```
+
+Steam online lobbies require the Steam client to be running and the signed-in account to own the configured App ID. If Steam is selected but not ready, the game requests Steam auto-login once and asks the player to press Host/Find/Join again after Steam reports ready. The same menu commands remain the entry points: `HostOnlineGame`, `FindOnlineGames`, and `JoinOnlineGame`.

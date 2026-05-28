@@ -4,9 +4,9 @@ Blackout Hunt can be packaged for Linux from the existing Windows UE 5.7 install
 
 ## Current Machine
 
-The UE install at `D:\UE_5.7` has the Windows editor and the Linux target platform metadata, but the `platform_Linux` optional payload is missing. The manifest says that component is about 16.5 GiB installed, with about 30,828 files.
+The UE install at `D:\UE_5.7` has the Windows editor and the `platform_Linux` optional payload installed. The manifest says that component is about 16.5 GiB installed, with about 30,828 files, and `Tools/Check-Unreal-Linux-Platform.sh` currently reports zero missing Linux platform files.
 
-Without Epic access, the project cannot download that payload. The scripts in `Tools` now stop before download/auth work and explain the missing piece.
+This is still a Windows UE install, so native Linux host build files such as `Engine/Build/BatchFiles/Linux/SetupEnvironment.sh` are not expected to be present. From this Linux machine, package with the Wine flow below instead of the native `RunUAT.sh` flow.
 
 ## Run Current Windows Build On Linux
 

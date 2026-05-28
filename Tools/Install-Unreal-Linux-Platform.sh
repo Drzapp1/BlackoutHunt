@@ -34,6 +34,30 @@ EOF
 	exit 1
 fi
 
+file_list="$(mktemp)"
+trap 'rm -f "$file_list"' EXIT
+
+"${legendary_cmd[@]}" list-files \
+	--manifest "$manifest" \
+	--install-tag platform_Linux \
+	--tsv > "$file_list"
+
+missing_files=0
+while IFS=$'\t' read -r path _hash _size _tags; do
+	[[ "$path" == "path" ]] && continue
+	[[ -z "${path:-}" ]] && continue
+	if [[ ! -e "$engine_root/$path" ]]; then
+		missing_files=$((missing_files + 1))
+	fi
+done < "$file_list"
+
+if (( missing_files == 0 )) && [[ -d "$engine_root/Engine/Binaries/Linux" ]]; then
+	echo "Unreal Engine platform_Linux component is already installed."
+	exit 0
+fi
+
+echo "platform_Linux is missing $missing_files file(s); starting Legendary install/repair."
+
 status="$("${legendary_cmd[@]}" status 2>&1 || true)"
 if grep -q "Epic account: <not logged in>" <<<"$status"; then
 	cat >&2 <<EOF
@@ -47,6 +71,7 @@ EOF
 	exit 1
 fi
 
+"${legendary_cmd[@]}" list-games --include-ue --platform Windows --tsv >/dev/null 2>&1 || true
 "${legendary_cmd[@]}" import UE_5.7 "$engine_root" --disable-check --platform Windows || true
 "${legendary_cmd[@]}" install UE_5.7 \
 	--repair \

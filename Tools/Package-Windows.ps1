@@ -76,6 +76,20 @@ If Windows still shows "A D3D11-compatible GPU is required", the machine is not 
     Set-Content -LiteralPath (Join-Path $PackageRoot "GPU-TROUBLESHOOTING.txt") -Value $troubleshooting -Encoding ASCII
 }
 
+function Copy-ClassroomPackageNotices {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PackageRoot
+    )
+
+    $noticeSource = Join-Path $projectRoot "Docs\THIRD_PARTY_NOTICES.txt"
+    if (-not (Test-Path -LiteralPath $noticeSource)) {
+        throw "Missing third-party notices source: $noticeSource"
+    }
+
+    Copy-Item -LiteralPath $noticeSource -Destination (Join-Path $PackageRoot "THIRD-PARTY-NOTICES.txt") -Force
+}
+
 if (-not $Configuration) {
     if ($Classroom) {
         $Configuration = "Shipping"
@@ -150,5 +164,6 @@ finally {
 if ($Classroom) {
     Copy-AppLocalDependenciesToPackageRoot -SourceRoot $appLocalDependenciesX64 -PackageRoot $archive
     Write-ClassroomLaunchHelpers -PackageRoot $archive
+    Copy-ClassroomPackageNotices -PackageRoot $archive
     & "$PSScriptRoot\Verify-ClassroomPackage.ps1" -PackageRoot $archive -ExpectedAppLocalDependencyRoot $appLocalDependenciesX64
 }

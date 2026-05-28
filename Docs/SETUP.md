@@ -51,7 +51,8 @@ Online lobby play:
 
 1. Use `HOST ONLINE FACILITY`, `HOST ONLINE SUBSTATION`, or `HOST ONLINE FOGGROUNDS` in the menu. Console fallbacks: `HostOnlineGame`, `HostOnlineSubstationGame`, or `HostOnlineFoggroundsGame`.
 2. Clients use `FIND ONLINE SESSIONS`, then `JOIN FIRST ONLINE SESSION`. Console fallbacks: `FindOnlineGames`, then `JoinOnlineGame 0`.
-3. The project defaults to `OnlineSubsystemNull`, which is useful for local/dev validation. For internet NAT traversal or relay, configure EOS or Steam as described in `D:\MainGame\Docs\ONLINE_SERVICES.md`.
+3. The project defaults to `OnlineSubsystemNull`, which is useful for local/dev validation. For Steam internet lobby testing, copy `Config\Steam\SteamValues.example.ini` to `Config\Steam\SteamValues.local.ini`, enter the numeric Steam App ID, then package with `.\Tools\Package-Windows-Steam.ps1 -Configuration Development`.
+4. Steam lobby play requires the Steam client to be running and the signed-in account to own the configured App ID. App ID `480` is only for development smoke tests. For real Steam shipping candidates, set a real App ID and `IncludeSteamAppIdTxtForLocalTesting=false`.
 
 Game hotspot fallback:
 
@@ -83,7 +84,11 @@ Jumpscare variant testing:
 
 Packaged executable:
 
-`D:\MainGame\Builds\Windows\BlackoutHunt.exe`
+`Builds\Windows\BlackoutHunt.exe`
+
+Steam-profile Windows packages are written to:
+
+`Builds\WindowsSteam\BlackoutHunt.exe`
 
 Classroom Windows packages include app-local runtime DLLs beside the root launcher and Shipping executable. A clean standard Windows user should be able to extract the zip and launch the game without administrator rights or a separate VC++ Redistributable install.
 
@@ -96,6 +101,6 @@ Validation automation flags are hidden and inert unless `-BHAutomation=1` is pre
 Once Unreal Editor opens successfully:
 
 1. Create a real `Content/Maps/L_Facility.umap`.
-2. Use Twinmotion plus Datasmith for the first authored facility art pass. See `D:\MainGame\Docs\TWINMOTION.md`.
+2. Use Twinmotion plus Datasmith for the first authored facility art pass. See `Docs\TWINMOTION.md`.
 3. Move the runtime layout into the map as authored geometry or Blueprints.
 4. Replace the current procedural hums/decoy tones with authored free sounds for doors, breaker repair, heartbeat scan, decoy pulses, and capture feedback.

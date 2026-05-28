@@ -8,6 +8,7 @@ archive="$project_root/Builds/Linux"
 engine_root="${UE_ROOT:-/run/media/adamrosta/T7/UE_5.7}"
 run_uat="$engine_root/Engine/Build/BatchFiles/RunUAT.bat"
 configuration="${CONFIGURATION:-Development}"
+toolchain_root="${LINUX_MULTIARCH_ROOT:-/run/media/adamrosta/T7/UnrealToolchains/v26_clang-20.1.8-rockylinux8}"
 uat_extra_args=()
 
 if [[ "${CLASSROOM:-0}" == "1" ]]; then
@@ -46,13 +47,25 @@ EOF
 	exit 1
 fi
 
+if [[ ! -f "$toolchain_root/ToolchainVersion.txt" ]]; then
+	cat >&2 <<EOF
+The Unreal Linux cross-toolchain was not found:
+  $toolchain_root
+
+Install the Unreal Linux toolchain, or set LINUX_MULTIARCH_ROOT to the v26
+toolchain root, then rerun.
+EOF
+	exit 1
+fi
+
 mkdir -p "$archive"
 
 project_win="$(winepath -w "$project")"
 archive_win="$(winepath -w "$archive")"
+toolchain_win="$(winepath -w "$toolchain_root")"
 
 pushd "$(dirname "$run_uat")" >/dev/null
-DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 wine cmd /c RunUAT.bat BuildCookRun \
+LINUX_MULTIARCH_ROOT="$toolchain_win" DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 wine cmd /c RunUAT.bat BuildCookRun \
 	"-project=$project_win" \
 	-notinstalledengine \
 	-noP4 \

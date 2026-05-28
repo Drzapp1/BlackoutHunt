@@ -21,9 +21,9 @@ The menu exposes the same actions in the `Account` tab. The first-load start scr
 
 The game writes local account files under:
 
-- `D:\MainGame\Saved\Account\profile.json`
-- `D:\MainGame\Saved\Account\progress.json`
-- `D:\MainGame\Saved\Account\local_credentials.enc.json`
+- `Saved\Account\profile.json`
+- `Saved\Account\progress.json`
+- `Saved\Account\local_credentials.enc.json`
 
 `local_credentials.enc.json` stores the local username and password hash inside an AES-encrypted, HMAC-checked payload tied to the current Windows login and project path. Passwords must be 8-128 characters. This is for local classroom convenience, not a replacement for server-side account security.
 
@@ -34,6 +34,8 @@ Round-end progress is recorded on each client when the server ends a round:
 - survivor wins
 - survivor escapes
 - XP
+
+XP unlocks local cosmetics only. The saved progress file stores selected outfit, shirt color, headwear, and gear indices; these choices are pushed to the replicated player state as visuals and do not change movement, scoring, powerups, or classroom balance. `AccountResetLocalClassroomData` deletes the progress file, so shared school PCs return to the default cosmetic choices when local data is reset.
 
 ## Backend
 
@@ -59,7 +61,7 @@ With external login disabled, round progress is saved locally and no backend syn
 
 The local backend scaffold is in:
 
-`D:\MainGame\Tools\AccountBackend`
+`Tools\AccountBackend`
 
 Run it with Node.js after setting provider environment variables:
 

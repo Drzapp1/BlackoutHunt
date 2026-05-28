@@ -1,0 +1,66 @@
+Blackout Hunt Third-Party Notices
+
+This notice covers third-party assets currently approved for classroom beta
+packaging. It is not legal advice; keep source license evidence with the
+project before broader distribution.
+
+ambientCG
+- Use: material textures imported under Content/BlackoutHunt/Art/Textures and
+  Content/BlackoutHunt/Art/Materials.
+- License: Creative Commons CC0 1.0 Universal.
+- Attribution text: Created using assets from ambientCG.com, licensed under
+  the Creative Commons CC0 1.0 Universal License.
+
+Quaternius
+- Use: CC0 character meshes, materials, and animations imported under
+  Content/BlackoutHunt/Art/Characters/Quaternius.
+- License: Creative Commons CC0 1.0 Universal.
+- Courtesy credit: LowPoly Models by Quaternius.
+
+KayKit / Kay Lousberg
+- Use: CC0 weapon prop meshes imported under
+  Content/BlackoutHunt/Art/Weapons/KayKit.
+- License: Creative Commons CC0 1.0 Universal.
+- Courtesy credit: KayKit by Kay Lousberg, www.kaylousberg.com.
+
+OpenGameArt CC0 scream sources
+- Use: processed audio layer imported as
+  Content/BlackoutHunt/Audio/SW_TerrifiedScreamFaint.uasset.
+- Sources:
+  https://opengameart.org/content/female-high-pitched-scream-sfx
+  https://opengameart.org/content/horror-scream1
+- License: Creative Commons CC0 1.0 Universal.
+
+Fab Free Customizable Jumpscares
+- Use: optional migrated runtime jumpscare meshes, animations, materials, and
+  sounds under Content/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares.
+- License: Fab Standard License, subject to the project's local entitlement.
+- Distribution note: ship only incorporated cooked project assets, not the
+  original asset pack, demo maps, input content, demo external actor/object
+  data, source pack, or standalone extracted files.
+- Listing: https://www.fab.com/listings/c0874256-c114-4821-a42e-2e988a1cfb87
+- Terms: https://www.fab.com/eula
+
+Whisper Fab/Epic jumpscares
+- Use: optional runtime jumpscare assets only when restored under
+  Content/BlackoutHunt/Art/Jumpscares/Whisper.
+- License: Epic/Fab entitlement required before any package includes the
+  restored assets.
+- Distribution note: ship only incorporated cooked project assets. Keep source
+  pack content and local entitlement/license evidence outside the package.
+
+SCP096 prototype
+- Use: cooked fallback jumpscare visual for 0.2.0-beta.6 classroom testing.
+- Distribution note: broader distribution remains blocked until complete
+  source-license and underlying-IP evidence is recorded. Raw SourceFiles and
+  scp-096.zip must not ship.
+
+Excluded risky/prototype content
+- Content/BlackoutHunt/Art/Characters/Hider is excluded from classroom
+  packages because local distributable license evidence is missing.
+- Content/BlackoutHunt/Art/Characters/Hunter is excluded from classroom
+  packages. Its local FNaTI source license says CC-BY-4.0, but the asset
+  remains blocked for classroom beta because third-party character/IP clearance
+  has not been completed.
+- Content/BlackoutHunt/Art/Downloaded and source archives under
+  Content/BlackoutHunt/Art are import/source material only and must not ship.

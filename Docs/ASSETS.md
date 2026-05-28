@@ -27,18 +27,45 @@ Project attribution text:
 - `Tiles078`: tiled facility floor patches
 - `Sign009`: warning placards near exits and hazard routes
 
-## 0.2.0-beta.5 Package Policy
+## 0.2.0-beta.6 Package Policy
 
-The Windows classroom beta cooks the documented package-safe content paths plus the restored SCP096 prototype jumpscare visual requested for beta. Package-safe paths include ambientCG materials/textures, in-house/generated audio, UI background media, and the Quaternius/KayKit CC0 character sets used by the current avatar path.
+The Windows classroom beta cooks only the documented package-safe content paths plus the restored SCP096 prototype jumpscare visual requested for beta testing. Package-safe paths include ambientCG materials/textures, in-house/generated audio, UI background media, Quaternius CC0 avatars, KayKit CC0 weapon props, and the specific restored jumpscare runtime subfolders used by `UBHGameSettings.JumpscareVariants`.
 
-The repository also contains prototype/import source assets that need explicit package decisions:
+Current cook policy is controlled by `Config/DefaultGame.ini`:
 
-- SCP096 prototype meshes and textures: included only for beta classroom testing; complete source-license evidence is still required before broader distribution.
-- Low-poly hider source mesh: excluded from beta package because no local distributable license evidence is present.
-- FNaTI Hunter source mesh: excluded from beta package for classroom beta. Local source license states CC-BY-4.0 and requires attribution if it is included in a future package.
-- Fab Free Customizable Jumpscares: planned runtime destination is `Content/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares` with gameplay config soft paths under `/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares`. Import through the UE Fab window/Add to Project flow, then migrate or rename the three monster, Blueprint, and audio assets to the configured paths or update `UBHGameSettings.JumpscareVariants`.
-- Fab listing: `https://www.fab.com/listings/c0874256-c114-4821-a42e-2e988a1cfb87`
-- Fab license terms: `https://www.fab.com/eula`
+- Always cook: `/Game/BlackoutHunt/Art/Textures`, `/Game/BlackoutHunt/Art/Materials`, `/Game/BlackoutHunt/Art/UI`, `/Game/BlackoutHunt/Audio`, `/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Animations`, `/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Materials`, `/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Meshes`, `/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Sounds`, `/Game/BlackoutHunt/Art/Jumpscares/Whisper`, `/Game/BlackoutHunt/Art/Characters/Quaternius`, `/Game/BlackoutHunt/Art/Characters/FreeAnimationLibrary`, `/Game/BlackoutHunt/Art/Weapons/KayKit`, `/Game/BlackoutHunt/Data`, `/Game/SmartBasicInterfaces`, `/Game/A_Surface_Footstep/Niagara_FX`, `/Game/ResidentHorrorV1/Audio`, `/Game/FlashLight_System/Sound`, `/Game/SecurityCameras/Sounds`, `/Game/SoundsOfHorror/Impacts/CUE`, and `/Game/SoundsOfHorror/Rumbles/CUE`.
+- Never cook: `/Game/BlackoutHunt/Art/Characters/Hider`, `/Game/BlackoutHunt/Art/Characters/Hunter`, `/Game/BlackoutHunt/Art/Downloaded`, and the original `/Game/Free_Jumpscares` source pack root.
+- Always stage as Non-UFS: `BlackoutHunt/Art/UI` for menu/background image access outside cooked packages.
+- Core redirect: `/Game/Free_Jumpscares` package references redirect to `/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares` so migrated runtime assets with stale source-pack references cook from the package-safe namespace while the source pack root stays excluded.
+- Verification-only forbidden staged paths: `Content/__ExternalActors__/Free_Jumpscares`, `Content/__ExternalObjects__/Free_Jumpscares`, and migrated demo-map data under `Content/__ExternalActors__/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Lvl_FirstPerson` or `Content/__ExternalObjects__/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Lvl_FirstPerson`.
+
+Risk decisions:
+
+| Asset area | Runtime references | 0.2.0-beta.6 decision | Distribution notes |
+| --- | --- | --- | --- |
+| SCP096 prototype, `Content/BlackoutHunt/Art/SCP096` | `ABHJumpscareMonster` uses hard fallback paths; `UBHGameSettings` exposes the `SCP096` variant. | Include cooked `.uasset` fallback only for classroom beta testing. | Broader distribution is blocked until complete source-license and underlying-IP evidence is recorded. Raw `SourceFiles` and `scp-096.zip` must never stage. |
+| Low-poly Hider, `Content/BlackoutHunt/Art/Characters/Hider` | `ABHCharacter` has optional `LoadObject` fallback paths. | Exclude from classroom package. | No local distributable license evidence is present. Runtime falls back to Quaternius/procedural avatar visuals if the asset is absent. |
+| FNaTI Hunter, `Content/BlackoutHunt/Art/Characters/Hunter` | `ABHCharacter` has optional native Hunter `LoadObject` paths. | Exclude from classroom package. | Local `license.txt` says CC-BY-4.0, but this remains too risky for classroom beta because it may involve third-party character/IP rights. If ever included, attribution and legal clearance are both required. |
+| Fab Free Customizable Jumpscares source root, `Content/Free_Jumpscares` | Restore script source only. | Exclude original source/demo root and its world-partition external actor/object data. | The package should use only migrated runtime assets under `Content/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares`. Source demo maps, first-person blueprints, input assets, and `__ExternalActors__`/`__ExternalObjects__` data should not stage. |
+| Fab Free Customizable Jumpscares migrated runtime path | `UBHGameSettings.JumpscareVariants` soft paths point at meshes, animations, materials, sounds, and material texture dependencies under `/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares`. | Include only the runtime subfolders needed by configured variants when local Fab entitlement/license evidence exists. | Fab Standard License permits distribution of projects with assets incorporated, but not standalone redistribution of the asset pack. Retain purchase/entitlement evidence outside the package. Listing: `https://www.fab.com/listings/c0874256-c114-4821-a42e-2e988a1cfb87`; terms: `https://www.fab.com/eula`. Migrated demo maps, first-person content, input content, and demo external actor/object data remain blocked. |
+| Whisper Fab/Epic jumpscares | `BHJumpscareVariantLibrary` discovers restored assets under `/Game/BlackoutHunt/Art/Jumpscares/Whisper`. | Cook the project-local Whisper runtime root if restored. | Keep source pack content out of staged builds; document the listing/license evidence before public distribution. |
+| Quaternius avatars | Menu/avatar and role visuals load Quaternius meshes, materials, and animations. | Include. | Local source license is CC0 1.0. Courtesy credit is optional. |
+| KayKit weapon prop | Teacher accessory code can load `/Game/BlackoutHunt/Art/Weapons/KayKit/SM_BH_Axe_1H`. | Include. | Local KayKit license is CC0 1.0. Courtesy credit is optional. |
+| Downloaded source folders and source archives under `Content/BlackoutHunt/Art` | Import/source material only. | Exclude from packages. | `Tools/Verify-ClassroomPackage.ps1` fails packages that stage raw source folders, source archives, FBX/glTF/source-like files, or risky Hider/Hunter roots. |
+
+Attribution text for current package:
+
+```text
+Created using assets from ambientCG.com, licensed under the Creative Commons CC0 1.0 Universal License.
+Includes CC0 assets by Quaternius and KayKit/Kay Lousberg.
+Includes processed CC0 audio sources from OpenGameArt.
+```
+
+The package script copies `Docs/THIRD_PARTY_NOTICES.txt` to the classroom package root as `THIRD-PARTY-NOTICES.txt` for future Windows classroom builds.
+
+`Tools/Verify-ClassroomPackage.ps1` must pass before distribution. It audits the package files and Win64 manifests for forbidden source assets, source archives, risky Hider/Hunter content, Free_Jumpscares source/demo roots, missing third-party notices, saved account data, saved logs/crashes, saved classroom reports under `Saved\ClassReports`, saved heatmap exports under `Saved\PlaytestTelemetry`, backend data, and credential/secret-like files.
+
+If any CC-BY-4.0 content is approved for a future build, add the creator, title, source URL, license URL, and modification notice to the shipped credits before enabling its cook path. Creative Commons summarizes CC-BY-4.0 attribution requirements at `https://creativecommons.org/licenses/by/4.0/`.
 
 ## Windows Executable Icon
 
@@ -57,10 +84,13 @@ The importer stops if it cannot confirm a CC0 license in the downloaded package.
 
 ## Interactable Prop Visuals
 
-Runtime interactable nodes use these imported CC0 materials for their prop bodies and panels:
+Runtime interactable nodes use the imported ambientCG CC0 material set for their prop bodies and panels. Some nodes also attach package-cooked imported mesh assets where they are already included in the classroom package:
 
 - batteries, breakers, lockers, terminals, switches, alarms, decoys, and objective stations reuse the painted metal, rusted metal, diamond plate, and warning sign material set
 - recognizable prop silhouettes are assembled from Unreal static mesh primitives in C++ so they cook with the game without a separate DCC import step
+- train snack, drink, reflex arcade, and memory-card activity stations are assembled from the same C++ primitive mesh/material fallback set and require no new cook paths
+- Facility vertical-slice route dressing uses package-cooked SmartBasicInterfaces meshes/materials for optional cabinets, drawers, generator sections, lights, exit frames and door leaves, cards, card readers, route screens, alarm panels, power buttons, and gas cans. Each runtime mesh call has a tinted C++ block fallback so Facility still starts if the imported package is absent.
+- Physics objective stations default to C++ primitive fallbacks for classroom-safe match startup. The optional SmartBasicInterfaces mesh/material pass from `/Game/SmartBasicInterfaces/Meshes` and `/Game/SmartBasicInterfaces/Materials` is gated behind `-BHImportedStationVisuals` for asset validation because the imported station meshes have caused match-entry crashes when loaded during runtime facility setup.
 
 ## Audio Assets
 
@@ -81,12 +111,29 @@ Imported scream sources:
 - license: CC0
 - processed asset: `Content/BlackoutHunt/Audio/SW_TerrifiedScreamFaint.uasset`
 
+### Gameplay Audio Identity Pass
+
+The runtime audio identity pass uses soft references to imported audio package assets so missing packages fall back silently instead of crashing or blocking packaging. The Windows classroom package cooks only the audio folders used by the pass:
+
+- `Content/ResidentHorrorV1/Audio`: surface footsteps and Teacher proximity heartbeat
+- `Content/FlashLight_System/Sound`: flashlight on/off clicks
+- `Content/SecurityCameras/Sounds`: CCTV static, breaker hum, and breaker completion
+- `Content/SoundsOfHorror/Impacts/CUE`: locker knock
+- `Content/SoundsOfHorror/Rumbles/CUE`: power-loss stinger
+
+Native fallback behavior: gameplay code checks soft paths before client playback, logs missing cue assets at verbose level, and keeps captions/status feedback for gameplay-critical cues.
+
+### Security Camera Gameplay Assets
+
+The CCTV gameplay loop can use optional imported meshes, materials, screen material, and static audio under `Content/SecurityCameras`. The classroom package currently cooks `Content/SecurityCameras/Sounds`; camera/computer meshes and materials are loaded only when present locally and fall back to native C++ prop geometry/materials plus engine-safe screen material when missing. Do not add broader `/Game/SecurityCameras` cook paths until license evidence for those visual assets is recorded.
+
 ## Reimport
 
 After changing downloaded source maps, re-run:
 
 ```powershell
-& 'D:\UE_5.7\Engine\Binaries\Win64\UnrealEditor-Cmd.exe' 'D:\MainGame\BlackoutHunt.uproject' -ExecutePythonScript='D:\MainGame\Tools\ImportAmbientCGAssets.py' -unattended -nop4 -nosplash
+$ProjectRoot = (Resolve-Path '.').Path
+& 'D:\UE_5.7\Engine\Binaries\Win64\UnrealEditor-Cmd.exe' "$ProjectRoot\BlackoutHunt.uproject" -ExecutePythonScript="$ProjectRoot\Tools\ImportAmbientCGAssets.py" -unattended -nop4 -nosplash
 ```
 
 The import script replaces the project-local material assets and saves `/Game/BlackoutHunt`.
@@ -94,12 +141,14 @@ The import script replaces the project-local material assets and saves `/Game/Bl
 After adding or replacing the Kenney Nature Kit package, run:
 
 ```powershell
-& 'D:\UE_5.7\Engine\Binaries\Win64\UnrealEditor-Cmd.exe' 'D:\MainGame\BlackoutHunt.uproject' -ExecutePythonScript='D:\MainGame\Tools\ImportFoggroundsAssets.py' -unattended -nop4 -nosplash
+$ProjectRoot = (Resolve-Path '.').Path
+& 'D:\UE_5.7\Engine\Binaries\Win64\UnrealEditor-Cmd.exe' "$ProjectRoot\BlackoutHunt.uproject" -ExecutePythonScript="$ProjectRoot\Tools\ImportFoggroundsAssets.py" -unattended -nop4 -nosplash
 ```
 
 After changing generated audio source settings, run:
 
 ```powershell
 .\Tools\GenerateAudioSources.ps1
-& 'D:\UE_5.7\Engine\Binaries\Win64\UnrealEditor-Cmd.exe' 'D:\MainGame\BlackoutHunt.uproject' -ExecutePythonScript='D:\MainGame\Tools\ImportAudioAssets.py' -unattended -nop4 -nosplash
+$ProjectRoot = (Resolve-Path '.').Path
+& 'D:\UE_5.7\Engine\Binaries\Win64\UnrealEditor-Cmd.exe' "$ProjectRoot\BlackoutHunt.uproject" -ExecutePythonScript="$ProjectRoot\Tools\ImportAudioAssets.py" -unattended -nop4 -nosplash
 ```
