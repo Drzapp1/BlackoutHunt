@@ -41,7 +41,7 @@ void ABHPowerSwitch::BeginInteract_Implementation(ABHCharacter* Character)
 {
 	if (HasAuthority())
 	{
-		if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+		if (ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
 		{
 			BHGM->ToggleLightCircuit(CircuitId);
 		}

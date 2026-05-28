@@ -147,7 +147,7 @@ void ABHBreaker::BeginInteract_Implementation(ABHCharacter* Character)
 			const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
 			if (!BHBreakerAllowsWarmup(BHGS))
 			{
-				if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+				if (ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
 				{
 					BHGM->NotifyLoudNoise(GetActorLocation(), TEXT("breaker repair"));
 				}
