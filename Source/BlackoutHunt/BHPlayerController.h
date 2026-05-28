@@ -291,6 +291,15 @@ public:
 	UFUNCTION(Exec)
 	void AtmosphereTest(const FString& Command);
 
+	UFUNCTION(Exec)
+	void ToggleAtmosphereConsole();
+
+	UFUNCTION(Exec)
+	void ShowAtmosphereConsole();
+
+	UFUNCTION(Exec)
+	void HideAtmosphereConsole();
+
 	void ShowMainMenu();
 	void HideMainMenu();
 	void ToggleMainMenu();
@@ -349,6 +358,13 @@ public:
 	bool TriggerPracticeJumpscareForMenu(FString& OutMessage);
 	bool TriggerJumpscareVariantForMenu(const FString& VariantToken, FString& OutMessage);
 	bool RunAtmosphereTestForMenu(const FString& Command, FString& OutMessage);
+	float GetAtmosphereConsoleValue(FName ParameterName) const;
+	void SetAtmosphereConsoleValue(FName ParameterName, float Value);
+	void ResetAtmosphereConsoleForMenu();
+	void ApplyPlayableAtmosphereConsoleForMenu();
+	void SaveAtmosphereConsoleProfileForMenu();
+	void LoadAtmosphereConsoleProfileForMenu();
+	FString GetAtmosphereConsoleSummaryForMenu() const;
 	bool TriggerTargetedJumpscareForMenu(APlayerState* TargetPlayerState, FString& OutMessage);
 	bool CycleAvatarForMenu(FString& OutMessage);
 	bool SetAvatarForMenu(int32 AvatarIndex, FString& OutMessage);
@@ -428,6 +444,7 @@ public:
 	int32 GetCrosshairStyle() const;
 	bool AreCaptionsEnabled() const;
 	bool IsHighContrastHudEnabled() const;
+	bool IsReducedFlashEnabled() const;
 	float GetHorrorCueFlashAlpha() const;
 	FLinearColor GetHorrorCueFlashColor() const;
 
@@ -604,6 +621,7 @@ public:
 
 private:
 	void RemoveMainMenuWidget();
+	void RemoveAtmosphereConsoleWidget();
 	void ApplyGameplayInputMode();
 	void EnsureAudioPreferencesLoaded();
 	void SaveAudioPreference(const TCHAR* Key, float Value) const;
@@ -630,6 +648,9 @@ private:
 	FBHLessonPreset BuildCurrentLessonPresetSnapshot(const FString& DisplayName, const FString& SelectedMapName) const;
 	bool IsLocalHostAdminContext() const;
 	bool RequireLocalHostAdmin(FString& OutMessage, const TCHAR* ActionDescription);
+	void CaptureAtmosphereConsoleDefaults();
+	void ApplySavedAtmosphereConsoleProfileFromTimer();
+	bool ApplySavedAtmosphereConsoleProfile(bool bShowStatus);
 	bool TryOpenClassroomBoardWindow(FString& OutMessage);
 	void OnClassroomBoardWindowClosed(const TSharedRef<SWindow>& ClosedWindow);
 	void BindGameWindowCloseOverride();
@@ -646,6 +667,7 @@ private:
 	void RequestCleanQuit(FString Reason);
 
 	TSharedPtr<SWidget> MainMenuWidget;
+	TSharedPtr<SWidget> AtmosphereConsoleWidget;
 	TSharedPtr<SWidget> TravelLoadingScreenWidget;
 	TSharedPtr<SWindow> ClassroomBoardWindow;
 	UPROPERTY(Transient)
@@ -691,12 +713,14 @@ private:
 	int32 GraphicsOverTargetSamples = 0;
 	int32 GraphicsPhysicalCores = 0;
 	int32 GraphicsLogicalCores = 0;
+	TMap<FName, float> AtmosphereConsoleDefaultValues;
 	bool bHudMapVisible = false;
 	int32 CrosshairStyle = 0;
 	bool bAmbientMusicStarted = false;
 	bool bAudioPreferencesLoaded = false;
 	bool bComfortPreferencesLoaded = false;
 	bool bGraphicsPreferencesLoaded = false;
+	bool bAtmosphereConsoleDefaultsCaptured = false;
 	bool bReducedJumpscares = false;
 	bool bReducedFlash = false;
 	bool bReducedCameraShake = false;
@@ -707,6 +731,9 @@ private:
 	bool bGraphicsAppliedAtStartup = false;
 	bool bGraphicsLikelyIntegratedGpu = false;
 	bool bGraphicsLikelySoftwareGpu = false;
+	bool bGraphicsPreferSafeResolution = false;
+	bool bGraphicsHasSavedResolutionPreference = false;
+	bool bGraphicsAutoSafeResolutionApplied = false;
 	bool bGraphicsFullscreen = false;
 	bool bGraphicsResolutionOverrideEnabled = false;
 	bool bVirtualBoxSafeApplied = false;
@@ -719,6 +746,7 @@ private:
 	bool bClassroomPreflightReported = false;
 	bool bClassroomFallbackStarted = false;
 	bool bRoundPhaseObserved = false;
+	bool bFoggroundsVolumetricActive = false;
 	bool bGameWindowCloseOverrideBound = false;
 	bool bCleanQuitRequested = false;
 	mutable FBHClassroomPreflightSummary CachedClassroomPreflightSummary;
@@ -733,9 +761,12 @@ private:
 	float HorrorCueFlashEndTime = -1.0f;
 	float HorrorCueFlashIntensity = 0.0f;
 	FLinearColor HorrorCueFlashColor = FLinearColor(1.0f, 0.04f, 0.02f, 1.0f);
+	FDynamicForceFeedbackHandle HorrorCueRumbleHandle = 0;
+	FTimerHandle HorrorCueHitStopHandle;
 	FTimerHandle AutomationStartupTimerHandle;
 	FTimerHandle AutomationQuitTimerHandle;
 	FTimerHandle ClassroomPreflightTimerHandle;
 	FTimerHandle ClassroomFallbackTimerHandle;
+	FTimerHandle AtmosphereProfileLoadTimerHandle;
 	FTimerHandle DisplayNameSyncTimerHandle;
 };

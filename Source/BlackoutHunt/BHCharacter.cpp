@@ -73,8 +73,10 @@ constexpr float BHTeacherCaptureSuccessRecoverySeconds = 0.62f;
 constexpr float BHTeacherCaptureMissRecoverySeconds = 1.05f;
 constexpr float BHTeacherCaptureDoorSlamRecoverySeconds = 1.20f;
 constexpr float BHTeacherCaptureFlashlightStaggerRecoverySeconds = 1.35f;
-constexpr float BHTeacherCaptureStaminaCost = 8.0f;
-constexpr float BHTeacherCaptureMinStamina = 4.0f;
+constexpr float BHHunterDefaultSprintDrainMultiplierMax = 0.85f;
+constexpr float BHHunterDefaultStaminaRecoveryMultiplier = 1.75f;
+constexpr float BHTeacherDefaultCaptureStaminaCost = 5.0f;
+constexpr float BHTeacherDefaultCaptureMinStamina = 2.0f;
 constexpr float BHTeacherCaptureRangeForgiveness = 28.0f;
 constexpr float BHTeacherCaptureVerticalTolerance = 140.0f;
 constexpr float BHTeacherCaptureArcMinDot = 0.05f;
@@ -650,7 +652,7 @@ FBHMovementRoleTuning BHMakeDefaultMovementRoleTuning(EBHPlayerRole Role)
 	{
 		Tuning.WalkSpeed = 315.0f;
 		Tuning.SprintSpeed = 1150.0f;
-		Tuning.SprintDrainMultiplier = 1.75f;
+		Tuning.SprintDrainMultiplier = BHHunterDefaultSprintDrainMultiplierMax;
 		Tuning.ProneSpeed = 95.0f;
 		Tuning.StaminaCostMultiplier = 1.40f;
 		Tuning.CooldownMultiplier = 1.30f;
@@ -747,7 +749,51 @@ FBHMovementAnimationProfile BHResolveMovementAnimationProfile()
 	return FBHMovementAnimationProfile();
 }
 
-UClass* BHLoadMovementAnimInstanceClass(const ABHPlayerState* BHPS)
+FBHPOVAnimationTuning BHResolvePOVAnimationTuning()
+{
+	if (const UBHGameSettings* Settings = GetDefault<UBHGameSettings>())
+	{
+		return Settings->POVAnimationTuning;
+	}
+	return FBHPOVAnimationTuning();
+}
+
+float BHPOVIntensityScale(EBHPOVAnimIntensity Intensity)
+{
+	switch (Intensity)
+	{
+	case EBHPOVAnimIntensity::Subtle:
+		return 0.55f;
+	case EBHPOVAnimIntensity::Punchy:
+		return 1.6f;
+	case EBHPOVAnimIntensity::Moderate:
+	default:
+		return 1.0f;
+	}
+}
+
+bool BHDoesSoftClassPackageExist(const TSoftClassPtr<UAnimInstance>& AnimClass)
+{
+	if (AnimClass.IsNull())
+	{
+		return false;
+	}
+
+	const FSoftObjectPath SoftPath = AnimClass.ToSoftObjectPath();
+	const FString PackageName = SoftPath.GetLongPackageName().IsEmpty()
+		? FPackageName::ObjectPathToPackageName(SoftPath.ToString())
+		: SoftPath.GetLongPackageName();
+	return !PackageName.IsEmpty() && FPackageName::DoesPackageExist(PackageName);
+}
+
+UClass* BHLoadAnimInstanceClassIfAvailable(const TSoftClassPtr<UAnimInstance>& AnimClass)
+{
+	return BHDoesSoftClassPackageExist(AnimClass)
+		? AnimClass.LoadSynchronous()
+		: nullptr;
+}
+
+UClass* BHLoadMovementAnimInstanceClassInternal(const ABHPlayerState* BHPS, bool bAllowHunterFallback)
 {
 	const FBHMovementAnimationProfile Profile = BHResolveMovementAnimationProfile();
 	if (!Profile.bPreferAnimBlueprint)
@@ -755,10 +801,30 @@ UClass* BHLoadMovementAnimInstanceClass(const ABHPlayerState* BHPS)
 		return nullptr;
 	}
 
-	const TSoftClassPtr<UAnimInstance>& AnimClass = BHPS && BHPS->PlayerRole == EBHPlayerRole::Hunter
-		? Profile.HunterAnimInstanceClass
-		: Profile.QuaterniusAnimInstanceClass;
-	return AnimClass.IsNull() ? nullptr : AnimClass.LoadSynchronous();
+	const bool bHunterRole = BHPS && BHPS->PlayerRole == EBHPlayerRole::Hunter;
+	if (bHunterRole)
+	{
+		if (UClass* HunterAnimClass = BHLoadAnimInstanceClassIfAvailable(Profile.HunterAnimInstanceClass))
+		{
+			return HunterAnimClass;
+		}
+		if (!bAllowHunterFallback)
+		{
+			return nullptr;
+		}
+	}
+
+	return BHLoadAnimInstanceClassIfAvailable(Profile.QuaterniusAnimInstanceClass);
+}
+
+UClass* BHLoadMovementAnimInstanceClass(const ABHPlayerState* BHPS)
+{
+	return BHLoadMovementAnimInstanceClassInternal(BHPS, true);
+}
+
+UClass* BHLoadNativeHunterAnimInstanceClass(const ABHPlayerState* BHPS)
+{
+	return BHLoadMovementAnimInstanceClassInternal(BHPS, false);
 }
 
 float BHRoleWalkSpeed(const ABHPlayerState* BHPS, float DefaultWalkSpeed)
@@ -775,7 +841,46 @@ float BHRoleSprintSpeed(const ABHPlayerState* BHPS, float DefaultSprintSpeed)
 
 float BHRoleSprintDrainMultiplier(const ABHPlayerState* BHPS)
 {
-	return BHResolveMovementRoleTuning(BHPS).SprintDrainMultiplier;
+	const float RoleMultiplier = BHResolveMovementRoleTuning(BHPS).SprintDrainMultiplier;
+	if (!BHPS || !BHPS->IsAliveHunter())
+	{
+		return RoleMultiplier;
+	}
+
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	const float HunterDrainCap = Settings
+		? FMath::Max(0.0f, Settings->HunterSprintDrainMultiplierMax)
+		: BHHunterDefaultSprintDrainMultiplierMax;
+	return FMath::Min(RoleMultiplier, HunterDrainCap);
+}
+
+float BHRoleStaminaRecoveryMultiplier(const ABHPlayerState* BHPS)
+{
+	if (!BHPS || !BHPS->IsAliveHunter())
+	{
+		return 1.0f;
+	}
+
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	return Settings
+		? FMath::Max(0.0f, Settings->HunterStaminaRecoveryMultiplier)
+		: BHHunterDefaultStaminaRecoveryMultiplier;
+}
+
+float BHTeacherCaptureStaminaCost()
+{
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	return Settings
+		? FMath::Max(0.0f, Settings->TeacherAxeStaminaCost)
+		: BHTeacherDefaultCaptureStaminaCost;
+}
+
+float BHTeacherCaptureMinStamina()
+{
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	return Settings
+		? FMath::Max(0.0f, Settings->TeacherAxeMinStamina)
+		: BHTeacherDefaultCaptureMinStamina;
 }
 
 float BHRoleProneSpeed(const ABHPlayerState* BHPS)
@@ -1281,12 +1386,20 @@ ABHCharacter::ABHCharacter()
 	WalkSpeed = 360.0f;
 	SprintSpeed = 900.0f;
 	MaxStamina = 100.0f;
+	InteractDistance = 150.0f;
+	CaptureDistance = 100.0f;
+	FlashlightDrainPerSecond = 0.0f;
+	ScanCooldownSeconds = 0.0f;
+	DecoyCooldownSeconds = 0.0f;
 	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
-	InteractDistance = FMath::Max(150.0f, Settings->InteractDistance);
-	CaptureDistance = FMath::Max(100.0f, Settings->CaptureDistance);
-	FlashlightDrainPerSecond = FMath::Max(0.0f, Settings->FlashlightDrainPerSecond);
-	ScanCooldownSeconds = FMath::Max(0.0f, Settings->ScanCooldownSeconds);
-	DecoyCooldownSeconds = FMath::Max(0.0f, Settings->DecoyCooldownSeconds);
+	if (Settings)
+	{
+		InteractDistance = FMath::Max(150.0f, Settings->InteractDistance);
+		CaptureDistance = FMath::Max(100.0f, Settings->CaptureDistance);
+		FlashlightDrainPerSecond = FMath::Max(0.0f, Settings->FlashlightDrainPerSecond);
+		ScanCooldownSeconds = FMath::Max(0.0f, Settings->ScanCooldownSeconds);
+		DecoyCooldownSeconds = FMath::Max(0.0f, Settings->DecoyCooldownSeconds);
+	}
 	StaminaDrainPerSecond = 20.0f;
 	StaminaRecoveryPerSecond = 14.0f;
 	MovementSpecialState = EBHMovementSpecialState::None;
@@ -1337,6 +1450,11 @@ ABHCharacter::ABHCharacter()
 	SmoothedMoveAlpha = 0.0f;
 	SmoothedStrafeAlpha = 0.0f;
 	SmoothedSprintAlpha = 0.0f;
+	ViewFeelCameraLocation = DefaultCameraLocation;
+	POVAnimRotationCurrent = FRotator::ZeroRotator;
+	POVAnimLocationCurrent = FVector::ZeroVector;
+	LocalSpecialAnimStartTime = -999.0f;
+	LocalSpecialAnimState = EBHMovementSpecialState::None;
 	FlashlightPulseTime = 0.0f;
 	LastBHopJumpInputTime = -999.0f;
 	SpecialMoveStartTime = -999.0f;
@@ -1396,6 +1514,7 @@ void ABHCharacter::BeginPlay()
 	if (Camera)
 	{
 		DefaultCameraFOV = Camera->FieldOfView;
+		SmoothedBaseFOV = DefaultCameraFOV;
 		DefaultCameraLocation = Camera->GetRelativeLocation();
 	}
 	if (FlashlightBeamOuter)
@@ -1498,7 +1617,8 @@ void ABHCharacter::Tick(float DeltaSeconds)
 			{
 				FootstepStimulusDistanceAccumulator += Speed2D * DeltaSeconds;
 				const bool bProneMove = IsProne();
-				const bool bLikelySprinting = !bProneMove && Speed2D > WalkSpeed * 1.18f;
+				const float RoleWalk = BHRoleWalkSpeed(BHPS, WalkSpeed);
+				const bool bLikelySprinting = !bProneMove && Speed2D > RoleWalk * 1.18f;
 				const float StepDistance = (bProneMove ? 245.0f : (bLikelySprinting ? 275.0f : 420.0f)) / FMath::Lerp(1.0f, 1.22f, StressNoiseAlpha);
 				const float StepCooldown = (bProneMove ? 1.35f : (bLikelySprinting ? 0.72f : 1.45f)) / FMath::Lerp(1.0f, 1.18f, StressNoiseAlpha);
 				const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
@@ -1755,6 +1875,7 @@ void ABHCharacter::Tick(float DeltaSeconds)
 				if (Now >= StaminaRecoveryLockedUntil)
 				{
 					const float RecoveryMultiplier = BHHorrorStaminaRecoveryMultiplier(this, BHPS)
+						* BHRoleStaminaRecoveryMultiplier(BHPS)
 						* (PowerupComponent ? PowerupComponent->GetStaminaRecoveryMultiplier() : 1.0f)
 						* (IsProne() ? BHProneStaminaRecoveryMultiplier : 1.0f);
 					Stamina = FMath::Min(MaxStamina, Stamina + StaminaRecoveryPerSecond * RecoveryMultiplier * DeltaSeconds);
@@ -2073,6 +2194,19 @@ void ABHCharacter::ResetRoleWarmupStateForRoundStart()
 	TeacherCaptureAttackResolveServerTime = -999.0f;
 	TeacherCaptureAttackEndServerTime = -999.0f;
 	TeacherCaptureNextAllowedServerTime = -999.0f;
+	MovementSpecialState = EBHMovementSpecialState::None;
+	CosmeticMovementSpecialState = EBHMovementSpecialState::None;
+	bBHopJumpQueued = false;
+	bSprintInputHeld = false;
+	bProneInputHeld = false;
+	bSpecialMoveEndsProne = false;
+	bSpecialMoveEndProneRequiresInput = false;
+	SpecialMoveStartTime = -999.0f;
+	SpecialMoveEndTime = -999.0f;
+	SpecialMoveCooldownEndTime = -999.0f;
+	SpecialMoveDistanceTravelled = 0.0f;
+	SpecialMoveDirection = FVector::ForwardVector;
+	SpecialMoveNoiseEventMask = 0;
 	FlashlightBattery = 100.0f;
 	bFlashlightEmptyTelemetryReported = false;
 	Stamina = MaxStamina;
@@ -2095,8 +2229,10 @@ void ABHCharacter::ResetRoleWarmupStateForRoundStart()
 	}
 	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
 	{
+		Movement->StopMovementImmediately();
 		Movement->SetMovementMode(MOVE_Walking);
 	}
+	ApplyMovementSpecialState();
 	ApplyFlashlightState();
 	ApplyHiddenState();
 }
@@ -2109,6 +2245,39 @@ bool ABHCharacter::IsHiddenInLocker() const
 float ABHCharacter::GetFlashlightBattery() const
 {
 	return FlashlightBattery;
+}
+
+float ABHCharacter::GetFlashlightTuningValue(FName ParameterName) const
+{
+	const FString Parameter = ParameterName.ToString();
+	if (Parameter == TEXT("Flashlight.IntensityScale")) { return FlashlightTuningIntensityScale; }
+	if (Parameter == TEXT("Flashlight.RadiusScale")) { return FlashlightTuningRadiusScale; }
+	if (Parameter == TEXT("Flashlight.VolumetricScale")) { return FlashlightTuningVolumetricScale; }
+	if (Parameter == TEXT("Flashlight.BeamLengthScale")) { return FlashlightTuningBeamLengthScale; }
+	if (Parameter == TEXT("Flashlight.BeamOpacityScale")) { return FlashlightTuningBeamOpacityScale; }
+	if (Parameter == TEXT("Flashlight.BeamBrightnessScale")) { return FlashlightTuningBeamBrightnessScale; }
+	if (Parameter == TEXT("Flashlight.ConeScale")) { return FlashlightTuningConeScale; }
+	if (Parameter == TEXT("Flashlight.RayVisibilityScale")) { return FlashlightTuningRayVisibilityScale; }
+	if (Parameter == TEXT("Flashlight.RayWidthScale")) { return FlashlightTuningRayWidthScale; }
+	if (Parameter == TEXT("Flashlight.RayStartOffset")) { return FlashlightTuningRayStartOffset; }
+	return 1.0f;
+}
+
+void ABHCharacter::SetFlashlightTuningValue(FName ParameterName, float Value)
+{
+	const FString Parameter = ParameterName.ToString();
+	if (Parameter == TEXT("Flashlight.IntensityScale")) { FlashlightTuningIntensityScale = FMath::Clamp(Value, 0.0f, 3.0f); }
+	else if (Parameter == TEXT("Flashlight.RadiusScale")) { FlashlightTuningRadiusScale = FMath::Clamp(Value, 0.0f, 3.0f); }
+	else if (Parameter == TEXT("Flashlight.VolumetricScale")) { FlashlightTuningVolumetricScale = FMath::Clamp(Value, 0.0f, 3.0f); }
+	else if (Parameter == TEXT("Flashlight.BeamLengthScale")) { FlashlightTuningBeamLengthScale = FMath::Clamp(Value, 0.0f, 3.0f); }
+	else if (Parameter == TEXT("Flashlight.BeamOpacityScale")) { FlashlightTuningBeamOpacityScale = FMath::Clamp(Value, 0.0f, 3.0f); }
+	else if (Parameter == TEXT("Flashlight.BeamBrightnessScale")) { FlashlightTuningBeamBrightnessScale = FMath::Clamp(Value, 0.0f, 3.0f); }
+	else if (Parameter == TEXT("Flashlight.ConeScale")) { FlashlightTuningConeScale = FMath::Clamp(Value, 0.1f, 2.0f); }
+	else if (Parameter == TEXT("Flashlight.RayVisibilityScale")) { FlashlightTuningRayVisibilityScale = FMath::Clamp(Value, 0.0f, 3.0f); }
+	else if (Parameter == TEXT("Flashlight.RayWidthScale")) { FlashlightTuningRayWidthScale = FMath::Clamp(Value, 0.25f, 3.0f); }
+	else if (Parameter == TEXT("Flashlight.RayStartOffset")) { FlashlightTuningRayStartOffset = FMath::Clamp(Value, 0.0f, 220.0f); }
+
+	UpdateFlashlightFeel(0.0f);
 }
 
 float ABHCharacter::GetStamina() const
@@ -2568,6 +2737,14 @@ void ABHCharacter::StartCosmeticSpecialMove(EBHMovementSpecialState State)
 
 	CosmeticMovementSpecialState = State;
 	LastRoleAnimationName = NAME_None;
+
+	// Client-local clock so the cosmetic-prediction path can drive POV camera progress
+	// (SpecialMoveStartTime is authority-only and not replicated).
+	if (State != LocalSpecialAnimState)
+	{
+		LocalSpecialAnimStartTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+		LocalSpecialAnimState = State;
+	}
 }
 
 void ABHCharacter::ClearCosmeticSpecialMove()
@@ -2901,6 +3078,15 @@ bool ABHCharacter::CanStandFromProne() const
 
 void ABHCharacter::ApplyMovementSpecialState()
 {
+	// Stamp the client-local POV clock when a replicated transient special move turns on. This
+	// covers the listen-server host (authority, no cosmetic prediction) and reconciles a remote
+	// client's prediction with the authoritative state. Matches the StartCosmeticSpecialMove path.
+	if (BHIsTransientSpecialMove(MovementSpecialState) && MovementSpecialState != LocalSpecialAnimState)
+	{
+		LocalSpecialAnimStartTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+		LocalSpecialAnimState = MovementSpecialState;
+	}
+
 	const bool bNeedsLowCapsule = IsProne()
 		|| MovementSpecialState == EBHMovementSpecialState::Sliding
 		|| MovementSpecialState == EBHMovementSpecialState::Diving;
@@ -3698,6 +3884,75 @@ void ABHCharacter::UpdateLowPolyAvatar(float DeltaSeconds)
 	{
 		RightFootMesh->SetRelativeRotation(FRotator(FMath::Clamp(Step * 12.0f * MoveAlpha, -12.0f, 14.0f) - LowProfileAlpha * 6.0f - ProneAlpha * 16.0f, 0.0f, 0.0f));
 	}
+
+	// Additive Hunter swing lunge: wind the right arm/torso back then drive it forward in lockstep
+	// with the procedural weapon swing. Cosmetic and visible in third person on every client (it
+	// runs off the multicast-stamped swing timers). Applied after the base joint writes so it is
+	// additive to locomotion rather than clobbered by it.
+	if (BHPS && BHPS->PlayerRole == EBHPlayerRole::Hunter && GetWorld())
+	{
+		const float Now = GetWorld()->GetTimeSeconds();
+		if (Now < TeacherMeleeSwingEndTime && TeacherMeleeSwingEndTime > TeacherMeleeSwingStartTime)
+		{
+			const float S = FMath::Clamp((Now - TeacherMeleeSwingStartTime) / FMath::Max(0.01f, BHTeacherMeleeSwingDuration), 0.0f, 1.0f);
+			const float LungeScale = BHPOVIntensityScale(BHResolvePOVAnimationTuning().Intensity);
+
+			float ShoulderPitch = 0.0f;   // negative = arm forward
+			float ShoulderYaw = 0.0f;
+			float ElbowExtend = 0.0f;     // negative = straighten
+			float TorsoLean = 0.0f;       // negative = lean forward (matches TorsoRotation convention)
+			if (S < 0.28f)
+			{
+				const float T = S / 0.28f;
+				ShoulderPitch = T * 26.0f;    // pull back
+				TorsoLean = T * 8.0f;         // lean back
+				ElbowExtend = T * 18.0f;      // cock the elbow
+			}
+			else if (S < 0.68f)
+			{
+				const float T = (S - 0.28f) / 0.40f;
+				ShoulderPitch = FMath::Lerp(26.0f, -30.0f, T);
+				ShoulderYaw = FMath::Lerp(0.0f, 22.0f, T);
+				ElbowExtend = FMath::Lerp(18.0f, -14.0f, T);
+				TorsoLean = FMath::Lerp(8.0f, -10.0f, T);
+			}
+			else
+			{
+				const float T = (S - 0.68f) / 0.32f;
+				ShoulderPitch = FMath::InterpEaseOut(-30.0f, 0.0f, T, 2.0f);
+				ShoulderYaw = FMath::Lerp(22.0f, 0.0f, T);
+				ElbowExtend = FMath::InterpEaseOut(-14.0f, 0.0f, T, 2.0f);
+				TorsoLean = FMath::InterpEaseOut(-10.0f, 0.0f, T, 2.0f);
+			}
+
+			ShoulderPitch *= LungeScale;
+			ShoulderYaw *= LungeScale;
+			ElbowExtend *= LungeScale;
+			TorsoLean *= LungeScale;
+
+			if (RightShoulderJoint)
+			{
+				RightShoulderJoint->AddRelativeRotation(FRotator(ShoulderPitch, ShoulderYaw, 0.0f));
+			}
+			if (RightElbowJoint)
+			{
+				RightElbowJoint->AddRelativeRotation(FRotator(ElbowExtend, 0.0f, 0.0f));
+			}
+			const FRotator TorsoLunge(TorsoLean, 0.0f, 0.0f);
+			if (BodyMesh)
+			{
+				BodyMesh->AddRelativeRotation(TorsoLunge);
+			}
+			if (ChestMesh)
+			{
+				ChestMesh->AddRelativeRotation(TorsoLunge);
+			}
+			if (RoleModelRoot)
+			{
+				RoleModelRoot->AddRelativeRotation(FRotator(TorsoLean * 0.72f, 0.0f, 0.0f));
+			}
+		}
+	}
 }
 
 void ABHCharacter::UpdateRoleSkeletalAnimation(float Speed2D, float MoveAlpha, float SprintAlpha, bool bGrounded)
@@ -3801,7 +4056,7 @@ void ABHCharacter::SetLowPolyAvatarVisible(bool bVisible)
 void ABHCharacter::ApplyRoleModelVisuals(const ABHPlayerState* BHPS, const FLinearColor& ShirtColor, const FLinearColor& SkinColor)
 {
 	const bool bUseHunterModel = BHPS && BHPS->PlayerRole == EBHPlayerRole::Hunter;
-	const bool bUseNativeHunterModel = bUseHunterModel && BHLoadMovementAnimInstanceClass(BHPS) != nullptr;
+	const bool bUseNativeHunterModel = bUseHunterModel && BHLoadNativeHunterAnimInstanceClass(BHPS) != nullptr;
 	bool bAppliedRoleModel = false;
 	bool bAppliedSkeletalModel = false;
 	const FVector RoleModelFeetOffset = BHRoleModelFeetAtCapsuleBaseOffset(GetCapsuleComponent(), AvatarRoot);
@@ -3936,13 +4191,209 @@ void ABHCharacter::UpdateViewFeel(float DeltaSeconds)
 	const FVector TargetCameraLocation = DefaultCameraLocation
 		+ FVector(0.0f, BobY - SmoothedStrafeAlpha * 1.65f, CrouchOffset + SpecialOffset + BobZ + StressTremor);
 
-	Camera->SetRelativeLocation(FMath::VInterpTo(Camera->GetRelativeLocation(), TargetCameraLocation, DeltaSeconds, bHiddenInLocker ? 4.5f : 11.5f));
+	// Interpolate the base view-feel location into a member; UpdatePOVAnimation owns the single
+	// final SetRelativeLocation so the additive POV punch doesn't fight the bob interpolation.
+	ViewFeelCameraLocation = FMath::VInterpTo(ViewFeelCameraLocation, TargetCameraLocation, DeltaSeconds, bHiddenInLocker ? 4.5f : 11.5f);
 
 	const float HiddenFOVPenalty = bHiddenInLocker ? 3.5f : 0.0f;
 	const float ExhaustionThreshold = MaxStamina * 0.22f;
 	const float ExhaustionAlpha = ExhaustionThreshold > 0.0f ? FMath::Clamp((ExhaustionThreshold - Stamina) / ExhaustionThreshold, 0.0f, 1.0f) : 0.0f;
 	const float DesiredFOV = DefaultCameraFOV + SmoothedSprintAlpha * 4.8f - HiddenFOVPenalty - HorrorAlpha * 6.8f - ExhaustionAlpha * 1.4f;
-	Camera->SetFieldOfView(FMath::FInterpTo(Camera->FieldOfView, DesiredFOV, DeltaSeconds, 4.2f));
+	// Track the smoothed "base" FOV in a member so the transient jumpscare punch layers on top
+	// without feeding back into the interpolation each frame.
+	SmoothedBaseFOV = FMath::FInterpTo(SmoothedBaseFOV, DesiredFOV, DeltaSeconds, 4.2f);
+	Camera->SetFieldOfView(FMath::Clamp(SmoothedBaseFOV - ComputeJumpscareFOVPunch(), 30.0f, 140.0f));
+
+	UpdatePOVAnimation(DeltaSeconds);
+}
+
+bool ABHCharacter::IsReducedCameraShakeLocal() const
+{
+	if (const ABHPlayerController* PC = Cast<ABHPlayerController>(GetController()))
+	{
+		return PC->IsComfortOptionEnabledForMenu(FName(TEXT("ReducedCameraShake")));
+	}
+	return false;
+}
+
+void ABHCharacter::UpdatePOVAnimation(float DeltaSeconds)
+{
+	if (!Camera)
+	{
+		return;
+	}
+
+	const FBHPOVAnimationTuning Tuning = BHResolvePOVAnimationTuning();
+
+	FRotator TargetRot = FRotator::ZeroRotator;
+	FVector TargetLoc = FVector::ZeroVector;
+
+	if (Tuning.bEnablePOVAnimation && GetWorld())
+	{
+		const float Now = GetWorld()->GetTimeSeconds();
+
+		// ---- Special-move layer (local-only progress clock) ----
+		const EBHMovementSpecialState Vis = MovementSpecialState != EBHMovementSpecialState::None
+			? MovementSpecialState
+			: CosmeticMovementSpecialState;
+		if (Vis != EBHMovementSpecialState::None)
+		{
+			const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+			const float Duration = FMath::Max(0.01f, BHGetSpecialMoveTuning(BHPS, Vis).DurationSeconds);
+			const float P = FMath::Clamp((Now - LocalSpecialAnimStartTime) / Duration, 0.0f, 1.0f);
+			const float Bell = FMath::Sin(P * PI);                            // 0..1..0
+			const float Ramp = FMath::Clamp(P / 0.18f, 0.0f, 1.0f);           // fast in
+			const float Settle = FMath::Clamp((P - 0.7f) / 0.3f, 0.0f, 1.0f); // tail rise
+
+			switch (Vis)
+			{
+			case EBHMovementSpecialState::Rolling:
+			{
+				// Roll-axis tumble that sweeps once and eases back to ~0 before the move ends.
+				const float Sweep = FMath::InterpEaseInOut(0.0f, 1.0f, P, 2.0f) * (1.0f - Settle);
+				TargetRot.Roll = Sweep * Tuning.RollSpinDegrees;
+				TargetRot.Pitch = -Bell * Tuning.RollPitchDipDeg;
+				TargetLoc.Z = -Bell * Tuning.RollPosPunchCm;
+				break;
+			}
+			case EBHMovementSpecialState::Sliding:
+			{
+				TargetRot.Pitch = -Ramp * (1.0f - Settle) * Tuning.SlidePitchDipDeg + Settle * Tuning.SlideSettleRiseDeg;
+				TargetRot.Roll = Ramp * (1.0f - Settle) * Tuning.SlideRollLeanDeg;
+				break;
+			}
+			case EBHMovementSpecialState::Diving:
+			{
+				TargetRot.Pitch = -Bell * Tuning.DivePitchDipDeg;
+				TargetLoc.Z = -Bell * Tuning.DivePosPunchCm;
+				break;
+			}
+			default:
+				break;
+			}
+		}
+
+		// ---- Swing / capture layer (local controlling client only) ----
+		if (IsLocallyControlled() && Now < TeacherMeleeSwingEndTime && TeacherMeleeSwingEndTime > TeacherMeleeSwingStartTime)
+		{
+			const float S = FMath::Clamp((Now - TeacherMeleeSwingStartTime) / FMath::Max(0.01f, BHTeacherMeleeSwingDuration), 0.0f, 1.0f);
+			if (S < 0.28f)
+			{
+				const float T = S / 0.28f;
+				TargetRot.Pitch += T * Tuning.SwingWindupPitchUpDeg;
+				TargetRot.Yaw += -T * Tuning.SwingWindupYawDeg;
+			}
+			else if (S < 0.68f)
+			{
+				const float T = (S - 0.28f) / 0.40f;
+				TargetRot.Pitch += FMath::Lerp(Tuning.SwingWindupPitchUpDeg, -Tuning.SwingPunchPitchDownDeg, T);
+				TargetRot.Yaw += FMath::Lerp(-Tuning.SwingWindupYawDeg, Tuning.SwingPunchYawDeg, T);
+				TargetLoc.X += FMath::Sin(T * PI) * Tuning.SwingPosPunchCm;
+			}
+			else
+			{
+				const float T = (S - 0.68f) / 0.32f;
+				TargetRot.Pitch += FMath::InterpEaseOut(-Tuning.SwingPunchPitchDownDeg, 0.0f, T, 2.0f);
+				TargetRot.Yaw += FMath::Lerp(Tuning.SwingPunchYawDeg, 0.0f, T);
+			}
+		}
+	}
+
+	// ---- intensity level + reduced-motion accessibility scaling ----
+	const float LevelScale = BHPOVIntensityScale(Tuning.Intensity);
+	float Scale = LevelScale;
+	if (IsReducedCameraShakeLocal())
+	{
+		Scale *= Tuning.ReducedMotionScale;
+	}
+	TargetRot *= Scale;
+	TargetLoc *= Scale;
+
+	// ---- smooth + apply (cosmetic camera-component transform only; control rotation untouched) ----
+	POVAnimRotationCurrent = FMath::RInterpTo(POVAnimRotationCurrent, TargetRot, DeltaSeconds, FMath::Max(0.1f, Tuning.RotInterpSpeed));
+	POVAnimLocationCurrent = FMath::VInterpTo(POVAnimLocationCurrent, TargetLoc, DeltaSeconds, FMath::Max(0.1f, Tuning.PosInterpSpeed));
+	// The jumpscare flinch is a sharp, damped impulse applied directly (not through the slow
+	// POV interpolation) so the recoil reads as an instant jolt rather than a smooth lean.
+	Camera->SetRelativeRotation(POVAnimRotationCurrent + ComputeJumpscareCameraFlinch());
+	Camera->SetRelativeLocation(ViewFeelCameraLocation + POVAnimLocationCurrent);
+}
+
+float ABHCharacter::GetJumpscareImpactEnvelope() const
+{
+	if (JumpscareImpactIntensity <= 0.0f || JumpscareImpactStartTime < 0.0f || !GetWorld())
+	{
+		return 0.0f;
+	}
+
+	// Total impact window: sharp attack then exponential-ish decay.
+	constexpr float AttackSeconds = 0.045f;
+	constexpr float TotalSeconds = 0.55f;
+	const float Age = GetWorld()->GetTimeSeconds() - JumpscareImpactStartTime;
+	if (Age < 0.0f || Age >= TotalSeconds)
+	{
+		return 0.0f;
+	}
+
+	float Env;
+	if (Age < AttackSeconds)
+	{
+		Env = Age / AttackSeconds;
+	}
+	else
+	{
+		const float DecayAlpha = FMath::Clamp((Age - AttackSeconds) / FMath::Max(KINDA_SMALL_NUMBER, TotalSeconds - AttackSeconds), 0.0f, 1.0f);
+		Env = FMath::Square(1.0f - DecayAlpha); // ease-out tail
+	}
+	return FMath::Clamp(Env * JumpscareImpactIntensity, 0.0f, 1.0f);
+}
+
+float ABHCharacter::ComputeJumpscareFOVPunch() const
+{
+	const float Env = GetJumpscareImpactEnvelope();
+	if (Env <= 0.0f)
+	{
+		return 0.0f;
+	}
+	// FOV punch is a zoom-in (positive return is subtracted from the base FOV by the caller).
+	return JumpscareImpactFOVPunch * Env;
+}
+
+FRotator ABHCharacter::ComputeJumpscareCameraFlinch() const
+{
+	const float Env = GetJumpscareImpactEnvelope();
+	if (Env <= 0.0f || !GetWorld())
+	{
+		return FRotator::ZeroRotator;
+	}
+
+	float Scale = Env;
+	if (IsReducedCameraShakeLocal())
+	{
+		Scale *= 0.35f;
+	}
+
+	// Damped high-frequency wobble on pitch + roll for a violent recoil that settles quickly.
+	const float Age = GetWorld()->GetTimeSeconds() - JumpscareImpactStartTime;
+	const float Wobble = FMath::Sin(Age * 58.0f);
+	const float PitchKick = -6.5f * Scale - 3.0f * Scale * Wobble;
+	const float RollKick = 4.0f * Scale * FMath::Sin(Age * 47.0f + 1.3f);
+	return FRotator(PitchKick, 0.0f, RollKick);
+}
+
+void ABHCharacter::PlayJumpscareCameraImpact(float Intensity, float FOVPunchDegrees)
+{
+	if (!IsLocallyControlled() || !GetWorld())
+	{
+		return;
+	}
+
+	JumpscareImpactIntensity = FMath::Clamp(Intensity, 0.0f, 1.0f);
+	JumpscareImpactStartTime = GetWorld()->GetTimeSeconds();
+	JumpscareImpactFOVPunch = FOVPunchDegrees >= 0.0f ? FOVPunchDegrees : 14.0f;
+	if (IsReducedCameraShakeLocal())
+	{
+		JumpscareImpactFOVPunch *= 0.4f;
+	}
 }
 
 void ABHCharacter::UpdateFlashlightFeel(float DeltaSeconds)
@@ -4001,33 +4452,43 @@ void ABHCharacter::UpdateFlashlightFeel(float DeltaSeconds)
 		- LowBatteryAlpha * (0.09f + 0.12f * FMath::Square(FMath::Max(0.0f, FMath::Sin(FlashlightPulseTime * 37.0f))))
 		- FearPanicAlpha * 0.075f * FMath::Square(FMath::Max(0.0f, FMath::Sin(FlashlightPulseTime * 29.0f)))
 		- DreadStrainAlpha * 0.045f * FMath::Square(FMath::Max(0.0f, FMath::Sin(FlashlightPulseTime * 17.0f)));
-	const float NormalIntensity = FMath::Clamp(9200.0f * FMath::Lerp(0.52f, 1.0f, BatteryAlpha) * UnevenPulse * Cutout, 1800.0f, 11500.0f);
-	const float NormalRadius = FMath::Lerp(1300.0f, 2200.0f, BatteryAlpha)
+	const float NormalIntensity = FMath::Clamp(10000.0f * FMath::Lerp(0.56f, 1.0f, BatteryAlpha) * UnevenPulse * Cutout, 2200.0f, 13200.0f);
+	const float NormalRadius = FMath::Lerp(1350.0f, 2400.0f, BatteryAlpha)
 		* FMath::Lerp(1.0f, 0.94f, HorrorAlpha)
 		* FMath::Lerp(1.0f, 0.88f, DreadStrainAlpha)
 		* FMath::Lerp(1.0f, 0.95f, FearPanicAlpha);
 
 	const float LightBoostMultiplier = PowerupComponent ? PowerupComponent->GetFlashlightMultiplier() : 1.0f;
-	const float EffectiveIntensity = (bExtremeFog ? FMath::Min(NormalIntensity, 9500.0f) : (bHeavyFog ? FMath::Min(NormalIntensity, 8600.0f) : NormalIntensity)) * LightBoostMultiplier;
-	const float EffectiveRadius = (bExtremeFog ? FMath::Min(NormalRadius, 650.0f) : (bHeavyFog ? FMath::Min(NormalRadius, 950.0f) : NormalRadius)) * FMath::Lerp(1.0f, 1.20f, LightBoostMultiplier - 1.0f);
-	const float EffectiveInnerConeAngle = bExtremeFog ? 16.0f : (bHeavyFog ? 16.0f : 18.0f);
-	const float EffectiveOuterConeAngle = bExtremeFog ? 30.0f : (bHeavyFog ? 32.0f : (34.0f + LowBatteryAlpha * 2.5f + HorrorAlpha * 1.8f));
+	const float EffectiveIntensity = (bExtremeFog ? FMath::Min(NormalIntensity, 10000.0f) : (bHeavyFog ? FMath::Min(NormalIntensity, 10800.0f) : NormalIntensity)) * LightBoostMultiplier * FlashlightTuningIntensityScale;
+	const float EffectiveRadius = (bExtremeFog ? FMath::Min(NormalRadius, 2200.0f) : (bHeavyFog ? FMath::Min(NormalRadius, 2400.0f) : NormalRadius)) * FMath::Lerp(1.0f, 1.16f, LightBoostMultiplier - 1.0f) * FlashlightTuningRadiusScale;
+	const float EffectiveInnerConeAngle = (bExtremeFog ? 9.0f : (bHeavyFog ? 10.0f : 18.0f)) * FlashlightTuningConeScale;
+	const float EffectiveOuterConeAngle = (bExtremeFog ? 18.0f : (bHeavyFog ? 20.0f : (34.0f + LowBatteryAlpha * 2.5f + HorrorAlpha * 1.8f))) * FlashlightTuningConeScale;
+	const float RayVisibilityScale = FMath::Clamp(FlashlightTuningRayVisibilityScale, 0.0f, 3.0f);
+	const float RayWidthScale = FMath::Clamp(FlashlightTuningRayWidthScale, 0.25f, 3.0f);
+	const float RayBoostAlpha = FMath::Clamp(RayVisibilityScale / 1.75f, 0.0f, 1.0f);
+	const float RayVisibilityBoost = RayVisibilityScale <= KINDA_SMALL_NUMBER
+		? 0.0f
+		: FMath::Lerp(0.42f, 1.85f, RayBoostAlpha);
+	const float VolumetricRayBoost = RayVisibilityScale <= KINDA_SMALL_NUMBER
+		? 0.0f
+		: FMath::Lerp(0.55f, 1.22f, RayBoostAlpha);
 
 	Flashlight->SetIntensity(EffectiveIntensity);
 	Flashlight->SetAttenuationRadius(EffectiveRadius);
-	Flashlight->SetInnerConeAngle(EffectiveInnerConeAngle);
-	Flashlight->SetOuterConeAngle(EffectiveOuterConeAngle);
-	Flashlight->SetVolumetricScatteringIntensity(bExtremeFog ? 20.0f : (bHeavyFog ? 18.0f : 8.0f));
+	Flashlight->SetInnerConeAngle(FMath::Clamp(EffectiveInnerConeAngle, 4.0f, 80.0f));
+	Flashlight->SetOuterConeAngle(FMath::Clamp(EffectiveOuterConeAngle, 6.0f, 88.0f));
+	Flashlight->SetVolumetricScatteringIntensity((bExtremeFog ? 5.6f : (bHeavyFog ? 6.0f : 6.6f)) * FlashlightTuningVolumetricScale * VolumetricRayBoost);
 
 	const float FogScatterAlpha =
 		ActiveFogPreset == EBHFogPreset::Extreme ? 0.80f :
 		ActiveFogPreset == EBHFogPreset::Heavy ? 0.72f :
 		0.42f;
-	const float BeamLength = bExtremeFog ? 620.0f : (bHeavyFog ? 850.0f : FMath::Clamp(EffectiveRadius * 0.74f, 760.0f, 1380.0f));
+	const float BeamLength = (bExtremeFog ? 1550.0f : (bHeavyFog ? 1850.0f : FMath::Clamp(EffectiveRadius * 0.70f, 680.0f, 1260.0f))) * FlashlightTuningBeamLengthScale;
 	const float BeamPulse = FMath::Clamp(UnevenPulse * Cutout, 0.55f, 1.28f);
 	const FLinearColor BeamTint(0.76f, 0.86f, 0.80f, 1.0f);
+	const float BeamStartOffset = FMath::Clamp(FlashlightTuningRayStartOffset, 0.0f, 220.0f);
 
-	const auto ConfigureBeam = [BeamTint](UMeshComponent* Beam, UMaterialInstanceDynamic* Material, float Length, float ConeAngle, float RadiusScale, float Opacity, float Brightness)
+	const auto ConfigureBeam = [BeamTint, BeamStartOffset, RayVisibilityScale, RayWidthScale, RayBoostAlpha](UMeshComponent* Beam, UMaterialInstanceDynamic* Material, float Length, float ConeAngle, float RadiusScale, float Opacity, float Brightness)
 	{
 		if (!Beam)
 		{
@@ -4035,7 +4496,7 @@ void ABHCharacter::UpdateFlashlightFeel(float DeltaSeconds)
 		}
 
 		const float BaseRadius = FMath::Max(8.0f, FMath::Tan(FMath::DegreesToRadians(ConeAngle)) * Length * RadiusScale);
-		Beam->SetRelativeLocation(FVector(Length * 0.5f + 14.0f, 0.0f, 0.0f));
+		Beam->SetRelativeLocation(FVector(Length * 0.5f + BeamStartOffset, 0.0f, 0.0f));
 		Beam->SetRelativeRotation(FRotator::ZeroRotator);
 		Beam->SetRelativeScale3D(FVector(Length / 100.0f, BaseRadius / 85.0f, BaseRadius / 85.0f));
 
@@ -4056,15 +4517,20 @@ void ABHCharacter::UpdateFlashlightFeel(float DeltaSeconds)
 			Material->SetScalarParameterValue(TEXT("Density"), Opacity * 0.85f);
 			Material->SetScalarParameterValue(TEXT("Brightness"), Brightness);
 			Material->SetScalarParameterValue(TEXT("Intensity"), Brightness);
-			Material->SetScalarParameterValue(TEXT("Falloff"), 3.4f);
-			Material->SetScalarParameterValue(TEXT("Softness"), 0.72f);
+			Material->SetScalarParameterValue(TEXT("Falloff"), FMath::Lerp(4.6f, 2.3f, RayBoostAlpha));
+			Material->SetScalarParameterValue(TEXT("Softness"), FMath::Lerp(0.62f, 0.90f, RayBoostAlpha));
+			Material->SetScalarParameterValue(TEXT("RayVisibility"), RayVisibilityScale);
+			Material->SetScalarParameterValue(TEXT("RayWidth"), RayWidthScale);
+			Material->SetScalarParameterValue(TEXT("BeamLength"), Length);
+			Material->SetScalarParameterValue(TEXT("BeamRadius"), BaseRadius);
+			Material->SetScalarParameterValue(TEXT("NearFadeDistance"), BeamStartOffset);
 		}
 	};
 
-	const float OuterOpacity = FMath::Clamp((0.014f + FogScatterAlpha * 0.032f + LowBatteryAlpha * 0.006f) * BeamPulse, 0.012f, bExtremeFog ? 0.060f : (bHeavyFog ? 0.065f : 0.105f));
-	const float CoreOpacity = FMath::Clamp((0.010f + FogScatterAlpha * 0.021f) * BeamPulse, 0.009f, bExtremeFog ? 0.040f : (bHeavyFog ? 0.048f : 0.072f));
-	ConfigureBeam(FlashlightBeamOuter, FlashlightBeamOuterMaterial, BeamLength, EffectiveOuterConeAngle, 1.0f, OuterOpacity, bExtremeFog ? 1.20f : (bHeavyFog ? 1.25f : 0.75f));
-	ConfigureBeam(FlashlightBeamCore, FlashlightBeamCoreMaterial, BeamLength * 0.82f, EffectiveInnerConeAngle, 0.50f, CoreOpacity, bExtremeFog ? 1.45f : (bHeavyFog ? 1.55f : 1.00f));
+	const float OuterOpacity = FMath::Clamp((0.014f + FogScatterAlpha * 0.028f + LowBatteryAlpha * 0.004f) * BeamPulse * FlashlightTuningBeamOpacityScale * RayVisibilityBoost, 0.0f, bExtremeFog ? 0.145f : (bHeavyFog ? 0.158f : 0.180f));
+	const float CoreOpacity = FMath::Clamp((0.010f + FogScatterAlpha * 0.020f) * BeamPulse * FlashlightTuningBeamOpacityScale * RayVisibilityBoost, 0.0f, bExtremeFog ? 0.110f : (bHeavyFog ? 0.120f : 0.140f));
+	ConfigureBeam(FlashlightBeamOuter, FlashlightBeamOuterMaterial, BeamLength, EffectiveOuterConeAngle, 0.92f * RayWidthScale, OuterOpacity, (bExtremeFog ? 0.86f : (bHeavyFog ? 0.92f : 1.00f)) * FlashlightTuningBeamBrightnessScale * FMath::Lerp(0.65f, 1.20f, RayBoostAlpha));
+	ConfigureBeam(FlashlightBeamCore, FlashlightBeamCoreMaterial, BeamLength * 0.82f, EffectiveInnerConeAngle, 0.48f * RayWidthScale, CoreOpacity, (bExtremeFog ? 1.05f : (bHeavyFog ? 1.12f : 1.20f)) * FlashlightTuningBeamBrightnessScale * FMath::Lerp(0.70f, 1.18f, RayBoostAlpha));
 }
 
 void ABHCharacter::ApplyFlashlightState()
@@ -5078,14 +5544,9 @@ bool ABHCharacter::BeginInteractAuthority(AActor* Target, bool bUseViewFallback,
 		return false;
 	}
 
-	if (IBHInteractableInterface::Execute_CanInteract(ResolvedTarget, this))
-	{
-		CurrentServerInteractTarget = ResolvedTarget;
-		IBHInteractableInterface::Execute_BeginInteract(ResolvedTarget, this);
-		return true;
-	}
-
-	return false;
+	CurrentServerInteractTarget = ResolvedTarget;
+	IBHInteractableInterface::Execute_BeginInteract(ResolvedTarget, this);
+	return true;
 }
 
 void ABHCharacter::ServerEndInteract_Implementation(AActor* Target)
@@ -5544,7 +6005,8 @@ bool ABHCharacter::TryCaptureAuthority(bool bShowFailureMessages)
 		return false;
 	}
 
-	if (Stamina < BHTeacherCaptureMinStamina)
+	const float CaptureMinStamina = BHTeacherCaptureMinStamina();
+	if (Stamina < CaptureMinStamina)
 	{
 		if (bShowFailureMessages)
 		{
@@ -5562,7 +6024,7 @@ bool ABHCharacter::TryCaptureAuthority(bool bShowFailureMessages)
 		return false;
 	}
 
-	Stamina = FMath::Max(0.0f, Stamina - BHTeacherCaptureStaminaCost);
+	Stamina = FMath::Max(0.0f, Stamina - BHTeacherCaptureStaminaCost());
 	StaminaRecoveryLockedUntil = Now + BHTeacherCaptureAttackSeconds;
 	bTeacherCaptureAttackActive = true;
 	bTeacherCaptureAttackResolved = false;

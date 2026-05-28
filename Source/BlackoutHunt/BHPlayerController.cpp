@@ -13,11 +13,22 @@
 #include "BHNetworkSupport.h"
 #include "BHPlayerState.h"
 #include "Components/AudioComponent.h"
+#include "Components/DirectionalLightComponent.h"
+#include "Components/ExponentialHeightFogComponent.h"
+#include "Components/LocalFogVolumeComponent.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/SkyAtmosphereComponent.h"
+#include "Components/SkyLightComponent.h"
+#include "Engine/DirectionalLight.h"
 #include "Engine/Engine.h"
+#include "Engine/ExponentialHeightFog.h"
 #include "Engine/GameViewportClient.h"
+#include "Engine/LocalFogVolume.h"
+#include "Engine/PostProcessVolume.h"
+#include "Engine/SkyLight.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "GameFramework/InputSettings.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformApplicationMisc.h"
@@ -36,8 +47,12 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/Images/SThrobber.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SSlider.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SScrollBox.h"
+#include "Widgets/Layout/SSeparator.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SOverlay.h"
 #include "Widgets/SWindow.h"
@@ -54,6 +69,7 @@ namespace
 constexpr TCHAR BHAudioConfigSection[] = TEXT("BlackoutHunt.Audio");
 constexpr TCHAR BHComfortConfigSection[] = TEXT("BlackoutHunt.Comfort");
 constexpr TCHAR BHGraphicsConfigSection[] = TEXT("BlackoutHunt.Graphics");
+constexpr TCHAR BHAtmosphereProfileConfigSection[] = TEXT("BlackoutHunt.FoggroundsAtmosphereProfile");
 constexpr TCHAR BHAmbientMusicAssetPath[] = TEXT("/Game/BlackoutHunt/Audio/SW_EerieLobbyLoop.SW_EerieLobbyLoop");
 constexpr TCHAR BHMenuClickAssetPath[] = TEXT("/Game/BlackoutHunt/Audio/SW_MenuClick.SW_MenuClick");
 constexpr float BHGraphicsGiB = 1024.0f * 1024.0f * 1024.0f;
@@ -148,6 +164,7 @@ struct FBHGraphicsHardwareProfile
 	int32 LogicalCores = 0;
 	bool bLikelyIntegratedGpu = false;
 	bool bLikelySoftwareGpu = false;
+	bool bPreferSafeResolution = false;
 	int32 RecommendedPreset = 1;
 	int32 RecommendedFpsGoal = 60;
 	int32 RecommendedRenderScale = 82;
@@ -264,9 +281,13 @@ FBHGraphicsHardwareProfile BHScanGraphicsHardwareProfile()
 			TEXT("VMware"),
 			TEXT("Parallels"),
 			TEXT("Microsoft Basic"),
+			TEXT("Microsoft Remote"),
 			TEXT("WARP"),
 			TEXT("SwiftShader"),
 			TEXT("llvmpipe"),
+			TEXT("Remote"),
+			TEXT("Generic"),
+			TEXT("Unknown"),
 			TEXT("Software")
 		});
 	Profile.bLikelyIntegratedGpu = BHStringContainsAny(GpuBrand, {
@@ -277,20 +298,23 @@ FBHGraphicsHardwareProfile BHScanGraphicsHardwareProfile()
 			TEXT("Radeon Graphics"),
 			TEXT("Integrated")
 		})
-		&& !BHStringContainsAny(GpuBrand, { TEXT("NVIDIA"), TEXT("GeForce"), TEXT("RTX"), TEXT("GTX") });
+		&& !BHStringContainsAny(GpuBrand, { TEXT("NVIDIA"), TEXT("GeForce"), TEXT("RTX"), TEXT("GTX"), TEXT("Arc") });
 
 	const bool bVeryLowSystemMemory = Profile.SystemMemoryGB > 0.0f && Profile.SystemMemoryGB <= 6.25f;
 	const bool bLowSystemMemory = Profile.SystemMemoryGB > 0.0f && Profile.SystemMemoryGB <= 10.25f;
+	const bool bUnknownVideoMemory = Profile.DedicatedVideoMemoryGB <= 0.0f;
 	const bool bKnownLowVideoMemory = Profile.DedicatedVideoMemoryGB > 0.0f && Profile.DedicatedVideoMemoryGB <= 4.25f;
 	const bool bModerateVideoMemory = Profile.DedicatedVideoMemoryGB > 0.0f && Profile.DedicatedVideoMemoryGB <= 6.25f;
 	const bool bStrongVideoMemory = Profile.DedicatedVideoMemoryGB >= 7.5f;
 	const bool bVeryStrongVideoMemory = Profile.DedicatedVideoMemoryGB >= 10.5f;
+	const bool bIntegratedOrUnknownGpuNeedsLow = Profile.bLikelyIntegratedGpu || (Profile.GpuBrand.IsEmpty() && bUnknownVideoMemory);
 
-	if (Profile.bLikelySoftwareGpu || bVeryLowSystemMemory || bKnownLowVideoMemory)
+	if (Profile.bLikelySoftwareGpu || bIntegratedOrUnknownGpuNeedsLow || bVeryLowSystemMemory || bKnownLowVideoMemory)
 	{
 		Profile.RecommendedPreset = 0;
 		Profile.RecommendedFpsGoal = Profile.bLikelySoftwareGpu ? 30 : 45;
 		Profile.RecommendedRenderScale = Profile.bLikelySoftwareGpu ? 60 : 67;
+		Profile.bPreferSafeResolution = true;
 	}
 	else if (Profile.bLikelyIntegratedGpu || bModerateVideoMemory || bLowSystemMemory || Profile.PhysicalCores <= 4)
 	{
@@ -844,6 +868,492 @@ void BHFitCloseVisualActorToCamera(AActor* VisualActor, float MaxHeight = 165.0f
 		VisualActor->SetActorScale3D(VisualActor->GetActorScale3D() * (MaxHeight / Height));
 	}
 }
+
+struct FBHAtmosphereSliderSpec
+{
+	const TCHAR* ParameterName;
+	const TCHAR* Label;
+	float MinValue;
+	float MaxValue;
+	int32 Decimals;
+};
+
+static const FBHAtmosphereSliderSpec BHFogConsoleSliders[] = {
+	{TEXT("Fog.Density"), TEXT("Density"), 0.0f, 2.0f, 3},
+	{TEXT("Fog.HeightFalloff"), TEXT("Height Falloff"), 0.001f, 0.250f, 3},
+	{TEXT("Fog.MaxOpacity"), TEXT("Max Opacity"), 0.0f, 1.0f, 3},
+	{TEXT("Fog.StartDistance"), TEXT("Start Distance"), 0.0f, 5000.0f, 0},
+	{TEXT("Fog.EndDistance"), TEXT("End Distance"), 0.0f, 12000.0f, 0},
+	{TEXT("Fog.Inscatter.R"), TEXT("Inscatter R"), 0.0f, 1.0f, 3},
+	{TEXT("Fog.Inscatter.G"), TEXT("Inscatter G"), 0.0f, 1.0f, 3},
+	{TEXT("Fog.Inscatter.B"), TEXT("Inscatter B"), 0.0f, 1.0f, 3},
+	{TEXT("Fog.DirectionalExponent"), TEXT("Directional Exponent"), 2.0f, 64.0f, 1},
+	{TEXT("Fog.DirectionalStart"), TEXT("Directional Start"), 0.0f, 5000.0f, 0},
+	{TEXT("Fog.Directional.R"), TEXT("Directional R"), 0.0f, 1.5f, 3},
+	{TEXT("Fog.Directional.G"), TEXT("Directional G"), 0.0f, 1.5f, 3},
+	{TEXT("Fog.Directional.B"), TEXT("Directional B"), 0.0f, 1.5f, 3}
+};
+
+static const FBHAtmosphereSliderSpec BHVolumetricConsoleSliders[] = {
+	{TEXT("Volumetric.Extinction"), TEXT("Extinction"), 0.1f, 6.0f, 2},
+	{TEXT("Volumetric.Distance"), TEXT("View Distance"), 500.0f, 10000.0f, 0},
+	{TEXT("Volumetric.Start"), TEXT("Start Distance"), 0.0f, 5000.0f, 0},
+	{TEXT("Volumetric.NearFade"), TEXT("Near Fade"), 0.0f, 1000.0f, 0},
+	{TEXT("Volumetric.Scattering"), TEXT("Scattering"), -0.9f, 0.9f, 3},
+	{TEXT("Volumetric.Albedo.R"), TEXT("Albedo R"), 0.0f, 1.0f, 3},
+	{TEXT("Volumetric.Albedo.G"), TEXT("Albedo G"), 0.0f, 1.0f, 3},
+	{TEXT("Volumetric.Albedo.B"), TEXT("Albedo B"), 0.0f, 1.0f, 3},
+	{TEXT("Volumetric.Emissive.R"), TEXT("Emissive R"), 0.0f, 0.5f, 3},
+	{TEXT("Volumetric.Emissive.G"), TEXT("Emissive G"), 0.0f, 0.5f, 3},
+	{TEXT("Volumetric.Emissive.B"), TEXT("Emissive B"), 0.0f, 0.5f, 3}
+};
+
+static const FBHAtmosphereSliderSpec BHLocalFogConsoleSliders[] = {
+	{TEXT("LocalFog.Radial"), TEXT("Radial Density"), 0.0f, 8.0f, 2},
+	{TEXT("LocalFog.Height"), TEXT("Height Density"), 0.0f, 8.0f, 2},
+	{TEXT("LocalFog.Falloff"), TEXT("Height Falloff"), 1.0f, 6000.0f, 0},
+	{TEXT("LocalFog.Offset"), TEXT("Height Offset"), -2.0f, 2.0f, 2},
+	{TEXT("LocalFog.Phase"), TEXT("Phase G"), 0.0f, 0.999f, 3},
+	{TEXT("LocalFog.Albedo.R"), TEXT("Albedo R"), 0.0f, 1.0f, 3},
+	{TEXT("LocalFog.Albedo.G"), TEXT("Albedo G"), 0.0f, 1.0f, 3},
+	{TEXT("LocalFog.Albedo.B"), TEXT("Albedo B"), 0.0f, 1.0f, 3},
+	{TEXT("LocalFog.Emissive.R"), TEXT("Emissive R"), 0.0f, 0.5f, 3},
+	{TEXT("LocalFog.Emissive.G"), TEXT("Emissive G"), 0.0f, 0.5f, 3},
+	{TEXT("LocalFog.Emissive.B"), TEXT("Emissive B"), 0.0f, 0.5f, 3}
+};
+
+static const FBHAtmosphereSliderSpec BHSkyConsoleSliders[] = {
+	{TEXT("Sky.Luminance.R"), TEXT("Sky R"), 0.0f, 2.0f, 3},
+	{TEXT("Sky.Luminance.G"), TEXT("Sky G"), 0.0f, 2.0f, 3},
+	{TEXT("Sky.Luminance.B"), TEXT("Sky B"), 0.0f, 2.0f, 3},
+	{TEXT("Sky.Aerial.R"), TEXT("Aerial R"), 0.0f, 2.0f, 3},
+	{TEXT("Sky.Aerial.G"), TEXT("Aerial G"), 0.0f, 2.0f, 3},
+	{TEXT("Sky.Aerial.B"), TEXT("Aerial B"), 0.0f, 2.0f, 3},
+	{TEXT("Sky.MultiScattering"), TEXT("Multi Scattering"), 0.0f, 2.0f, 3},
+	{TEXT("Sky.HeightFogContribution"), TEXT("Height Fog Contribution"), 0.0f, 1.0f, 3},
+	{TEXT("Sky.AerialDistance"), TEXT("Aerial Distance"), 0.0f, 3.0f, 3},
+	{TEXT("Sky.Ground.R"), TEXT("Ground R"), 0.0f, 1.0f, 3},
+	{TEXT("Sky.Ground.G"), TEXT("Ground G"), 0.0f, 1.0f, 3},
+	{TEXT("Sky.Ground.B"), TEXT("Ground B"), 0.0f, 1.0f, 3},
+	{TEXT("Sky.RayleighScale"), TEXT("Rayleigh Scale"), 0.0f, 2.0f, 3},
+	{TEXT("Sky.MieScale"), TEXT("Mie Scale"), 0.0f, 5.0f, 3},
+	{TEXT("Sky.MieAbsorptionScale"), TEXT("Mie Absorption"), 0.0f, 5.0f, 3},
+	{TEXT("Sky.MieAnisotropy"), TEXT("Mie Anisotropy"), 0.0f, 0.999f, 3},
+	{TEXT("Sky.AbsorptionScale"), TEXT("Absorption Scale"), 0.0f, 0.5f, 3}
+};
+
+static const FBHAtmosphereSliderSpec BHMoonConsoleSliders[] = {
+	{TEXT("Moon.Intensity"), TEXT("Intensity"), 0.0f, 5.0f, 3},
+	{TEXT("Moon.Indirect"), TEXT("Indirect"), 0.0f, 5.0f, 3},
+	{TEXT("Moon.Volumetric"), TEXT("Volumetric"), 0.0f, 2.0f, 3},
+	{TEXT("Moon.Pitch"), TEXT("Pitch"), -90.0f, 90.0f, 1},
+	{TEXT("Moon.Yaw"), TEXT("Yaw"), -180.0f, 180.0f, 1},
+	{TEXT("Moon.Color.R"), TEXT("Color R"), 0.0f, 1.5f, 3},
+	{TEXT("Moon.Color.G"), TEXT("Color G"), 0.0f, 1.5f, 3},
+	{TEXT("Moon.Color.B"), TEXT("Color B"), 0.0f, 1.5f, 3},
+	{TEXT("Moon.Disk.R"), TEXT("Disk R"), 0.0f, 2.0f, 3},
+	{TEXT("Moon.Disk.G"), TEXT("Disk G"), 0.0f, 2.0f, 3},
+	{TEXT("Moon.Disk.B"), TEXT("Disk B"), 0.0f, 2.0f, 3}
+};
+
+static const FBHAtmosphereSliderSpec BHSkyLightConsoleSliders[] = {
+	{TEXT("SkyLight.Intensity"), TEXT("Intensity"), 0.0f, 3.0f, 3},
+	{TEXT("SkyLight.Volumetric"), TEXT("Volumetric"), 0.0f, 2.0f, 3},
+	{TEXT("SkyLight.Color.R"), TEXT("Color R"), 0.0f, 1.5f, 3},
+	{TEXT("SkyLight.Color.G"), TEXT("Color G"), 0.0f, 1.5f, 3},
+	{TEXT("SkyLight.Color.B"), TEXT("Color B"), 0.0f, 1.5f, 3},
+	{TEXT("SkyLight.Lower.R"), TEXT("Lower R"), 0.0f, 1.0f, 3},
+	{TEXT("SkyLight.Lower.G"), TEXT("Lower G"), 0.0f, 1.0f, 3},
+	{TEXT("SkyLight.Lower.B"), TEXT("Lower B"), 0.0f, 1.0f, 3}
+};
+
+static const FBHAtmosphereSliderSpec BHPostConsoleSliders[] = {
+	{TEXT("Post.Exposure"), TEXT("Exposure"), 0.03f, 2.0f, 3},
+	{TEXT("Post.ExposureBias"), TEXT("Exposure Bias"), -3.0f, 3.0f, 3},
+	{TEXT("Post.Vignette"), TEXT("Vignette"), 0.0f, 1.0f, 3},
+	{TEXT("Post.FilmGrain"), TEXT("Film Grain"), 0.0f, 1.0f, 3},
+	{TEXT("Post.Saturation.R"), TEXT("Saturation R"), 0.0f, 2.0f, 3},
+	{TEXT("Post.Saturation.G"), TEXT("Saturation G"), 0.0f, 2.0f, 3},
+	{TEXT("Post.Saturation.B"), TEXT("Saturation B"), 0.0f, 2.0f, 3},
+	{TEXT("Post.Contrast.R"), TEXT("Contrast R"), 0.0f, 2.0f, 3},
+	{TEXT("Post.Contrast.G"), TEXT("Contrast G"), 0.0f, 2.0f, 3},
+	{TEXT("Post.Contrast.B"), TEXT("Contrast B"), 0.0f, 2.0f, 3},
+	{TEXT("Post.SceneTint.R"), TEXT("Scene Tint R"), 0.0f, 2.0f, 3},
+	{TEXT("Post.SceneTint.G"), TEXT("Scene Tint G"), 0.0f, 2.0f, 3},
+	{TEXT("Post.SceneTint.B"), TEXT("Scene Tint B"), 0.0f, 2.0f, 3},
+	{TEXT("Post.IndirectIntensity"), TEXT("Indirect Intensity"), 0.0f, 2.0f, 3},
+	{TEXT("Post.Indirect.R"), TEXT("Indirect R"), 0.0f, 2.0f, 3},
+	{TEXT("Post.Indirect.G"), TEXT("Indirect G"), 0.0f, 2.0f, 3},
+	{TEXT("Post.Indirect.B"), TEXT("Indirect B"), 0.0f, 2.0f, 3}
+};
+
+static const FBHAtmosphereSliderSpec BHFlashlightConsoleSliders[] = {
+	{TEXT("Flashlight.IntensityScale"), TEXT("Intensity Scale"), 0.0f, 3.0f, 3},
+	{TEXT("Flashlight.RadiusScale"), TEXT("Radius Scale"), 0.0f, 3.0f, 3},
+	{TEXT("Flashlight.VolumetricScale"), TEXT("Fog Scatter Scale"), 0.0f, 3.0f, 3},
+	{TEXT("Flashlight.BeamLengthScale"), TEXT("Beam Length Scale"), 0.0f, 3.0f, 3},
+	{TEXT("Flashlight.BeamOpacityScale"), TEXT("Beam Opacity Scale"), 0.0f, 3.0f, 3},
+	{TEXT("Flashlight.BeamBrightnessScale"), TEXT("Beam Brightness Scale"), 0.0f, 3.0f, 3},
+	{TEXT("Flashlight.ConeScale"), TEXT("Cone Scale"), 0.25f, 2.0f, 3},
+	{TEXT("Flashlight.RayVisibilityScale"), TEXT("Fog Ray Visibility"), 0.0f, 3.0f, 3},
+	{TEXT("Flashlight.RayWidthScale"), TEXT("Fog Ray Width"), 0.25f, 3.0f, 3},
+	{TEXT("Flashlight.RayStartOffset"), TEXT("Fog Ray Start"), 0.0f, 220.0f, 0}
+};
+
+template <typename FuncType>
+void BHForEachAtmosphereSliderSpec(FuncType&& Func)
+{
+	for (const FBHAtmosphereSliderSpec& Spec : BHFogConsoleSliders) { Func(Spec); }
+	for (const FBHAtmosphereSliderSpec& Spec : BHVolumetricConsoleSliders) { Func(Spec); }
+	for (const FBHAtmosphereSliderSpec& Spec : BHLocalFogConsoleSliders) { Func(Spec); }
+	for (const FBHAtmosphereSliderSpec& Spec : BHSkyConsoleSliders) { Func(Spec); }
+	for (const FBHAtmosphereSliderSpec& Spec : BHMoonConsoleSliders) { Func(Spec); }
+	for (const FBHAtmosphereSliderSpec& Spec : BHSkyLightConsoleSliders) { Func(Spec); }
+	for (const FBHAtmosphereSliderSpec& Spec : BHPostConsoleSliders) { Func(Spec); }
+	for (const FBHAtmosphereSliderSpec& Spec : BHFlashlightConsoleSliders) { Func(Spec); }
+}
+
+FString BHFormatAtmosphereValue(float Value, int32 Decimals)
+{
+	switch (FMath::Clamp(Decimals, 0, 3))
+	{
+	case 0:
+		return FString::Printf(TEXT("%.0f"), Value);
+	case 1:
+		return FString::Printf(TEXT("%.1f"), Value);
+	case 2:
+		return FString::Printf(TEXT("%.2f"), Value);
+	default:
+		return FString::Printf(TEXT("%.3f"), Value);
+	}
+}
+
+FLinearColor BHSetColorComponent(FLinearColor Color, const FString& Channel, float Value)
+{
+	if (Channel.Equals(TEXT("R"), ESearchCase::IgnoreCase))
+	{
+		Color.R = Value;
+	}
+	else if (Channel.Equals(TEXT("G"), ESearchCase::IgnoreCase))
+	{
+		Color.G = Value;
+	}
+	else if (Channel.Equals(TEXT("B"), ESearchCase::IgnoreCase))
+	{
+		Color.B = Value;
+	}
+	Color.A = 1.0f;
+	return Color;
+}
+
+float BHGetColorComponent(const FLinearColor& Color, const FString& Channel)
+{
+	if (Channel.Equals(TEXT("R"), ESearchCase::IgnoreCase))
+	{
+		return Color.R;
+	}
+	if (Channel.Equals(TEXT("G"), ESearchCase::IgnoreCase))
+	{
+		return Color.G;
+	}
+	if (Channel.Equals(TEXT("B"), ESearchCase::IgnoreCase))
+	{
+		return Color.B;
+	}
+	return Color.A;
+}
+
+FVector4 BHSetVectorComponent(FVector4 Vector, const FString& Channel, float Value)
+{
+	if (Channel.Equals(TEXT("R"), ESearchCase::IgnoreCase) || Channel.Equals(TEXT("X"), ESearchCase::IgnoreCase))
+	{
+		Vector.X = Value;
+	}
+	else if (Channel.Equals(TEXT("G"), ESearchCase::IgnoreCase) || Channel.Equals(TEXT("Y"), ESearchCase::IgnoreCase))
+	{
+		Vector.Y = Value;
+	}
+	else if (Channel.Equals(TEXT("B"), ESearchCase::IgnoreCase) || Channel.Equals(TEXT("Z"), ESearchCase::IgnoreCase))
+	{
+		Vector.Z = Value;
+	}
+	else
+	{
+		Vector.W = Value;
+	}
+	return Vector;
+}
+
+float BHGetVectorComponent(const FVector4& Vector, const FString& Channel)
+{
+	if (Channel.Equals(TEXT("R"), ESearchCase::IgnoreCase) || Channel.Equals(TEXT("X"), ESearchCase::IgnoreCase))
+	{
+		return Vector.X;
+	}
+	if (Channel.Equals(TEXT("G"), ESearchCase::IgnoreCase) || Channel.Equals(TEXT("Y"), ESearchCase::IgnoreCase))
+	{
+		return Vector.Y;
+	}
+	if (Channel.Equals(TEXT("B"), ESearchCase::IgnoreCase) || Channel.Equals(TEXT("Z"), ESearchCase::IgnoreCase))
+	{
+		return Vector.Z;
+	}
+	return Vector.W;
+}
+
+class SBHAtmosphereConsole : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SBHAtmosphereConsole) {}
+		SLATE_ARGUMENT(TWeakObjectPtr<ABHPlayerController>, PlayerController)
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs)
+	{
+		PlayerController = InArgs._PlayerController;
+
+		TSharedRef<SVerticalBox> SliderList = SNew(SVerticalBox);
+		AddSection(SliderList, TEXT("Height Fog"), BHFogConsoleSliders);
+		AddSection(SliderList, TEXT("Volumetric Fog"), BHVolumetricConsoleSliders);
+		AddSection(SliderList, TEXT("Local Fog Volumes"), BHLocalFogConsoleSliders);
+		AddSection(SliderList, TEXT("Sky Atmosphere"), BHSkyConsoleSliders);
+		AddSection(SliderList, TEXT("Moon Light"), BHMoonConsoleSliders);
+		AddSection(SliderList, TEXT("Sky Light"), BHSkyLightConsoleSliders);
+		AddSection(SliderList, TEXT("Post Process"), BHPostConsoleSliders);
+		AddSection(SliderList, TEXT("Flashlight / Beam"), BHFlashlightConsoleSliders);
+
+		ChildSlot
+		[
+			SNew(SOverlay)
+			+ SOverlay::Slot()
+			.HAlign(HAlign_Right)
+			.VAlign(VAlign_Center)
+			.Padding(FMargin(16.0f))
+			[
+				SNew(SBox)
+				.WidthOverride(520.0f)
+				.MaxDesiredHeight(760.0f)
+				[
+					SNew(SBorder)
+					.BorderImage(BHUiWhiteBrush())
+					.BorderBackgroundColor(FLinearColor(0.015f, 0.020f, 0.026f, 0.94f))
+					.Padding(FMargin(14.0f))
+					[
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.FillWidth(1.0f)
+							[
+								SNew(STextBlock)
+								.Text(FText::FromString(TEXT("Atmosphere Console")))
+								.Font(BHUiFont(16, FName(TEXT("Bold"))))
+								.ColorAndOpacity(FLinearColor(0.90f, 0.96f, 1.0f, 1.0f))
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(FMargin(8.0f, 0.0f, 0.0f, 0.0f))
+							[
+								MakeButton(TEXT("Save"), [this]()
+								{
+									if (ABHPlayerController* PC = PlayerController.Get())
+									{
+										PC->SaveAtmosphereConsoleProfileForMenu();
+									}
+								})
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(FMargin(6.0f, 0.0f, 0.0f, 0.0f))
+							[
+								MakeButton(TEXT("Load"), [this]()
+								{
+									if (ABHPlayerController* PC = PlayerController.Get())
+									{
+										PC->LoadAtmosphereConsoleProfileForMenu();
+									}
+								})
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(FMargin(6.0f, 0.0f, 0.0f, 0.0f))
+							[
+								MakeButton(TEXT("Playable"), [this]()
+								{
+									if (ABHPlayerController* PC = PlayerController.Get())
+									{
+										PC->ApplyPlayableAtmosphereConsoleForMenu();
+									}
+								})
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(FMargin(6.0f, 0.0f, 0.0f, 0.0f))
+							[
+								MakeButton(TEXT("Reset"), [this]()
+								{
+									if (ABHPlayerController* PC = PlayerController.Get())
+									{
+										PC->ResetAtmosphereConsoleForMenu();
+									}
+								})
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(FMargin(6.0f, 0.0f, 0.0f, 0.0f))
+							[
+								MakeButton(TEXT("Close"), [this]()
+								{
+									if (ABHPlayerController* PC = PlayerController.Get())
+									{
+										PC->HideAtmosphereConsole();
+									}
+								})
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(FMargin(0.0f, 8.0f, 0.0f, 10.0f))
+						[
+							SNew(STextBlock)
+							.Text_Lambda([this]()
+							{
+								if (const ABHPlayerController* PC = PlayerController.Get())
+								{
+									return FText::FromString(PC->GetAtmosphereConsoleSummaryForMenu());
+								}
+								return FText::FromString(TEXT("No local controller."));
+							})
+							.Font(BHUiFont(10))
+							.ColorAndOpacity(FLinearColor(0.68f, 0.76f, 0.82f, 1.0f))
+						]
+						+ SVerticalBox::Slot()
+						.FillHeight(1.0f)
+						[
+							SNew(SScrollBox)
+							+ SScrollBox::Slot()
+							[
+								SliderList
+							]
+						]
+					]
+				]
+			]
+		];
+	}
+
+private:
+	template <int32 Count>
+	void AddSection(TSharedRef<SVerticalBox> Root, const TCHAR* Title, const FBHAtmosphereSliderSpec (&Specs)[Count])
+	{
+		Root->AddSlot()
+		.AutoHeight()
+		.Padding(FMargin(0.0f, 8.0f, 0.0f, 4.0f))
+		[
+			SNew(STextBlock)
+			.Text(FText::FromString(Title))
+			.Font(BHUiFont(12, FName(TEXT("Bold"))))
+			.ColorAndOpacity(FLinearColor(0.56f, 0.82f, 0.96f, 1.0f))
+		];
+
+		for (const FBHAtmosphereSliderSpec& Spec : Specs)
+		{
+			Root->AddSlot()
+			.AutoHeight()
+			.Padding(FMargin(0.0f, 2.0f, 0.0f, 2.0f))
+			[
+				MakeSliderRow(Spec)
+			];
+		}
+
+		Root->AddSlot()
+		.AutoHeight()
+		.Padding(FMargin(0.0f, 6.0f, 0.0f, 0.0f))
+		[
+			SNew(SSeparator)
+			.Thickness(1.0f)
+			.ColorAndOpacity(FLinearColor(0.16f, 0.22f, 0.28f, 1.0f))
+		];
+	}
+
+	TSharedRef<SWidget> MakeButton(const TCHAR* Label, TFunction<void()> Action)
+	{
+		return SNew(SButton)
+			.ContentPadding(FMargin(10.0f, 4.0f))
+			.ButtonColorAndOpacity(FLinearColor(0.08f, 0.12f, 0.16f, 1.0f))
+			.OnClicked_Lambda([Action]()
+			{
+				Action();
+				return FReply::Handled();
+			})
+			[
+				SNew(STextBlock)
+				.Text(FText::FromString(Label))
+				.Font(BHUiFont(10, FName(TEXT("Bold"))))
+				.ColorAndOpacity(FLinearColor(0.88f, 0.94f, 1.0f, 1.0f))
+			];
+	}
+
+	TSharedRef<SWidget> MakeSliderRow(const FBHAtmosphereSliderSpec& Spec)
+	{
+		const FName ParameterName(Spec.ParameterName);
+		const float MinValue = Spec.MinValue;
+		const float MaxValue = Spec.MaxValue;
+		const int32 Decimals = Spec.Decimals;
+
+		return SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.FillWidth(0.42f)
+			.VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.Text(FText::FromString(Spec.Label))
+				.Font(BHUiFont(10))
+				.ColorAndOpacity(FLinearColor(0.82f, 0.88f, 0.92f, 1.0f))
+			]
+			+ SHorizontalBox::Slot()
+			.FillWidth(0.44f)
+			.Padding(FMargin(8.0f, 0.0f))
+			.VAlign(VAlign_Center)
+			[
+				SNew(SSlider)
+				.Value_Lambda([this, ParameterName, MinValue, MaxValue]()
+				{
+					const ABHPlayerController* PC = PlayerController.Get();
+					if (!PC || MaxValue <= MinValue)
+					{
+						return 0.0f;
+					}
+					return FMath::Clamp((PC->GetAtmosphereConsoleValue(ParameterName) - MinValue) / (MaxValue - MinValue), 0.0f, 1.0f);
+				})
+				.OnValueChanged_Lambda([this, ParameterName, MinValue, MaxValue](float NormalizedValue)
+				{
+					if (ABHPlayerController* PC = PlayerController.Get())
+					{
+						PC->SetAtmosphereConsoleValue(ParameterName, FMath::Lerp(MinValue, MaxValue, FMath::Clamp(NormalizedValue, 0.0f, 1.0f)));
+					}
+				})
+			]
+			+ SHorizontalBox::Slot()
+			.FillWidth(0.14f)
+			.VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.Justification(ETextJustify::Right)
+				.Text_Lambda([this, ParameterName, Decimals]()
+				{
+					const ABHPlayerController* PC = PlayerController.Get();
+					return FText::FromString(BHFormatAtmosphereValue(PC ? PC->GetAtmosphereConsoleValue(ParameterName) : 0.0f, Decimals));
+				})
+				.Font(BHUiFont(9, FName(TEXT("Bold"))))
+				.ColorAndOpacity(FLinearColor(0.70f, 0.94f, 0.92f, 1.0f))
+			];
+	}
+
+	TWeakObjectPtr<ABHPlayerController> PlayerController;
+};
 }
 
 ABHPlayerController::ABHPlayerController()
@@ -900,6 +1410,7 @@ void ABHPlayerController::BeginPlay()
 			}
 		}
 		ScheduleAutomation();
+		GetWorldTimerManager().SetTimer(AtmosphereProfileLoadTimerHandle, this, &ABHPlayerController::ApplySavedAtmosphereConsoleProfileFromTimer, 1.0f, false);
 	}
 }
 
@@ -921,13 +1432,17 @@ void ABHPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		World->GetTimerManager().ClearTimer(AutomationQuitTimerHandle);
 		World->GetTimerManager().ClearTimer(ClassroomPreflightTimerHandle);
 		World->GetTimerManager().ClearTimer(ClassroomFallbackTimerHandle);
+		World->GetTimerManager().ClearTimer(AtmosphereProfileLoadTimerHandle);
 		World->GetTimerManager().ClearTimer(DisplayNameSyncTimerHandle);
 		World->GetTimerManager().ClearAllTimersForObject(this);
 	}
 
 	HideClassroomBoard();
 	RemoveMainMenuWidget();
+	RemoveAtmosphereConsoleWidget();
 	HideTravelLoadingScreen();
+	AtmosphereConsoleDefaultValues.Reset();
+	bAtmosphereConsoleDefaultsCaptured = false;
 
 	if (AmbientMusicComponent)
 	{
@@ -944,8 +1459,15 @@ void ABHPlayerController::PreClientTravel(const FString& PendingURL, ETravelType
 {
 	if (IsLocalController())
 	{
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(AtmosphereProfileLoadTimerHandle);
+		}
 		RemoveMainMenuWidget();
+		RemoveAtmosphereConsoleWidget();
 		HideClassroomBoard();
+		AtmosphereConsoleDefaultValues.Reset();
+		bAtmosphereConsoleDefaultsCaptured = false;
 	}
 
 	Super::PreClientTravel(PendingURL, TravelType, bIsSeamlessTravel);
@@ -966,10 +1488,12 @@ void ABHPlayerController::SetupInputComponent()
 		InputComponent->BindAction(TEXT("SpectatorQueueTeacher"), IE_Pressed, this, &ABHPlayerController::SpectatorQueueTeacher);
 		InputComponent->BindAction(TEXT("SpectatorQueueSurvivor"), IE_Pressed, this, &ABHPlayerController::SpectatorQueueSurvivor);
 		InputComponent->BindAction(TEXT("SpectatorQueueMonitor"), IE_Pressed, this, &ABHPlayerController::SpectatorQueueMonitor);
-		InputComponent->BindKey(EKeys::B, IE_Pressed, this, &ABHPlayerController::ToggleClassroomBoard);
 		InputComponent->BindKey(EKeys::F7, IE_Pressed, this, &ABHPlayerController::TesterGrantTrainResources);
 		InputComponent->BindKey(EKeys::F8, IE_Pressed, this, &ABHPlayerController::TesterOpenTrainIntermission);
 		InputComponent->BindKey(EKeys::F9, IE_Pressed, this, &ABHPlayerController::TesterAdvanceTrainPhase);
+		InputComponent->BindKey(EKeys::F11, IE_Pressed, this, &ABHPlayerController::ToggleAtmosphereConsole);
+		InputComponent->BindKey(EKeys::Pause, IE_Pressed, this, &ABHPlayerController::ToggleAtmosphereConsole);
+		InputComponent->BindKey(EKeys::Backslash, IE_Pressed, this, &ABHPlayerController::ToggleAtmosphereConsole);
 		InputComponent->BindKey(EKeys::F12, IE_Pressed, this, &ABHPlayerController::TesterForceFinalRecap);
 		InputComponent->BindKey(EKeys::Insert, IE_Pressed, this, &ABHPlayerController::TesterGrantTrainResources);
 		InputComponent->BindKey(EKeys::Home, IE_Pressed, this, &ABHPlayerController::TesterOpenTrainIntermission);
@@ -1501,6 +2025,64 @@ void ABHPlayerController::AtmosphereTest(const FString& Command)
 	ServerAtmosphereTest(Command);
 }
 
+void ABHPlayerController::ToggleAtmosphereConsole()
+{
+	if (AtmosphereConsoleWidget.IsValid())
+	{
+		HideAtmosphereConsole();
+		return;
+	}
+
+	ShowAtmosphereConsole();
+}
+
+void ABHPlayerController::ShowAtmosphereConsole()
+{
+	FString Message;
+	if (!RequireLocalHostAdmin(Message, TEXT("open the atmosphere console")))
+	{
+		return;
+	}
+
+	if (!GEngine || !GEngine->GameViewport)
+	{
+		ShowLocalStatusMessage(TEXT("Atmosphere console needs an active game viewport."), 3.0f);
+		return;
+	}
+
+	if (AtmosphereConsoleWidget.IsValid())
+	{
+		ShowLocalStatusMessage(TEXT("Atmosphere console is already open."), 1.6f);
+		return;
+	}
+
+	HideMainMenu();
+	HideTravelLoadingScreen();
+	CaptureAtmosphereConsoleDefaults();
+
+	SAssignNew(AtmosphereConsoleWidget, SBHAtmosphereConsole)
+		.PlayerController(TWeakObjectPtr<ABHPlayerController>(this));
+
+	GEngine->GameViewport->AddViewportWidgetContent(AtmosphereConsoleWidget.ToSharedRef(), 250);
+
+	FInputModeGameAndUI InputMode;
+	InputMode.SetWidgetToFocus(AtmosphereConsoleWidget);
+	InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+	InputMode.SetHideCursorDuringCapture(false);
+	SetInputMode(InputMode);
+	bShowMouseCursor = true;
+	ShowLocalStatusMessage(TEXT("Atmosphere console opened."), 1.6f);
+}
+
+void ABHPlayerController::HideAtmosphereConsole()
+{
+	RemoveAtmosphereConsoleWidget();
+	if (!MainMenuWidget.IsValid() && !TravelLoadingScreenWidget.IsValid())
+	{
+		ApplyGameplayInputMode();
+	}
+}
+
 void ABHPlayerController::ShowMainMenu()
 {
 	if (!IsLocalController() || MainMenuWidget.IsValid() || !GEngine || !GEngine->GameViewport)
@@ -1509,6 +2091,7 @@ void ABHPlayerController::ShowMainMenu()
 	}
 
 	HideTravelLoadingScreen();
+	RemoveAtmosphereConsoleWidget();
 
 	SAssignNew(MainMenuWidget, SBHMainMenu)
 		.PlayerController(this);
@@ -1532,6 +2115,20 @@ void ABHPlayerController::RemoveMainMenuWidget()
 	}
 
 	MainMenuWidget.Reset();
+	if (FSlateApplication::IsInitialized())
+	{
+		FSlateApplication::Get().ClearKeyboardFocus(EFocusCause::Cleared);
+	}
+}
+
+void ABHPlayerController::RemoveAtmosphereConsoleWidget()
+{
+	if (AtmosphereConsoleWidget.IsValid() && GEngine && GEngine->GameViewport)
+	{
+		GEngine->GameViewport->RemoveViewportWidgetContent(AtmosphereConsoleWidget.ToSharedRef());
+	}
+
+	AtmosphereConsoleWidget.Reset();
 	if (FSlateApplication::IsInitialized())
 	{
 		FSlateApplication::Get().ClearKeyboardFocus(EFocusCause::Cleared);
@@ -1768,13 +2365,20 @@ bool ABHPlayerController::HostLiveClassroomForMenu(const FString& LevelName, FSt
 	if (UBHGameInstance* BHGI = GetWorld() ? GetWorld()->GetGameInstance<UBHGameInstance>() : nullptr)
 	{
 		const FString ConfiguredClassroomAddress = BHGI->GetConfiguredClassroomJoinAddress(7777);
-		FString TunnelMessage;
-		BHGI->TryStartInternetTunnel(TunnelMessage, 7777);
+		if (BHGI->IsAutomationEnabled())
+		{
+			BHGI->LogAutomationMarkerOnce(TEXT("LIVE_CLASSROOM_TUNNEL_SKIPPED"));
+		}
+		else
+		{
+			FString TunnelMessage;
+			BHGI->TryStartInternetTunnel(TunnelMessage, 7777);
+		}
 		if (!ConfiguredClassroomAddress.IsEmpty())
 		{
 			BHGI->SetPublicJoinAddress(ConfiguredClassroomAddress);
 		}
-			JoinAddress = BHGI->GetPreferredClassroomJoinAddress(7777);
+		JoinAddress = BHGI->GetPreferredClassroomJoinAddress(7777);
 	}
 	Preset.MapName = NormalizedLevel;
 	const FString Options = BHMakeListenOptions(NormalizedLevel, FBHLessonPresetStore::BuildRevisionLaunchOptions(Preset, true));
@@ -2275,7 +2879,11 @@ FBHClassroomPreflightSummary ABHPlayerController::GetClassroomPreflightSummaryFo
 	}
 	if (bGraphicsLikelySoftwareGpu)
 	{
-		Warnings.Add(TEXT("Graphics adapter looks like software or VM rendering. Use Low 4GB or 720p Windowed and validate on real classroom hardware."));
+		Warnings.Add(TEXT("Graphics adapter looks like software or VM rendering. Auto graphics uses Low 4GB plus 1280x720 windowed on first launch; validate on real classroom hardware."));
+	}
+	else if (bAutoHardwareGraphicsEnabled && bGraphicsPreferSafeResolution)
+	{
+		Warnings.Add(TEXT("Low-spec graphics detected. Auto graphics uses Low 4GB plus 1280x720 windowed on first launch unless this machine already saved a resolution."));
 	}
 
 	Summary.bReadyForClassroom = bClassroomMode && bNetworkLooksReady && bTunnelConfirmed;
@@ -2298,6 +2906,14 @@ FBHClassroomPreflightSummary ABHPlayerController::GetClassroomPreflightSummaryFo
 	else if (!bPackageRootFound && !bRuntimeBinaryDirFound)
 	{
 		Summary.ReadyStatus = TEXT("Package path unknown");
+	}
+	else if (bGraphicsLikelySoftwareGpu)
+	{
+		Summary.ReadyStatus = TEXT("Ready - validate graphics");
+	}
+	else if (GraphicsPresetQuality <= 0 && bGraphicsAutoSafeResolutionApplied)
+	{
+		Summary.ReadyStatus = TEXT("Ready - low graphics 720p");
 	}
 	else if (GraphicsPresetQuality <= 0)
 	{
@@ -2354,9 +2970,23 @@ FBHClassroomPreflightSummary ABHPlayerController::GetClassroomPreflightSummaryFo
 	const FString PackageText = bPackageRootFound
 		? FString::Printf(TEXT("%s (found)"), *WindowsPackageRoot)
 		: FString::Printf(TEXT("%s (not found; use runtime executable folder below)"), *WindowsPackageRoot);
-	const FString GraphicsStatus = bGraphicsLikelySoftwareGpu
-		? TEXT("Needs hardware validation")
-		: (GraphicsPresetQuality <= 0 ? TEXT("Low graphics profile") : TEXT("Ready"));
+	FString GraphicsStatus = TEXT("Ready");
+	if (bGraphicsLikelySoftwareGpu)
+	{
+		GraphicsStatus = TEXT("Needs hardware validation");
+	}
+	else if (GraphicsPresetQuality <= 0 && bGraphicsAutoSafeResolutionApplied)
+	{
+		GraphicsStatus = TEXT("Low graphics profile, 720p windowed");
+	}
+	else if (GraphicsPresetQuality <= 0)
+	{
+		GraphicsStatus = TEXT("Low graphics profile");
+	}
+	else if (bGraphicsLikelyIntegratedGpu)
+	{
+		GraphicsStatus = TEXT("Integrated GPU - validate FPS");
+	}
 
 	BHAppendPreflightLine(Lines, TEXT("Ready"), Summary.ReadyStatus);
 	BHAppendPreflightLine(Lines, TEXT("Next action"), NextAction);
@@ -2682,6 +3312,583 @@ bool ABHPlayerController::RunAtmosphereTestForMenu(const FString& Command, FStri
 	OutMessage = FString::Printf(TEXT("Atmosphere test sent: %s."), Command.IsEmpty() ? TEXT("help") : *Command);
 	ShowLocalStatusMessage(OutMessage, 2.5f);
 	return true;
+}
+
+float ABHPlayerController::GetAtmosphereConsoleValue(FName ParameterName) const
+{
+	const float DefaultValue = AtmosphereConsoleDefaultValues.Contains(ParameterName)
+		? AtmosphereConsoleDefaultValues[ParameterName]
+		: 0.0f;
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return DefaultValue;
+	}
+
+	const FString Parameter = ParameterName.ToString();
+	const auto SuffixAfter = [&Parameter](const TCHAR* Prefix) -> FString
+	{
+		const FString PrefixString(Prefix);
+		return Parameter.StartsWith(PrefixString) ? Parameter.RightChop(PrefixString.Len()) : FString();
+	};
+
+	if (Parameter.StartsWith(TEXT("Fog.")) || Parameter.StartsWith(TEXT("Volumetric.")))
+	{
+		for (TActorIterator<AExponentialHeightFog> It(World); It; ++It)
+		{
+			const UExponentialHeightFogComponent* Fog = It->GetComponent();
+			if (!Fog)
+			{
+				continue;
+			}
+
+			if (Parameter == TEXT("Fog.Density")) { return Fog->FogDensity; }
+			if (Parameter == TEXT("Fog.HeightFalloff")) { return Fog->FogHeightFalloff; }
+			if (Parameter == TEXT("Fog.MaxOpacity")) { return Fog->FogMaxOpacity; }
+			if (Parameter == TEXT("Fog.StartDistance")) { return Fog->StartDistance; }
+			if (Parameter == TEXT("Fog.EndDistance")) { return Fog->EndDistance; }
+			if (Parameter == TEXT("Fog.DirectionalExponent")) { return Fog->DirectionalInscatteringExponent; }
+			if (Parameter == TEXT("Fog.DirectionalStart")) { return Fog->DirectionalInscatteringStartDistance; }
+			if (Parameter.StartsWith(TEXT("Fog.Inscatter."))) { return BHGetColorComponent(Fog->FogInscatteringLuminance, SuffixAfter(TEXT("Fog.Inscatter."))); }
+			if (Parameter.StartsWith(TEXT("Fog.Directional."))) { return BHGetColorComponent(Fog->DirectionalInscatteringLuminance, SuffixAfter(TEXT("Fog.Directional."))); }
+			if (Parameter == TEXT("Volumetric.Extinction")) { return Fog->VolumetricFogExtinctionScale; }
+			if (Parameter == TEXT("Volumetric.Distance")) { return Fog->VolumetricFogDistance; }
+			if (Parameter == TEXT("Volumetric.Start")) { return Fog->VolumetricFogStartDistance; }
+			if (Parameter == TEXT("Volumetric.NearFade")) { return Fog->VolumetricFogNearFadeInDistance; }
+			if (Parameter == TEXT("Volumetric.Scattering")) { return Fog->VolumetricFogScatteringDistribution; }
+			if (Parameter.StartsWith(TEXT("Volumetric.Albedo."))) { return BHGetColorComponent(FLinearColor(Fog->VolumetricFogAlbedo), SuffixAfter(TEXT("Volumetric.Albedo."))); }
+			if (Parameter.StartsWith(TEXT("Volumetric.Emissive."))) { return BHGetColorComponent(Fog->VolumetricFogEmissive, SuffixAfter(TEXT("Volumetric.Emissive."))); }
+		}
+	}
+
+	if (Parameter.StartsWith(TEXT("LocalFog.")))
+	{
+		for (TActorIterator<ALocalFogVolume> It(World); It; ++It)
+		{
+			const ULocalFogVolumeComponent* Fog = It->GetComponent();
+			if (!Fog)
+			{
+				continue;
+			}
+
+			if (Parameter == TEXT("LocalFog.Radial")) { return Fog->RadialFogExtinction; }
+			if (Parameter == TEXT("LocalFog.Height")) { return Fog->HeightFogExtinction; }
+			if (Parameter == TEXT("LocalFog.Falloff")) { return Fog->HeightFogFalloff; }
+			if (Parameter == TEXT("LocalFog.Offset")) { return Fog->HeightFogOffset; }
+			if (Parameter == TEXT("LocalFog.Phase")) { return Fog->FogPhaseG; }
+			if (Parameter.StartsWith(TEXT("LocalFog.Albedo."))) { return BHGetColorComponent(Fog->FogAlbedo, SuffixAfter(TEXT("LocalFog.Albedo."))); }
+			if (Parameter.StartsWith(TEXT("LocalFog.Emissive."))) { return BHGetColorComponent(Fog->FogEmissive, SuffixAfter(TEXT("LocalFog.Emissive."))); }
+		}
+	}
+
+	if (Parameter.StartsWith(TEXT("Sky.")))
+	{
+		for (TActorIterator<ASkyAtmosphere> It(World); It; ++It)
+		{
+			const USkyAtmosphereComponent* Sky = It->GetComponent();
+			if (!Sky)
+			{
+				continue;
+			}
+
+			if (Parameter.StartsWith(TEXT("Sky.Luminance."))) { return BHGetColorComponent(Sky->SkyLuminanceFactor, SuffixAfter(TEXT("Sky.Luminance."))); }
+			if (Parameter.StartsWith(TEXT("Sky.Aerial."))) { return BHGetColorComponent(Sky->SkyAndAerialPerspectiveLuminanceFactor, SuffixAfter(TEXT("Sky.Aerial."))); }
+			if (Parameter == TEXT("Sky.MultiScattering")) { return Sky->MultiScatteringFactor; }
+			if (Parameter == TEXT("Sky.HeightFogContribution")) { return Sky->HeightFogContribution; }
+			if (Parameter == TEXT("Sky.AerialDistance")) { return Sky->AerialPespectiveViewDistanceScale; }
+			if (Parameter.StartsWith(TEXT("Sky.Ground."))) { return BHGetColorComponent(FLinearColor(Sky->GroundAlbedo), SuffixAfter(TEXT("Sky.Ground."))); }
+			if (Parameter == TEXT("Sky.RayleighScale")) { return Sky->RayleighScatteringScale; }
+			if (Parameter == TEXT("Sky.MieScale")) { return Sky->MieScatteringScale; }
+			if (Parameter == TEXT("Sky.MieAbsorptionScale")) { return Sky->MieAbsorptionScale; }
+			if (Parameter == TEXT("Sky.MieAnisotropy")) { return Sky->MieAnisotropy; }
+			if (Parameter == TEXT("Sky.AbsorptionScale")) { return Sky->OtherAbsorptionScale; }
+		}
+	}
+
+	if (Parameter.StartsWith(TEXT("Moon.")))
+	{
+		for (TActorIterator<ADirectionalLight> It(World); It; ++It)
+		{
+			const UDirectionalLightComponent* Light = Cast<UDirectionalLightComponent>(It->GetLightComponent());
+			if (!Light || !Light->bAtmosphereSunLight)
+			{
+				continue;
+			}
+
+			if (Parameter == TEXT("Moon.Intensity")) { return Light->Intensity; }
+			if (Parameter == TEXT("Moon.Indirect")) { return Light->IndirectLightingIntensity; }
+			if (Parameter == TEXT("Moon.Volumetric")) { return Light->VolumetricScatteringIntensity; }
+			if (Parameter == TEXT("Moon.Pitch")) { return It->GetActorRotation().Pitch; }
+			if (Parameter == TEXT("Moon.Yaw")) { return It->GetActorRotation().Yaw; }
+			if (Parameter.StartsWith(TEXT("Moon.Color."))) { return BHGetColorComponent(Light->GetLightColor(), SuffixAfter(TEXT("Moon.Color."))); }
+			if (Parameter.StartsWith(TEXT("Moon.Disk."))) { return BHGetColorComponent(Light->AtmosphereSunDiskColorScale, SuffixAfter(TEXT("Moon.Disk."))); }
+		}
+	}
+
+	if (Parameter.StartsWith(TEXT("SkyLight.")))
+	{
+		for (TActorIterator<ASkyLight> It(World); It; ++It)
+		{
+			const USkyLightComponent* SkyLight = It->GetLightComponent();
+			if (!SkyLight)
+			{
+				continue;
+			}
+
+			if (Parameter == TEXT("SkyLight.Intensity")) { return SkyLight->Intensity; }
+			if (Parameter == TEXT("SkyLight.Volumetric")) { return SkyLight->VolumetricScatteringIntensity; }
+			if (Parameter.StartsWith(TEXT("SkyLight.Color."))) { return BHGetColorComponent(SkyLight->GetLightColor(), SuffixAfter(TEXT("SkyLight.Color."))); }
+			if (Parameter.StartsWith(TEXT("SkyLight.Lower."))) { return BHGetColorComponent(SkyLight->LowerHemisphereColor, SuffixAfter(TEXT("SkyLight.Lower."))); }
+		}
+	}
+
+	if (Parameter.StartsWith(TEXT("Post.")))
+	{
+		for (TActorIterator<APostProcessVolume> It(World); It; ++It)
+		{
+			const FPostProcessSettings& Settings = It->Settings;
+			if (Parameter == TEXT("Post.Exposure")) { return Settings.AutoExposureMinBrightness; }
+			if (Parameter == TEXT("Post.ExposureBias")) { return Settings.AutoExposureBias; }
+			if (Parameter == TEXT("Post.Vignette")) { return Settings.VignetteIntensity; }
+			if (Parameter == TEXT("Post.FilmGrain")) { return Settings.FilmGrainIntensity; }
+			if (Parameter.StartsWith(TEXT("Post.Saturation."))) { return BHGetVectorComponent(Settings.ColorSaturation, SuffixAfter(TEXT("Post.Saturation."))); }
+			if (Parameter.StartsWith(TEXT("Post.Contrast."))) { return BHGetVectorComponent(Settings.ColorContrast, SuffixAfter(TEXT("Post.Contrast."))); }
+			if (Parameter.StartsWith(TEXT("Post.SceneTint."))) { return BHGetColorComponent(Settings.SceneColorTint, SuffixAfter(TEXT("Post.SceneTint."))); }
+			if (Parameter == TEXT("Post.IndirectIntensity")) { return Settings.IndirectLightingIntensity; }
+			if (Parameter.StartsWith(TEXT("Post.Indirect."))) { return BHGetColorComponent(Settings.IndirectLightingColor, SuffixAfter(TEXT("Post.Indirect."))); }
+		}
+	}
+
+	if (Parameter.StartsWith(TEXT("Flashlight.")))
+	{
+		if (const ABHCharacter* ControlledCharacter = Cast<ABHCharacter>(GetPawn()))
+		{
+			return ControlledCharacter->GetFlashlightTuningValue(ParameterName);
+		}
+		for (TActorIterator<ABHCharacter> It(World); It; ++It)
+		{
+			return It->GetFlashlightTuningValue(ParameterName);
+		}
+	}
+
+	return DefaultValue;
+}
+
+void ABHPlayerController::SetAtmosphereConsoleValue(FName ParameterName, float Value)
+{
+	if (!IsLocalHostAdminContext())
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	const FString Parameter = ParameterName.ToString();
+	const auto SuffixAfter = [&Parameter](const TCHAR* Prefix) -> FString
+	{
+		const FString PrefixString(Prefix);
+		return Parameter.StartsWith(PrefixString) ? Parameter.RightChop(PrefixString.Len()) : FString();
+	};
+
+	if (Parameter.StartsWith(TEXT("Fog.")) || Parameter.StartsWith(TEXT("Volumetric.")))
+	{
+		for (TActorIterator<AExponentialHeightFog> It(World); It; ++It)
+		{
+			UExponentialHeightFogComponent* Fog = It->GetComponent();
+			if (!Fog)
+			{
+				continue;
+			}
+
+			if (Parameter == TEXT("Fog.Density")) { Fog->SetFogDensity(Value); }
+			else if (Parameter == TEXT("Fog.HeightFalloff")) { Fog->SetFogHeightFalloff(Value); }
+			else if (Parameter == TEXT("Fog.MaxOpacity")) { Fog->SetFogMaxOpacity(Value); }
+			else if (Parameter == TEXT("Fog.StartDistance")) { Fog->SetStartDistance(Value); }
+			else if (Parameter == TEXT("Fog.EndDistance")) { Fog->SetEndDistance(Value); }
+			else if (Parameter == TEXT("Fog.DirectionalExponent")) { Fog->SetDirectionalInscatteringExponent(Value); }
+			else if (Parameter == TEXT("Fog.DirectionalStart")) { Fog->SetDirectionalInscatteringStartDistance(Value); }
+			else if (Parameter.StartsWith(TEXT("Fog.Inscatter."))) { Fog->SetFogInscatteringColor(BHSetColorComponent(Fog->FogInscatteringLuminance, SuffixAfter(TEXT("Fog.Inscatter.")), Value)); }
+			else if (Parameter.StartsWith(TEXT("Fog.Directional."))) { Fog->SetDirectionalInscatteringColor(BHSetColorComponent(Fog->DirectionalInscatteringLuminance, SuffixAfter(TEXT("Fog.Directional.")), Value)); }
+			else if (Parameter == TEXT("Volumetric.Extinction")) { Fog->SetVolumetricFogExtinctionScale(Value); }
+			else if (Parameter == TEXT("Volumetric.Distance")) { Fog->SetVolumetricFogDistance(Value); }
+			else if (Parameter == TEXT("Volumetric.Start")) { Fog->SetVolumetricFogStartDistance(Value); }
+			else if (Parameter == TEXT("Volumetric.NearFade")) { Fog->SetVolumetricFogNearFadeInDistance(Value); }
+			else if (Parameter == TEXT("Volumetric.Scattering")) { Fog->SetVolumetricFogScatteringDistribution(Value); }
+			else if (Parameter.StartsWith(TEXT("Volumetric.Albedo.")))
+			{
+				const FLinearColor Color = BHSetColorComponent(FLinearColor(Fog->VolumetricFogAlbedo), SuffixAfter(TEXT("Volumetric.Albedo.")), Value);
+				Fog->SetVolumetricFogAlbedo(Color.ToFColor(false));
+			}
+			else if (Parameter.StartsWith(TEXT("Volumetric.Emissive."))) { Fog->SetVolumetricFogEmissive(BHSetColorComponent(Fog->VolumetricFogEmissive, SuffixAfter(TEXT("Volumetric.Emissive.")), Value)); }
+		}
+	}
+	else if (Parameter.StartsWith(TEXT("LocalFog.")))
+	{
+		for (TActorIterator<ALocalFogVolume> It(World); It; ++It)
+		{
+			ULocalFogVolumeComponent* Fog = It->GetComponent();
+			if (!Fog)
+			{
+				continue;
+			}
+
+			if (Parameter == TEXT("LocalFog.Radial")) { Fog->SetRadialFogExtinction(Value); }
+			else if (Parameter == TEXT("LocalFog.Height")) { Fog->SetHeightFogExtinction(Value); }
+			else if (Parameter == TEXT("LocalFog.Falloff")) { Fog->SetHeightFogFalloff(Value); }
+			else if (Parameter == TEXT("LocalFog.Offset")) { Fog->SetHeightFogOffset(Value); }
+			else if (Parameter == TEXT("LocalFog.Phase")) { Fog->SetFogPhaseG(Value); }
+			else if (Parameter.StartsWith(TEXT("LocalFog.Albedo."))) { Fog->SetFogAlbedo(BHSetColorComponent(Fog->FogAlbedo, SuffixAfter(TEXT("LocalFog.Albedo.")), Value)); }
+			else if (Parameter.StartsWith(TEXT("LocalFog.Emissive."))) { Fog->SetFogEmissive(BHSetColorComponent(Fog->FogEmissive, SuffixAfter(TEXT("LocalFog.Emissive.")), Value)); }
+		}
+	}
+	else if (Parameter.StartsWith(TEXT("Sky.")))
+	{
+		for (TActorIterator<ASkyAtmosphere> It(World); It; ++It)
+		{
+			USkyAtmosphereComponent* Sky = It->GetComponent();
+			if (!Sky)
+			{
+				continue;
+			}
+
+			if (Parameter.StartsWith(TEXT("Sky.Luminance."))) { Sky->SetSkyLuminanceFactor(BHSetColorComponent(Sky->SkyLuminanceFactor, SuffixAfter(TEXT("Sky.Luminance.")), Value)); }
+			else if (Parameter.StartsWith(TEXT("Sky.Aerial."))) { Sky->SetSkyAndAerialPerspectiveLuminanceFactor(BHSetColorComponent(Sky->SkyAndAerialPerspectiveLuminanceFactor, SuffixAfter(TEXT("Sky.Aerial.")), Value)); }
+			else if (Parameter == TEXT("Sky.MultiScattering")) { Sky->SetMultiScatteringFactor(Value); }
+			else if (Parameter == TEXT("Sky.HeightFogContribution")) { Sky->SetHeightFogContribution(Value); }
+			else if (Parameter == TEXT("Sky.AerialDistance")) { Sky->SetAerialPespectiveViewDistanceScale(Value); }
+			else if (Parameter.StartsWith(TEXT("Sky.Ground.")))
+			{
+				const FLinearColor Color = BHSetColorComponent(FLinearColor(Sky->GroundAlbedo), SuffixAfter(TEXT("Sky.Ground.")), Value);
+				Sky->SetGroundAlbedo(Color.ToFColor(false));
+			}
+			else if (Parameter == TEXT("Sky.RayleighScale")) { Sky->SetRayleighScatteringScale(Value); }
+			else if (Parameter == TEXT("Sky.MieScale")) { Sky->SetMieScatteringScale(Value); }
+			else if (Parameter == TEXT("Sky.MieAbsorptionScale")) { Sky->SetMieAbsorptionScale(Value); }
+			else if (Parameter == TEXT("Sky.MieAnisotropy")) { Sky->SetMieAnisotropy(Value); }
+			else if (Parameter == TEXT("Sky.AbsorptionScale")) { Sky->SetOtherAbsorptionScale(Value); }
+		}
+		for (TActorIterator<ASkyLight> It(World); It; ++It)
+		{
+			if (USkyLightComponent* SkyLight = It->GetLightComponent())
+			{
+				SkyLight->SetCaptureIsDirty();
+			}
+		}
+	}
+	else if (Parameter.StartsWith(TEXT("Moon.")))
+	{
+		for (TActorIterator<ADirectionalLight> It(World); It; ++It)
+		{
+			UDirectionalLightComponent* Light = Cast<UDirectionalLightComponent>(It->GetLightComponent());
+			if (!Light || !Light->bAtmosphereSunLight)
+			{
+				continue;
+			}
+
+			if (Parameter == TEXT("Moon.Intensity")) { Light->SetIntensity(Value); }
+			else if (Parameter == TEXT("Moon.Indirect")) { Light->SetIndirectLightingIntensity(Value); }
+			else if (Parameter == TEXT("Moon.Volumetric")) { Light->SetVolumetricScatteringIntensity(Value); }
+			else if (Parameter == TEXT("Moon.Pitch"))
+			{
+				FRotator Rotation = It->GetActorRotation();
+				Rotation.Pitch = Value;
+				It->SetActorRotation(Rotation);
+			}
+			else if (Parameter == TEXT("Moon.Yaw"))
+			{
+				FRotator Rotation = It->GetActorRotation();
+				Rotation.Yaw = Value;
+				It->SetActorRotation(Rotation);
+			}
+			else if (Parameter.StartsWith(TEXT("Moon.Color."))) { Light->SetLightColor(BHSetColorComponent(Light->GetLightColor(), SuffixAfter(TEXT("Moon.Color.")), Value), false); }
+			else if (Parameter.StartsWith(TEXT("Moon.Disk."))) { Light->SetAtmosphereSunDiskColorScale(BHSetColorComponent(Light->AtmosphereSunDiskColorScale, SuffixAfter(TEXT("Moon.Disk.")), Value)); }
+		}
+	}
+	else if (Parameter.StartsWith(TEXT("SkyLight.")))
+	{
+		for (TActorIterator<ASkyLight> It(World); It; ++It)
+		{
+			USkyLightComponent* SkyLight = It->GetLightComponent();
+			if (!SkyLight)
+			{
+				continue;
+			}
+
+			if (Parameter == TEXT("SkyLight.Intensity")) { SkyLight->SetIntensity(Value); }
+			else if (Parameter == TEXT("SkyLight.Volumetric")) { SkyLight->SetVolumetricScatteringIntensity(Value); }
+			else if (Parameter.StartsWith(TEXT("SkyLight.Color."))) { SkyLight->SetLightColor(BHSetColorComponent(SkyLight->GetLightColor(), SuffixAfter(TEXT("SkyLight.Color.")), Value)); }
+			else if (Parameter.StartsWith(TEXT("SkyLight.Lower."))) { SkyLight->SetLowerHemisphereColor(BHSetColorComponent(SkyLight->LowerHemisphereColor, SuffixAfter(TEXT("SkyLight.Lower.")), Value)); }
+			SkyLight->SetCaptureIsDirty();
+		}
+	}
+	else if (Parameter.StartsWith(TEXT("Post.")))
+	{
+		for (TActorIterator<APostProcessVolume> It(World); It; ++It)
+		{
+			FPostProcessSettings& Settings = It->Settings;
+			if (Parameter == TEXT("Post.Exposure"))
+			{
+				Settings.bOverride_AutoExposureMinBrightness = true;
+				Settings.bOverride_AutoExposureMaxBrightness = true;
+				Settings.AutoExposureMinBrightness = Value;
+				Settings.AutoExposureMaxBrightness = Value;
+			}
+			else if (Parameter == TEXT("Post.ExposureBias"))
+			{
+				Settings.bOverride_AutoExposureBias = true;
+				Settings.AutoExposureBias = Value;
+			}
+			else if (Parameter == TEXT("Post.Vignette"))
+			{
+				Settings.bOverride_VignetteIntensity = true;
+				Settings.VignetteIntensity = Value;
+			}
+			else if (Parameter == TEXT("Post.FilmGrain"))
+			{
+				Settings.bOverride_FilmGrainIntensity = true;
+				Settings.FilmGrainIntensity = Value;
+			}
+			else if (Parameter.StartsWith(TEXT("Post.Saturation.")))
+			{
+				Settings.bOverride_ColorSaturation = true;
+				Settings.ColorSaturation = BHSetVectorComponent(Settings.ColorSaturation, SuffixAfter(TEXT("Post.Saturation.")), Value);
+			}
+			else if (Parameter.StartsWith(TEXT("Post.Contrast.")))
+			{
+				Settings.bOverride_ColorContrast = true;
+				Settings.ColorContrast = BHSetVectorComponent(Settings.ColorContrast, SuffixAfter(TEXT("Post.Contrast.")), Value);
+			}
+			else if (Parameter.StartsWith(TEXT("Post.SceneTint.")))
+			{
+				Settings.bOverride_SceneColorTint = true;
+				Settings.SceneColorTint = BHSetColorComponent(Settings.SceneColorTint, SuffixAfter(TEXT("Post.SceneTint.")), Value);
+			}
+			else if (Parameter == TEXT("Post.IndirectIntensity"))
+			{
+				Settings.bOverride_IndirectLightingIntensity = true;
+				Settings.IndirectLightingIntensity = Value;
+			}
+			else if (Parameter.StartsWith(TEXT("Post.Indirect.")))
+			{
+				Settings.bOverride_IndirectLightingColor = true;
+				Settings.IndirectLightingColor = BHSetColorComponent(Settings.IndirectLightingColor, SuffixAfter(TEXT("Post.Indirect.")), Value);
+			}
+		}
+	}
+	else if (Parameter.StartsWith(TEXT("Flashlight.")))
+	{
+		for (TActorIterator<ABHCharacter> It(World); It; ++It)
+		{
+			It->SetFlashlightTuningValue(ParameterName, Value);
+		}
+	}
+}
+
+void ABHPlayerController::ResetAtmosphereConsoleForMenu()
+{
+	if (!IsLocalHostAdminContext())
+	{
+		return;
+	}
+
+	if (!bAtmosphereConsoleDefaultsCaptured || AtmosphereConsoleDefaultValues.IsEmpty())
+	{
+		CaptureAtmosphereConsoleDefaults();
+	}
+
+	for (const TPair<FName, float>& DefaultValue : AtmosphereConsoleDefaultValues)
+	{
+		SetAtmosphereConsoleValue(DefaultValue.Key, DefaultValue.Value);
+	}
+	ShowLocalStatusMessage(TEXT("Atmosphere console reset to its opening snapshot."), 2.0f);
+}
+
+void ABHPlayerController::ApplyPlayableAtmosphereConsoleForMenu()
+{
+	if (!IsLocalHostAdminContext())
+	{
+		return;
+	}
+
+	const TPair<const TCHAR*, float> Values[] = {
+		{TEXT("Fog.Density"), 0.180f},
+		{TEXT("Fog.HeightFalloff"), 0.050f},
+		{TEXT("Fog.MaxOpacity"), 0.58f},
+		{TEXT("Fog.StartDistance"), 110.0f},
+		{TEXT("Fog.EndDistance"), 7600.0f},
+		{TEXT("Fog.Inscatter.R"), 0.26f},
+		{TEXT("Fog.Inscatter.G"), 0.36f},
+		{TEXT("Fog.Inscatter.B"), 0.39f},
+		{TEXT("Fog.DirectionalExponent"), 8.0f},
+		{TEXT("Fog.DirectionalStart"), 0.0f},
+		{TEXT("Fog.Directional.R"), 0.36f},
+		{TEXT("Fog.Directional.G"), 0.50f},
+		{TEXT("Fog.Directional.B"), 0.56f},
+		{TEXT("Volumetric.Extinction"), 1.15f},
+		{TEXT("Volumetric.Distance"), 7800.0f},
+		{TEXT("Volumetric.Start"), 120.0f},
+		{TEXT("Volumetric.NearFade"), 220.0f},
+		{TEXT("Volumetric.Scattering"), 0.18f},
+		{TEXT("Volumetric.Albedo.R"), 0.58f},
+		{TEXT("Volumetric.Albedo.G"), 0.68f},
+		{TEXT("Volumetric.Albedo.B"), 0.70f},
+		{TEXT("Volumetric.Emissive.R"), 0.032f},
+		{TEXT("Volumetric.Emissive.G"), 0.044f},
+		{TEXT("Volumetric.Emissive.B"), 0.048f},
+		{TEXT("LocalFog.Radial"), 1.15f},
+		{TEXT("LocalFog.Height"), 0.60f},
+		{TEXT("LocalFog.Falloff"), 2600.0f},
+		{TEXT("LocalFog.Offset"), -0.34f},
+		{TEXT("LocalFog.Phase"), 0.18f},
+		{TEXT("LocalFog.Albedo.R"), 0.64f},
+		{TEXT("LocalFog.Albedo.G"), 0.74f},
+		{TEXT("LocalFog.Albedo.B"), 0.76f},
+		{TEXT("LocalFog.Emissive.R"), 0.026f},
+		{TEXT("LocalFog.Emissive.G"), 0.036f},
+		{TEXT("LocalFog.Emissive.B"), 0.040f},
+		{TEXT("Sky.Luminance.R"), 0.86f},
+		{TEXT("Sky.Luminance.G"), 1.02f},
+		{TEXT("Sky.Luminance.B"), 1.24f},
+		{TEXT("Sky.Aerial.R"), 0.80f},
+		{TEXT("Sky.Aerial.G"), 0.94f},
+		{TEXT("Sky.Aerial.B"), 1.12f},
+		{TEXT("Sky.MultiScattering"), 0.78f},
+		{TEXT("Sky.HeightFogContribution"), 0.16f},
+		{TEXT("Sky.AerialDistance"), 0.34f},
+		{TEXT("Moon.Intensity"), 1.25f},
+		{TEXT("Moon.Indirect"), 1.00f},
+		{TEXT("Moon.Volumetric"), 0.10f},
+		{TEXT("SkyLight.Intensity"), 1.00f},
+		{TEXT("SkyLight.Volumetric"), 0.10f},
+		{TEXT("SkyLight.Lower.R"), 0.12f},
+		{TEXT("SkyLight.Lower.G"), 0.15f},
+		{TEXT("SkyLight.Lower.B"), 0.17f},
+		{TEXT("Post.Exposure"), 1.20f},
+		{TEXT("Post.ExposureBias"), 0.34f},
+		{TEXT("Post.Vignette"), 0.34f},
+		{TEXT("Post.FilmGrain"), 0.045f},
+		{TEXT("Post.Saturation.R"), 1.00f},
+		{TEXT("Post.Saturation.G"), 1.03f},
+		{TEXT("Post.Saturation.B"), 1.03f},
+		{TEXT("Post.Contrast.R"), 0.96f},
+		{TEXT("Post.Contrast.G"), 0.97f},
+		{TEXT("Post.Contrast.B"), 0.97f},
+		{TEXT("Post.SceneTint.R"), 1.08f},
+		{TEXT("Post.SceneTint.G"), 1.14f},
+		{TEXT("Post.SceneTint.B"), 1.18f},
+		{TEXT("Post.IndirectIntensity"), 1.00f},
+		{TEXT("Post.Indirect.R"), 0.48f},
+		{TEXT("Post.Indirect.G"), 0.62f},
+		{TEXT("Post.Indirect.B"), 0.78f},
+		{TEXT("Flashlight.IntensityScale"), 1.00f},
+		{TEXT("Flashlight.RadiusScale"), 1.00f},
+		{TEXT("Flashlight.VolumetricScale"), 0.65f},
+		{TEXT("Flashlight.BeamLengthScale"), 0.80f},
+		{TEXT("Flashlight.BeamOpacityScale"), 0.72f},
+		{TEXT("Flashlight.BeamBrightnessScale"), 0.82f},
+		{TEXT("Flashlight.ConeScale"), 0.90f},
+		{TEXT("Flashlight.RayVisibilityScale"), 1.35f},
+		{TEXT("Flashlight.RayWidthScale"), 1.12f},
+		{TEXT("Flashlight.RayStartOffset"), 58.0f}
+	};
+
+	for (const TPair<const TCHAR*, float>& Pair : Values)
+	{
+		SetAtmosphereConsoleValue(FName(Pair.Key), Pair.Value);
+	}
+	ShowLocalStatusMessage(TEXT("Playable fog tuning applied."), 2.0f);
+}
+
+void ABHPlayerController::SaveAtmosphereConsoleProfileForMenu()
+{
+	if (!IsLocalHostAdminContext() || !GConfig)
+	{
+		return;
+	}
+
+	int32 SavedCount = 0;
+	BHForEachAtmosphereSliderSpec([this, &SavedCount](const FBHAtmosphereSliderSpec& Spec)
+	{
+		const FName ParameterName(Spec.ParameterName);
+		GConfig->SetFloat(BHAtmosphereProfileConfigSection, Spec.ParameterName, GetAtmosphereConsoleValue(ParameterName), GGameUserSettingsIni);
+		++SavedCount;
+	});
+
+	GConfig->SetBool(BHAtmosphereProfileConfigSection, TEXT("Enabled"), true, GGameUserSettingsIni);
+	GConfig->SetString(BHAtmosphereProfileConfigSection, TEXT("SavedAtUtc"), *FDateTime::UtcNow().ToIso8601(), GGameUserSettingsIni);
+	GConfig->Flush(false, GGameUserSettingsIni);
+
+	ShowLocalStatusMessage(FString::Printf(TEXT("Saved Foggrounds atmosphere profile (%d sliders)."), SavedCount), 2.5f);
+}
+
+void ABHPlayerController::LoadAtmosphereConsoleProfileForMenu()
+{
+	ApplySavedAtmosphereConsoleProfile(true);
+}
+
+void ABHPlayerController::ApplySavedAtmosphereConsoleProfileFromTimer()
+{
+	const UWorld* World = GetWorld();
+	const ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
+	const bool bFoggrounds = BHGS && BHGS->ActiveLevelName.Equals(TEXT("Foggrounds"), ESearchCase::IgnoreCase);
+	if (bFoggrounds)
+	{
+		ApplySavedAtmosphereConsoleProfile(false);
+	}
+}
+
+bool ABHPlayerController::ApplySavedAtmosphereConsoleProfile(bool bShowStatus)
+{
+	if (!IsLocalHostAdminContext() || !GConfig)
+	{
+		return false;
+	}
+
+	bool bEnabled = false;
+	if (!GConfig->GetBool(BHAtmosphereProfileConfigSection, TEXT("Enabled"), bEnabled, GGameUserSettingsIni) || !bEnabled)
+	{
+		if (bShowStatus)
+		{
+			ShowLocalStatusMessage(TEXT("No saved Foggrounds atmosphere profile found."), 2.5f);
+		}
+		return false;
+	}
+
+	int32 LoadedCount = 0;
+	BHForEachAtmosphereSliderSpec([this, &LoadedCount](const FBHAtmosphereSliderSpec& Spec)
+	{
+		float SavedValue = 0.0f;
+		if (GConfig->GetFloat(BHAtmosphereProfileConfigSection, Spec.ParameterName, SavedValue, GGameUserSettingsIni))
+		{
+			SetAtmosphereConsoleValue(FName(Spec.ParameterName), SavedValue);
+			++LoadedCount;
+		}
+	});
+
+	if (bShowStatus)
+	{
+		ShowLocalStatusMessage(
+			LoadedCount > 0
+				? FString::Printf(TEXT("Loaded Foggrounds atmosphere profile (%d sliders)."), LoadedCount)
+				: FString(TEXT("Saved Foggrounds profile exists, but contains no slider values.")),
+			2.5f);
+	}
+	return LoadedCount > 0;
+}
+
+FString ABHPlayerController::GetAtmosphereConsoleSummaryForMenu() const
+{
+	const UWorld* World = GetWorld();
+	const ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
+	const FString LevelName = BHGS && !BHGS->ActiveLevelName.IsEmpty() ? BHGS->ActiveLevelName : TEXT("current map");
+	const FString NetMode = World
+		? (World->GetNetMode() == NM_ListenServer ? TEXT("host") : (World->GetNetMode() == NM_Standalone ? TEXT("standalone") : TEXT("client")))
+		: TEXT("no world");
+	return FString::Printf(TEXT("%s | %s | local visual tuning"), *LevelName, *NetMode);
 }
 
 bool ABHPlayerController::TriggerTargetedJumpscareForMenu(APlayerState* TargetPlayerState, FString& OutMessage)
@@ -3161,6 +4368,7 @@ void ABHPlayerController::EnsureGraphicsPreferencesLoaded()
 	GraphicsRecommendedPreset = HardwareProfile.RecommendedPreset;
 	GraphicsRecommendedRenderScale = HardwareProfile.RecommendedRenderScale;
 	GraphicsRecommendedFpsGoal = HardwareProfile.RecommendedFpsGoal;
+	bGraphicsPreferSafeResolution = HardwareProfile.bPreferSafeResolution;
 	GraphicsPresetQuality = HardwareProfile.RecommendedPreset;
 	GraphicsRenderScalePercent = HardwareProfile.RecommendedRenderScale;
 	GraphicsAdaptiveFpsGoal = HardwareProfile.RecommendedFpsGoal;
@@ -3177,7 +4385,9 @@ void ABHPlayerController::EnsureGraphicsPreferencesLoaded()
 		GConfig->GetBool(BHGraphicsConfigSection, TEXT("ResolutionFullscreen"), bGraphicsFullscreen, GGameUserSettingsIni);
 		const bool bLoadedResolutionWidth = GConfig->GetInt(BHGraphicsConfigSection, TEXT("ResolutionWidth"), GraphicsResolutionWidth, GGameUserSettingsIni);
 		const bool bLoadedResolutionHeight = GConfig->GetInt(BHGraphicsConfigSection, TEXT("ResolutionHeight"), GraphicsResolutionHeight, GGameUserSettingsIni);
-		bGraphicsResolutionOverrideEnabled = bGraphicsResolutionOverrideEnabled || (bLoadedResolutionWidth && bLoadedResolutionHeight);
+		const bool bLoadedUsableResolution = bLoadedResolutionWidth && bLoadedResolutionHeight && GraphicsResolutionWidth > 0 && GraphicsResolutionHeight > 0;
+		bGraphicsHasSavedResolutionPreference = bLoadedUsableResolution;
+		bGraphicsResolutionOverrideEnabled = bGraphicsResolutionOverrideEnabled || bLoadedUsableResolution;
 
 		if (!bAutoHardwareGraphicsEnabled)
 		{
@@ -3244,10 +4454,22 @@ void ABHPlayerController::SaveGraphicsPreferences() const
 	SaveGraphicsPreference(TEXT("TextureQuality"), GraphicsTextureQuality);
 	SaveGraphicsPreference(TEXT("ShadowQuality"), GraphicsShadowQuality);
 	SaveGraphicsPreference(TEXT("EffectsQuality"), GraphicsEffectsQuality);
-	SaveGraphicsPreference(TEXT("ResolutionOverride"), bGraphicsResolutionOverrideEnabled);
-	SaveGraphicsPreference(TEXT("ResolutionWidth"), GraphicsResolutionWidth);
-	SaveGraphicsPreference(TEXT("ResolutionHeight"), GraphicsResolutionHeight);
-	SaveGraphicsPreference(TEXT("ResolutionFullscreen"), bGraphicsFullscreen);
+	const bool bSaveResolutionPreference = bGraphicsHasSavedResolutionPreference
+		|| (!bGraphicsAutoSafeResolutionApplied && bGraphicsResolutionOverrideEnabled && GraphicsResolutionWidth > 0 && GraphicsResolutionHeight > 0);
+	if (bSaveResolutionPreference)
+	{
+		SaveGraphicsPreference(TEXT("ResolutionOverride"), bGraphicsResolutionOverrideEnabled);
+		SaveGraphicsPreference(TEXT("ResolutionWidth"), GraphicsResolutionWidth);
+		SaveGraphicsPreference(TEXT("ResolutionHeight"), GraphicsResolutionHeight);
+		SaveGraphicsPreference(TEXT("ResolutionFullscreen"), bGraphicsFullscreen);
+	}
+	else
+	{
+		GConfig->RemoveKey(BHGraphicsConfigSection, TEXT("ResolutionOverride"), GGameUserSettingsIni);
+		GConfig->RemoveKey(BHGraphicsConfigSection, TEXT("ResolutionWidth"), GGameUserSettingsIni);
+		GConfig->RemoveKey(BHGraphicsConfigSection, TEXT("ResolutionHeight"), GGameUserSettingsIni);
+		GConfig->RemoveKey(BHGraphicsConfigSection, TEXT("ResolutionFullscreen"), GGameUserSettingsIni);
+	}
 	GConfig->Flush(false, GGameUserSettingsIni);
 }
 
@@ -3260,6 +4482,7 @@ void ABHPlayerController::ApplyStartupGraphicsSettings()
 
 	EnsureGraphicsPreferencesLoaded();
 	bGraphicsAppliedAtStartup = true;
+	bGraphicsAutoSafeResolutionApplied = false;
 
 	FString Message;
 	ApplyGraphicsPresetInternal(GraphicsPresetQuality, false, Message);
@@ -3269,11 +4492,26 @@ void ABHPlayerController::ApplyStartupGraphicsSettings()
 		GraphicsFrameRateLimit = FMath::Max(GraphicsRecommendedFpsGoal, GraphicsAdaptiveFpsGoal);
 	}
 	ApplySavedManualGraphicsTuning();
+	if (bAutoHardwareGraphicsEnabled
+		&& bGraphicsPreferSafeResolution
+		&& !bGraphicsHasSavedResolutionPreference
+		&& !bGraphicsResolutionOverrideEnabled)
+	{
+		GraphicsResolutionWidth = 1280;
+		GraphicsResolutionHeight = 720;
+		bGraphicsFullscreen = false;
+		bGraphicsResolutionOverrideEnabled = true;
+		bGraphicsAutoSafeResolutionApplied = true;
+	}
 	ApplySavedGraphicsResolution();
 	GraphicsAverageFrameTimeMs = 0.0f;
 	GraphicsAdaptiveEvaluationSeconds = -3.0f;
 
 	UE_LOG(LogTemp, Display, TEXT("BlackoutHunt graphics startup: %s"), *GetGraphicsSummaryForMenu());
+	if (bGraphicsAutoSafeResolutionApplied)
+	{
+		UE_LOG(LogTemp, Display, TEXT("BlackoutHunt graphics startup applied 1280x720 windowed safe resolution for low-spec hardware; selecting another resolution in Settings will persist the user's choice."));
+	}
 }
 
 void ABHPlayerController::ApplySavedManualGraphicsTuning()
@@ -3392,6 +4630,19 @@ void ABHPlayerController::ApplyAdaptiveGraphicsState(bool bAnnounce)
 
 	ConsoleCommand(FString::Printf(TEXT("r.SSR.Quality %d"), EffectiveEffectsQuality <= 0 ? 0 : FMath::Clamp(EffectiveEffectsQuality, 1, 4)));
 	ConsoleCommand(FString::Printf(TEXT("r.VolumetricFog %d"), EffectiveEffectsQuality >= 2 ? 1 : 0));
+	{
+		// Foggrounds is a fog-centric map: force volumetric fog on across every graphics tier so the
+		// uniform fog body and the flashlight god-rays render identically from Low through Ultra.
+		// The froxel grid is coarsened on low tiers to keep the cost viable on 4GB classroom GPUs.
+		// Outside Foggrounds this block is skipped, leaving the gated value above in place.
+		const UWorld* GraphicsWorld = GetWorld();
+		const ABHGameState* GraphicsGameState = GraphicsWorld ? GraphicsWorld->GetGameState<ABHGameState>() : nullptr;
+		if (GraphicsGameState && GraphicsGameState->ActiveLevelName.Equals(TEXT("Foggrounds"), ESearchCase::IgnoreCase))
+		{
+			ConsoleCommand(TEXT("r.VolumetricFog 1"));
+			ConsoleCommand(FString::Printf(TEXT("r.VolumetricFog.GridPixelSize %d"), EffectiveEffectsQuality >= 2 ? 8 : 16));
+		}
+	}
 	ConsoleCommand(FString::Printf(TEXT("fx.Niagara.QualityLevel %d"), EffectiveEffectsQuality));
 
 	if (EffectiveStep >= 3)
@@ -3712,6 +4963,7 @@ bool ABHPlayerController::ApplyAutoGraphicsForMenu(FString& OutMessage)
 	GraphicsRecommendedPreset = HardwareProfile.RecommendedPreset;
 	GraphicsRecommendedRenderScale = HardwareProfile.RecommendedRenderScale;
 	GraphicsRecommendedFpsGoal = HardwareProfile.RecommendedFpsGoal;
+	bGraphicsPreferSafeResolution = HardwareProfile.bPreferSafeResolution;
 	GraphicsPresetQuality = HardwareProfile.RecommendedPreset;
 	GraphicsRenderScalePercent = HardwareProfile.RecommendedRenderScale;
 	GraphicsAdaptiveFpsGoal = HardwareProfile.RecommendedFpsGoal;
@@ -3727,6 +4979,15 @@ bool ABHPlayerController::ApplyAutoGraphicsForMenu(FString& OutMessage)
 	GraphicsUnderTargetSamples = 0;
 	GraphicsOverTargetSamples = 0;
 	ApplyAdaptiveGraphicsState(false);
+	if (bGraphicsPreferSafeResolution && !bGraphicsHasSavedResolutionPreference && !bGraphicsResolutionOverrideEnabled)
+	{
+		GraphicsResolutionWidth = 1280;
+		GraphicsResolutionHeight = 720;
+		bGraphicsFullscreen = false;
+		bGraphicsResolutionOverrideEnabled = true;
+		bGraphicsAutoSafeResolutionApplied = true;
+		ApplySavedGraphicsResolution();
+	}
 	SaveGraphicsPreferences();
 
 	OutMessage = FString::Printf(TEXT("Auto graphics selected %s. %s"), BHGraphicsPresetLabel(GraphicsPresetQuality), *GetGraphicsSummaryForMenu());
@@ -3903,6 +5164,8 @@ bool ABHPlayerController::ApplyResolutionForMenu(int32 Width, int32 Height, bool
 	GraphicsResolutionHeight = SafeHeight;
 	bGraphicsFullscreen = bFullscreen;
 	bGraphicsResolutionOverrideEnabled = true;
+	bGraphicsHasSavedResolutionPreference = true;
+	bGraphicsAutoSafeResolutionApplied = false;
 	ConsoleCommand(FString::Printf(TEXT("r.SetRes %dx%d%s"), SafeWidth, SafeHeight, bFullscreen ? TEXT("f") : TEXT("w")));
 	SaveGraphicsPreferences();
 	OutMessage = FString::Printf(TEXT("Local resolution applied: %dx%d %s."), SafeWidth, SafeHeight, bFullscreen ? TEXT("Fullscreen") : TEXT("Windowed"));
@@ -3990,7 +5253,12 @@ FString ABHPlayerController::GetGraphicsSummaryForMenu() const
 		? FString::Printf(TEXT("%s, effective %d FPS"), *BaseCapText, EffectiveFrameRateLimit)
 		: BaseCapText;
 	const FString ResolutionText = bGraphicsResolutionOverrideEnabled && GraphicsResolutionWidth > 0 && GraphicsResolutionHeight > 0
-		? FString::Printf(TEXT("Res %dx%d %s"), GraphicsResolutionWidth, GraphicsResolutionHeight, bGraphicsFullscreen ? TEXT("F") : TEXT("W"))
+		? FString::Printf(
+			TEXT("Res %dx%d %s%s"),
+			GraphicsResolutionWidth,
+			GraphicsResolutionHeight,
+			bGraphicsFullscreen ? TEXT("F") : TEXT("W"),
+			bGraphicsAutoSafeResolutionApplied ? TEXT(" auto-safe") : TEXT(""))
 		: TEXT("Res default");
 
 	return FString::Printf(
@@ -4420,6 +5688,17 @@ void ABHPlayerController::HandleRoundPhaseUiState()
 		return;
 	}
 
+	// Foggrounds forces volumetric fog on for every graphics tier (see ApplyAdaptiveGraphicsState).
+	// Re-apply whenever the map becomes Foggrounds or leaves it: the initial graphics pass can run
+	// before ActiveLevelName has replicated (and on late-join/direct-load), and leaving must restore
+	// the normal quality-gated value.
+	const bool bFoggroundsActiveNow = BHGS->ActiveLevelName.Equals(TEXT("Foggrounds"), ESearchCase::IgnoreCase);
+	if (bFoggroundsActiveNow != bFoggroundsVolumetricActive)
+	{
+		bFoggroundsVolumetricActive = bFoggroundsActiveNow;
+		ApplyAdaptiveGraphicsState(false);
+	}
+
 	const EBHRoundPhase CurrentPhase = BHGS->RoundPhase;
 	if (!bRoundPhaseObserved)
 	{
@@ -4787,6 +6066,11 @@ bool ABHPlayerController::IsHighContrastHudEnabled() const
 	return bHighContrastHud;
 }
 
+bool ABHPlayerController::IsReducedFlashEnabled() const
+{
+	return bReducedFlash;
+}
+
 bool ABHPlayerController::IsLocalHostAdminContext() const
 {
 	const UWorld* World = GetWorld();
@@ -4815,6 +6099,20 @@ bool ABHPlayerController::RequireLocalHostAdmin(FString& OutMessage, const TCHAR
 		*GetNameSafe(this));
 	ShowLocalStatusMessage(OutMessage, 4.0f);
 	return false;
+}
+
+void ABHPlayerController::CaptureAtmosphereConsoleDefaults()
+{
+	AtmosphereConsoleDefaultValues.Reset();
+	const auto CaptureSpec = [this](const FBHAtmosphereSliderSpec& Spec)
+	{
+		const FName ParameterName(Spec.ParameterName);
+		AtmosphereConsoleDefaultValues.Add(ParameterName, GetAtmosphereConsoleValue(ParameterName));
+	};
+
+	BHForEachAtmosphereSliderSpec(CaptureSpec);
+
+	bAtmosphereConsoleDefaultsCaptured = true;
 }
 
 bool ABHPlayerController::TryOpenClassroomBoardWindow(FString& OutMessage)
@@ -5132,6 +6430,12 @@ void ABHPlayerController::TickAutomation()
 	UWorld* World = GetWorld();
 	if (!World)
 	{
+		return;
+	}
+
+	if (BHGI->ShouldRequestAutomationCleanExit())
+	{
+		RequestCleanQuit(TEXT("automation"));
 		return;
 	}
 
@@ -5924,6 +7228,10 @@ void ABHPlayerController::ClientSetJumpscareInputLocked_Implementation(bool bLoc
 		{
 			HideMainMenu();
 		}
+		if (AtmosphereConsoleWidget.IsValid())
+		{
+			HideAtmosphereConsole();
+		}
 		SetIgnoreMoveInput(true);
 		SetIgnoreLookInput(true);
 		bShowMouseCursor = false;
@@ -5932,7 +7240,7 @@ void ABHPlayerController::ClientSetJumpscareInputLocked_Implementation(bool bLoc
 
 	SetIgnoreMoveInput(false);
 	SetIgnoreLookInput(false);
-	if (!MainMenuWidget.IsValid())
+	if (!MainMenuWidget.IsValid() && !AtmosphereConsoleWidget.IsValid())
 	{
 		ApplyGameplayInputMode();
 	}
@@ -6209,11 +7517,60 @@ void ABHPlayerController::ClientPlayHorrorCue_Implementation(const FBHClientHorr
 		HorrorCueFlashColor = Cue.FlashColor;
 	}
 
+	// ---- Impact feel: FOV punch + camera flinch, gamepad rumble, and a brief hitstop. ----
+	const float ImpactIntensity = FMath::Clamp(FMath::Max(Cue.ShakeIntensity, Cue.FlashIntensity), 0.0f, 1.0f) * JumpscareScale;
+
+	if (Cue.FOVPunch > 0.0f && ShakeScale > 0.0f)
+	{
+		if (ABHCharacter* ControlledCharacter = Cast<ABHCharacter>(GetPawn()))
+		{
+			ControlledCharacter->PlayJumpscareCameraImpact(ImpactIntensity, Cue.FOVPunch);
+		}
+	}
+
+	if (Cue.RumbleIntensity > 0.0f && !bReducedJumpscares)
+	{
+		const float RumbleStrength = FMath::Clamp(Cue.RumbleIntensity * FMath::Max(0.35f, ImpactIntensity), 0.0f, 1.0f);
+		PlayDynamicForceFeedback(
+			RumbleStrength,
+			FMath::Clamp(Cue.DurationSeconds * 0.5f, 0.2f, 1.2f),
+			/*bAffectsLeftLarge=*/true,
+			/*bAffectsLeftSmall=*/true,
+			/*bAffectsRightLarge=*/true,
+			/*bAffectsRightSmall=*/true,
+			EDynamicForceFeedbackAction::Start,
+			HorrorCueRumbleHandle);
+	}
+
+	if (Cue.HitStopSeconds > 0.0f && !bReducedJumpscares && GetWorld())
+	{
+		// Client-local micro slow-motion for the "jolt". A game-time timer fires after
+		// HitStopSeconds of real time when the delay is scaled by the dilation factor.
+		constexpr float HitStopDilation = 0.12f;
+		UGameplayStatics::SetGlobalTimeDilation(this, HitStopDilation);
+
+		TWeakObjectPtr<ABHPlayerController> WeakThis(this);
+		FTimerDelegate RestoreDilation;
+		RestoreDilation.BindLambda([WeakThis]()
+		{
+			if (WeakThis.IsValid())
+			{
+				UGameplayStatics::SetGlobalTimeDilation(WeakThis.Get(), 1.0f);
+			}
+		});
+		const float RealStop = FMath::Clamp(Cue.HitStopSeconds, 0.0f, 0.25f);
+		GetWorldTimerManager().SetTimer(HorrorCueHitStopHandle, RestoreDilation, FMath::Max(0.001f, RealStop * HitStopDilation), false);
+	}
+
 	if (Cue.bLockInput && Cue.LockSeconds > 0.0f)
 	{
 		if (MainMenuWidget.IsValid())
 		{
 			HideMainMenu();
+		}
+		if (AtmosphereConsoleWidget.IsValid())
+		{
+			HideAtmosphereConsole();
 		}
 		SetIgnoreMoveInput(true);
 		SetIgnoreLookInput(true);
@@ -6231,7 +7588,7 @@ void ABHPlayerController::ClientPlayHorrorCue_Implementation(const FBHClientHorr
 			ABHPlayerController* PC = WeakThis.Get();
 			PC->SetIgnoreMoveInput(false);
 			PC->SetIgnoreLookInput(false);
-			if (!PC->MainMenuWidget.IsValid())
+			if (!PC->MainMenuWidget.IsValid() && !PC->AtmosphereConsoleWidget.IsValid())
 			{
 				PC->ApplyGameplayInputMode();
 			}

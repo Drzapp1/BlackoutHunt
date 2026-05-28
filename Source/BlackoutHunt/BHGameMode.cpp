@@ -21,6 +21,7 @@
 #include "BHGameSettings.h"
 #include "BHHUD.h"
 #include "BHJumpscareMonster.h"
+#include "BHJumpscarePresentation.h"
 #include "BHJumpscareVariantLibrary.h"
 #include "BHLessonPreset.h"
 #include "BHLocker.h"
@@ -74,6 +75,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
+#include "Sound/SoundBase.h"
 #include "TimerManager.h"
 
 #include <initializer_list>
@@ -169,7 +171,7 @@ bool BHJumpscareVariantHasExistingAudio(const FBHJumpscareVariant& Variant)
 
 bool BHJumpscareVariantHasProxyVisual(const FBHJumpscareVariant& Variant)
 {
-	return Variant.VariantId.ToString().Equals(TEXT("SCP096"), ESearchCase::IgnoreCase);
+	return Variant.VisualActorClass.IsNull() && Variant.SkeletalMesh.IsNull() && Variant.StaticMesh.IsNull();
 }
 
 bool BHJumpscareVariantHasExistingVisual(const FBHJumpscareVariant& Variant)
@@ -186,6 +188,11 @@ bool BHIsFabJumpscarePackVariant(const FBHJumpscareVariant& Variant)
 	return VariantId.Equals(TEXT("FabMonster01"), ESearchCase::IgnoreCase)
 		|| VariantId.Equals(TEXT("FabMonster02"), ESearchCase::IgnoreCase)
 		|| VariantId.Equals(TEXT("FabMonster03"), ESearchCase::IgnoreCase);
+}
+
+bool BHIsLegacyScp096JumpscareVariant(const FBHJumpscareVariant& Variant)
+{
+	return Variant.VariantId.ToString().Equals(TEXT("SCP096"), ESearchCase::IgnoreCase);
 }
 
 constexpr float BHJumpscareMinViewDot = 0.50f;
@@ -241,24 +248,6 @@ bool BHJumpscareTraceToFocusClear(UWorld* World, const FVector& ViewLocation, co
 
 	FHitResult Hit;
 	return !World->LineTraceSingleByChannel(Hit, ViewLocation, FocusLocation, ECC_Visibility, Params);
-}
-
-FVector BHJumpscareCloseFaceFocusLocation(const FVector& ViewLocation, const FVector& ViewForward, const FBHJumpscareVariant& Variant)
-{
-	FVector Forward = ViewForward;
-	Forward.Z = 0.0f;
-	Forward = Forward.GetSafeNormal();
-	if (Forward.IsNearlyZero())
-	{
-		Forward = FVector::ForwardVector;
-	}
-
-	const float FocusHeight = FMath::Clamp(Variant.FocusHeight, 80.0f, 320.0f);
-	const FVector CloseOffset = Variant.CloseVisualOffset;
-	const float HeightFactor = CloseOffset.Z < -80.0f ? 0.98f : 0.50f;
-	const float FaceLift = FMath::Clamp(CloseOffset.Z + FocusHeight * HeightFactor, 22.0f, 54.0f);
-	const float FaceDistance = FMath::Max(88.0f, CloseOffset.X + FMath::Clamp(FocusHeight * 0.08f, 8.0f, 18.0f));
-	return ViewLocation + Forward * FaceDistance + FVector::UpVector * FaceLift;
 }
 
 bool BHJumpscareSpawnSpaceClear(UWorld* World, const FVector& SpawnLocation, const FCollisionQueryParams& Params)
@@ -654,6 +643,31 @@ FString CsvEscape(const FString& Input)
 	return FString::Printf(TEXT("\"%s\""), *Value);
 }
 
+FString MarkdownInline(FString Input)
+{
+	Input.ReplaceInline(TEXT("\r"), TEXT(" "));
+	Input.ReplaceInline(TEXT("\n"), TEXT(" "));
+	Input.ReplaceInline(TEXT("|"), TEXT("\\|"));
+	Input.TrimStartAndEndInline();
+	return Input.IsEmpty() ? FString(TEXT("Not recorded")) : Input;
+}
+
+FString ReportDurationText(int32 Seconds)
+{
+	Seconds = FMath::Max(0, Seconds);
+	const int32 Minutes = Seconds / 60;
+	const int32 RemainderSeconds = Seconds % 60;
+	if (Minutes <= 0)
+	{
+		return FString::Printf(TEXT("%d sec"), Seconds);
+	}
+	if (RemainderSeconds <= 0)
+	{
+		return FString::Printf(TEXT("%d min"), Minutes);
+	}
+	return FString::Printf(TEXT("%d min %d sec"), Minutes, RemainderSeconds);
+}
+
 FString SanitizeReportToken(FString Token)
 {
 	Token.TrimStartAndEndInline();
@@ -1001,6 +1015,15 @@ void ABHGameMode::PostLogin(APlayerController* NewPlayer)
 
 	if (GameState && GameState->PlayerArray.Num() > MaxPlayers)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("BHGameMode: rejected join, class is full (%d/%d). Returning player to menu."),
+			GameState->PlayerArray.Num(), MaxPlayers);
+		if (ABHPlayerController* FullBHPC = Cast<ABHPlayerController>(NewPlayer))
+		{
+			// Best-effort: tell the bounced student why before they travel back to the menu.
+			FullBHPC->ClientShowStatusMessage(
+				FString::Printf(TEXT("This class is full (%d/%d). Returning you to the menu."), MaxPlayers, MaxPlayers),
+				4.0f);
+		}
 		NewPlayer->ClientTravel(TEXT("/Engine/Maps/Entry"), TRAVEL_Absolute);
 		return;
 	}
@@ -1893,9 +1916,10 @@ FBHJumpscareVariant ABHGameMode::ChooseJumpscareVariant(EBHScareEventType EventT
 	if (Candidates.IsEmpty() || TotalWeight <= 0.0f)
 	{
 		FBHJumpscareVariant Fallback;
-		Fallback.VariantId = TEXT("SCP096");
-		Fallback.DisplayName = TEXT("SCP-096 Prototype");
+		Fallback.VariantId = TEXT("ProxyRed");
+		Fallback.DisplayName = TEXT("Procedural Red Proxy");
 		Fallback.Weight = 1.0f;
+		Fallback.LaunchSound = TSoftObjectPtr<USoundBase>(FSoftObjectPath(TEXT("/Game/BlackoutHunt/Audio/SW_TerrifiedScreamFaint.SW_TerrifiedScreamFaint")));
 		Fallback.FocusHeight = 145.0f;
 		Fallback.LightColor = FLinearColor(1.0f, 0.02f, 0.0f, 1.0f);
 		Fallback.CameraShakeIntensity = 0.96f;
@@ -1927,7 +1951,7 @@ FString ABHGameMode::GetJumpscareVariantTestReport() const
 
 	if (Variants.IsEmpty())
 	{
-		Report += TEXT("No configured variants. Runtime scares will use the SCP096 fallback proxy.");
+		Report += TEXT("No configured variants. Runtime scares will use the procedural fallback proxy.");
 		return Report;
 	}
 
@@ -1967,6 +1991,14 @@ bool ABHGameMode::ResolveJumpscareVariantToken(const FString& VariantToken, FBHJ
 	{
 		OutError = TEXT("Missing jumpscare variant. Use Escape > Round > Test Commands.");
 		return false;
+	}
+
+	if (Token.Equals(TEXT("SCP096"), ESearchCase::IgnoreCase)
+		|| Token.Equals(TEXT("SCP-096"), ESearchCase::IgnoreCase))
+	{
+		OutVariant = MakeLegacyScp096ProxyJumpscareVariant();
+		OutVariantIndex = INDEX_NONE;
+		return true;
 	}
 
 	if (Token.IsNumeric())
@@ -2107,7 +2139,7 @@ void ABHGameMode::TriggerCloseOverlayJumpscare(ABHCharacter* Target, const FBHJu
 	FVector ViewLocation = Target->GetActorLocation() + FVector(0.0f, 0.0f, 95.0f);
 	FVector ViewForward = Target->GetActorForwardVector().GetSafeNormal();
 	BHResolveJumpscareView(Target, TargetPC, ViewLocation, ViewForward);
-	const FVector FocusLocation = BHJumpscareCloseFaceFocusLocation(ViewLocation, ViewForward, Variant);
+	const FVector FocusLocation = BHResolveJumpscareCloseFocusLocation(ViewLocation, ViewForward, Variant);
 	const float CloseHoldDuration = FMath::Clamp(HoldDuration, 0.8f, 2.0f);
 
 	RecordPlaytestTelemetryMarker(TEXT("jumpscare"), Target->GetActorLocation(), FString::Printf(TEXT("close_overlay variant=%s"), *Variant.VariantId.ToString()), nullptr, Target->GetPlayerState<ABHPlayerState>());
@@ -2281,10 +2313,12 @@ void ABHGameMode::TestJumpscareVariant(ABHPlayerController* RequestingController
 
 	const FString VariantName = Variant.DisplayName.IsEmpty() ? Variant.VariantId.ToString() : Variant.DisplayName;
 	const TArray<FBHJumpscareVariant> Variants = GetResolvedJumpscareVariants();
-	const FString Label = FString::Printf(TEXT("%d/%d %s"),
-		VariantIndex + 1,
-		FMath::Max(1, Variants.Num()),
-		*VariantName);
+	const FString Label = VariantIndex == INDEX_NONE
+		? VariantName
+		: FString::Printf(TEXT("%d/%d %s"),
+			VariantIndex + 1,
+			FMath::Max(1, Variants.Num()),
+			*VariantName);
 	TriggerTesterJumpscareVariant(RequestingController, Variant, Label);
 }
 
@@ -2300,6 +2334,11 @@ void ABHGameMode::TriggerTesterJumpscareVariant(ABHPlayerController* RequestingC
 	if (!Target || !BHPS || BHPS->LifeState != EBHPlayerLifeState::Alive)
 	{
 		RequestingController->ClientShowStatusMessage(TEXT("Jumpscare testing needs an alive player pawn."), 3.0f);
+		return;
+	}
+	if (BHIsLegacyScp096JumpscareVariant(Variant))
+	{
+		TriggerMonsterChargeJumpscareWithVariant(Target, Variant, FString::Printf(TEXT("Jumpscare test: %s"), *TestLabel), 44.0f, 44.0f);
 		return;
 	}
 
@@ -2531,7 +2570,11 @@ void ABHGameMode::TriggerTesterSuperJumpscare(ABHPlayerController* RequestingCon
 
 	const FVector TargetLocation = Target->GetActorLocation();
 	const float FocusHeight = FMath::Clamp(Variant.FocusHeight, 80.0f, 320.0f);
-	const float TotalLockSeconds = 4.95f;
+	const float StageFocusHeight = FMath::Clamp(FocusHeight - 20.0f, 110.0f, 150.0f);
+	const float TotalLockSeconds = 6.35f;
+	const float CrossDelaySeconds = 1.55f;
+	const float BendDelaySeconds = 3.05f;
+	const float ChargeDelaySeconds = 4.55f;
 	const FLinearColor StageColor = Variant.LightColor.A > 0.0f ? Variant.LightColor : FLinearColor(1.0f, 0.04f, 0.02f, 1.0f);
 	TWeakObjectPtr<ABHGameMode> WeakGameMode(this);
 	TWeakObjectPtr<ABHPlayerController> WeakController(RequestingController);
@@ -2572,11 +2615,11 @@ void ABHGameMode::TriggerTesterSuperJumpscare(ABHPlayerController* RequestingCon
 		}
 	};
 
-	SendStageCue(RequestingController, PeekEnd + FVector(0.0f, 0.0f, FocusHeight), TEXT("Something sees you."), Variant, StageColor, 1.35f, TotalLockSeconds, 0.42f, 0.18f, 0.55f, 0.0f);
-	BHSpawnScriptedJumpscareStage(GetWorld(), RequestingController, Variant, TArray<FVector>{ PeekStart, PeekEnd }, 420.0f, 1.25f, Target, true, false);
+	SendStageCue(RequestingController, PeekEnd + FVector(0.0f, 0.0f, StageFocusHeight), TEXT("Something sees you."), Variant, StageColor, 1.20f, TotalLockSeconds, 0.34f, 0.08f, 0.75f, 0.0f);
+	BHSpawnScriptedJumpscareStage(GetWorld(), RequestingController, Variant, TArray<FVector>{ PeekStart, PeekEnd }, 720.0f, 1.05f, Target, true, false);
 
 	FTimerDelegate CrossDelegate;
-	CrossDelegate.BindLambda([WeakController, Variant, StageColor, CrossStart, CrossEnd, FocusHeight, TotalLockSeconds]()
+	CrossDelegate.BindLambda([WeakController, Variant, StageColor, CrossStart, CrossEnd, StageFocusHeight, TotalLockSeconds, CrossDelaySeconds]()
 	{
 		ABHPlayerController* TargetPC = WeakController.Get();
 		if (!TargetPC)
@@ -2586,31 +2629,29 @@ void ABHGameMode::TriggerTesterSuperJumpscare(ABHPlayerController* RequestingCon
 
 		FBHClientHorrorCue Cue;
 		Cue.EventType = EBHScareEventType::MonsterCharge;
-		Cue.FocusLocation = (CrossStart + CrossEnd) * 0.5f + FVector(0.0f, 0.0f, FocusHeight);
+		Cue.FocusLocation = (CrossStart + CrossEnd) * 0.5f + FVector(0.0f, 0.0f, StageFocusHeight);
 		Cue.Message = TEXT("");
 		Cue.DurationSeconds = 0.95f;
-		Cue.LockSeconds = FMath::Max(0.0f, TotalLockSeconds - 1.05f);
-		Cue.ShakeIntensity = 0.68f;
-		Cue.CameraJitterDuration = 0.95f;
-		Cue.CameraJitterFrequency = 42.0f;
-		Cue.FlashIntensity = 0.28f;
+		Cue.LockSeconds = FMath::Max(0.0f, TotalLockSeconds - CrossDelaySeconds);
+		Cue.ShakeIntensity = 0.52f;
+		Cue.CameraJitterDuration = 0.90f;
+		Cue.CameraJitterFrequency = 40.0f;
+		Cue.FlashIntensity = 0.18f;
 		Cue.FlashColor = StageColor;
-		Cue.AudioAsset = Variant.LaunchSound;
-		Cue.AudioVolume = 1.2f;
 		Cue.VariantId = Variant.VariantId;
 		Cue.bSnapToFocus = true;
 		Cue.bLockInput = true;
 		TargetPC->ClientSnapViewToFlatFocus(Cue.FocusLocation);
 		TargetPC->ClientPlayHorrorCue(Cue);
 
-		BHSpawnScriptedJumpscareStage(TargetPC->GetWorld(), TargetPC, Variant, TArray<FVector>{ CrossStart, CrossEnd }, 5600.0f, 1.05f);
+		BHSpawnScriptedJumpscareStage(TargetPC->GetWorld(), TargetPC, Variant, TArray<FVector>{ CrossStart, CrossEnd }, 5600.0f, 0.95f, nullptr, false, false);
 	});
 	FTimerHandle CrossTimerHandle;
-	GetWorldTimerManager().SetTimer(CrossTimerHandle, CrossDelegate, 1.05f, false);
+	GetWorldTimerManager().SetTimer(CrossTimerHandle, CrossDelegate, CrossDelaySeconds, false);
 
 	FTimerDelegate ChargeDelegate;
 	FTimerDelegate BendDelegate;
-	BendDelegate.BindLambda([WeakController, Variant, StageColor, ChargeBendStart, ChargeStart, FocusHeight, TotalLockSeconds]()
+	BendDelegate.BindLambda([WeakController, Variant, StageColor, ChargeBendStart, ChargeStart, StageFocusHeight, TotalLockSeconds, BendDelaySeconds]()
 	{
 		ABHPlayerController* TargetPC = WeakController.Get();
 		if (!TargetPC)
@@ -2620,14 +2661,14 @@ void ABHGameMode::TriggerTesterSuperJumpscare(ABHPlayerController* RequestingCon
 
 		FBHClientHorrorCue Cue;
 		Cue.EventType = EBHScareEventType::MonsterCharge;
-		Cue.FocusLocation = ChargeStart + FVector(0.0f, 0.0f, FocusHeight);
+		Cue.FocusLocation = ChargeStart + FVector(0.0f, 0.0f, StageFocusHeight);
 		Cue.Message = TEXT("It moved.");
-		Cue.DurationSeconds = 0.80f;
-		Cue.LockSeconds = FMath::Max(0.0f, TotalLockSeconds - 2.05f);
-		Cue.ShakeIntensity = 0.58f;
-		Cue.CameraJitterDuration = 0.70f;
-		Cue.CameraJitterFrequency = 44.0f;
-		Cue.FlashIntensity = 0.20f;
+		Cue.DurationSeconds = 0.95f;
+		Cue.LockSeconds = FMath::Max(0.0f, TotalLockSeconds - BendDelaySeconds);
+		Cue.ShakeIntensity = 0.56f;
+		Cue.CameraJitterDuration = 0.90f;
+		Cue.CameraJitterFrequency = 42.0f;
+		Cue.FlashIntensity = 0.18f;
 		Cue.FlashColor = StageColor;
 		Cue.VariantId = Variant.VariantId;
 		Cue.bSnapToFocus = true;
@@ -2636,12 +2677,12 @@ void ABHGameMode::TriggerTesterSuperJumpscare(ABHPlayerController* RequestingCon
 		TargetPC->ClientPlayHorrorCue(Cue);
 		TargetPC->ClientShowStatusMessage(Cue.Message, 1.35f);
 
-		BHSpawnScriptedJumpscareStage(TargetPC->GetWorld(), TargetPC, Variant, TArray<FVector>{ ChargeBendStart, ChargeStart }, 3300.0f, 0.78f, nullptr, false, false);
+		BHSpawnScriptedJumpscareStage(TargetPC->GetWorld(), TargetPC, Variant, TArray<FVector>{ ChargeBendStart, ChargeStart }, 3300.0f, 0.95f, nullptr, false, false);
 	});
 	FTimerHandle BendTimerHandle;
-	GetWorldTimerManager().SetTimer(BendTimerHandle, BendDelegate, 2.05f, false);
+	GetWorldTimerManager().SetTimer(BendTimerHandle, BendDelegate, BendDelaySeconds, false);
 
-	ChargeDelegate.BindLambda([WeakGameMode, WeakController, WeakTarget, Variant, StageColor, ChargeStart, FocusHeight, TotalLockSeconds]()
+	ChargeDelegate.BindLambda([WeakGameMode, WeakController, WeakTarget, Variant, StageColor, ChargeStart, StageFocusHeight, TotalLockSeconds, ChargeDelaySeconds]()
 	{
 		ABHGameMode* GameMode = WeakGameMode.Get();
 		ABHPlayerController* TargetPC = WeakController.Get();
@@ -2653,17 +2694,15 @@ void ABHGameMode::TriggerTesterSuperJumpscare(ABHPlayerController* RequestingCon
 
 		FBHClientHorrorCue Cue;
 		Cue.EventType = EBHScareEventType::MonsterCharge;
-		Cue.FocusLocation = ChargeStart + FVector(0.0f, 0.0f, FocusHeight);
+		Cue.FocusLocation = ChargeStart + FVector(0.0f, 0.0f, StageFocusHeight);
 		Cue.Message = TEXT("It is coming.");
-		Cue.DurationSeconds = 2.45f;
-		Cue.LockSeconds = FMath::Max(0.0f, TotalLockSeconds - 2.62f);
-		Cue.ShakeIntensity = 0.88f;
-		Cue.CameraJitterDuration = 1.85f;
+		Cue.DurationSeconds = 1.55f;
+		Cue.LockSeconds = FMath::Max(0.0f, TotalLockSeconds - ChargeDelaySeconds);
+		Cue.ShakeIntensity = 0.78f;
+		Cue.CameraJitterDuration = 1.35f;
 		Cue.CameraJitterFrequency = 48.0f;
-		Cue.FlashIntensity = 0.42f;
+		Cue.FlashIntensity = 0.32f;
 		Cue.FlashColor = StageColor;
-		Cue.AudioAsset = Variant.LaunchSound;
-		Cue.AudioVolume = 1.25f;
 		Cue.VariantId = Variant.VariantId;
 		Cue.bSnapToFocus = true;
 		Cue.bLockInput = true;
@@ -2679,12 +2718,12 @@ void ABHGameMode::TriggerTesterSuperJumpscare(ABHPlayerController* RequestingCon
 		ABHJumpscareMonster* Monster = GameMode->GetWorld()->SpawnActor<ABHJumpscareMonster>(ChargeStart, SpawnRotation, SpawnParams);
 		if (Monster)
 		{
-			Monster->Configure(TargetCharacter, 9800.0f, 6.6f, 0.10f);
+			Monster->Configure(TargetCharacter, 8200.0f, 4.30f, 0.0f, false);
 			Monster->ConfigureVariant(Variant);
 		}
 	});
 	FTimerHandle ChargeTimerHandle;
-	GetWorldTimerManager().SetTimer(ChargeTimerHandle, ChargeDelegate, 2.62f, false);
+	GetWorldTimerManager().SetTimer(ChargeTimerHandle, ChargeDelegate, ChargeDelaySeconds, false);
 
 	FreezeTargetForJumpscare(Target, TotalLockSeconds);
 	CutLightsForJumpscare(TargetLocation, ChargeBendStart, 3200.0f, 10.5f);
@@ -2894,6 +2933,17 @@ void ABHGameMode::RecordRevisionAnswer(ABHCharacter* Character, const FBHRevisio
 	const int32 MasteredAnswers = Stats.CorrectAnswers + Stats.CorrectionsCompleted;
 	Stats.MasteryPercent = Stats.Attempts > 0 ? FMath::Clamp(100.0f * static_cast<float>(MasteredAnswers) / static_cast<float>(Stats.Attempts), 0.0f, 100.0f) : 0.0f;
 	BHPS->RevisionStats = Stats;
+
+	// Spaced-repetition review loop: a miss queues the exact question to be
+	// re-asked later; answering it correctly clears it from the queue.
+	if (bCorrect)
+	{
+		BHPS->DequeueRevisionReview(Question.Id);
+	}
+	else
+	{
+		BHPS->EnqueueRevisionReview(Question.Id);
+	}
 
 	if (bCorrect && BHPS->PlayerRole == EBHPlayerRole::FakeHunter)
 	{
@@ -3759,7 +3809,29 @@ bool ABHGameMode::ExportRevisionReportToDisk(EBHRoundPhase ResultPhase, bool bAu
 		int32 Attempts = 0;
 		int32 Correct = 0;
 		TSet<FString> MissedBy;
+		// Distractor analysis: how many times each specific wrong answer was chosen,
+		// so the report can name the actual misconception, not just "this was missed".
+		TMap<FString, int32> WrongAnswerCounts;
 	};
+
+	struct FTopicReportRow
+	{
+		EBHPhysicsTopic Topic = EBHPhysicsTopic::ForcesAndMotion;
+		int32 Attempts = 0;
+		int32 Correct = 0;
+		int32 Wrong = 0;
+		TMap<FString, int32> MissesBySubtopic;
+	};
+
+	FTopicReportRow TopicRows[4];
+	for (int32 TopicIndex = 0; TopicIndex < 4; ++TopicIndex)
+	{
+		TopicRows[TopicIndex].Topic = static_cast<EBHPhysicsTopic>(TopicIndex);
+	}
+	int32 DifficultyAttempts[3] = {0, 0, 0};
+	float FirstAttemptSeconds = 0.0f;
+	float LastAttemptSeconds = 0.0f;
+	bool bHasAttemptTime = false;
 
 	TMap<FString, FStudentReportRow> StudentsByName;
 	if (GameState)
@@ -3799,15 +3871,36 @@ bool ABHGameMode::ExportRevisionReportToDisk(EBHRoundPhase ResultPhase, bool bAu
 		++StudentRow.Attempts;
 		StudentRow.Points += FMath::Max(0, Attempt.PointsEarned);
 		const int32 TopicIndex = ReportTopicIndex(Attempt.Topic);
+		const int32 DifficultyIndex = FMath::Clamp(static_cast<int32>(Attempt.Difficulty), 0, 2);
+		++DifficultyAttempts[DifficultyIndex];
+		if (!bHasAttemptTime)
+		{
+			FirstAttemptSeconds = Attempt.TimestampSeconds;
+			LastAttemptSeconds = Attempt.TimestampSeconds;
+			bHasAttemptTime = true;
+		}
+		else
+		{
+			FirstAttemptSeconds = FMath::Min(FirstAttemptSeconds, Attempt.TimestampSeconds);
+			LastAttemptSeconds = FMath::Max(LastAttemptSeconds, Attempt.TimestampSeconds);
+		}
+
 		++StudentRow.TopicAttempts[TopicIndex];
+		++TopicRows[TopicIndex].Attempts;
 		if (Attempt.bCorrect)
 		{
 			++StudentRow.Correct;
 			++StudentRow.TopicCorrect[TopicIndex];
+			++TopicRows[TopicIndex].Correct;
 			StudentRow.CorrectQuestionIds.Add(Attempt.QuestionId.IsEmpty() ? Attempt.QuestionText.Left(48) : Attempt.QuestionId);
 		}
 		else
 		{
+			++TopicRows[TopicIndex].Wrong;
+			const FString SubtopicKey = Attempt.QuestionSubtopic.IsEmpty()
+				? (Attempt.TopicName.IsEmpty() ? FBHRevisionQuestionBank::TopicToString(Attempt.Topic) : Attempt.TopicName)
+				: Attempt.QuestionSubtopic;
+			++TopicRows[TopicIndex].MissesBySubtopic.FindOrAdd(SubtopicKey);
 			StudentRow.WrongQuestionIds.Add(Attempt.QuestionId.IsEmpty() ? Attempt.QuestionText.Left(48) : Attempt.QuestionId);
 		}
 
@@ -3825,6 +3918,14 @@ bool ABHGameMode::ExportRevisionReportToDisk(EBHRoundPhase ResultPhase, bool bAu
 		else
 		{
 			QuestionRow.MissedBy.Add(PlayerName);
+			// Record which distractor was chosen so the misconception is identifiable.
+			// Skip the generic placeholder text used when no specific choice was captured.
+			if (!Attempt.SelectedAnswer.IsEmpty()
+				&& !Attempt.SelectedAnswer.Equals(TEXT("Incorrect response"), ESearchCase::IgnoreCase)
+				&& !Attempt.SelectedAnswer.Equals(Attempt.CorrectAnswer, ESearchCase::IgnoreCase))
+			{
+				++QuestionRow.WrongAnswerCounts.FindOrAdd(Attempt.SelectedAnswer);
+			}
 		}
 	}
 
@@ -3840,19 +3941,22 @@ bool ABHGameMode::ExportRevisionReportToDisk(EBHRoundPhase ResultPhase, bool bAu
 
 	const FString ReportDir = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("ClassReports")));
 	IFileManager::Get().MakeDirectory(*ReportDir, true);
-	const FString Timestamp = FDateTime::UtcNow().ToString(TEXT("%Y%m%d_%H%M%S"));
+	const FDateTime ExportedUtc = FDateTime::UtcNow();
+	const FString ExportedUtcIso = ExportedUtc.ToIso8601();
+	const FString Timestamp = ExportedUtc.ToString(TEXT("%Y%m%d_%H%M%S"));
 	const FString LevelToken = SanitizeReportToken(RuntimeLevelName);
 	const FString Prefix = FString::Printf(TEXT("BlackoutHunt_%s_stage%d_%s"), *LevelToken, RuntimeStageIndex, *Timestamp);
 	const FString SummaryPath = FPaths::Combine(ReportDir, Prefix + TEXT("_summary.csv"));
 	const FString StudentPath = FPaths::Combine(ReportDir, Prefix + TEXT("_students.csv"));
 	const FString AttemptsPath = FPaths::Combine(ReportDir, Prefix + TEXT("_attempts.csv"));
 	const FString QuestionsPath = FPaths::Combine(ReportDir, Prefix + TEXT("_questions.csv"));
+	const FString TeacherRecapPath = FPaths::Combine(ReportDir, Prefix + TEXT("_teacher_recap.md"));
 
 	const FBHClassRevisionSummary ClassSummary = ComputeRevisionSummary();
 	const FString ResultText = StaticEnum<EBHRoundPhase>() ? StaticEnum<EBHRoundPhase>()->GetNameStringByValue(static_cast<int64>(ResultPhase)) : TEXT("Unknown");
 	TArray<FString> SummaryLines;
 	SummaryLines.Add(MakeCsvRow({TEXT("Metric"), TEXT("Value")}));
-	SummaryLines.Add(MakeCsvRow({TEXT("ExportedUtc"), FDateTime::UtcNow().ToIso8601()}));
+	SummaryLines.Add(MakeCsvRow({TEXT("ExportedUtc"), ExportedUtcIso}));
 	SummaryLines.Add(MakeCsvRow({TEXT("Result"), ResultText}));
 	SummaryLines.Add(MakeCsvRow({TEXT("Level"), RuntimeLevelName}));
 	SummaryLines.Add(MakeCsvRow({TEXT("StageIndex"), FString::FromInt(RuntimeStageIndex)}));
@@ -3965,7 +4069,7 @@ bool ABHGameMode::ExportRevisionReportToDisk(EBHRoundPhase ResultPhase, bool bAu
 	QuestionLines.Add(MakeCsvRow({
 		TEXT("QuestionId"), TEXT("Topic"), TEXT("Subtopic"), TEXT("Difficulty"), TEXT("Type"), TEXT("Question"),
 		TEXT("CorrectAnswer"), TEXT("Attempts"), TEXT("Correct"), TEXT("Wrong"), TEXT("AccuracyPercent"),
-		TEXT("MissedBy"), TEXT("Explanation")
+		TEXT("MissedBy"), TEXT("TopWrongAnswer"), TEXT("TopWrongAnswerCount"), TEXT("Explanation")
 	}));
 
 	TArray<FString> QuestionKeys;
@@ -3984,6 +4088,19 @@ bool ABHGameMode::ExportRevisionReportToDisk(EBHRoundPhase ResultPhase, bool bAu
 		const int32 Wrong = FMath::Max(0, Row->Attempts - Row->Correct);
 		const float Accuracy = Row->Attempts > 0 ? 100.0f * static_cast<float>(Row->Correct) / static_cast<float>(Row->Attempts) : 0.0f;
 		const FBHQuestionAttemptRecord& First = Row->FirstAttempt;
+
+		// Most-chosen distractor for this question, for spreadsheet misconception analysis.
+		FString TopWrongAnswer;
+		int32 TopWrongCount = 0;
+		for (const TPair<FString, int32>& WrongPair : Row->WrongAnswerCounts)
+		{
+			if (WrongPair.Value > TopWrongCount)
+			{
+				TopWrongCount = WrongPair.Value;
+				TopWrongAnswer = WrongPair.Key;
+			}
+		}
+
 		QuestionLines.Add(MakeCsvRow({
 			First.QuestionId,
 			First.TopicName.IsEmpty() ? FBHRevisionQuestionBank::TopicToString(First.Topic) : First.TopicName,
@@ -3997,23 +4114,437 @@ bool ABHGameMode::ExportRevisionReportToDisk(EBHRoundPhase ResultPhase, bool bAu
 			FString::FromInt(Wrong),
 			FString::Printf(TEXT("%.1f"), Accuracy),
 			FString::Join(MissedBy, TEXT("; ")),
+			TopWrongAnswer,
+			FString::FromInt(TopWrongCount),
 			First.Explanation
 		}));
 	}
+
+	const ABHGameState* BHGS = GetGameState<ABHGameState>();
+	FBHLessonPreset SelectedPreset;
+	FString PresetMessage;
+	const bool bHasSelectedPreset = FBHLessonPresetStore::TryFindPreset(FBHLessonPresetStore::GetSelectedPresetId(), SelectedPreset, PresetMessage);
+	const FString PresetSummary = bHasSelectedPreset
+		? FBHLessonPresetStore::DescribePreset(SelectedPreset)
+		: FString(TEXT("Manual/live classroom settings"));
+	const int32 ActivityWindowSeconds = bHasAttemptTime
+		? FMath::RoundToInt(FMath::Max(0.0f, LastAttemptSeconds - FirstAttemptSeconds))
+		: 0;
+	int32 TotalCorrect = 0;
+	int32 TotalWrong = 0;
+	for (int32 TopicIndex = 0; TopicIndex < 4; ++TopicIndex)
+	{
+		TotalCorrect += TopicRows[TopicIndex].Correct;
+		TotalWrong += TopicRows[TopicIndex].Wrong;
+	}
+	int32 TotalPoints = 0;
+	for (const TPair<FString, FStudentReportRow>& Pair : StudentsByName)
+	{
+		TotalPoints += FMath::Max(0, Pair.Value.Points);
+	}
+
+	struct FTopicMarkdownRow
+	{
+		EBHPhysicsTopic Topic = EBHPhysicsTopic::ForcesAndMotion;
+		int32 Attempts = 0;
+		int32 Correct = 0;
+		int32 Wrong = 0;
+		float Accuracy = 0.0f;
+		FString TopMissedSubtopic;
+		int32 TopMissedSubtopicCount = 0;
+	};
+
+	TArray<FTopicMarkdownRow> TopicMarkdownRows;
+	for (const FTopicReportRow& TopicRow : TopicRows)
+	{
+		if (TopicRow.Attempts <= 0)
+		{
+			continue;
+		}
+
+		FTopicMarkdownRow MarkdownRow;
+		MarkdownRow.Topic = TopicRow.Topic;
+		MarkdownRow.Attempts = TopicRow.Attempts;
+		MarkdownRow.Correct = TopicRow.Correct;
+		MarkdownRow.Wrong = TopicRow.Wrong;
+		MarkdownRow.Accuracy = 100.0f * static_cast<float>(TopicRow.Correct) / static_cast<float>(FMath::Max(1, TopicRow.Attempts));
+		for (const TPair<FString, int32>& SubtopicPair : TopicRow.MissesBySubtopic)
+		{
+			if (SubtopicPair.Value > MarkdownRow.TopMissedSubtopicCount)
+			{
+				MarkdownRow.TopMissedSubtopic = SubtopicPair.Key;
+				MarkdownRow.TopMissedSubtopicCount = SubtopicPair.Value;
+			}
+		}
+		TopicMarkdownRows.Add(MarkdownRow);
+	}
+	TopicMarkdownRows.Sort([](const FTopicMarkdownRow& A, const FTopicMarkdownRow& B)
+	{
+		if (!FMath::IsNearlyEqual(A.Accuracy, B.Accuracy))
+		{
+			return A.Accuracy < B.Accuracy;
+		}
+		if (A.Wrong != B.Wrong)
+		{
+			return A.Wrong > B.Wrong;
+		}
+		return static_cast<int32>(A.Topic) < static_cast<int32>(B.Topic);
+	});
+
+	TArray<FQuestionReportRow> MissedQuestionRows;
+	for (const TPair<FString, FQuestionReportRow>& Pair : QuestionsByKey)
+	{
+		const int32 Wrong = FMath::Max(0, Pair.Value.Attempts - Pair.Value.Correct);
+		if (Wrong > 0)
+		{
+			MissedQuestionRows.Add(Pair.Value);
+		}
+	}
+	MissedQuestionRows.Sort([](const FQuestionReportRow& A, const FQuestionReportRow& B)
+	{
+		const int32 WrongA = FMath::Max(0, A.Attempts - A.Correct);
+		const int32 WrongB = FMath::Max(0, B.Attempts - B.Correct);
+		if (WrongA != WrongB)
+		{
+			return WrongA > WrongB;
+		}
+		const float AccuracyA = A.Attempts > 0 ? 100.0f * static_cast<float>(A.Correct) / static_cast<float>(A.Attempts) : 0.0f;
+		const float AccuracyB = B.Attempts > 0 ? 100.0f * static_cast<float>(B.Correct) / static_cast<float>(B.Attempts) : 0.0f;
+		if (!FMath::IsNearlyEqual(AccuracyA, AccuracyB))
+		{
+			return AccuracyA < AccuracyB;
+		}
+		return A.FirstAttempt.QuestionId < B.FirstAttempt.QuestionId;
+	});
+
+	struct FStudentFollowupRow
+	{
+		FString PlayerName;
+		float Mastery = 0.0f;
+		float Accuracy = 0.0f;
+		int32 Attempts = 0;
+		int32 Correct = 0;
+		int32 Contributions = 0;
+		FString WeakTopic;
+		FString RecommendedDifficulty;
+		FString Reason;
+	};
+
+	auto EffectiveStatsForRow = [](const FStudentReportRow& Row)
+	{
+		FBHPlayerRevisionStats EffectiveStats = Row.Stats;
+		if (!Row.bHasPlayerState && Row.Attempts > 0)
+		{
+			EffectiveStats.Attempts = Row.Attempts;
+			EffectiveStats.CorrectAnswers = Row.Correct;
+			EffectiveStats.MasteryPercent = 100.0f * static_cast<float>(Row.Correct) / static_cast<float>(FMath::Max(1, Row.Attempts));
+		}
+		return EffectiveStats;
+	};
+
+	TArray<FStudentFollowupRow> FollowupRows;
+	for (const FString& StudentName : StudentNames)
+	{
+		const FStudentReportRow* Row = StudentsByName.Find(StudentName);
+		if (!Row)
+		{
+			continue;
+		}
+		if (Row->RoleName.Contains(TEXT("Bot")))
+		{
+			continue;
+		}
+
+		const FBHPlayerRevisionStats EffectiveStats = EffectiveStatsForRow(*Row);
+		const float Accuracy = Row->Attempts > 0 ? 100.0f * static_cast<float>(Row->Correct) / static_cast<float>(Row->Attempts) : EffectiveStats.MasteryPercent;
+		const bool bBelowMastery = EffectiveStats.MasteryPercent < RevisionIndividualThreshold;
+		const bool bLowAccuracy = Row->Attempts > 0 && Accuracy < 60.0f;
+		const bool bBelowContribution = Row->bHasPlayerState && EffectiveStats.ContributionCount < GetRevisionMinimumContributionTarget();
+		if (!bBelowMastery && !bLowAccuracy && !bBelowContribution && Row->WrongQuestionIds.IsEmpty())
+		{
+			continue;
+		}
+
+		TArray<FString> Reasons;
+		if (bBelowMastery)
+		{
+			Reasons.Add(FString::Printf(TEXT("mastery %.0f%% below %.0f%%"), EffectiveStats.MasteryPercent, RevisionIndividualThreshold));
+		}
+		if (bLowAccuracy)
+		{
+			Reasons.Add(FString::Printf(TEXT("accuracy %.0f%%"), Accuracy));
+		}
+		if (bBelowContribution)
+		{
+			Reasons.Add(FString::Printf(TEXT("contributions %d/%d"), EffectiveStats.ContributionCount, GetRevisionMinimumContributionTarget()));
+		}
+		if (!Row->WrongQuestionIds.IsEmpty())
+		{
+			Reasons.Add(FString::Printf(TEXT("%d missed question(s)"), Row->WrongQuestionIds.Num()));
+		}
+
+		const EBHPhysicsTopic WeakTopic = WeakestTopicForStats(EffectiveStats, RevisionTopicMask);
+		const EBHQuestionDifficulty RecommendedDifficulty = AdaptiveDifficultyForStats(EffectiveStats, Row->Attempts <= 0 || Row->Correct >= Row->Attempts);
+		FStudentFollowupRow Followup;
+		Followup.PlayerName = Row->PlayerName;
+		Followup.Mastery = EffectiveStats.MasteryPercent;
+		Followup.Accuracy = Accuracy;
+		Followup.Attempts = Row->Attempts;
+		Followup.Correct = Row->Correct;
+		Followup.Contributions = EffectiveStats.ContributionCount;
+		Followup.WeakTopic = FBHRevisionQuestionBank::TopicToString(WeakTopic);
+		Followup.RecommendedDifficulty = FBHRevisionQuestionBank::DifficultyToString(RecommendedDifficulty);
+		Followup.Reason = FString::Join(Reasons, TEXT("; "));
+		FollowupRows.Add(Followup);
+	}
+	FollowupRows.Sort([](const FStudentFollowupRow& A, const FStudentFollowupRow& B)
+	{
+		if (!FMath::IsNearlyEqual(A.Mastery, B.Mastery))
+		{
+			return A.Mastery < B.Mastery;
+		}
+		if (!FMath::IsNearlyEqual(A.Accuracy, B.Accuracy))
+		{
+			return A.Accuracy < B.Accuracy;
+		}
+		if (A.Attempts != B.Attempts)
+		{
+			return A.Attempts > B.Attempts;
+		}
+		return A.PlayerName < B.PlayerName;
+	});
+
+	const EBHPhysicsTopic RecommendedTopic = ClassSummary.WeakTopic;
+	EBHQuestionDifficulty RecommendedClassDifficulty = EBHQuestionDifficulty::Medium;
+	if (Attempts.IsEmpty() || ClassSummary.ClassMasteryAverage < 55.0f || ClassSummary.StudentsBelowIndividualThreshold > 0)
+	{
+		RecommendedClassDifficulty = EBHQuestionDifficulty::Easy;
+	}
+	else if (ClassSummary.ClassMasteryAverage >= RevisionClassThreshold + 8.0f && ClassSummary.StudentsBelowIndividualThreshold == 0)
+	{
+		RecommendedClassDifficulty = EBHQuestionDifficulty::Hard;
+	}
+	const FString RecommendedTopicText = FBHRevisionQuestionBank::TopicToString(RecommendedTopic);
+	const FString RecommendedDifficultyText = FBHRevisionQuestionBank::DifficultyToString(RecommendedClassDifficulty);
+	const FString SuggestedPresetText = RecommendedTopic == EBHPhysicsTopic::Electricity && RecommendedClassDifficulty == EBHQuestionDifficulty::Easy
+		? FString(TEXT("Electricity easy"))
+		: FString::Printf(TEXT("Custom: %s focus, %s complexity"), *RecommendedTopicText, *RecommendedDifficultyText);
+	const FString TargetRecommendation = ClassSummary.ClassMasteryAverage < RevisionClassThreshold || ClassSummary.StudentsBelowIndividualThreshold > 0
+		? FString(TEXT("Use Support 60/40 or repeat current targets until corrections are secure."))
+		: FString(TEXT("Keep Default 70/50, or use Stretch 80/60 if the next class needs challenge."));
+	const FString StrongTopicText = TopicMarkdownRows.IsEmpty()
+		? FString(TEXT("Not enough question data"))
+		: FBHRevisionQuestionBank::TopicToString(TopicMarkdownRows.Last().Topic);
+	const int32 StudentsMeetingIndividualThreshold = FMath::Max(0, ClassSummary.ActiveStudentCount - ClassSummary.StudentsBelowIndividualThreshold);
+	const int32 ObjectiveCompleted = BHGS ? BHGS->SideObjectivesCompleted : 0;
+	const int32 ObjectiveRequired = BHGS ? BHGS->SideObjectivesRequired : ActiveSideObjectiveCount;
+	const int32 BreakersCompleted = BHGS ? BHGS->BreakersCompleted : 0;
+	const int32 BreakersRequired = BHGS ? BHGS->BreakersRequired : RequiredBreakers;
+	const FString ExitStateText = BHGS && BHGS->bExitUnlocked ? TEXT("Unlocked") : TEXT("Locked");
+	const FString FinalEscapeText = (BHGS && BHGS->FinalEscapeState != EBHFinalEscapeState::Inactive && StaticEnum<EBHFinalEscapeState>())
+		? StaticEnum<EBHFinalEscapeState>()->GetNameStringByValue(static_cast<int64>(BHGS->FinalEscapeState))
+		: FString(TEXT("Not reached"));
+	const FString NextDestinationText = BHGS && !BHGS->NextLevelName.IsEmpty()
+		? BHGS->NextLevelName
+		: (NextRuntimeLevelName.IsEmpty() ? FString(TEXT("Next classroom route")) : NextRuntimeLevelName);
+
+	TArray<FString> MarkdownLines;
+	MarkdownLines.Add(TEXT("# Blackout Hunt Classroom Report"));
+	MarkdownLines.Add(TEXT(""));
+	MarkdownLines.Add(TEXT("> Teacher-local report. This file may include lobby display names, question text, answer explanations, and follow-up suggestions. Do not project or share it with students without reviewing it first."));
+	MarkdownLines.Add(TEXT(""));
+	MarkdownLines.Add(TEXT("## Session Summary"));
+	MarkdownLines.Add(FString::Printf(TEXT("- Exported UTC: %s"), *ExportedUtcIso));
+	MarkdownLines.Add(FString::Printf(TEXT("- Map and round: %s, stage %d, result %s"), *MarkdownInline(RuntimeLevelName), RuntimeStageIndex, *MarkdownInline(ResultText)));
+	MarkdownLines.Add(FString::Printf(TEXT("- Selected preset: %s"), *MarkdownInline(PresetSummary)));
+	MarkdownLines.Add(FString::Printf(TEXT("- Live settings: focus %s, difficulty %s, class %.0f%%, individual %.0f%%, duration %s, scare %d"),
+		*MarkdownInline(FBHLessonPresetStore::TopicMaskToText(RevisionTopicMask)),
+		*MarkdownInline(RevisionDifficultyMixToString(RevisionDifficultyMix)),
+		RevisionClassThreshold,
+		RevisionIndividualThreshold,
+		*ReportDurationText(RevisionRoundDuration),
+		RevisionScareIntensity));
+	MarkdownLines.Add(FString::Printf(TEXT("- Question activity: %d attempt(s), %d correct, %d missed, %d point(s), active window %s%s"),
+		Attempts.Num(),
+		TotalCorrect,
+		TotalWrong,
+		TotalPoints,
+		*ReportDurationText(ActivityWindowSeconds),
+		bHasAttemptTime ? TEXT("") : TEXT(" (no attempts yet)")));
+	MarkdownLines.Add(FString::Printf(TEXT("- Difficulty mix attempted: Easy %d, Medium %d, Hard %d"),
+		DifficultyAttempts[0],
+		DifficultyAttempts[1],
+		DifficultyAttempts[2]));
+	MarkdownLines.Add(TEXT(""));
+
+	MarkdownLines.Add(TEXT("## Class Mastery"));
+	MarkdownLines.Add(FString::Printf(TEXT("- Class mastery: %.1f%% against %.0f%% target."), ClassSummary.ClassMasteryAverage, RevisionClassThreshold));
+	MarkdownLines.Add(FString::Printf(TEXT("- Individual target: %d/%d active student(s) at or above %.0f%%."), StudentsMeetingIndividualThreshold, ClassSummary.ActiveStudentCount, RevisionIndividualThreshold));
+	MarkdownLines.Add(FString::Printf(TEXT("- Contribution target: %d student/monitor(s) still below %d contribution(s)."), ClassSummary.StudentsWithoutContribution, GetRevisionMinimumContributionTarget()));
+	MarkdownLines.Add(FString::Printf(TEXT("- Weakest class topic: %s."), *MarkdownInline(RecommendedTopicText)));
+	MarkdownLines.Add(TEXT(""));
+
+	MarkdownLines.Add(TEXT("## Weak Topics"));
+	if (TopicMarkdownRows.IsEmpty())
+	{
+		MarkdownLines.Add(TEXT("No question attempts were recorded, so weak topics cannot be inferred yet."));
+	}
+	else
+	{
+		MarkdownLines.Add(TEXT("| Topic | Accuracy | Attempts | Missed | Most missed subtopic |"));
+		MarkdownLines.Add(TEXT("| --- | ---: | ---: | ---: | --- |"));
+		for (const FTopicMarkdownRow& Row : TopicMarkdownRows)
+		{
+			const FString MissedSubtopic = Row.TopMissedSubtopic.IsEmpty()
+				? FString(TEXT("No missed subtopic recorded"))
+				: FString::Printf(TEXT("%s (%d)"), *Row.TopMissedSubtopic, Row.TopMissedSubtopicCount);
+			MarkdownLines.Add(FString::Printf(TEXT("| %s | %.0f%% | %d | %d | %s |"),
+				*MarkdownInline(FBHRevisionQuestionBank::TopicToString(Row.Topic)),
+				Row.Accuracy,
+				Row.Attempts,
+				Row.Wrong,
+				*MarkdownInline(MissedSubtopic)));
+		}
+	}
+	MarkdownLines.Add(TEXT(""));
+
+	MarkdownLines.Add(TEXT("## Common Misconceptions"));
+	if (MissedQuestionRows.IsEmpty())
+	{
+		MarkdownLines.Add(TEXT("No missed questions were recorded. Use the next round to confirm this was genuine mastery rather than low sample size."));
+	}
+	else
+	{
+		const int32 MaxMisconceptions = FMath::Min(5, MissedQuestionRows.Num());
+		for (int32 Index = 0; Index < MaxMisconceptions; ++Index)
+		{
+			const FQuestionReportRow& Row = MissedQuestionRows[Index];
+			const int32 Wrong = FMath::Max(0, Row.Attempts - Row.Correct);
+			const float Accuracy = Row.Attempts > 0 ? 100.0f * static_cast<float>(Row.Correct) / static_cast<float>(Row.Attempts) : 0.0f;
+			const FBHQuestionAttemptRecord& First = Row.FirstAttempt;
+			MarkdownLines.Add(FString::Printf(TEXT("%d. %s - %s, %s, missed %d/%d (%.0f%% correct)."),
+				Index + 1,
+				*MarkdownInline(First.QuestionSubtopic.IsEmpty() ? First.QuestionId : First.QuestionSubtopic),
+				*MarkdownInline(First.TopicName.IsEmpty() ? FBHRevisionQuestionBank::TopicToString(First.Topic) : First.TopicName),
+				*MarkdownInline(FBHRevisionQuestionBank::DifficultyToString(First.Difficulty)),
+				Wrong,
+				Row.Attempts,
+				Accuracy));
+			MarkdownLines.Add(FString::Printf(TEXT("   - Prompt: %s"), *MarkdownInline(First.QuestionText.Left(180))));
+			if (!First.CorrectAnswer.IsEmpty())
+			{
+				MarkdownLines.Add(FString::Printf(TEXT("   - Correct answer: %s"), *MarkdownInline(First.CorrectAnswer.Left(160))));
+			}
+			// Distractor breakdown: name the most-chosen wrong answer(s) so the teacher
+			// can target the actual misconception, e.g. "8 chose 'mass times velocity'".
+			if (Row.WrongAnswerCounts.Num() > 0)
+			{
+				TArray<TPair<FString, int32>> SortedWrong;
+				for (const TPair<FString, int32>& WrongPair : Row.WrongAnswerCounts)
+				{
+					SortedWrong.Add(WrongPair);
+				}
+				SortedWrong.Sort([](const TPair<FString, int32>& A, const TPair<FString, int32>& B)
+				{
+					return A.Value > B.Value;
+				});
+				FString WrongSummary;
+				const int32 MaxDistractors = FMath::Min(3, SortedWrong.Num());
+				for (int32 WrongIndex = 0; WrongIndex < MaxDistractors; ++WrongIndex)
+				{
+					if (WrongIndex > 0)
+					{
+						WrongSummary += TEXT("; ");
+					}
+					WrongSummary += FString::Printf(TEXT("%dx \"%s\""), SortedWrong[WrongIndex].Value, *MarkdownInline(SortedWrong[WrongIndex].Key.Left(80)));
+				}
+				MarkdownLines.Add(FString::Printf(TEXT("   - Common wrong choices: %s"), *WrongSummary));
+			}
+			if (!First.Explanation.IsEmpty())
+			{
+				MarkdownLines.Add(FString::Printf(TEXT("   - Teacher explanation: %s"), *MarkdownInline(First.Explanation.Left(220))));
+			}
+		}
+	}
+	MarkdownLines.Add(TEXT(""));
+
+	MarkdownLines.Add(TEXT("## Students Needing Follow-up"));
+	if (FollowupRows.IsEmpty())
+	{
+		MarkdownLines.Add(TEXT("No individual follow-up was flagged from the recorded attempts and live mastery state."));
+	}
+	else
+	{
+		MarkdownLines.Add(TEXT("| Lobby name | Mastery | Attempts | Contributions | Recommended review | Reason |"));
+		MarkdownLines.Add(TEXT("| --- | ---: | ---: | ---: | --- | --- |"));
+		const int32 MaxFollowups = FMath::Min(8, FollowupRows.Num());
+		for (int32 Index = 0; Index < MaxFollowups; ++Index)
+		{
+			const FStudentFollowupRow& Row = FollowupRows[Index];
+			MarkdownLines.Add(FString::Printf(TEXT("| %s | %.0f%% | %d/%d | %d | %s at %s | %s |"),
+				*MarkdownInline(Row.PlayerName),
+				Row.Mastery,
+				Row.Correct,
+				Row.Attempts,
+				Row.Contributions,
+				*MarkdownInline(Row.WeakTopic),
+				*MarkdownInline(Row.RecommendedDifficulty),
+				*MarkdownInline(Row.Reason)));
+		}
+		if (FollowupRows.Num() > MaxFollowups)
+		{
+			MarkdownLines.Add(FString::Printf(TEXT("_Plus %d additional student(s) in the CSV export._"), FollowupRows.Num() - MaxFollowups));
+		}
+	}
+	MarkdownLines.Add(TEXT(""));
+
+	MarkdownLines.Add(TEXT("## Follow-up Plan"));
+	MarkdownLines.Add(FString::Printf(TEXT("- Suggested next preset: %s."), *MarkdownInline(SuggestedPresetText)));
+	MarkdownLines.Add(FString::Printf(TEXT("- Next focus: review %s at %s level, then run one short correction check before the next hunt."), *MarkdownInline(RecommendedTopicText), *MarkdownInline(RecommendedDifficultyText)));
+	MarkdownLines.Add(FString::Printf(TEXT("- Threshold guidance: %s"), *MarkdownInline(TargetRecommendation)));
+	MarkdownLines.Add(TEXT(""));
+
+	MarkdownLines.Add(TEXT("## Gameplay Notes"));
+	MarkdownLines.Add(FString::Printf(TEXT("- Objective nodes completed: %d/%d."), ObjectiveCompleted, ObjectiveRequired));
+	MarkdownLines.Add(FString::Printf(TEXT("- Breakers repaired: %d/%d. Exit state: %s."), BreakersCompleted, BreakersRequired, *ExitStateText));
+	MarkdownLines.Add(FString::Printf(TEXT("- Final escape state: %s."), *MarkdownInline(FinalEscapeText)));
+	MarkdownLines.Add(FString::Printf(TEXT("- Next route: %s."), *MarkdownInline(NextDestinationText)));
+	if (BHGI)
+	{
+		MarkdownLines.Add(TEXT(""));
+		MarkdownLines.Add(TEXT("### Train Recap Snapshot"));
+		MarkdownLines.Add(TEXT("```text"));
+		MarkdownLines.Add(BHGI->BuildTrainRecapOverview());
+		MarkdownLines.Add(TEXT(""));
+		MarkdownLines.Add(BHGI->BuildTrainRecapTopics());
+		MarkdownLines.Add(TEXT(""));
+		MarkdownLines.Add(BHGI->BuildTrainRecapTips(NextDestinationText));
+		MarkdownLines.Add(TEXT("```"));
+	}
+	MarkdownLines.Add(TEXT(""));
+
+	MarkdownLines.Add(TEXT("## Printable Class Recap"));
+	MarkdownLines.Add(TEXT("This section avoids names and answer keys. Copy only this section if you want a student-facing recap after teacher review."));
+	MarkdownLines.Add(FString::Printf(TEXT("- Class result: %.0f%% mastery from %d question attempt(s)."), ClassSummary.ClassMasteryAverage, Attempts.Num()));
+	MarkdownLines.Add(FString::Printf(TEXT("- Strongest area: %s."), *MarkdownInline(StrongTopicText)));
+	MarkdownLines.Add(FString::Printf(TEXT("- Review next: %s."), *MarkdownInline(RecommendedTopicText)));
+	MarkdownLines.Add(FString::Printf(TEXT("- Next target: practise %s questions, then retry one team node."), *MarkdownInline(RecommendedDifficultyText)));
+	MarkdownLines.Add(TEXT(""));
 
 	const bool bSavedSummary = FFileHelper::SaveStringToFile(FString::Join(SummaryLines, LINE_TERMINATOR), *SummaryPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
 	const bool bSavedStudents = FFileHelper::SaveStringToFile(FString::Join(StudentLines, LINE_TERMINATOR), *StudentPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
 	const bool bSavedAttempts = FFileHelper::SaveStringToFile(FString::Join(AttemptLines, LINE_TERMINATOR), *AttemptsPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
 	const bool bSavedQuestions = FFileHelper::SaveStringToFile(FString::Join(QuestionLines, LINE_TERMINATOR), *QuestionsPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
-	if (!bSavedSummary || !bSavedStudents || !bSavedAttempts || !bSavedQuestions)
+	const bool bSavedTeacherRecap = FFileHelper::SaveStringToFile(FString::Join(MarkdownLines, LINE_TERMINATOR), *TeacherRecapPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	if (!bSavedSummary || !bSavedStudents || !bSavedAttempts || !bSavedQuestions || !bSavedTeacherRecap)
 	{
 		OutMessage = FString::Printf(TEXT("Classroom report export failed. Check write access to %s."), *ReportDir);
 		return false;
 	}
 
 	bRevisionReportExported = true;
-	OutMessage = FString::Printf(TEXT("Classroom report exported to %s"), *ReportDir);
-	UE_LOG(LogTemp, Display, TEXT("%s (%s, %s, %s, %s)"), *OutMessage, *SummaryPath, *StudentPath, *AttemptsPath, *QuestionsPath);
+	OutMessage = FString::Printf(TEXT("Classroom report exported to %s (CSV plus teacher recap Markdown)."), *ReportDir);
+	UE_LOG(LogTemp, Display, TEXT("%s (%s, %s, %s, %s, %s)"), *OutMessage, *SummaryPath, *StudentPath, *AttemptsPath, *QuestionsPath, *TeacherRecapPath);
 	return true;
 }
 
@@ -4151,75 +4682,7 @@ void ABHGameMode::TriggerPracticeJumpscare(ABHPlayerController* RequestingContro
 		return;
 	}
 
-	const FVector TargetLocation = Target->GetActorLocation();
-	ABHPlayerController* TargetPC = Cast<ABHPlayerController>(Target->GetController());
-	FVector Forward = RequestingController ? RequestingController->GetControlRotation().Vector() : Target->GetActorForwardVector();
-	Forward.Z = 0.0f;
-	Forward = Forward.GetSafeNormal();
-	if (Forward.IsNearlyZero())
-	{
-		Forward = Target->GetActorForwardVector().GetSafeNormal2D();
-	}
-	if (Forward.IsNearlyZero())
-	{
-		Forward = FVector::ForwardVector;
-	}
-
-	const FVector Right = FVector::CrossProduct(FVector::UpVector, Forward).GetSafeNormal();
-	const FVector Directions[] = { Forward, Right, -Right, -Forward };
-	const float Distances[] = { 4300.0f, 3700.0f, 3100.0f, 2500.0f, 1900.0f };
-	TArray<FVector> Candidates;
-	Candidates.Reserve(UE_ARRAY_COUNT(Directions) * UE_ARRAY_COUNT(Distances));
-	for (int32 DirectionIndex = 0; DirectionIndex < UE_ARRAY_COUNT(Directions); ++DirectionIndex)
-	{
-		const FVector Direction = Directions[DirectionIndex];
-		if (Direction.IsNearlyZero())
-		{
-			continue;
-		}
-
-		for (float Distance : Distances)
-		{
-			Candidates.Add(TargetLocation + Direction * Distance);
-		}
-	}
-
-	FActorSpawnParameters SpawnParams;
-	SpawnParams.Owner = RequestingController;
-	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	const FBHJumpscareVariant Variant = ChooseJumpscareVariant(EBHScareEventType::MonsterCharge);
-	const float FocusHeight = FMath::Clamp(Variant.FocusHeight, 80.0f, 320.0f);
-	FBHResolvedJumpscareSpawn ResolvedSpawn;
-	if (!ResolveVisibleJumpscareSpawn(Target, TargetPC, Candidates, FocusHeight, 900.0f, 4600.0f, 62.0f, ResolvedSpawn))
-	{
-		if (RequestingController)
-		{
-			RequestingController->ClientShowStatusMessage(TEXT("No camera-visible monster route found; using close visual."), 2.75f);
-		}
-		TriggerCloseOverlayJumpscare(Target, Variant, TEXT("Something sees you."), 3.0f, 42.0f, 42.0f);
-		return;
-	}
-
-	if (ABHJumpscareMonster* Monster = GetWorld()->SpawnActor<ABHJumpscareMonster>(ResolvedSpawn.SpawnLocation, ResolvedSpawn.SpawnRotation, SpawnParams))
-	{
-		Monster->Configure(Target, 9300.0f, 8.6f, 3.05f);
-		Monster->ConfigureVariant(Variant);
-		if (TargetPC)
-		{
-			SendJumpscareChargeCue(Target, Variant, ResolvedSpawn.FocusLocation, TEXT("Something sees you."), 3.05f, 1.0f, false);
-		}
-		FreezeTargetForJumpscare(Target, 3.0f);
-		CutLightsForJumpscare(TargetLocation, ResolvedSpawn.SpawnLocation, 0.0f, 10.25f);
-		LastMonsterChargeTime = GetWorld()->GetTimeSeconds();
-		Target->AddFear(48.0f);
-		Target->AddDread(46.0f);
-	}
-	else if (RequestingController)
-	{
-		RequestingController->ClientShowStatusMessage(TEXT("Could not spawn the visible monster model; using close visual."), 3.0f);
-		TriggerCloseOverlayJumpscare(Target, Variant, TEXT("Something sees you."), 3.0f, 42.0f, 42.0f);
-		return;
-	}
+	TriggerMonsterChargeJumpscare(Target);
 }
 
 void ABHGameMode::TriggerTargetedJumpscare(ABHPlayerController* RequestingController, APlayerState* TargetPlayerState)
@@ -5923,14 +6386,14 @@ void ABHGameMode::AddFoggroundsMoodPass()
 	switch (RuntimeFogPreset)
 	{
 	case EBHFogPreset::Light:
-		AddMoodPass(FLinearColor(0.060f, 0.090f, 0.095f, 1.0f), 0.075f, 0.56f, 0.14f);
+		AddMoodPass(FLinearColor(0.155f, 0.205f, 0.220f, 1.0f), 0.210f, 0.30f, 0.035f);
 		break;
 	case EBHFogPreset::Extreme:
-		AddMoodPass(FLinearColor(0.055f, 0.078f, 0.082f, 1.0f), 0.820f, 0.68f, 0.16f);
+		AddMoodPass(FLinearColor(0.245f, 0.335f, 0.355f, 1.0f), 0.620f, 0.38f, 0.055f);
 		break;
 	case EBHFogPreset::Heavy:
 	default:
-		AddMoodPass(FLinearColor(0.012f, 0.022f, 0.024f, 1.0f), 1.150f, 0.94f, 0.36f);
+		AddMoodPass(FLinearColor(0.255f, 0.355f, 0.380f, 1.0f), 0.480f, 0.40f, 0.060f);
 		break;
 	}
 
@@ -5941,9 +6404,9 @@ void ABHGameMode::AddFoggroundsLightingPass()
 {
 	const bool bExtremeFog = RuntimeFogPreset == EBHFogPreset::Extreme;
 	const bool bHeavyFog = RuntimeFogPreset == EBHFogPreset::Heavy;
-	const float SkyBrightness = bExtremeFog ? 0.43f : (bHeavyFog ? 0.34f : 0.29f);
-	const FLinearColor MoonTint(0.36f, 0.48f, 0.72f, 1.0f);
-	const FLinearColor SkyTint(0.10f, 0.16f, 0.27f, 1.0f);
+	const float SkyBrightness = bExtremeFog ? 1.22f : (bHeavyFog ? 1.10f : 0.88f);
+	const FLinearColor MoonTint(0.68f, 0.80f, 0.98f, 1.0f);
+	const FLinearColor SkyTint(0.38f, 0.50f, 0.70f, 1.0f);
 
 	if (ASkyAtmosphere* SkyAtmosphere = GetWorld()->SpawnActor<ASkyAtmosphere>(FVector::ZeroVector, FRotator::ZeroRotator))
 	{
@@ -5954,10 +6417,10 @@ void ABHGameMode::AddFoggroundsLightingPass()
 		{
 			SkyComponent->SetSkyLuminanceFactor(FLinearColor(SkyBrightness * 0.78f, SkyBrightness * 0.92f, SkyBrightness * 1.12f, 1.0f));
 			SkyComponent->SetSkyAndAerialPerspectiveLuminanceFactor(FLinearColor(SkyBrightness * 0.72f, SkyBrightness * 0.86f, SkyBrightness, 1.0f));
-			SkyComponent->SetGroundAlbedo(FColor(22, 28, 34));
-			SkyComponent->SetMultiScatteringFactor(0.35f);
-			SkyComponent->SetHeightFogContribution(0.10f);
-			SkyComponent->SetAerialPespectiveViewDistanceScale(0.25f);
+			SkyComponent->SetGroundAlbedo(FColor(44, 54, 64));
+			SkyComponent->SetMultiScatteringFactor(0.78f);
+			SkyComponent->SetHeightFogContribution(0.18f);
+			SkyComponent->SetAerialPespectiveViewDistanceScale(0.34f);
 		}
 	}
 
@@ -5969,14 +6432,14 @@ void ABHGameMode::AddFoggroundsLightingPass()
 		MoonLight->SetMobility(EComponentMobility::Movable);
 		if (UDirectionalLightComponent* LightComponent = Cast<UDirectionalLightComponent>(MoonLight->GetLightComponent()))
 		{
-			LightComponent->SetIntensity(bExtremeFog ? 0.68f : (bHeavyFog ? 0.56f : 0.43f));
+			LightComponent->SetIntensity(bExtremeFog ? 1.45f : (bHeavyFog ? 1.28f : 0.90f));
 			LightComponent->SetLightColor(MoonTint);
-			LightComponent->SetIndirectLightingIntensity(bExtremeFog ? 0.50f : (bHeavyFog ? 0.40f : 0.32f));
+			LightComponent->SetIndirectLightingIntensity(bExtremeFog ? 1.12f : (bHeavyFog ? 0.98f : 0.62f));
 			LightComponent->SetVolumetricScatteringIntensity(0.10f);
 			LightComponent->SetCastShadows(false);
 			LightComponent->SetAtmosphereSunLight(true);
 			LightComponent->SetAtmosphereSunLightIndex(0);
-			LightComponent->SetAtmosphereSunDiskColorScale(FLinearColor(0.12f, 0.18f, 0.30f, 1.0f));
+			LightComponent->SetAtmosphereSunDiskColorScale(FLinearColor(0.28f, 0.38f, 0.58f, 1.0f));
 		}
 	}
 
@@ -5989,10 +6452,10 @@ void ABHGameMode::AddFoggroundsLightingPass()
 		{
 			SkyLightComponent->SetMobility(EComponentMobility::Movable);
 			SkyLightComponent->SourceType = SLS_CapturedScene;
-			SkyLightComponent->SetIntensity(bExtremeFog ? 0.30f : (bHeavyFog ? 0.24f : 0.18f));
+			SkyLightComponent->SetIntensity(bExtremeFog ? 1.12f : (bHeavyFog ? 0.98f : 0.68f));
 			SkyLightComponent->SetLightColor(SkyTint);
-			SkyLightComponent->SetLowerHemisphereColor(FLinearColor(0.018f, 0.026f, 0.032f, 1.0f));
-			SkyLightComponent->SetVolumetricScatteringIntensity(0.12f);
+			SkyLightComponent->SetLowerHemisphereColor(FLinearColor(0.120f, 0.150f, 0.170f, 1.0f));
+			SkyLightComponent->SetVolumetricScatteringIntensity(0.10f);
 			SkyLightComponent->SetRealTimeCaptureEnabled(true);
 			SkyLightComponent->SetCaptureIsDirty();
 		}
@@ -6001,161 +6464,13 @@ void ABHGameMode::AddFoggroundsLightingPass()
 
 void ABHGameMode::AddFoggroundsModeledFog()
 {
-	int32 HorizontalBankCount = 40;
-	int32 VerticalWispCount = 18;
-	float BaseAlpha = 0.38f;
-	float LocalVolumeDensity = 1.25f;
-	FLinearColor FogTint(0.55f, 0.68f, 0.70f, BaseAlpha);
-
-	switch (RuntimeFogPreset)
-	{
-	case EBHFogPreset::Light:
-		HorizontalBankCount = 24;
-		VerticalWispCount = 9;
-		BaseAlpha = 0.26f;
-		LocalVolumeDensity = 0.70f;
-		FogTint = FLinearColor(0.60f, 0.72f, 0.73f, BaseAlpha);
-		break;
-	case EBHFogPreset::Extreme:
-		HorizontalBankCount = 82;
-		VerticalWispCount = 34;
-		BaseAlpha = 0.42f;
-		LocalVolumeDensity = 2.20f;
-		FogTint = FLinearColor(0.42f, 0.56f, 0.58f, BaseAlpha);
-		break;
-	case EBHFogPreset::Heavy:
-		HorizontalBankCount = 170;
-		VerticalWispCount = 96;
-		BaseAlpha = 0.78f;
-		LocalVolumeDensity = 5.25f;
-		FogTint = FLinearColor(0.24f, 0.32f, 0.34f, BaseAlpha);
-		break;
-	default:
-		break;
-	}
-
-	const bool bExtremeFog = RuntimeFogPreset == EBHFogPreset::Extreme;
-	const bool bDenseFog = RuntimeFogPreset == EBHFogPreset::Heavy || RuntimeFogPreset == EBHFogPreset::Extreme;
-	const auto SpawnFogSheet = [](const FVector& Location, const FVector& Scale, const FRotator& Rotation, float AlphaScale)
-	{
-		// Fog cards read as visible rectangular planes in cooked builds. Local fog volumes below keep the modeled fog without geometry artifacts.
-		(void)Location;
-		(void)Scale;
-		(void)Rotation;
-		(void)AlphaScale;
-	};
-
-	struct FFogSheetSpec
-	{
-		FVector Location;
-		FVector Scale;
-		FRotator Rotation;
-		float AlphaScale;
-	};
-
-	const FFogSheetSpec FixedSheets[] = {
-		{FVector(5600.0f, -4920.0f, 42.0f), FVector(30.0f, 5.6f, 0.030f), FRotator(0.0f, 2.0f, 0.0f), 1.20f},
-		{FVector(6500.0f, -3900.0f, 58.0f), FVector(18.0f, 4.0f, 0.030f), FRotator(0.0f, -15.0f, 0.0f), 1.15f},
-		{FVector(0.0f, -4050.0f, 44.0f), FVector(48.0f, 4.4f, 0.030f), FRotator(0.0f, 0.0f, 0.0f), 1.05f},
-		{FVector(-5800.0f, 4050.0f, 52.0f), FVector(24.0f, 5.2f, 0.030f), FRotator(0.0f, 8.0f, 0.0f), 1.25f},
-		{FVector(-7100.0f, 4600.0f, 125.0f), FVector(12.0f, 0.050f, 2.4f), FRotator(0.0f, 90.0f, 0.0f), 1.30f},
-		{FVector(-6900.0f, 1200.0f, 112.0f), FVector(10.0f, 0.050f, 2.1f), FRotator(0.0f, 104.0f, 0.0f), 1.10f},
-		{FVector(-5200.0f, -5100.0f, 92.0f), FVector(11.0f, 0.045f, 1.7f), FRotator(0.0f, -8.0f, 0.0f), 0.92f},
-		{FVector(7000.0f, -1150.0f, 132.0f), FVector(9.0f, 0.045f, 2.2f), FRotator(0.0f, 82.0f, 0.0f), 1.05f},
-		{FVector(-980.0f, 5050.0f, 130.0f), FVector(13.5f, 0.055f, 2.6f), FRotator(0.0f, 38.0f, 0.0f), 1.30f},
-		{FVector(-1200.0f, 4800.0f, 65.0f), FVector(14.0f, 4.2f, 0.035f), FRotator(0.0f, -20.0f, 0.0f), 1.18f}
-	};
-	for (const FFogSheetSpec& Sheet : FixedSheets)
-	{
-		SpawnFogSheet(Sheet.Location, Sheet.Scale, Sheet.Rotation, Sheet.AlphaScale);
-	}
-
-	if (bDenseFog)
-	{
-		const FFogSheetSpec ExtremeCurtains[] = {
-			{FVector(5900.0f, -4725.0f, 155.0f), FVector(34.0f, 0.060f, 3.8f), FRotator(0.0f, 6.0f, 0.0f), 1.35f},
-			{FVector(4200.0f, -3525.0f, 145.0f), FVector(26.0f, 0.060f, 3.4f), FRotator(0.0f, -12.0f, 0.0f), 1.20f},
-			{FVector(0.0f, -4000.0f, 140.0f), FVector(42.0f, 0.060f, 3.3f), FRotator(0.0f, 2.0f, 0.0f), 1.25f},
-			{FVector(-4300.0f, -4200.0f, 150.0f), FVector(24.0f, 0.060f, 3.5f), FRotator(0.0f, 15.0f, 0.0f), 1.28f},
-			{FVector(-6500.0f, 700.0f, 155.0f), FVector(20.0f, 0.060f, 3.6f), FRotator(0.0f, 96.0f, 0.0f), 1.32f},
-			{FVector(-5850.0f, 4050.0f, 145.0f), FVector(28.0f, 0.060f, 3.4f), FRotator(0.0f, -8.0f, 0.0f), 1.35f},
-			{FVector(-800.0f, 4450.0f, 150.0f), FVector(30.0f, 0.060f, 3.5f), FRotator(0.0f, 12.0f, 0.0f), 1.25f},
-			{FVector(4200.0f, 3300.0f, 145.0f), FVector(24.0f, 0.060f, 3.3f), FRotator(0.0f, -18.0f, 0.0f), 1.24f},
-			{FVector(7000.0f, 900.0f, 155.0f), FVector(18.0f, 0.060f, 3.5f), FRotator(0.0f, 88.0f, 0.0f), 1.28f},
-			{FVector(-980.0f, 5050.0f, 210.0f), FVector(22.0f, 0.065f, 4.2f), FRotator(0.0f, 40.0f, 0.0f), 1.42f}
-		};
-		for (const FFogSheetSpec& Curtain : ExtremeCurtains)
-		{
-			SpawnFogSheet(Curtain.Location, bExtremeFog ? Curtain.Scale * 0.82f : Curtain.Scale, Curtain.Rotation, bExtremeFog ? Curtain.AlphaScale * 0.50f : Curtain.AlphaScale);
-		}
-	}
-
-	FRandomStream FogStream(91273 + static_cast<int32>(RuntimeFogPreset) * 811);
-	for (int32 Index = 0; Index < HorizontalBankCount; ++Index)
-	{
-		const float X = FogStream.FRandRange(-7350.0f, 7350.0f);
-		const float Y = FogStream.FRandRange(-5650.0f, 5650.0f);
-		if (X > 5400.0f && Y < -3300.0f && RuntimeFogPreset == EBHFogPreset::Light)
-		{
-			continue;
-		}
-
-		const FVector Location(X, Y, FogStream.FRandRange(28.0f, 72.0f));
-		const float SheetScaleBoost = bExtremeFog ? 0.88f : 1.0f;
-		const FVector Scale(FogStream.FRandRange(7.5f, 19.0f) * SheetScaleBoost, FogStream.FRandRange(2.0f, 6.2f) * SheetScaleBoost, FogStream.FRandRange(0.020f, 0.045f) * (bExtremeFog ? 0.75f : 1.0f));
-		const FRotator Rotation(0.0f, FogStream.FRandRange(-35.0f, 35.0f), 0.0f);
-		SpawnFogSheet(Location, Scale, Rotation, bExtremeFog ? FogStream.FRandRange(0.34f, 0.74f) : FogStream.FRandRange(0.65f, 1.20f));
-	}
-
-	for (int32 Index = 0; Index < VerticalWispCount; ++Index)
-	{
-		const float X = FogStream.FRandRange(-7600.0f, 7350.0f);
-		const float Y = FogStream.FRandRange(-5700.0f, 5700.0f);
-		const FVector Location(X, Y, FogStream.FRandRange(92.0f, 170.0f));
-		const float WispScaleBoost = bExtremeFog ? 0.82f : 1.0f;
-		const FVector Scale(FogStream.FRandRange(5.0f, 13.5f) * WispScaleBoost, FogStream.FRandRange(0.030f, 0.070f) * (bExtremeFog ? 0.72f : 1.0f), FogStream.FRandRange(1.2f, 3.0f) * WispScaleBoost);
-		const FRotator Rotation(0.0f, FogStream.FRandRange(-180.0f, 180.0f), 0.0f);
-		SpawnFogSheet(Location, Scale, Rotation, bExtremeFog ? FogStream.FRandRange(0.38f, 0.82f) : FogStream.FRandRange(0.75f, 1.35f));
-	}
-
-	struct FFogVolumeSpec
-	{
-		FVector Location;
-		FVector Scale;
-		float DensityScale;
-	};
-
-	const FFogVolumeSpec VolumeSpecs[] = {
-		{FVector(6100.0f, -4850.0f, 130.0f), FVector(7.8f, 3.0f, 1.15f), 1.20f},
-		{FVector(0.0f, -4050.0f, 125.0f), FVector(10.5f, 2.2f, 1.05f), 0.95f},
-		{FVector(-5850.0f, 4050.0f, 135.0f), FVector(6.5f, 3.1f, 1.20f), 1.25f},
-		{FVector(-6950.0f, 4000.0f, 160.0f), FVector(4.5f, 4.0f, 1.55f), 1.35f},
-		{FVector(-6600.0f, -900.0f, 150.0f), FVector(4.8f, 3.5f, 1.30f), 1.05f},
-		{FVector(6900.0f, -900.0f, 145.0f), FVector(4.2f, 3.0f, 1.20f), 0.95f},
-		{FVector(-980.0f, 5050.0f, 190.0f), FVector(5.5f, 4.4f, 1.80f), 1.40f},
-		{FVector(2500.0f, 2400.0f, 135.0f), FVector(6.0f, 3.6f, 1.25f), 0.90f}
-	};
-
-	for (const FFogVolumeSpec& Spec : VolumeSpecs)
-	{
-		if (ALocalFogVolume* Volume = GetWorld()->SpawnActor<ALocalFogVolume>(Spec.Location, FRotator::ZeroRotator))
-		{
-			Volume->SetReplicates(true);
-			Volume->SetReplicateMovement(false);
-			Volume->bAlwaysRelevant = true;
-			Volume->SetActorScale3D(Spec.Scale);
-			if (ULocalFogVolumeComponent* FogComponent = Volume->GetComponent())
-			{
-				FogComponent->SetRadialFogExtinction(LocalVolumeDensity * Spec.DensityScale);
-				FogComponent->SetHeightFogExtinction(LocalVolumeDensity * (bExtremeFog ? 0.38f : 0.55f) * Spec.DensityScale);
-				FogComponent->SetHeightFogFalloff(bExtremeFog ? 2200.0f : (RuntimeFogPreset == EBHFogPreset::Heavy ? 3600.0f : 1800.0f));
-				FogComponent->SetHeightFogOffset(bExtremeFog ? -0.38f : (RuntimeFogPreset == EBHFogPreset::Heavy ? -0.65f : -0.35f));
-				FogComponent->SetFogAlbedo(FLinearColor(FogTint.R, FogTint.G, FogTint.B, 1.0f));
-				FogComponent->SetFogEmissive(bExtremeFog ? FLinearColor(0.016f, 0.024f, 0.025f, 1.0f) : FLinearColor(0.008f, 0.014f, 0.016f, 1.0f));
-				FogComponent->SetFogPhaseG(bExtremeFog ? 0.32f : 0.35f);
-			}
-		}
-	}
+	// Intentionally empty. Foggrounds fog is now produced solely by the uniform global exponential
+	// height fog configured in AddMoodPass: it is horizontally constant across the whole map and,
+	// with volumetric fog forced on for every graphics tier (see ABHPlayerController::
+	// ApplyAdaptiveGraphicsState), renders identically on all hardware. The previous per-spot
+	// ALocalFogVolume patches were removed because they made fog density uneven across the map and
+	// only rendered when r.VolumetricFog was enabled (off on Low/Medium), so they vanished there.
+	// Kept as a hook in case hand-placed fog accents are reintroduced later.
 }
 
 void ABHGameMode::BuildSubstationLevel()
@@ -7245,26 +7560,28 @@ void ABHGameMode::AddMoodPass(const FLinearColor& FogColor, float FogDensity, fl
 		PostProcess->Settings.bOverride_FilmGrainIntensity = true;
 		PostProcess->Settings.FilmGrainIntensity = FilmGrainIntensity;
 		PostProcess->Settings.bOverride_ColorSaturation = true;
-		PostProcess->Settings.ColorSaturation = bExtremeFog ? FVector4(0.88f, 0.94f, 0.96f, 1.0f) : FVector4(0.78f, 0.84f, 0.90f, 1.0f);
+		PostProcess->Settings.ColorSaturation = bFoggrounds
+			? (bExtremeFog ? FVector4(1.02f, 1.04f, 1.04f, 1.0f) : (bHeavyFog ? FVector4(1.00f, 1.03f, 1.03f, 1.0f) : FVector4(0.96f, 0.99f, 1.00f, 1.0f)))
+			: FVector4(0.78f, 0.84f, 0.90f, 1.0f);
 		PostProcess->Settings.bOverride_ColorContrast = true;
-		PostProcess->Settings.ColorContrast = bExtremeFog ? FVector4(1.02f, 1.02f, 1.00f, 1.0f) : FVector4(1.12f, 1.10f, 1.06f, 1.0f);
-		const float FoggroundsBrightExposure = bExtremeFog ? 0.025f : (bHeavyFog ? 0.024f : 0.030f);
-		const float FoggroundsDarkExposure = bExtremeFog ? 0.85f : (bHeavyFog ? 0.78f : 0.95f);
-		const float FoggroundsHybridExposure = (FoggroundsBrightExposure + FoggroundsDarkExposure) * 0.5f;
+		PostProcess->Settings.ColorContrast = bFoggrounds
+			? (bExtremeFog ? FVector4(0.94f, 0.95f, 0.95f, 1.0f) : (bHeavyFog ? FVector4(0.96f, 0.97f, 0.97f, 1.0f) : FVector4(1.00f, 1.00f, 0.98f, 1.0f)))
+			: FVector4(1.12f, 1.10f, 1.06f, 1.0f);
+		const float FoggroundsFixedExposure = bExtremeFog ? 1.28f : (bHeavyFog ? 1.18f : 1.08f);
 		PostProcess->Settings.bOverride_AutoExposureMinBrightness = true;
-		PostProcess->Settings.AutoExposureMinBrightness = bFoggrounds ? FoggroundsHybridExposure : 0.030f;
+		PostProcess->Settings.AutoExposureMinBrightness = bFoggrounds ? FoggroundsFixedExposure : 0.030f;
 		PostProcess->Settings.bOverride_AutoExposureMaxBrightness = true;
-		PostProcess->Settings.AutoExposureMaxBrightness = bFoggrounds ? FoggroundsHybridExposure : 0.95f;
+		PostProcess->Settings.AutoExposureMaxBrightness = bFoggrounds ? FoggroundsFixedExposure : 0.95f;
 		if (bFoggrounds)
 		{
 			PostProcess->Settings.bOverride_AutoExposureBias = true;
-			PostProcess->Settings.AutoExposureBias = bExtremeFog ? -0.32f : (bHeavyFog ? -0.24f : -0.14f);
+			PostProcess->Settings.AutoExposureBias = bExtremeFog ? 0.42f : (bHeavyFog ? 0.34f : 0.18f);
 			PostProcess->Settings.bOverride_SceneColorTint = true;
-			PostProcess->Settings.SceneColorTint = bExtremeFog ? FLinearColor(0.94f, 0.99f, 1.04f, 1.0f) : FLinearColor(0.92f, 0.96f, 1.02f, 1.0f);
+			PostProcess->Settings.SceneColorTint = bExtremeFog ? FLinearColor(1.13f, 1.18f, 1.22f, 1.0f) : FLinearColor(1.08f, 1.14f, 1.18f, 1.0f);
 			PostProcess->Settings.bOverride_IndirectLightingColor = true;
-			PostProcess->Settings.IndirectLightingColor = FLinearColor(0.12f, 0.18f, 0.28f, 1.0f);
+			PostProcess->Settings.IndirectLightingColor = FLinearColor(0.48f, 0.62f, 0.78f, 1.0f);
 			PostProcess->Settings.bOverride_IndirectLightingIntensity = true;
-			PostProcess->Settings.IndirectLightingIntensity = bExtremeFog ? 0.48f : (bHeavyFog ? 0.38f : 0.30f);
+			PostProcess->Settings.IndirectLightingIntensity = bExtremeFog ? 1.12f : (bHeavyFog ? 0.98f : 0.62f);
 		}
 	}
 
@@ -7273,27 +7590,29 @@ void ABHGameMode::AddMoodPass(const FLinearColor& FogColor, float FogDensity, fl
 		if (UExponentialHeightFogComponent* FogComponent = Fog->GetComponent())
 		{
 			FogComponent->SetFogDensity(FogDensity);
-			FogComponent->SetFogHeightFalloff(bExtremeFog ? 0.085f : 0.075f);
+			FogComponent->SetFogHeightFalloff(bFoggrounds ? (bExtremeFog ? 0.034f : 0.036f) : 0.075f);
 			FogComponent->SetFogInscatteringColor(FogColor);
-			FogComponent->SetFogMaxOpacity(bExtremeFog ? 0.78f : 1.0f);
-			FogComponent->SetStartDistance(0.0f);
-			FogComponent->SetEndDistance(0.0f);
+			FogComponent->SetFogMaxOpacity(bFoggrounds ? (bExtremeFog ? 0.96f : (bHeavyFog ? 0.92f : 0.80f)) : 1.0f);
+			FogComponent->SetStartDistance(bFoggrounds ? (bExtremeFog ? 80.0f : 110.0f) : 0.0f);
+			FogComponent->SetEndDistance(bFoggrounds ? 7400.0f : 0.0f);
 			FogComponent->SetFogCutoffDistance(0.0f);
 			FogComponent->SetDirectionalInscatteringExponent(8.0f);
 			FogComponent->SetDirectionalInscatteringStartDistance(0.0f);
-			const float DirectionalInscatterScale = bExtremeFog ? 1.75f : 1.45f;
+			const float DirectionalInscatterScale = bFoggrounds ? (bExtremeFog ? 1.55f : 1.42f) : (bExtremeFog ? 1.75f : 1.45f);
 			FogComponent->SetDirectionalInscatteringColor(FLinearColor(FogColor.R * DirectionalInscatterScale, FogColor.G * DirectionalInscatterScale, FogColor.B * DirectionalInscatterScale, 1.0f));
 			FogComponent->SetVolumetricFog(true);
-			FogComponent->SetVolumetricFogScatteringDistribution(bExtremeFog ? 0.38f : 0.45f);
+			FogComponent->SetVolumetricFogScatteringDistribution(bFoggrounds ? (bExtremeFog ? 0.18f : 0.22f) : (bExtremeFog ? 0.38f : 0.45f));
 			FogComponent->SetVolumetricFogAlbedo(FColor(
 				FMath::Clamp(FMath::RoundToInt(FogColor.R * 255.0f), 0, 255),
 				FMath::Clamp(FMath::RoundToInt(FogColor.G * 255.0f), 0, 255),
 				FMath::Clamp(FMath::RoundToInt(FogColor.B * 255.0f), 0, 255)));
-			FogComponent->SetVolumetricFogEmissive(FLinearColor(FogColor.R * (bExtremeFog ? 0.030f : 0.018f), FogColor.G * (bExtremeFog ? 0.030f : 0.018f), FogColor.B * (bExtremeFog ? 0.030f : 0.018f), 1.0f));
-			FogComponent->SetVolumetricFogExtinctionScale(FMath::Clamp(FogDensity * 18.0f, 0.55f, bExtremeFog ? 2.65f : 3.25f));
-			FogComponent->SetVolumetricFogDistance(bExtremeFog ? 4200.0f : 5200.0f);
-			FogComponent->SetVolumetricFogStartDistance(0.0f);
-			FogComponent->SetVolumetricFogNearFadeInDistance(bExtremeFog ? 75.0f : 55.0f);
+			const float FogEmissiveScale = bFoggrounds ? (bExtremeFog ? 0.135f : 0.115f) : (bExtremeFog ? 0.030f : 0.018f);
+			FogComponent->SetVolumetricFogEmissive(FLinearColor(FogColor.R * FogEmissiveScale, FogColor.G * FogEmissiveScale, FogColor.B * FogEmissiveScale, 1.0f));
+			const float FogExtinctionMax = bFoggrounds ? (bExtremeFog ? 4.8f : (bHeavyFog ? 3.7f : 2.3f)) : (bExtremeFog ? 2.65f : 3.25f);
+			FogComponent->SetVolumetricFogExtinctionScale(FMath::Clamp(FogDensity * (bFoggrounds ? 6.5f : 18.0f), 0.32f, FogExtinctionMax));
+			FogComponent->SetVolumetricFogDistance(bFoggrounds ? (bExtremeFog ? 7200.0f : 7800.0f) : (bExtremeFog ? 4200.0f : 5200.0f));
+			FogComponent->SetVolumetricFogStartDistance(bFoggrounds ? 100.0f : 0.0f);
+			FogComponent->SetVolumetricFogNearFadeInDistance(bFoggrounds ? 180.0f : (bExtremeFog ? 75.0f : 55.0f));
 		}
 	}
 }
@@ -8871,7 +9190,7 @@ bool ABHGameMode::TriggerStudentScareSwitch(ABHCharacter* Activator, const FVect
 
 void ABHGameMode::TriggerMonsterChargeJumpscare(ABHCharacter* Target)
 {
-	const FBHJumpscareVariant Variant = ChooseJumpscareVariant(EBHScareEventType::MonsterCharge);
+	const FBHJumpscareVariant Variant = MakeLegacyScp096ProxyJumpscareVariant();
 	TriggerMonsterChargeJumpscareWithVariant(Target, Variant, TEXT("Something sees you."), 38.0f, 42.0f);
 }
 
@@ -8886,8 +9205,14 @@ void ABHGameMode::TriggerMonsterChargeJumpscareWithVariant(ABHCharacter* Target,
 	ABHPlayerController* TargetPC = Cast<ABHPlayerController>(Target->GetController());
 	const float FocusHeight = FMath::Clamp(Variant.FocusHeight, 80.0f, 320.0f);
 	const int32 EffectiveScareIntensity = GetEffectiveScareIntensity();
-	const float Speed = bPartyPace ? 10800.0f : FMath::Lerp(9000.0f, 10300.0f, static_cast<float>(EffectiveScareIntensity) / 3.0f);
-	const float HoldDuration = bPartyPace ? 2.15f : FMath::Lerp(2.65f, 3.25f, static_cast<float>(EffectiveScareIntensity) / 3.0f);
+	const bool bLegacyScp096 = BHIsLegacyScp096JumpscareVariant(Variant);
+	const float IntensityAlpha = static_cast<float>(EffectiveScareIntensity) / 3.0f;
+	const float Speed = bLegacyScp096
+		? (bPartyPace ? 9800.0f : FMath::Lerp(8800.0f, 10000.0f, IntensityAlpha))
+		: (bPartyPace ? 10800.0f : FMath::Lerp(9000.0f, 10300.0f, IntensityAlpha));
+	const float HoldDuration = bLegacyScp096
+		? (bPartyPace ? 2.75f : FMath::Lerp(3.05f, 3.55f, IntensityAlpha))
+		: (bPartyPace ? 2.15f : FMath::Lerp(2.65f, 3.25f, IntensityAlpha));
 
 	TArray<FVector> Candidates;
 	Candidates.Reserve(ScarePoints.Num() + 24);
@@ -8947,19 +9272,95 @@ void ABHGameMode::TriggerMonsterChargeJumpscareWithVariant(ABHCharacter* Target,
 	}
 
 	RecordPlaytestTelemetryMarker(TEXT("jumpscare"), TargetLocation, FString::Printf(TEXT("monster_charge variant=%s"), *Variant.VariantId.ToString()), nullptr, Target->GetPlayerState<ABHPlayerState>());
-	SendJumpscareChargeCue(Target, Variant, ResolvedSpawn.FocusLocation, Message, HoldDuration, 1.0f, false);
+	if (bLegacyScp096)
+	{
+		if (TargetPC)
+		{
+			TargetPC->ClientSnapViewToFlatFocus(ResolvedSpawn.FocusLocation);
+
+			const float SensoryScale = GetScareSensoryScale();
+			FBHClientHorrorCue RevealCue;
+			RevealCue.EventType = EBHScareEventType::MonsterCharge;
+			RevealCue.FocusLocation = ResolvedSpawn.FocusLocation;
+			RevealCue.Message = Message;
+			RevealCue.DurationSeconds = HoldDuration + 0.85f;
+			RevealCue.LockSeconds = HoldDuration;
+			RevealCue.ShakeIntensity = FMath::Clamp(0.18f * SensoryScale, 0.0f, 1.0f);
+			RevealCue.CameraJitterDuration = 0.25f * SensoryScale;
+			RevealCue.FlashIntensity = 0.0f;
+			RevealCue.FlashColor = Variant.LightColor;
+			RevealCue.CloseVisualOffset = Variant.CloseVisualOffset;
+			RevealCue.CloseVisualRotation = Variant.CloseVisualRotation;
+			RevealCue.CloseVisualScale = Variant.CloseVisualScale;
+			RevealCue.VariantId = Variant.VariantId;
+			RevealCue.bSnapToFocus = true;
+			RevealCue.bLockInput = true;
+			TargetPC->ClientPlayHorrorCue(RevealCue);
+		}
+
+		FTimerDelegate ChargeCueDelegate;
+		TWeakObjectPtr<ABHGameMode> WeakGameMode(this);
+		TWeakObjectPtr<ABHPlayerController> WeakTargetPC(TargetPC);
+		const FBHJumpscareVariant ChargeVariant = Variant;
+		const FVector ChargeFocusLocation = ResolvedSpawn.FocusLocation;
+		const FVector ChargeMonsterLocation = ResolvedSpawn.SpawnLocation;
+		const FString ChargeMessage;
+		const float ChargeRestoreDelay = bPartyPace ? 9.0f : 10.25f;
+		const float ChargeSensoryScale = GetScareSensoryScale();
+		const float AudioSensoryScale = ChargeSensoryScale <= 0.0f ? 0.0f : FMath::Lerp(0.35f, 1.0f, ChargeSensoryScale);
+		ChargeCueDelegate.BindLambda([WeakGameMode, WeakTargetPC, ChargeVariant, ChargeFocusLocation, ChargeMonsterLocation, TargetLocation, ChargeMessage, ChargeRestoreDelay, ChargeSensoryScale, AudioSensoryScale]()
+		{
+			if (ABHPlayerController* SprintPC = WeakTargetPC.Get())
+			{
+				FBHClientHorrorCue ChargeCue;
+				ChargeCue.EventType = EBHScareEventType::MonsterCharge;
+				ChargeCue.FocusLocation = ChargeFocusLocation;
+				ChargeCue.Message = ChargeMessage;
+				ChargeCue.DurationSeconds = 3.95f;
+				ChargeCue.LockSeconds = 0.55f;
+				ChargeCue.ShakeIntensity = FMath::Clamp(FMath::Max(ChargeVariant.CameraShakeIntensity, 0.96f) * ChargeSensoryScale, 0.0f, 1.0f);
+				ChargeCue.CameraJitterDuration = FMath::Max(ChargeVariant.CameraJitterDuration, 1.25f) * ChargeSensoryScale;
+				ChargeCue.CameraJitterFrequency = 58.0f;
+				ChargeCue.FlashIntensity = FMath::Clamp(FMath::Max(ChargeVariant.FlashIntensity, 0.92f) * ChargeSensoryScale, 0.0f, 1.0f);
+				ChargeCue.FlashColor = ChargeVariant.LightColor;
+				ChargeCue.AudioAsset = ChargeVariant.LaunchSound;
+				ChargeCue.AudioVolume = FMath::Clamp(1.15f * AudioSensoryScale, 0.0f, 2.0f);
+				ChargeCue.CloseVisualOffset = ChargeVariant.CloseVisualOffset;
+				ChargeCue.CloseVisualRotation = ChargeVariant.CloseVisualRotation;
+				ChargeCue.CloseVisualScale = ChargeVariant.CloseVisualScale;
+				ChargeCue.VariantId = ChargeVariant.VariantId;
+				ChargeCue.bSnapToFocus = true;
+				ChargeCue.bLockInput = true;
+				SprintPC->ClientPlayHorrorCue(ChargeCue);
+			}
+			if (ABHGameMode* GameMode = WeakGameMode.Get())
+			{
+				GameMode->CutLightsForJumpscare(TargetLocation, ChargeMonsterLocation, 0.0f, ChargeRestoreDelay);
+			}
+		});
+
+		FTimerHandle ChargeCueHandle;
+		GetWorldTimerManager().SetTimer(ChargeCueHandle, ChargeCueDelegate, HoldDuration, false);
+	}
+	else
+	{
+		SendJumpscareChargeCue(Target, Variant, ResolvedSpawn.FocusLocation, Message, HoldDuration, 1.0f, false);
+		CutLightsForJumpscare(TargetLocation, ResolvedSpawn.SpawnLocation, 0.0f, bPartyPace ? 9.0f : 10.25f);
+	}
 	FreezeTargetForJumpscare(Target, HoldDuration);
-	CutLightsForJumpscare(TargetLocation, ResolvedSpawn.SpawnLocation, 0.0f, bPartyPace ? 9.0f : 10.25f);
 
 	LastMonsterChargeTime = GetWorld()->GetTimeSeconds();
 	Target->AddFear(FearAmount);
 	Target->AddDread(DreadAmount);
 
-	for (ABHFlickerLight* Light : FlickerLights)
+	if (!bLegacyScp096)
 	{
-		if (Light && Light->GetCircuitId() > 0 && FVector::DistSquared2D(Light->GetActorLocation(), TargetLocation) <= FMath::Square(2400.0f) && FMath::FRand() < 0.34f)
+		for (ABHFlickerLight* Light : FlickerLights)
 		{
-			Light->SetPowered(false);
+			if (Light && Light->GetCircuitId() > 0 && FVector::DistSquared2D(Light->GetActorLocation(), TargetLocation) <= FMath::Square(2400.0f) && FMath::FRand() < 0.34f)
+			{
+				Light->SetPowered(false);
+			}
 		}
 	}
 }
@@ -9636,7 +10037,6 @@ void ABHGameMode::StartPrepPhase()
 	BotWorldStimuli.Reset();
 	BotObjectiveClaims.Reset();
 	BotTargetCooldowns.Reset();
-	BotApproachPointCache.Reset();
 	LoggedBotTacticalWarnings.Reset();
 	TelemetryUsedLockerKeys.Reset();
 	TelemetryStartedObjectiveKeys.Reset();
@@ -9672,7 +10072,6 @@ void ABHGameMode::StartHuntPhaseImmediately()
 	BotWorldStimuli.Reset();
 	BotObjectiveClaims.Reset();
 	BotTargetCooldowns.Reset();
-	BotApproachPointCache.Reset();
 	LoggedBotTacticalWarnings.Reset();
 	TelemetryUsedLockerKeys.Reset();
 	TelemetryStartedObjectiveKeys.Reset();
