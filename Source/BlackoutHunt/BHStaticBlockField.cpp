@@ -13,8 +13,8 @@ ABHStaticBlockField::ABHStaticBlockField()
 	bReplicates = true;
 	bAlwaysRelevant = true;
 	SetReplicateMovement(false);
-	NetUpdateFrequency = 1.0f;
-	MinNetUpdateFrequency = 0.5f;
+	SetNetUpdateFrequency(1.0f);
+	SetMinNetUpdateFrequency(0.5f);
 
 	USceneComponent* Root = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
 	SetRootComponent(Root);

@@ -40,6 +40,12 @@ public class BlackoutHunt : ModuleRules
 
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
+			DynamicallyLoadedModuleNames.AddRange(new string[]
+			{
+				"OnlineSubsystemEOS",
+				"SocketSubsystemEOS"
+			});
+
 			PublicSystemLibraries.Add("bcrypt.lib");
 		}
 
@@ -55,10 +61,13 @@ public class BlackoutHunt : ModuleRules
 			});
 		}
 
-		string PlayitAgentPath = Path.Combine(ModuleDirectory, "..", "..", "ThirdParty", "Playit", "playit.exe");
-		if (File.Exists(PlayitAgentPath))
+		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
-			RuntimeDependencies.Add("$(TargetOutputDir)/playit.exe", PlayitAgentPath);
+			string PlayitAgentPath = Path.Combine(ModuleDirectory, "..", "..", "ThirdParty", "Playit", "playit.exe");
+			if (File.Exists(PlayitAgentPath))
+			{
+				RuntimeDependencies.Add("$(TargetOutputDir)/playit.exe", PlayitAgentPath);
+			}
 		}
 	}
 }

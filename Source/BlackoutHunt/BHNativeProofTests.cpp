@@ -8,6 +8,7 @@
 #include "BHBotPolicySubsystem.h"
 #include "BHCCTVZone.h"
 #include "BHCharacter.h"
+#include "BHCrawlSpaceVolume.h"
 #include "BHCosmeticUnlocks.h"
 #include "BHDoor.h"
 #include "BHFootstepSurfaceComponent.h"
@@ -691,6 +692,51 @@ bool FBHLateSpectatorPreferenceSurvivesTrainIntermissionTest::RunTest(const FStr
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHActiveRolesResetForLobbyAfterTravelTest,
+	"BlackoutHunt.Network.ActiveRolesResetForLobbyAfterTravel",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHActiveRolesResetForLobbyAfterTravelTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FBHScopedAutomationWorld TestWorld(TEXT("BlackoutHuntProof"));
+	UWorld* World = TestWorld.Get();
+	TestNotNull(TEXT("Test world is created."), World);
+	if (!World)
+	{
+		return false;
+	}
+
+	ABHGameState* GameState = BHCreateProofGameState(World, EBHRoundPhase::Lobby);
+	ABHGameMode* GameMode = World->SpawnActor<ABHGameMode>();
+	ABHPlayerController* Controller = World->SpawnActor<ABHPlayerController>();
+	ABHPlayerState* PlayerState = World->SpawnActor<ABHPlayerState>();
+	TestNotNull(TEXT("Game state spawns."), GameState);
+	TestNotNull(TEXT("Game mode spawns."), GameMode);
+	TestNotNull(TEXT("Player controller spawns."), Controller);
+	TestNotNull(TEXT("Player state spawns."), PlayerState);
+	if (GameState && GameMode && Controller && PlayerState)
+	{
+		Controller->PlayerState = PlayerState;
+		PlayerState->SetRole(EBHPlayerRole::FakeHunter);
+		PlayerState->SetDesiredRole(EBHPlayerRole::Hunter);
+		PlayerState->SetLifeState(EBHPlayerLifeState::Captured);
+		PlayerState->SetFakeHunterEligible(true);
+		PlayerState->SetReady(true);
+
+		GameMode->DebugRestorePlayersAfterTravelForTest(Controller);
+
+		TestEqual(TEXT("Active round role clears to assignable lobby state."), PlayerState->PlayerRole, EBHPlayerRole::Unassigned);
+		TestEqual(TEXT("Queued host role survives the lobby reset."), PlayerState->DesiredRole, EBHPlayerRole::Hunter);
+		TestEqual(TEXT("Captured state clears for the next lobby."), PlayerState->LifeState, EBHPlayerLifeState::Alive);
+		TestFalse(TEXT("Hall Monitor eligibility does not leak to the next lobby."), PlayerState->bFakeHunterEligible);
+		TestFalse(TEXT("Ready state resets after travel."), PlayerState->bReady);
+	}
+
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHCharacterSpecialMovementTest,
 	"BlackoutHunt.Movement.SpecialMovementStatesAndTuning",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -757,6 +803,58 @@ bool FBHCharacterSpecialMovementTest::RunTest(const FString& Parameters)
 
 		TestTrue(TEXT("Hunter roll starts with role tuning."), Hunter->TryStartSpecialMoveForTest(EBHMovementSpecialState::Rolling, false));
 		TestTrue(TEXT("Hunter roll has higher stamina cost."), FMath::IsNearlyEqual(Hunter->GetStamina(), 83.2f, 0.05f));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHCrawlSpaceAccessTest,
+	"BlackoutHunt.Movement.CrawlSpaceRoleAndProfileGate",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHCrawlSpaceAccessTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FBHScopedAutomationWorld TestWorld(TEXT("BlackoutHuntCrawlSpace"));
+	UWorld* World = TestWorld.Get();
+	TestNotNull(TEXT("Test world is created."), World);
+	if (!World)
+	{
+		return false;
+	}
+
+	ABHGameState* GameState = BHCreateProofGameState(World, EBHRoundPhase::Hunt);
+	ABHCrawlSpaceVolume* CrawlSpace = World->SpawnActor<ABHCrawlSpaceVolume>();
+	ABHCharacter* Survivor = World->SpawnActor<ABHCharacter>(FVector(0.0f, 0.0f, 140.0f), FRotator::ZeroRotator);
+	ABHCharacter* Hunter = World->SpawnActor<ABHCharacter>(FVector(180.0f, 0.0f, 140.0f), FRotator::ZeroRotator);
+	ABHCharacter* Tester = World->SpawnActor<ABHCharacter>(FVector(360.0f, 0.0f, 140.0f), FRotator::ZeroRotator);
+	TestNotNull(TEXT("Game state spawns."), GameState);
+	TestNotNull(TEXT("Crawlspace volume spawns."), CrawlSpace);
+	TestNotNull(TEXT("Survivor spawns."), Survivor);
+	TestNotNull(TEXT("Hunter spawns."), Hunter);
+	TestNotNull(TEXT("Tester spawns."), Tester);
+	if (GameState)
+	{
+		GameState->SetTestMode(true);
+	}
+
+	if (CrawlSpace && Survivor && Hunter && Tester)
+	{
+		BHAttachProofPlayerState(World, Survivor, EBHPlayerRole::Survivor, TEXT("Crawl Student"));
+		BHAttachProofPlayerState(World, Hunter, EBHPlayerRole::Hunter, TEXT("Crawl Teacher"));
+		BHAttachProofPlayerState(World, Tester, EBHPlayerRole::Tester, TEXT("Crawl Tester"));
+
+		TestFalse(TEXT("Standing survivor cannot enter low crawlspace."), CrawlSpace->DebugCanCharacterUseCrawlSpace(Survivor));
+		TestTrue(TEXT("Survivor can enter crawlspace while prone."), Survivor->TrySetProneForTest(true));
+		TestTrue(TEXT("Prone survivor can enter crawlspace."), CrawlSpace->DebugCanCharacterUseCrawlSpace(Survivor));
+
+		TestTrue(TEXT("Hunter can enter prone state for normal movement tuning."), Hunter->TrySetProneForTest(true));
+		TestFalse(TEXT("Hunter remains blocked from survivor crawlspaces even in test mode."), CrawlSpace->DebugCanCharacterUseCrawlSpace(Hunter));
+
+		TestFalse(TEXT("Standing tester cannot enter low crawlspace."), CrawlSpace->DebugCanCharacterUseCrawlSpace(Tester));
+		TestTrue(TEXT("Tester can enter crawlspace while prone."), Tester->TrySetProneForTest(true));
+		TestTrue(TEXT("Prone tester can enter crawlspace."), CrawlSpace->DebugCanCharacterUseCrawlSpace(Tester));
 	}
 
 	return true;

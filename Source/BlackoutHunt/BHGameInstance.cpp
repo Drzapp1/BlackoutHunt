@@ -29,7 +29,7 @@ namespace
 {
 	const FName BHOnlineLevelSetting(TEXT("BHLEVEL"));
 	const FName BHOnlineBuildSetting(TEXT("BHBUILD"));
-	const FString BHOnlineBuildId(TEXT("BlackoutHunt-0.2.0-beta.6"));
+	const FString BHOnlineBuildId(TEXT("BlackoutHunt-0.5.0-beta.1"));
 	constexpr int32 BHOnlineMaxSearchResults = 25;
 
 	FString NormalizeRuntimeLevelName(FString LevelName)
@@ -69,20 +69,6 @@ namespace
 		}
 
 		return PlayerState->GetPlayerName();
-	}
-
-	int32 PointsForDifficulty(EBHQuestionDifficulty Difficulty)
-	{
-		switch (Difficulty)
-		{
-		case EBHQuestionDifficulty::Hard:
-			return 18;
-		case EBHQuestionDifficulty::Medium:
-			return 12;
-		case EBHQuestionDifficulty::Easy:
-		default:
-			return 8;
-		}
 	}
 
 	FString BHTelemetryCsvEscape(const FString& Input)
@@ -138,6 +124,7 @@ void UBHGameInstance::Init()
 
 	if (AutomationConfig.bEnabled)
 	{
+		AutomationStartTimeSeconds = FPlatformTime::Seconds();
 		LogAutomationMarker(TEXT("BH_AUTOMATION_BOOT"));
 	}
 }
@@ -152,6 +139,13 @@ void UBHGameInstance::Shutdown()
 	}
 
 	FBHNetworkSupport::StopInternetTunnel();
+
+	FString OnlineMessage;
+	if (IOnlineSessionPtr Sessions = GetOnlineSessionInterface(OnlineMessage))
+	{
+		ClearOnlineDelegates(Sessions);
+	}
+
 	Super::Shutdown();
 }
 
@@ -733,6 +727,14 @@ float UBHGameInstance::GetAutomationQuitSeconds() const
 	return AutomationConfig.ShouldAutoQuit() ? AutomationConfig.AutoQuitSeconds : 0.0f;
 }
 
+bool UBHGameInstance::ShouldRequestAutomationCleanExit() const
+{
+	const float QuitSeconds = GetAutomationQuitSeconds();
+	return QuitSeconds > 0.0f
+		&& AutomationStartTimeSeconds > 0.0
+		&& FPlatformTime::Seconds() - AutomationStartTimeSeconds >= static_cast<double>(QuitSeconds);
+}
+
 void UBHGameInstance::LogAutomationMarker(const FString& Marker) const
 {
 	if (!AutomationConfig.bEnabled || Marker.IsEmpty())
@@ -841,15 +843,94 @@ bool UBHGameInstance::RestoreTravelPlayerState(ABHPlayerState* PlayerState) cons
 	PlayerState->SetRole(Existing->PlayerRole);
 	PlayerState->SetDesiredRole(Existing->DesiredRole);
 	PlayerState->SetSpectatorRolePreference(Existing->SpectatorRolePreference);
-	PlayerState->SetLifeState(Existing->LifeState == EBHPlayerLifeState::Escaped ? EBHPlayerLifeState::Alive : Existing->LifeState);
-	PlayerState->SetFakeHunterEligible(Existing->bFakeHunterEligible);
+	PlayerState->SetLifeState(EBHPlayerLifeState::Alive);
+	PlayerState->SetFakeHunterEligible(false);
 	PlayerState->RevisionStats = Existing->RevisionStats;
 	PlayerState->QuestionPoints = FMath::Max(0, Existing->QuestionPoints);
 	PlayerState->LifetimeQuestionPoints = FMath::Max(PlayerState->QuestionPoints, Existing->LifetimeQuestionPoints);
 	PlayerState->HunterPoints = FMath::Max(0, Existing->HunterPoints);
 	PlayerState->LifetimeHunterPoints = FMath::Max(PlayerState->HunterPoints, Existing->LifetimeHunterPoints);
 	PlayerState->Powerups = Existing->Powerups;
+	for (FBHPowerupInventoryEntry& Entry : PlayerState->Powerups)
+	{
+		Entry.CooldownEndServerTime = 0.0f;
+	}
 	return true;
+}
+
+void UBHGameInstance::MarkTravelPlayerLeftForReconnect(const ABHPlayerState* PlayerState, float ServerTimeSeconds)
+{
+	if (!PlayerState)
+	{
+		return;
+	}
+
+	// Persist the player's current state, then stamp the leave time on the matching entry so a
+	// rejoin within the grace window can be recognized and restored.
+	PersistTravelPlayerState(PlayerState);
+
+	const FString StableId = TravelStableIdForPlayerState(PlayerState);
+	const FString PlayerName = PlayerState->GetPlayerName();
+	FBHTravelPlayerProgress* Existing = TravelPlayerProgress.FindByPredicate([&](const FBHTravelPlayerProgress& Progress)
+	{
+		return (!StableId.IsEmpty() && Progress.StableId == StableId)
+			|| (!PlayerName.IsEmpty() && Progress.PlayerName == PlayerName);
+	});
+
+	if (Existing)
+	{
+		Existing->LeftServerWorldTime = ServerTimeSeconds;
+	}
+}
+
+bool UBHGameInstance::TryGetReconnectProgress(const ABHPlayerState* PlayerState, float NowServerTimeSeconds, float GraceSeconds, FBHTravelPlayerProgress& OutProgress) const
+{
+	if (!PlayerState || GraceSeconds <= 0.0f)
+	{
+		return false;
+	}
+
+	const FString StableId = TravelStableIdForPlayerState(PlayerState);
+	const FString PlayerName = PlayerState->GetPlayerName();
+	const FBHTravelPlayerProgress* Existing = TravelPlayerProgress.FindByPredicate([&](const FBHTravelPlayerProgress& Progress)
+	{
+		return (!StableId.IsEmpty() && Progress.StableId == StableId)
+			|| (!PlayerName.IsEmpty() && Progress.PlayerName == PlayerName);
+	});
+
+	if (!Existing || Existing->LeftServerWorldTime < 0.0f)
+	{
+		return false;
+	}
+
+	if (NowServerTimeSeconds - Existing->LeftServerWorldTime > GraceSeconds)
+	{
+		return false;
+	}
+
+	OutProgress = *Existing;
+	return true;
+}
+
+void UBHGameInstance::ClearReconnectMark(const ABHPlayerState* PlayerState)
+{
+	if (!PlayerState)
+	{
+		return;
+	}
+
+	const FString StableId = TravelStableIdForPlayerState(PlayerState);
+	const FString PlayerName = PlayerState->GetPlayerName();
+	FBHTravelPlayerProgress* Existing = TravelPlayerProgress.FindByPredicate([&](const FBHTravelPlayerProgress& Progress)
+	{
+		return (!StableId.IsEmpty() && Progress.StableId == StableId)
+			|| (!PlayerName.IsEmpty() && Progress.PlayerName == PlayerName);
+	});
+
+	if (Existing)
+	{
+		Existing->LeftServerWorldTime = -1.0f;
+	}
 }
 
 void UBHGameInstance::ResetPersistentHunterPoints()
@@ -858,6 +939,20 @@ void UBHGameInstance::ResetPersistentHunterPoints()
 	{
 		Progress.HunterPoints = 0;
 		Progress.LifetimeHunterPoints = 0;
+	}
+}
+
+void UBHGameInstance::ResetPersistentTrainRunProgress()
+{
+	for (FBHTravelPlayerProgress& Progress : TravelPlayerProgress)
+	{
+		Progress.LifeState = EBHPlayerLifeState::Alive;
+		Progress.bFakeHunterEligible = false;
+		Progress.QuestionPoints = 0;
+		Progress.LifetimeQuestionPoints = 0;
+		Progress.HunterPoints = 0;
+		Progress.LifetimeHunterPoints = 0;
+		Progress.Powerups.Reset();
 	}
 }
 
@@ -1132,10 +1227,15 @@ FString UBHGameInstance::BuildTrainRecapTopics() const
 		int32 Correct = 0;
 	};
 
-	FTopicRollup Topics[4];
+	// Must match the number of entries in EBHPhysicsTopic (see BHTypes.h). The enum has no
+	// sentinel, so this literal is kept in sync manually and the printf below still lists each
+	// topic explicitly.
+	constexpr int32 PhysicsTopicCount = 4;
+
+	FTopicRollup Topics[PhysicsTopicCount];
 	for (const FBHQuestionAttemptRecord& Attempt : QuestionAttemptHistory)
 	{
-		const int32 TopicIndex = FMath::Clamp(static_cast<int32>(Attempt.Topic), 0, 3);
+		const int32 TopicIndex = FMath::Clamp(static_cast<int32>(Attempt.Topic), 0, PhysicsTopicCount - 1);
 		++Topics[TopicIndex].Attempts;
 		if (Attempt.bCorrect)
 		{
@@ -1147,7 +1247,7 @@ FString UBHGameInstance::BuildTrainRecapTopics() const
 	int32 StrongIndex = 0;
 	float WeakScore = 101.0f;
 	float StrongScore = -1.0f;
-	for (int32 Index = 0; Index < 4; ++Index)
+	for (int32 Index = 0; Index < PhysicsTopicCount; ++Index)
 	{
 		const float Score = Topics[Index].Attempts > 0 ? 100.0f * Topics[Index].Correct / Topics[Index].Attempts : 50.0f;
 		if (Score < WeakScore)
@@ -1226,40 +1326,68 @@ bool UBHGameInstance::IsOnlineIdentityReadyForSessions(FString& OutMessage)
 	IOnlineSubsystem* OnlineSubsystem = IOnlineSubsystem::Get();
 	if (!OnlineSubsystem)
 	{
-		OutMessage = TEXT("No OnlineSubsystem is loaded. The project defaults to OnlineSubsystemNull for local tests; configure Steam for relay/lobby internet play.");
+		OutMessage = TEXT("No OnlineSubsystem is loaded. The project defaults to OnlineSubsystemNull for local tests; configure EOS or Steam for relay/lobby internet play.");
 		return false;
 	}
 
 	const FString SubsystemName = OnlineSubsystem->GetSubsystemName().ToString();
-	if (!SubsystemName.Equals(TEXT("Steam"), ESearchCase::IgnoreCase))
+	if (SubsystemName.Equals(TEXT("Steam"), ESearchCase::IgnoreCase))
 	{
-		return true;
-	}
+		IOnlineIdentityPtr Identity = OnlineSubsystem->GetIdentityInterface();
+		if (!Identity.IsValid())
+		{
+			OutMessage = TEXT("Steam is selected, but the Steam identity interface is unavailable. Start the Steam client and verify OnlineSubsystemSteam is packaged.");
+			return false;
+		}
 
-	IOnlineIdentityPtr Identity = OnlineSubsystem->GetIdentityInterface();
-	if (!Identity.IsValid())
-	{
-		OutMessage = TEXT("Steam is selected, but the Steam identity interface is unavailable. Start the Steam client and verify OnlineSubsystemSteam is packaged.");
+		if (Identity->GetLoginStatus(0) == ELoginStatus::LoggedIn)
+		{
+			return true;
+		}
+
+		if (!bSteamAutoLoginAttempted)
+		{
+			bSteamAutoLoginAttempted = true;
+			const bool bAutoLoginStarted = Identity->AutoLogin(0);
+			OutMessage = bAutoLoginStarted
+				? TEXT("Steam sign-in is starting. Keep Steam running with an account that owns this App ID, then press the online button again.")
+				: TEXT("Steam is not ready. Start Steam, sign into an account that owns this App ID, then press the online button again.");
+			return false;
+		}
+
+		OutMessage = TEXT("Steam is not signed in yet. Start Steam, sign into an account that owns this App ID, then press the online button again.");
 		return false;
 	}
 
-	if (Identity->GetLoginStatus(0) == ELoginStatus::LoggedIn)
+	if (SubsystemName.Equals(TEXT("EOS"), ESearchCase::IgnoreCase))
 	{
-		return true;
-	}
+		IOnlineIdentityPtr Identity = OnlineSubsystem->GetIdentityInterface();
+		if (!Identity.IsValid())
+		{
+			OutMessage = TEXT("EOS is selected, but the EOS identity interface is unavailable. Verify OnlineSubsystemEOS, SocketSubsystemEOS, and the EOS values file are packaged.");
+			return false;
+		}
 
-	if (!bSteamAutoLoginAttempted)
-	{
-		bSteamAutoLoginAttempted = true;
-		const bool bAutoLoginStarted = Identity->AutoLogin(0);
-		OutMessage = bAutoLoginStarted
-			? TEXT("Steam sign-in is starting. Keep Steam running with an account that owns this App ID, then press the online button again.")
-			: TEXT("Steam is not ready. Start Steam, sign into an account that owns this App ID, then press the online button again.");
+		if (Identity->GetLoginStatus(0) == ELoginStatus::LoggedIn)
+		{
+			return true;
+		}
+
+		if (!bEOSAutoLoginAttempted)
+		{
+			bEOSAutoLoginAttempted = true;
+			const bool bAutoLoginStarted = Identity->AutoLogin(0);
+			OutMessage = bAutoLoginStarted
+				? TEXT("EOS sign-in is starting. Complete the Epic account prompt if it appears, then press the online button again.")
+				: TEXT("EOS is not ready. Fill Config\\EOS\\EOSValues.local.ini, package with the EOS profile, then press the online button again.");
+			return false;
+		}
+
+		OutMessage = TEXT("EOS is not signed in yet. Complete the Epic account prompt if it appears, then press the online button again.");
 		return false;
 	}
 
-	OutMessage = TEXT("Steam is not signed in yet. Start Steam, sign into an account that owns this App ID, then press the online button again.");
-	return false;
+	return true;
 }
 
 bool UBHGameInstance::IsHostNetworkContext(FString& OutMessage, const TCHAR* ActionDescription) const
@@ -1309,7 +1437,7 @@ void UBHGameInstance::RebuildOnlineSessionSummaries()
 		Summary.SessionId = Result.GetSessionIdStr();
 		Summary.PingMs = Result.PingInMs;
 		Summary.MaxPlayers = Result.Session.SessionSettings.NumPublicConnections;
-		Summary.CurrentPlayers = Summary.MaxPlayers - Result.Session.NumOpenPublicConnections;
+		Summary.CurrentPlayers = FMath::Clamp(Summary.MaxPlayers - Result.Session.NumOpenPublicConnections, 0, Summary.MaxPlayers);
 
 		if (!Result.Session.SessionSettings.Get(BHOnlineLevelSetting, Summary.LevelName) || Summary.LevelName.IsEmpty())
 		{

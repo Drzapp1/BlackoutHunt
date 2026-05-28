@@ -7,6 +7,7 @@
 #include "BHPlayerState.h"
 #include "BHPowerupComponent.h"
 #include "BHPowerupLibrary.h"
+#include "BHPropVisuals.h"
 #include "BHRevisionQuestionBank.h"
 #include "Components/TextRenderComponent.h"
 #include "GameFramework/GameStateBase.h"
@@ -23,21 +24,11 @@ ABHTrainBonusQuestionTerminal::ABHTrainBonusQuestionTerminal()
 
 	PromptText = CreateDefaultSubobject<UTextRenderComponent>(TEXT("PromptText"));
 	PromptText->SetupAttachment(SceneRoot);
-	PromptText->SetRelativeLocation(FVector(-58.0f, -60.0f, 92.0f));
-	PromptText->SetRelativeRotation(FRotator(0.0f, 90.0f, 0.0f));
-	PromptText->SetHorizontalAlignment(EHTA_Left);
-	PromptText->SetVerticalAlignment(EVRTA_TextTop);
-	PromptText->SetWorldSize(12.0f);
-	PromptText->SetTextRenderColor(FColor(255, 210, 92));
+	BHPropVisuals::ConfigureReadableText(PromptText, FVector(-58.0f, -60.0f, 92.0f), FRotator(0.0f, 90.0f, 0.0f), 12.0f, FColor(255, 210, 92));
 
 	ChoicesText = CreateDefaultSubobject<UTextRenderComponent>(TEXT("ChoicesText"));
 	ChoicesText->SetupAttachment(SceneRoot);
-	ChoicesText->SetRelativeLocation(FVector(-58.0f, -61.0f, 34.0f));
-	ChoicesText->SetRelativeRotation(FRotator(0.0f, 90.0f, 0.0f));
-	ChoicesText->SetHorizontalAlignment(EHTA_Left);
-	ChoicesText->SetVerticalAlignment(EVRTA_TextTop);
-	ChoicesText->SetWorldSize(9.5f);
-	ChoicesText->SetTextRenderColor(FColor(220, 242, 232));
+	BHPropVisuals::ConfigureReadableText(ChoicesText, FVector(-58.0f, -61.0f, 34.0f), FRotator(0.0f, 90.0f, 0.0f), 9.5f, FColor(220, 242, 232));
 }
 
 void ABHTrainBonusQuestionTerminal::Tick(float DeltaSeconds)
@@ -186,6 +177,17 @@ bool ABHTrainBonusQuestionTerminal::SubmitAnswer(ABHCharacter* Character, int32 
 	}
 	bFeedbackCorrect = bCorrect;
 
+	// Spaced-repetition review loop: a miss queues the exact question to be
+	// re-asked later; answering it correctly clears it from the queue.
+	if (bCorrect)
+	{
+		BHPS->DequeueRevisionReview(Question.Id);
+	}
+	else
+	{
+		BHPS->EnqueueRevisionReview(Question.Id);
+	}
+
 	FBHQuestionAttemptRecord Record;
 	Record.PlayerName = BHPS->GetPlayerName();
 	Record.QuestionId = Question.Id;
@@ -227,7 +229,18 @@ void ABHTrainBonusQuestionTerminal::LoadQuestion(EBHPhysicsTopic PreferredTopic,
 {
 	FBHRevisionQuestion NewQuestion;
 	bool bSelected = false;
+
+	// Spaced repetition: re-ask a previously missed question before normal selection.
 	if (AdaptivePlayerState)
+	{
+		const FString ReviewId = AdaptivePlayerState->PeekRevisionReview();
+		if (!ReviewId.IsEmpty() && FBHRevisionQuestionBank::FindQuestion(ReviewId, NewQuestion))
+		{
+			bSelected = true;
+		}
+	}
+
+	if (!bSelected && AdaptivePlayerState)
 	{
 		const ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr;
 		EBHPhysicsTopic AdaptiveTopic = PreferredTopic;

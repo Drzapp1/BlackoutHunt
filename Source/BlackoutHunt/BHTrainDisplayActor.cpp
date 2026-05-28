@@ -216,6 +216,8 @@ void BHConfigureDisplayTextComponent(UTextRenderComponent* TextComponent, const 
 
 	TextComponent->SetRelativeLocation(Location);
 	TextComponent->SetRelativeRotation(Rotation);
+	TextComponent->SetUsingAbsoluteScale(true);
+	TextComponent->SetWorldScale3D(FVector::OneVector);
 	TextComponent->SetHorizontalAlignment(EHTA_Left);
 	TextComponent->SetVerticalAlignment(EVRTA_TextTop);
 	TextComponent->SetWorldSize(WorldSize);
@@ -662,6 +664,7 @@ void ABHTrainDisplayActor::ApplyDisplayProfile()
 		}
 		TextComponent->SetRelativeLocation(Location);
 		TextComponent->SetRelativeRotation(Rotation);
+		TextComponent->SetWorldScale3D(FVector::OneVector);
 		TextComponent->SetWorldSize(WorldSize);
 	};
 
@@ -700,10 +703,10 @@ void ABHTrainDisplayActor::ApplyDisplayProfile()
 		SetPanel(RightFrame, FVector(282.0f, 10.0f, 0.0f), FVector(0.080f, 0.14f, 1.86f), false);
 		SetPanel(LeftHanger, FVector(-196.0f, 10.0f, 146.0f), FVector(0.052f, 0.052f, 0.86f), false);
 		SetPanel(RightHanger, FVector(196.0f, 10.0f, 146.0f), FVector(0.052f, 0.052f, 0.86f), false);
-		SetText(HeaderText, FVector(-226.0f, 23.0f, 63.0f), FRotator(0.0f, -90.0f, 0.0f), 17.0f);
-		SetText(BodyText, FVector(-226.0f, 23.5f, 32.0f), FRotator(0.0f, -90.0f, 0.0f), 9.2f);
-		SetText(HeaderTextBack, FVector(226.0f, -23.0f, 63.0f), FRotator(0.0f, 90.0f, 0.0f), 17.0f);
-		SetText(BodyTextBack, FVector(226.0f, -23.5f, 32.0f), FRotator(0.0f, 90.0f, 0.0f), 9.2f);
+		SetText(HeaderText, FVector(-226.0f, 23.0f, 63.0f), FRotator(0.0f, 90.0f, 0.0f), 17.0f);
+		SetText(BodyText, FVector(-226.0f, 23.5f, 32.0f), FRotator(0.0f, 90.0f, 0.0f), 9.2f);
+		SetText(HeaderTextBack, FVector(226.0f, -23.0f, 63.0f), FRotator(0.0f, -90.0f, 0.0f), 17.0f);
+		SetText(BodyTextBack, FVector(226.0f, -23.5f, 32.0f), FRotator(0.0f, -90.0f, 0.0f), 9.2f);
 	}
 	else
 	{

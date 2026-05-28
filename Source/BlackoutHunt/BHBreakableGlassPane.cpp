@@ -9,6 +9,13 @@
 #include "Net/UnrealNetwork.h"
 #include "Sound/SoundBase.h"
 
+namespace
+{
+	// Converts a physics impulse magnitude (NormalImpulse.Size()) into damage units
+	// comparable to the crack/break damage thresholds.
+	constexpr float GlassImpulseToDamageScale = 10000.0f;
+}
+
 ABHBreakableGlassPane::ABHBreakableGlassPane()
 {
 	InteractionLabel = FText::FromString(TEXT("Break Glass"));
@@ -16,8 +23,8 @@ ABHBreakableGlassPane::ABHBreakableGlassPane()
 	CrackDamageThreshold = 12.0f;
 	BreakDamageThreshold = 34.0f;
 	BreakNoiseStrength = 1.15f;
-	NetUpdateFrequency = 8.0f;
-	MinNetUpdateFrequency = 1.0f;
+	SetNetUpdateFrequency(8.0f);
+	SetMinNetUpdateFrequency(1.0f);
 
 	if (Mesh)
 	{
@@ -68,11 +75,11 @@ float ABHBreakableGlassPane::TakeDamage(float DamageAmount, FDamageEvent const& 
 		return AppliedDamage;
 	}
 
-	if (DamageAmount >= BreakDamageThreshold)
+	if (AppliedDamage >= BreakDamageThreshold)
 	{
 		BreakGlass(DamageCauser ? DamageCauser : this, TEXT("impact glass"));
 	}
-	else if (DamageAmount >= CrackDamageThreshold)
+	else if (AppliedDamage >= CrackDamageThreshold)
 	{
 		CrackGlass(DamageCauser ? DamageCauser : this, TEXT("cracked glass"));
 	}
@@ -189,7 +196,7 @@ void ABHBreakableGlassPane::OnPaneHit(UPrimitiveComponent* HitComponent, AActor*
 		return;
 	}
 
-	const float ImpactStrength = NormalImpulse.Size() / 10000.0f;
+	const float ImpactStrength = NormalImpulse.Size() / GlassImpulseToDamageScale;
 	if (ImpactStrength >= BreakDamageThreshold)
 	{
 		BreakGlass(OtherActor, TEXT("impact glass"));

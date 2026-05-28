@@ -88,6 +88,11 @@ void ABHSecurityShutter::SetOpen(bool bNewOpen)
 
 bool ABHSecurityShutter::TrySetOpen(bool bNewOpen)
 {
+	if (!HasAuthority())
+	{
+		return false;
+	}
+
 	if (bOpen == bNewOpen)
 	{
 		return true;

@@ -43,8 +43,8 @@ void ABHEscapeStationManager::Tick(float DeltaSeconds)
 	if (HasAuthority())
 	{
 		TickAntiCamp(DeltaSeconds);
+		UpdateStationDisplays();
 	}
-	UpdateStationDisplays();
 }
 
 void ABHEscapeStationManager::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -238,6 +238,14 @@ void ABHEscapeStationManager::UpdateStationDisplays()
 		Accent = FLinearColor(0.36f, 0.86f, 1.0f, 1.0f);
 	}
 
+	if (Header == LastDisplayHeader && Body == LastDisplayBody && Accent.Equals(LastDisplayAccent))
+	{
+		return;
+	}
+	LastDisplayHeader = Header;
+	LastDisplayBody = Body;
+	LastDisplayAccent = Accent;
+
 	for (ABHTrainDisplayActor* Display : Displays)
 	{
 		if (Display)
@@ -257,6 +265,17 @@ void ABHEscapeStationManager::TickAntiCamp(float DeltaSeconds)
 	}
 
 	const float Now = GetWorld()->GetTimeSeconds();
+
+	// Drop entries whose hunter has gone away or whose penalty has already elapsed so the
+	// map does not accumulate stale keys for the duration of an active escape.
+	for (auto It = HunterPenaltyEndTimes.CreateIterator(); It; ++It)
+	{
+		if (!It.Key().IsValid() || It.Value() <= Now)
+		{
+			It.RemoveCurrent();
+		}
+	}
+
 	if (BHGS->bHunterInputFrozen)
 	{
 		const AGameStateBase* BaseGameState = GetWorld()->GetGameState();

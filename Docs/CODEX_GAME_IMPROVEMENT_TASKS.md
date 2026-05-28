@@ -194,7 +194,7 @@ Inspect first:
 - `Tools/Verify-ClassroomPackage.ps1`
 - `Docs/CLASSROOM_DEPLOYMENT.md`
 - `Docs/ROADMAP.md`
-- `Docs/BETA_RELEASE_NOTES_0.2.0-beta.6.md`
+- `Docs/BETA_RELEASE_NOTES_0.5.0-beta.1.md`
 
 Acceptance criteria:
 
@@ -658,7 +658,7 @@ Use this as the quick disambiguation layer when assigning work by existing backl
 - Project root: `D:\BlackoutHunt`
 - Engine: Unreal Engine 5
 - Game: multiplayer classroom horror hunt prototype
-- Current beta target: `0.2.0-beta.6`
+- Current beta target: `0.5.0-beta.1`
 - Core implementation style: native gameplay logic is mostly C++; keep new gameplay systems in C++ when extending existing systems.
 - Important docs:
   - `README.md`

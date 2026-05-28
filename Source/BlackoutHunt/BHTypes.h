@@ -288,6 +288,73 @@ struct FBHMovementSpecialTuning
 	FText BlockedText;
 };
 
+UENUM(BlueprintType)
+enum class EBHPOVAnimIntensity : uint8
+{
+	Subtle,
+	Moderate,
+	Punchy
+};
+
+// Procedural, asset-free first-person camera animation layer (additive camera tilt/roll/punch
+// synced to rolls, slides, dives, and the capture swing) plus the Hunter third-person body lunge.
+// All magnitudes are authored at the "Moderate" level and scaled by Intensity, then by
+// ReducedMotionScale when the player has the reduced-camera-shake comfort option enabled.
+USTRUCT(BlueprintType)
+struct FBHPOVAnimationTuning
+{
+	GENERATED_BODY()
+
+	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|POV")
+	bool bEnablePOVAnimation = true;
+
+	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|POV")
+	EBHPOVAnimIntensity Intensity = EBHPOVAnimIntensity::Moderate;
+
+	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|POV", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float ReducedMotionScale = 0.30f;
+
+	// Roll (degrees / cm)
+	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|POV")
+	float RollSpinDegrees = 320.0f;
+	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|POV")
+	float RollPitchDipDeg = 14.0f;
+	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|POV")
+	float RollPosPunchCm = 6.0f;
+
+	// Slide
+	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|POV")
+	float SlidePitchDipDeg = 11.0f;
+	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|POV")
+	float SlideRollLeanDeg = 7.0f;
+	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|POV")
+	float SlideSettleRiseDeg = 4.0f;
+
+	// Dive
+	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|POV")
+	float DivePitchDipDeg = 18.0f;
+	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|POV")
+	float DivePosPunchCm = 9.0f;
+
+	// Swing / capture (local first-person)
+	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|POV")
+	float SwingWindupPitchUpDeg = 9.0f;
+	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|POV")
+	float SwingWindupYawDeg = 4.0f;
+	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|POV")
+	float SwingPunchPitchDownDeg = 12.0f;
+	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|POV")
+	float SwingPunchYawDeg = 7.0f;
+	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|POV")
+	float SwingPosPunchCm = 5.0f;
+
+	// Global interp speeds
+	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|POV", meta = (ClampMin = "0.0"))
+	float RotInterpSpeed = 14.0f;
+	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|POV", meta = (ClampMin = "0.0"))
+	float PosInterpSpeed = 16.0f;
+};
+
 USTRUCT(BlueprintType)
 struct FBHMovementRoleTuning
 {
@@ -440,6 +507,21 @@ enum class EBHScareEventType : uint8
 	FootstepEcho UMETA(DisplayName = "Footstep Echo")
 };
 
+// How a monster-charge jumpscare approaches the target. Used to vary the spawn framing so
+// repeated scares stay unpredictable.
+UENUM(BlueprintType)
+enum class EBHJumpscareApproach : uint8
+{
+	// Spawns in view ahead of the player and charges head-on (the classic approach).
+	HeadOn UMETA(DisplayName = "Head-On"),
+	// Spawns behind the player, out of view, so the reveal lands on contact ("it was behind you").
+	Behind UMETA(DisplayName = "Behind"),
+	// Spawns close and already in view, then lunges almost immediately ("it's already there").
+	AlreadyThere UMETA(DisplayName = "Already There"),
+	// Spawns above the player and descends onto them ("ceiling drop").
+	CeilingDrop UMETA(DisplayName = "Ceiling Drop")
+};
+
 USTRUCT(BlueprintType)
 struct FBHJumpscareVariant
 {
@@ -507,6 +589,22 @@ struct FBHJumpscareVariant
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0.0"))
 	float CameraJitterDuration = 1.10f;
+
+	// Degrees the field of view snaps inward at the moment of impact, then eases back. 0 disables the punch.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0.0", ClampMax = "30.0"))
+	float ImpactFOVPunch = 14.0f;
+
+	// Brief client-local hitstop (slow-motion) applied on impact, in real seconds. 0 disables.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0.0", ClampMax = "0.25"))
+	float ImpactHitStopSeconds = 0.07f;
+
+	// Gamepad rumble strength on impact (0..1). 0 disables.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float ImpactRumbleIntensity = 0.85f;
+
+	// Optional extra audio layer (e.g. a low sub-boom / transient) played alongside the main impact scream.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	TSoftObjectPtr<USoundBase> ImpactStinger;
 };
 
 USTRUCT(BlueprintType)
@@ -627,6 +725,26 @@ struct FBHClientHorrorCue
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
 	bool bUpperBodyCloseVisual = false;
+
+	// Degrees the field of view snaps inward on impact, then eases back. 0 disables.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0.0", ClampMax = "30.0"))
+	float FOVPunch = 0.0f;
+
+	// Brief client-local hitstop (slow-motion) applied on impact, in real seconds. 0 disables.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0.0", ClampMax = "0.25"))
+	float HitStopSeconds = 0.0f;
+
+	// Gamepad rumble strength on impact (0..1). 0 disables.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float RumbleIntensity = 0.0f;
+
+	// Optional extra audio layer (e.g. a low sub-boom / transient) played alongside the main impact scream.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	TSoftObjectPtr<USoundBase> ImpactStinger;
+
+	// When true the impact scream is doubled with a pitched-down "roar" layer for extra low-end weight.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	bool bLayeredImpactAudio = false;
 };
 
 USTRUCT(BlueprintType)

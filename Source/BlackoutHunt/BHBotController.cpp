@@ -103,6 +103,25 @@ float BHBotRoleMoveSpeed(const ABHPlayerState* BotPS)
 	return 470.0f;
 }
 
+bool BHBotIntentRequiresMovement(EBHBotIntent Intent)
+{
+	switch (Intent)
+	{
+	case EBHBotIntent::Patrol:
+	case EBHBotIntent::Chase:
+	case EBHBotIntent::InvestigateNoise:
+	case EBHBotIntent::InvestigateLastSeen:
+	case EBHBotIntent::SearchLocker:
+	case EBHBotIntent::AmbushObjective:
+	case EBHBotIntent::UseScan:
+	case EBHBotIntent::UsePower:
+	case EBHBotIntent::DropTrap:
+		return true;
+	default:
+		return false;
+	}
+}
+
 void BHApplyBotMovementProfile(ACharacter* MoveCharacter, const ABHPlayerState* BotPS)
 {
 	if (UCharacterMovementComponent* Movement = MoveCharacter ? MoveCharacter->GetCharacterMovement() : nullptr)
@@ -157,8 +176,9 @@ ABHBotController::ABHBotController()
 	}
 
 	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
-	bUseStateTreeAI = Settings ? Settings->bUseStateTreeAI : true;
+	bUseStateTreeAI = Settings ? Settings->bUseStateTreeAI : false;
 	bStateTreeBrainRunning = false;
+	bStateTreePolicyFallbackActivated = false;
 	ThinkInterval = Settings ? FMath::Max(0.05f, Settings->BotThinkInterval) : 0.25f;
 	SightRange = Settings ? FMath::Max(800.0f, Settings->BotSightRange) : 2800.0f;
 	HearingMemorySeconds = Settings ? FMath::Max(1.0f, Settings->BotHearingMemorySeconds) : 12.0f;
@@ -242,7 +262,16 @@ void ABHBotController::Tick(float DeltaSeconds)
 	if (Now >= NextThinkTime)
 	{
 		NextThinkTime = Now + ThinkInterval;
-		if (!ShouldUseStateTreeBrain())
+		if (ShouldUseStateTreeBrain())
+		{
+			FString FallbackReason;
+			if (ShouldFallbackFromStateTree(FallbackReason))
+			{
+				ActivateStateTreePolicyFallback(FallbackReason);
+				Think();
+			}
+		}
+		else
 		{
 			Think();
 		}
@@ -255,7 +284,9 @@ FString ABHBotController::GetBotDebugLine() const
 	const APawn* ControlledPawn = GetPawn();
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	const float LastSeenAge = LastKnownSurvivorTime <= -900.0f ? -1.0f : Now - LastKnownSurvivorTime;
-	FString Brain = (bUseStateTreeAI && BotPS && BotPS->PlayerRole == EBHPlayerRole::Hunter) ? TEXT("StateTreeMissingAsset") : TEXT("Policy");
+	FString Brain = (bUseStateTreeAI && BotPS && BotPS->PlayerRole == EBHPlayerRole::Hunter)
+		? (bStateTreePolicyFallbackActivated ? TEXT("Policy(StateTreeFallback)") : TEXT("StateTreeMissingAsset"))
+		: TEXT("Policy");
 	if (StateTreeAIComponent && StateTreeAIComponent->IsRunning())
 	{
 		Brain = TEXT("StateTree");
@@ -305,6 +336,7 @@ void ABHBotController::OnPossess(APawn* InPawn)
 	LastProgressLocation = InPawn ? InPawn->GetActorLocation() : FVector::ZeroVector;
 	LastProgressTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	ABHPlayerState* BotPS = GetBHPlayerState();
+	bStateTreePolicyFallbackActivated = false;
 
 	if (ACharacter* MoveCharacter = Cast<ACharacter>(InPawn))
 	{
@@ -338,6 +370,8 @@ bool ABHBotController::RunStateTreeIntent(EBHBotIntent Intent, AActor* Target, c
 	{
 		return false;
 	}
+
+	BHApplyBotMovementProfile(BotCharacter, BotPS);
 
 	if (ABHGameMode* BHGM = GetBHGameMode())
 	{
@@ -513,6 +547,100 @@ bool ABHBotController::ShouldUseStateTreeBrain() const
 	return bUseStateTreeAI && bStateTreeBrainRunning && StateTreeAIComponent && StateTreeAIComponent->IsRunning();
 }
 
+bool ABHBotController::ShouldFallbackFromStateTree(FString& OutReason) const
+{
+	OutReason.Reset();
+	if (!ShouldUseStateTreeBrain() || !GetWorld())
+	{
+		return false;
+	}
+
+	const ABHPlayerState* BotPS = GetBHPlayerState();
+	if (!BotPS || BotPS->PlayerRole != EBHPlayerRole::Hunter)
+	{
+		return false;
+	}
+
+	const float Now = GetWorld()->GetTimeSeconds();
+	const float StartupGraceSeconds = FMath::Max(1.0f, ThinkInterval * 4.0f);
+	if ((LastDecisionTime <= -900.0f || CurrentIntent == EBHBotIntent::None)
+		&& Now - LastProgressTime >= StartupGraceSeconds)
+	{
+		OutReason = TEXT("no hunter intent emitted");
+		return true;
+	}
+
+	const ABHGameState* BHGS = GetBHGameState();
+	if (BHGS
+		&& BHGS->RoundPhase == EBHRoundPhase::Hunt
+		&& BHBotIntentRequiresMovement(CurrentIntent)
+		&& LastDecisionTime > -900.0f)
+	{
+		const UPathFollowingComponent* PathFollowing = GetPathFollowingComponent();
+		const APawn* ControlledPawn = GetPawn();
+		const bool bPathMoving = PathFollowing && PathFollowing->GetStatus() == EPathFollowingStatus::Moving;
+		const bool bPawnMoving = ControlledPawn && ControlledPawn->GetVelocity().SizeSquared2D() > FMath::Square(20.0f);
+		const float IdleDecisionSeconds = Now - LastDecisionTime;
+		const float IdleWatchdogSeconds = FMath::Max(1.25f, ThinkInterval * 5.0f);
+		if (!bPathMoving && !bPawnMoving && IdleDecisionSeconds >= IdleWatchdogSeconds)
+		{
+			OutReason = FString::Printf(TEXT("hunter state tree stopped during %s"), *BHBotIntentName(CurrentIntent));
+			return true;
+		}
+	}
+
+	FBHBotMemory Memory = LocalMemory;
+	if (ABHGameMode* BHGM = GetBHGameMode())
+	{
+		BHGM->GetBotWorldMemorySnapshot(Memory, 3.0f);
+	}
+
+	const float RecentSightAge = Now - Memory.LastSeenSurvivorTime;
+	if (RecentSightAge >= 0.55f
+		&& RecentSightAge <= 2.0f
+		&& CurrentIntent != EBHBotIntent::Chase
+		&& CurrentIntent != EBHBotIntent::InvestigateLastSeen)
+	{
+		OutReason = TEXT("fresh survivor sight ignored");
+		return true;
+	}
+
+	const bool bNoiseResponsiveIntent = CurrentIntent == EBHBotIntent::InvestigateNoise
+		|| CurrentIntent == EBHBotIntent::InvestigateLastSeen
+		|| CurrentIntent == EBHBotIntent::Chase
+		|| CurrentIntent == EBHBotIntent::UseScan;
+	const float RecentNoiseAge = Now - Memory.LastHeardTime;
+	if (RecentNoiseAge >= 0.75f
+		&& RecentNoiseAge <= 2.0f
+		&& !bNoiseResponsiveIntent)
+	{
+		OutReason = TEXT("fresh noise ignored");
+		return true;
+	}
+
+	return false;
+}
+
+void ABHBotController::ActivateStateTreePolicyFallback(const FString& Reason)
+{
+	if (bStateTreePolicyFallbackActivated)
+	{
+		bStateTreeBrainRunning = false;
+		return;
+	}
+
+	bStateTreePolicyFallbackActivated = true;
+	bStateTreeBrainRunning = false;
+	if (StateTreeAIComponent && StateTreeAIComponent->IsRunning())
+	{
+		StateTreeAIComponent->StopLogic(Reason);
+	}
+	LastDecisionDebugLabel = FString::Printf(TEXT("state tree policy fallback: %s"), *Reason);
+	UE_LOG(LogTemp, Warning, TEXT("BlackoutHunt hunter StateTree fallback for %s: %s"),
+		*GetNameSafe(this),
+		Reason.IsEmpty() ? TEXT("unspecified") : *Reason);
+}
+
 void ABHBotController::OnTargetPerceptionUpdated(AActor* Actor, FAIStimulus Stimulus)
 {
 	if (!HasAuthority() || !Actor || !Stimulus.WasSuccessfullySensed())
@@ -627,19 +755,19 @@ void ABHBotController::Think()
 
 	if (BotPS->PlayerRole == EBHPlayerRole::Survivor)
 	{
-		ThinkSurvivor(BotCharacter, BotPS, BHGS);
+		ThinkWithCandidates(BotCharacter, BotPS, BHGS, TEXT("no free survivor objective"));
 	}
 	else if (BotPS->PlayerRole == EBHPlayerRole::Hunter)
 	{
-		ThinkTeacher(BotCharacter, BotPS, BHGS);
+		ThinkWithCandidates(BotCharacter, BotPS, BHGS, TEXT("no teacher lead"));
 	}
 	else if (BotPS->PlayerRole == EBHPlayerRole::FakeHunter)
 	{
-		ThinkFakeHunter(BotCharacter, BotPS, BHGS);
+		ThinkWithCandidates(BotCharacter, BotPS, BHGS, TEXT("monitor patrol"));
 	}
 }
 
-void ABHBotController::ThinkSurvivor(ABHCharacter* BotCharacter, ABHPlayerState* BotPS, ABHGameState* BHGS)
+void ABHBotController::ThinkWithCandidates(ABHCharacter* BotCharacter, ABHPlayerState* BotPS, ABHGameState* BHGS, const TCHAR* EmptyPatrolLabel)
 {
 	TArray<FBHBotDecisionCandidate> Candidates;
 	BuildDecisionCandidates(BotCharacter, BotPS, BHGS, Candidates);
@@ -648,57 +776,7 @@ void ABHBotController::ThinkSurvivor(ABHCharacter* BotCharacter, ABHPlayerState*
 		FBHBotDecisionCandidate PatrolDecision;
 		PatrolDecision.Intent = EBHBotIntent::Patrol;
 		PatrolDecision.Location = GetStablePatrolPoint(BotCharacter);
-		PatrolDecision.DebugLabel = TEXT("no free survivor objective");
-		LastDecisionCandidateCount = 1;
-		bLastDecisionUsedPolicyModel = false;
-		CommitDecision(BotCharacter, BotPS, BHGS, PatrolDecision);
-		return;
-	}
-
-	FBHBotPolicyResult Result = ScoreDecisionCandidate(BuildPolicyFeatures(BotCharacter, BotPS, BHGS, Candidates), Candidates);
-	if (Candidates.IsValidIndex(Result.ChosenIndex))
-	{
-		LastDecisionCandidateCount = Candidates.Num();
-		bLastDecisionUsedPolicyModel = Result.bUsedModel;
-		CommitDecision(BotCharacter, BotPS, BHGS, Candidates[Result.ChosenIndex]);
-	}
-}
-
-void ABHBotController::ThinkTeacher(ABHCharacter* BotCharacter, ABHPlayerState* BotPS, ABHGameState* BHGS)
-{
-	TArray<FBHBotDecisionCandidate> Candidates;
-	BuildDecisionCandidates(BotCharacter, BotPS, BHGS, Candidates);
-	if (Candidates.IsEmpty())
-	{
-		FBHBotDecisionCandidate PatrolDecision;
-		PatrolDecision.Intent = EBHBotIntent::Patrol;
-		PatrolDecision.Location = GetStablePatrolPoint(BotCharacter);
-		PatrolDecision.DebugLabel = TEXT("no teacher lead");
-		LastDecisionCandidateCount = 1;
-		bLastDecisionUsedPolicyModel = false;
-		CommitDecision(BotCharacter, BotPS, BHGS, PatrolDecision);
-		return;
-	}
-
-	FBHBotPolicyResult Result = ScoreDecisionCandidate(BuildPolicyFeatures(BotCharacter, BotPS, BHGS, Candidates), Candidates);
-	if (Candidates.IsValidIndex(Result.ChosenIndex))
-	{
-		LastDecisionCandidateCount = Candidates.Num();
-		bLastDecisionUsedPolicyModel = Result.bUsedModel;
-		CommitDecision(BotCharacter, BotPS, BHGS, Candidates[Result.ChosenIndex]);
-	}
-}
-
-void ABHBotController::ThinkFakeHunter(ABHCharacter* BotCharacter, ABHPlayerState* BotPS, ABHGameState* BHGS)
-{
-	TArray<FBHBotDecisionCandidate> Candidates;
-	BuildDecisionCandidates(BotCharacter, BotPS, BHGS, Candidates);
-	if (Candidates.IsEmpty())
-	{
-		FBHBotDecisionCandidate PatrolDecision;
-		PatrolDecision.Intent = EBHBotIntent::Patrol;
-		PatrolDecision.Location = GetStablePatrolPoint(BotCharacter);
-		PatrolDecision.DebugLabel = TEXT("monitor patrol");
+		PatrolDecision.DebugLabel = EmptyPatrolLabel;
 		LastDecisionCandidateCount = 1;
 		bLastDecisionUsedPolicyModel = false;
 		CommitDecision(BotCharacter, BotPS, BHGS, PatrolDecision);
@@ -936,12 +1014,12 @@ void ABHBotController::BuildTeacherDecisionCandidates(ABHCharacter* BotCharacter
 		ABHObjectiveStation* Station = *It;
 		if (Station && Station->IsDirectorActive() && !Station->IsCompleted())
 		{
-			const float Risk = CountNearbyAllies(Station->GetActorLocation(), EBHPlayerRole::Survivor, 1400.0f) * -0.05f;
+			const float CrowdBonus = CountNearbyAllies(Station->GetActorLocation(), EBHPlayerRole::Survivor, 1400.0f) * 0.05f;
 			const float RoutePrediction = LastSeenAge <= HearingMemorySeconds + 8.0f
 				? FMath::Clamp(1.0f - FVector::Dist2D(Station->GetActorLocation(), LastKnownSurvivorLocation) / 5200.0f, 0.0f, 0.55f)
 				: 0.0f;
 			const FVector AmbushLocation = LastSeenAge <= HearingMemorySeconds + 8.0f ? BuildAmbushLocation(LastKnownSurvivorLocation, Station->GetActorLocation()) : Station->GetActorLocation();
-			AddCandidate(OutCandidates, EBHBotIntent::AmbushObjective, Station, AmbushLocation, 1.0f + FMath::Max(0.0f, -Risk) + RoutePrediction + (bAmbusher ? 0.34f : 0.0f) + (bRoamingMonitor ? 0.16f : 0.0f) + (bTrapMonitor ? 0.20f : 0.0f), 0.0f, 0.46f + RoutePrediction, BHBotDecisionLabel(BotRole, Personality, bCanCapture ? TEXT("ambush station") : TEXT("monitor station route")));
+			AddCandidate(OutCandidates, EBHBotIntent::AmbushObjective, Station, AmbushLocation, 1.0f + FMath::Max(0.0f, CrowdBonus) + RoutePrediction + (bAmbusher ? 0.34f : 0.0f) + (bRoamingMonitor ? 0.16f : 0.0f) + (bTrapMonitor ? 0.20f : 0.0f), 0.0f, 0.46f + RoutePrediction, BHBotDecisionLabel(BotRole, Personality, bCanCapture ? TEXT("ambush station") : TEXT("monitor station route")));
 		}
 	}
 	for (TActorIterator<ABHBreaker> It(GetWorld()); It; ++It)

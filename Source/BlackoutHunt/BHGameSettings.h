@@ -7,6 +7,7 @@
 
 class UStateTree;
 class UBHMovementTuningAsset;
+class USoundMix;
 
 UCLASS(Config = Game, DefaultConfig)
 class BLACKOUTHUNT_API UBHGameSettings : public UObject
@@ -33,6 +34,11 @@ public:
 
 	UPROPERTY(Config, EditAnywhere, Category = "Rules")
 	bool bAllowHostForceStart;
+
+	// Seconds a student who drops mid-round may rejoin straight back into their role/state before
+	// falling back to a late-join spectator. 0 disables mid-round reconnect restore.
+	UPROPERTY(Config, EditAnywhere, Category = "Rules")
+	float ReconnectGraceSeconds;
 
 	UPROPERTY(Config, EditAnywhere, Category = "Classroom")
 	bool bClassroomMode;
@@ -67,6 +73,18 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Horror")
 	float DecoyCooldownSeconds;
 
+	UPROPERTY(Config, EditAnywhere, Category = "Movement|Hunter", meta = (ClampMin = "0.0"))
+	float HunterSprintDrainMultiplierMax;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Movement|Hunter", meta = (ClampMin = "0.0"))
+	float HunterStaminaRecoveryMultiplier;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Movement|Hunter", meta = (ClampMin = "0.0"))
+	float TeacherAxeStaminaCost;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Movement|Hunter", meta = (ClampMin = "0.0"))
+	float TeacherAxeMinStamina;
+
 	UPROPERTY(Config, EditAnywhere, Category = "Horror")
 	float BatteryRefillAmount;
 
@@ -100,6 +118,14 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Horror")
 	TArray<FBHJumpscareVariant> JumpscareVariants;
 
+	// Optional SoundMix pushed for JumpscareDuckSeconds when a jumpscare impact fires, to duck ambient audio
+	// under the scare. Leave unset to disable ducking (no SoundMix asset shipped by default).
+	UPROPERTY(Config, EditAnywhere, Category = "Horror")
+	TSoftObjectPtr<USoundMix> JumpscareDuckSoundMix;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Horror", meta = (ClampMin = "0.1", ClampMax = "4.0"))
+	float JumpscareDuckSeconds = 1.4f;
+
 	UPROPERTY(Config, EditAnywhere, Category = "Horror|Footsteps")
 	TArray<FBHFootstepSurfaceProfile> FootstepSurfaceProfiles;
 
@@ -117,6 +143,9 @@ public:
 
 	UPROPERTY(Config, EditAnywhere, Category = "Movement|Production")
 	FBHMovementAnimationProfile MovementAnimationProfile;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Movement|Production")
+	FBHPOVAnimationTuning POVAnimationTuning;
 
 	UPROPERTY(Config, EditAnywhere, Category = "Horror|Variation")
 	FBHHorrorVariationSettings HorrorVariation;

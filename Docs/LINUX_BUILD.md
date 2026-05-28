@@ -56,6 +56,11 @@ After `platform_Linux` is installed:
 
 This runs the Windows `RunUAT.bat` through Wine and archives the package to `Builds/Linux`.
 
+Linux classroom packages use the default `OnlineSubsystemNull` direct-IP path. The
+project's EOS plugins are kept Win64-only because the current UE 5.7 Windows
+install does not provide Linux-ready `OnlineSubsystemEOS`/`SocketSubsystemEOS`
+runtime binaries.
+
 ## Native Linux UE Alternative
 
 If a native Linux Unreal Engine 5.7 install is available, set `UE_ROOT` to it and use:

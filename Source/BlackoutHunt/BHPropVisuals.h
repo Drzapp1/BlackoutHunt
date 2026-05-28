@@ -5,6 +5,7 @@
 class UMaterialInterface;
 class UStaticMesh;
 class UStaticMeshComponent;
+class UTextRenderComponent;
 
 namespace BHPropVisuals
 {
@@ -17,6 +18,7 @@ namespace BHPropVisuals
 	UMaterialInterface* RustedMetalMaterial();
 	UMaterialInterface* DiamondPlateMaterial();
 	UMaterialInterface* WarningSignMaterial();
+	UMaterialInterface* ReadableTextMaterial();
 
 	void ConfigurePart(
 		UStaticMeshComponent* Component,
@@ -29,4 +31,11 @@ namespace BHPropVisuals
 
 	void TintPart(UStaticMeshComponent* Component, const FLinearColor& Color, float EmissiveStrength = 0.0f);
 	void SetPartVisible(UStaticMeshComponent* Component, bool bVisible);
+
+	void ConfigureReadableText(
+		UTextRenderComponent* Component,
+		const FVector& RelativeLocation,
+		const FRotator& RelativeRotation,
+		float WorldSize,
+		const FColor& Color);
 }

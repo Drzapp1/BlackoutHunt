@@ -1,7 +1,9 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "BHGameMode.h"
+#include "BHPlayerState.h"
 #include "BHRevisionQuestionBank.h"
+#include "BHTypes.h"
 #include "Misc/AutomationTest.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHGameModeRevisionTuningTest,
@@ -61,6 +63,67 @@ bool FBHGameModeRevisionTuningTest::RunTest(const FString& Parameters)
 			}
 		}
 	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHRevisionReviewQueueTest,
+	"BlackoutHunt.GameMode.RevisionReviewQueue",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHRevisionReviewQueueTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	// The spaced-repetition loop re-asks the exact missed question, so a by-ID
+	// lookup must round-trip every authored question.
+	const TArray<FBHRevisionQuestion>& Questions = FBHRevisionQuestionBank::GetQuestions();
+	TestTrue(TEXT("Question bank is non-empty for review lookups."), Questions.Num() > 0);
+	if (Questions.Num() > 0)
+	{
+		const FString KnownId = Questions[0].Id;
+		FBHRevisionQuestion Found;
+		TestTrue(TEXT("FindQuestion locates a known question ID."), FBHRevisionQuestionBank::FindQuestion(KnownId, Found));
+		TestEqual(TEXT("FindQuestion returns the requested question."), Found.Id, KnownId);
+		FBHRevisionQuestion Missing;
+		TestFalse(TEXT("FindQuestion fails for an unknown ID."), FBHRevisionQuestionBank::FindQuestion(TEXT("does_not_exist_999"), Missing));
+	}
+
+	ABHPlayerState* PlayerState = NewObject<ABHPlayerState>();
+	if (!TestNotNull(TEXT("Player state constructs for review-queue testing."), PlayerState))
+	{
+		return false;
+	}
+
+	// A fresh player has nothing to review.
+	TestEqual(TEXT("Review queue starts empty."), PlayerState->RevisionReviewQueue.Num(), 0);
+	TestTrue(TEXT("Peek on an empty queue returns an empty ID."), PlayerState->PeekRevisionReview().IsEmpty());
+
+	// A miss enqueues the question; oldest is surfaced first.
+	PlayerState->EnqueueRevisionReview(TEXT("forces_q1"));
+	PlayerState->EnqueueRevisionReview(TEXT("waves_q2"));
+	TestEqual(TEXT("Two distinct misses queue two questions."), PlayerState->RevisionReviewQueue.Num(), 2);
+	TestEqual(TEXT("Oldest missed question is surfaced first."), PlayerState->PeekRevisionReview(), FString(TEXT("forces_q1")));
+
+	// Re-missing an already-queued question dedups (moves it to the back).
+	PlayerState->EnqueueRevisionReview(TEXT("forces_q1"));
+	TestEqual(TEXT("Re-missing a queued question does not duplicate it."), PlayerState->RevisionReviewQueue.Num(), 2);
+	TestEqual(TEXT("Re-missed question moves behind the other pending review."), PlayerState->PeekRevisionReview(), FString(TEXT("waves_q2")));
+
+	// Answering a queued question correctly clears it.
+	TestTrue(TEXT("Dequeue removes a queued question and reports success."), PlayerState->DequeueRevisionReview(TEXT("waves_q2")));
+	TestEqual(TEXT("Queue shrinks after a correct review answer."), PlayerState->RevisionReviewQueue.Num(), 1);
+	TestFalse(TEXT("Dequeue of an absent question reports no removal."), PlayerState->DequeueRevisionReview(TEXT("waves_q2")));
+
+	// The queue is capped so a long session cannot grow it without bound.
+	PlayerState->ResetRevisionStats();
+	TestEqual(TEXT("Resetting revision stats also clears the review queue."), PlayerState->RevisionReviewQueue.Num(), 0);
+	for (int32 Index = 0; Index < 20; ++Index)
+	{
+		PlayerState->EnqueueRevisionReview(FString::Printf(TEXT("q_%d"), Index));
+	}
+	TestTrue(TEXT("Review queue stays bounded across many misses."), PlayerState->RevisionReviewQueue.Num() <= 8);
+	TestEqual(TEXT("Capped queue keeps the most recent miss reachable."), PlayerState->RevisionReviewQueue.Last(), FString(TEXT("q_19")));
 
 	return true;
 }

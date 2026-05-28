@@ -447,6 +447,8 @@ public:
 	bool IsReducedFlashEnabled() const;
 	float GetHorrorCueFlashAlpha() const;
 	FLinearColor GetHorrorCueFlashColor() const;
+	// Near-opaque black "blink" overlay alpha, fired at the instant of a strong jumpscare impact.
+	float GetHorrorCueBlinkAlpha() const;
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetReady(bool bReady);
@@ -661,6 +663,9 @@ private:
 	void RunAutomationAtmosphereTests();
 	void TickAutomation();
 	void TickHorrorCueEffects(float DeltaSeconds);
+	// Plays the layered jumpscare impact audio (pitch-randomized scream + optional sub-roar + stinger),
+	// and pushes the optional duck SoundMix from settings while the scare plays.
+	void PlayJumpscareImpactAudio(const FBHClientHorrorCue& Cue, float VolumeScale);
 	void HandleRoundPhaseUiState();
 	void RunClassroomNetworkPreflight();
 	void RunClassroomFallbackCheck();
@@ -761,8 +766,11 @@ private:
 	float HorrorCueFlashEndTime = -1.0f;
 	float HorrorCueFlashIntensity = 0.0f;
 	FLinearColor HorrorCueFlashColor = FLinearColor(1.0f, 0.04f, 0.02f, 1.0f);
+	float HorrorCueBlinkStartTime = -1.0f;
+	float HorrorCueBlinkIntensity = 0.0f;
 	FDynamicForceFeedbackHandle HorrorCueRumbleHandle = 0;
 	FTimerHandle HorrorCueHitStopHandle;
+	FTimerHandle HorrorCueDuckHandle;
 	FTimerHandle AutomationStartupTimerHandle;
 	FTimerHandle AutomationQuitTimerHandle;
 	FTimerHandle ClassroomPreflightTimerHandle;

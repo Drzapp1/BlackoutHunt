@@ -41,21 +41,14 @@ Fab Free Customizable Jumpscares
 - Listing: https://www.fab.com/listings/c0874256-c114-4821-a42e-2e988a1cfb87
 - Terms: https://www.fab.com/eula
 
-Whisper Fab/Epic jumpscares
-- Use: optional runtime jumpscare assets only when restored under
-  Content/BlackoutHunt/Art/Jumpscares/Whisper.
-- License: Epic/Fab entitlement required before any package includes the
-  restored assets.
-- Distribution note: ship only incorporated cooked project assets. Keep source
-  pack content and local entitlement/license evidence outside the package.
-
-SCP096 prototype
-- Use: cooked fallback jumpscare visual for 0.2.0-beta.6 classroom testing.
-- Distribution note: broader distribution remains blocked until complete
-  source-license and underlying-IP evidence is recorded. Raw SourceFiles and
-  scp-096.zip must not ship.
-
 Excluded risky/prototype content
+- Content/BlackoutHunt/Art/SCP096 is excluded from classroom packages. The
+  SCP096 prototype remains blocked until complete source-license and
+  underlying-IP evidence is recorded. Raw SourceFiles, cooked prototype assets,
+  and scp-096.zip must not ship.
+- Content/BlackoutHunt/Art/Jumpscares/Whisper is excluded from classroom
+  packages unless a future release records listing/license evidence and adds an
+  explicit cook path.
 - Content/BlackoutHunt/Art/Characters/Hider is excluded from classroom
   packages because local distributable license evidence is missing.
 - Content/BlackoutHunt/Art/Characters/Hunter is excluded from classroom

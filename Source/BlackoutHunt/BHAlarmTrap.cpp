@@ -14,8 +14,8 @@ ABHAlarmTrap::ABHAlarmTrap()
 	PrimaryActorTick.TickInterval = 0.033f;
 	bReplicates = true;
 	SetReplicateMovement(true);
-	NetUpdateFrequency = 10.0f;
-	MinNetUpdateFrequency = 2.0f;
+	SetNetUpdateFrequency(10.0f);
+	SetMinNetUpdateFrequency(2.0f);
 	InitialLifeSpan = 55.0f;
 	AgeSeconds = 0.0f;
 	ArmDelaySeconds = 1.15f;

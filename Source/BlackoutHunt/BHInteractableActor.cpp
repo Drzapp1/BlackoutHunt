@@ -8,8 +8,8 @@ ABHInteractableActor::ABHInteractableActor()
 {
 	bReplicates = true;
 	SetReplicateMovement(false);
-	NetUpdateFrequency = 4.0f;
-	MinNetUpdateFrequency = 0.5f;
+	SetNetUpdateFrequency(4.0f);
+	SetMinNetUpdateFrequency(0.5f);
 	NetPriority = 0.8f;
 
 	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));

@@ -33,6 +33,28 @@ namespace
 		return FString::Printf(TEXT("%02d:%02d"), ClampedSeconds / 60, ClampedSeconds % 60);
 	}
 
+	FString BoardTrainPhaseName(const EBHTrainPhase TrainPhase)
+	{
+		switch (TrainPhase)
+		{
+		case EBHTrainPhase::Arrival:
+			return TEXT("Train: Arrival");
+		case EBHTrainPhase::Recap:
+			return TEXT("Train: Class Recap");
+		case EBHTrainPhase::BonusQuestion:
+			return TEXT("Train: Bonus Question");
+		case EBHTrainPhase::Shop:
+			return TEXT("Train: Shop");
+		case EBHTrainPhase::StationStop:
+			return TEXT("Train: Station Stop");
+		case EBHTrainPhase::Departing:
+			return TEXT("Train: Departing");
+		case EBHTrainPhase::Inactive:
+		default:
+			return TEXT("Train");
+		}
+	}
+
 	FString BoardRoleName(const EBHPlayerRole Role)
 	{
 		switch (Role)
@@ -617,6 +639,17 @@ FText SBHClassroomBoard::GetSessionText() const
 	if (!GameState)
 	{
 		return FText::FromString(TEXT("No session"));
+	}
+
+	// During the train intermission the round phase is static, so show the active train phase
+	// and its own countdown instead of the (paused) round timer. Keeps the projector informative
+	// between rounds.
+	if (GameState->RoundPhase == EBHRoundPhase::Intermission && GameState->TrainPhase != EBHTrainPhase::Inactive)
+	{
+		const FString TrainPhaseText = BoardTrainPhaseName(GameState->TrainPhase);
+		const float Now = GameState->GetServerWorldTimeSeconds();
+		const int32 TrainRemaining = FMath::CeilToInt(FMath::Max(0.0f, GameState->TrainPhaseEndServerTime - Now));
+		return FText::FromString(FString::Printf(TEXT("%s  %s"), *TrainPhaseText, *BoardClock(TrainRemaining)));
 	}
 
 	const FString PhaseText = GameState->GetPhaseText();

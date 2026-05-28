@@ -2,6 +2,7 @@
 #include "BHAmbientEmitter.h"
 #include "BHCharacter.h"
 #include "BHGameSettings.h"
+#include "BHJumpscarePresentation.h"
 #include "BHJumpscareVariantLibrary.h"
 #include "BHPlayerController.h"
 #include "Animation/AnimSequence.h"
@@ -30,11 +31,6 @@ constexpr float BHJumpscareCloseTargetVisualHeight = 165.0f;
 constexpr float BHJumpscareMinVisualScaleAxis = 0.05f;
 constexpr float BHJumpscareMaxVisualScaleAxis = 2.0f;
 
-bool BHVariantIdIsScp096(FName VariantId)
-{
-	return VariantId.ToString().Equals(TEXT("SCP096"), ESearchCase::IgnoreCase);
-}
-
 FVector BHSanitizeJumpscareScale(const FVector& RawScale)
 {
 	FVector Scale = RawScale.GetAbs();
@@ -57,24 +53,6 @@ float BHMeshVisualHeight(const USkeletalMesh* Mesh)
 float BHMeshVisualHeight(const UStaticMesh* Mesh)
 {
 	return Mesh ? Mesh->GetBounds().BoxExtent.Z * 2.0f : 0.0f;
-}
-
-FVector BHJumpscareCloseFaceFocusLocation(const FVector& ViewLocation, const FVector& ViewForward, const FBHJumpscareVariant& Variant)
-{
-	FVector Forward = ViewForward;
-	Forward.Z = 0.0f;
-	Forward = Forward.GetSafeNormal();
-	if (Forward.IsNearlyZero())
-	{
-		Forward = FVector::ForwardVector;
-	}
-
-	const float FocusHeight = FMath::Clamp(Variant.FocusHeight, 80.0f, 320.0f);
-	const FVector CloseOffset = Variant.CloseVisualOffset;
-	const float HeightFactor = CloseOffset.Z < -80.0f ? 0.98f : 0.50f;
-	const float FaceLift = FMath::Clamp(CloseOffset.Z + FocusHeight * HeightFactor, 22.0f, 54.0f);
-	const float FaceDistance = FMath::Max(88.0f, CloseOffset.X + FMath::Clamp(FocusHeight * 0.08f, 8.0f, 18.0f));
-	return ViewLocation + Forward * FaceDistance + FVector::UpVector * FaceLift;
 }
 
 void ConfigurePart(UStaticMeshComponent* Part, UStaticMesh* Mesh, const FVector& Location, const FVector& Scale)
@@ -184,6 +162,11 @@ ABHJumpscareMonster::ABHJumpscareMonster()
 	PrimaryActorTick.bCanEverTick = true;
 	bReplicates = true;
 	SetReplicateMovement(true);
+	// A jumpscare is only seen up close, so far clients never need its fast movement updates.
+	// Cull beyond ~60 m and cap the movement cadence so a full class does not pay for every
+	// monster moving every tick to every student. Nearby clients still get smooth motion.
+	SetNetCullDistanceSquared(6000.0f * 6000.0f);
+	SetNetUpdateFrequency(30.0f);
 
 	Root = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
 	SetRootComponent(Root);
@@ -313,97 +296,25 @@ ABHJumpscareMonster::ABHJumpscareMonster()
 	bChargeStarted = false;
 	bContactJumpscareTriggered = false;
 	bUseScriptedPath = false;
+	bChargeDescend = false;
+	bPlayChargeEffects = true;
 	bScriptedFaceLookAtTarget = false;
 	bScriptedPlayChargeEffects = true;
 	ScriptedPathIndex = 1;
-	bUsingScpVisual = false;
+	bUsingImportedVisual = false;
 	bCloseupPresentation = false;
+	CloseupStartTime = -1.0f;
 	CameraFocusHeight = 145.0f;
 	PresentationLightColor = FLinearColor(1.0f, 0.02f, 0.0f, 1.0f);
 	PresentationVisualOffset = FVector(-20.0f, 0.0f, -88.0f);
 	PresentationVisualRotation = FRotator(0.0f, -90.0f, 0.0f);
 	PresentationVisualScale = FVector::OneVector;
 	BaseVisualRootScale = FVector(BHJumpscareProxyVisualRootScale);
-	JumpscareVariantId = TEXT("SCP096");
+	JumpscareVariantId = TEXT("ProxyRed");
 	LaunchSound = nullptr;
 	SetActorScale3D(FVector::OneVector);
 
-	static ConstructorHelpers::FObjectFinder<USkeletalMesh> ScpSkeletalMesh(TEXT("/Game/BlackoutHunt/Art/SCP096/Skeletal/SK_SCP096.SK_SCP096"));
-	static ConstructorHelpers::FObjectFinder<UAnimSequence> ScpRunAnim(TEXT("/Game/BlackoutHunt/Art/SCP096/Skeletal/A_SCP096_Run.A_SCP096_Run"));
-	static ConstructorHelpers::FObjectFinder<UMaterialInterface> ScpMaterial(TEXT("/Game/BlackoutHunt/Art/SCP096/M_SCP096.M_SCP096"));
-	if (ScpSkeletalMesh.Succeeded() && SkeletalMonsterMesh)
-	{
-		SkeletalMonsterMesh->SetSkeletalMesh(ScpSkeletalMesh.Object);
-		if (ScpMaterial.Succeeded())
-		{
-			SkeletalMonsterMesh->SetMaterial(0, ScpMaterial.Object);
-		}
-		if (ScpRunAnim.Succeeded())
-		{
-			SkeletalMonsterMesh->SetAnimationMode(EAnimationMode::AnimationSingleNode);
-			SkeletalMonsterMesh->SetAnimation(ScpRunAnim.Object);
-			SkeletalMonsterMesh->Play(true);
-		}
-		SkeletalMonsterMesh->SetRelativeLocation(FVector(-20.0f, 0.0f, -88.0f));
-		SkeletalMonsterMesh->SetRelativeRotation(FRotator(0.0f, -90.0f, 0.0f));
-		SkeletalMonsterMesh->SetRelativeScale3D(FitVisualScaleToTargetHeight(FVector::OneVector, BHMeshVisualHeight(ScpSkeletalMesh.Object)));
-		SkeletalMonsterMesh->SetHiddenInGame(false);
-		SkeletalMonsterMesh->SetVisibility(true, true);
-		BaseVisualRootScale = FVector::OneVector;
-		bUsingScpVisual = true;
-	}
-	else
-	{
-		static ConstructorHelpers::FObjectFinder<UStaticMesh> ScpStaticMesh(TEXT("/Game/BlackoutHunt/Art/SCP096/SM_SCP096.SM_SCP096"));
-		if (ScpStaticMesh.Succeeded() && MonsterMesh)
-		{
-			MonsterMesh->SetStaticMesh(ScpStaticMesh.Object);
-			if (ScpMaterial.Succeeded())
-			{
-				MonsterMesh->SetMaterial(0, ScpMaterial.Object);
-			}
-			MonsterMesh->SetRelativeLocation(FVector(-20.0f, 0.0f, -88.0f));
-			MonsterMesh->SetRelativeRotation(FRotator(0.0f, -90.0f, 0.0f));
-			MonsterMesh->SetRelativeScale3D(FitVisualScaleToTargetHeight(FVector::OneVector, BHMeshVisualHeight(ScpStaticMesh.Object)));
-			MonsterMesh->SetHiddenInGame(false);
-			MonsterMesh->SetVisibility(true, true);
-			BaseVisualRootScale = FVector::OneVector;
-			bUsingScpVisual = true;
-		}
-	}
-
-	if (bUsingScpVisual)
-	{
-		MonsterMesh->SetHiddenInGame(MonsterMesh->GetStaticMesh() == nullptr);
-		MonsterMesh->SetVisibility(MonsterMesh->GetStaticMesh() != nullptr, true);
-		SkeletalMonsterMesh->SetHiddenInGame(SkeletalMonsterMesh->GetSkeletalMeshAsset() == nullptr);
-		SkeletalMonsterMesh->SetVisibility(SkeletalMonsterMesh->GetSkeletalMeshAsset() != nullptr, true);
-
-		UStaticMeshComponent* ScpProxyParts[] = {
-			Body,
-			Chest,
-			Head,
-			LeftArm,
-			RightArm,
-			LeftLeg,
-			RightLeg,
-			LeftEye,
-			RightEye,
-			Mouth
-		};
-		for (UStaticMeshComponent* Part : ScpProxyParts)
-		{
-			if (Part)
-			{
-				Part->SetHiddenInGame(true);
-				Part->SetVisibility(false, true);
-			}
-		}
-	}
-	else
-	{
-		UseProxyFallbackVisual();
-	}
+	UseProxyFallbackVisual();
 
 	ApplyVisualRootScale();
 }
@@ -414,10 +325,28 @@ void ABHJumpscareMonster::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	DOREPLIFETIME(ABHJumpscareMonster, JumpscareVariantId);
 }
 
+float ABHJumpscareMonster::ComputeLocalReducedFlashScale() const
+{
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return 1.0f;
+	}
+
+	if (const ABHPlayerController* LocalBHPC = Cast<ABHPlayerController>(World->GetFirstPlayerController()))
+	{
+		// Mirror the 0.25x factor used for horror-cue and flicker-burst flash.
+		return LocalBHPC->IsReducedFlashEnabled() ? 0.25f : 1.0f;
+	}
+
+	return 1.0f;
+}
+
 void ABHJumpscareMonster::BeginPlay()
 {
 	Super::BeginPlay();
 	SpawnTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	CachedReducedFlashScale = ComputeLocalReducedFlashScale();
 	SetLifeSpan(MaxLifetime + 0.35f);
 	SetActorHiddenInGame(false);
 	ApplyVisuals();
@@ -432,7 +361,7 @@ void ABHJumpscareMonster::Tick(float DeltaSeconds)
 		const float Age = SpawnTime >= 0.0f ? GetWorld()->GetTimeSeconds() - SpawnTime : 0.0f;
 		const bool bHolding = HoldSeconds > 0.0f && Age < HoldSeconds;
 		const float Pulse = 0.65f + FMath::Abs(FMath::Sin(Age * (bHolding ? 19.0f : 13.0f))) * 0.35f;
-		const bool bCanStartChargeEffects = !bUseScriptedPath || bScriptedPlayChargeEffects;
+		const bool bCanStartChargeEffects = bUseScriptedPath ? bScriptedPlayChargeEffects : bPlayChargeEffects;
 		if (!bHolding && !bChargeStarted && bCanStartChargeEffects)
 		{
 			StartChargeEffects();
@@ -440,20 +369,47 @@ void ABHJumpscareMonster::Tick(float DeltaSeconds)
 
 		if (VisualRoot)
 		{
-			const float RunAlpha = bHolding ? 0.0f : 1.0f;
-			const float Bob = FMath::Sin(Age * 42.0f) * 8.0f * RunAlpha;
-			const float Roll = FMath::Sin(Age * 38.0f) * 4.5f * RunAlpha;
-			VisualRoot->SetRelativeLocation(FVector(0.0f, Bob * 0.35f, FMath::Abs(Bob) * 0.35f));
-			VisualRoot->SetRelativeRotation(FRotator(-11.0f * RunAlpha, 0.0f, Roll));
-			ApplyVisualRootScale();
+			if (bCloseupPresentation)
+			{
+				// Close-up "lunge": the entity slams toward the camera (+X is forward, toward the view)
+				// from a slightly pulled-back, smaller pose, then the face twitches as it settles.
+				constexpr float LungeDuration = 0.14f;
+				const float CloseAge = CloseupStartTime >= 0.0f ? FMath::Max(0.0f, GetWorld()->GetTimeSeconds() - CloseupStartTime) : LungeDuration;
+				const float LungeAlpha = FMath::Clamp(CloseAge / LungeDuration, 0.0f, 1.0f);
+				const float Eased = 1.0f - FMath::Square(1.0f - LungeAlpha); // ease-out: fast in, settle
+				const FVector StartOffset(-72.0f, 0.0f, -26.0f);
+				const FVector LungeLoc = FMath::Lerp(StartOffset, FVector::ZeroVector, Eased);
+
+				// Head twitch decays over ~0.6s after the lunge lands.
+				const float TwitchDecay = 1.0f - FMath::Clamp((CloseAge - LungeDuration) / 0.6f, 0.0f, 1.0f);
+				const float TwitchYaw = FMath::Sin(CloseAge * 46.0f) * 3.4f * TwitchDecay;
+				const float TwitchPitch = FMath::Sin(CloseAge * 61.0f + 0.7f) * 2.6f * TwitchDecay;
+				VisualRoot->SetRelativeLocation(LungeLoc);
+				VisualRoot->SetRelativeRotation(FRotator(TwitchPitch, TwitchYaw, TwitchYaw * 0.4f));
+				VisualRoot->SetRelativeScale3D(BaseVisualRootScale * FMath::Lerp(0.78f, 1.0f, Eased));
+			}
+			else
+			{
+				const float RunAlpha = bHolding ? 0.0f : 1.0f;
+				const float Bob = FMath::Sin(Age * 42.0f) * 8.0f * RunAlpha;
+				const float Roll = FMath::Sin(Age * 38.0f) * 4.5f * RunAlpha;
+				VisualRoot->SetRelativeLocation(FVector(0.0f, Bob * 0.35f, FMath::Abs(Bob) * 0.35f));
+				VisualRoot->SetRelativeRotation(FRotator(-11.0f * RunAlpha, 0.0f, Roll));
+				ApplyVisualRootScale();
+			}
 		}
+		// Mute the pulse oscillation toward its steady midpoint for a local Reduced-flash player.
+		// The base glow (and the sustained hold boost) stays, so the monster is still clearly
+		// visible; only the rapid strobe amplitude is reduced.
+		const float SteadyPulse = 0.825f;
+		const float EffectivePulse = SteadyPulse + (Pulse - SteadyPulse) * CachedReducedFlashScale;
 		if (EyeLight)
 		{
-			EyeLight->SetIntensity((15000.0f + 11000.0f * Pulse) * (bHolding ? 1.25f : 1.0f));
+			EyeLight->SetIntensity((15000.0f + 11000.0f * EffectivePulse) * (bHolding ? 1.25f : 1.0f));
 		}
 		if (CoreLight)
 		{
-			CoreLight->SetIntensity((6500.0f + 7000.0f * Pulse) * (bHolding ? 1.2f : 1.0f));
+			CoreLight->SetIntensity((6500.0f + 7000.0f * EffectivePulse) * (bHolding ? 1.2f : 1.0f));
 		}
 	}
 
@@ -488,7 +444,12 @@ void ABHJumpscareMonster::Tick(float DeltaSeconds)
 
 	const FVector TargetLocation = Target->GetActorLocation() + FVector(0.0f, 0.0f, 110.0f);
 	FVector Delta = TargetLocation - GetActorLocation();
-	Delta.Z = 0.0f;
+	if (!bChargeDescend)
+	{
+		// Default homing charge stays on the horizontal plane; the ceiling-drop approach keeps
+		// the vertical component so the entity descends onto the target.
+		Delta.Z = 0.0f;
+	}
 	const FVector Direction = Delta.GetSafeNormal();
 	if (Direction.IsNearlyZero())
 	{
@@ -671,6 +632,7 @@ void ABHJumpscareMonster::TriggerContactJumpscare()
 	SetActorLocation(CloseLocation);
 	SetActorRotation((ViewLocation - CloseLocation).Rotation());
 	bCloseupPresentation = true;
+	CloseupStartTime = GetWorld()->GetTimeSeconds();
 	if (!ActiveVariant.VariantId.IsNone() || !JumpscareVariantId.IsNone())
 	{
 		ApplyConfiguredVariant();
@@ -682,19 +644,23 @@ void ABHJumpscareMonster::TriggerContactJumpscare()
 	SetActorScale3D(FVector::OneVector);
 	SetCloseupUpperBodyOnly();
 	ForceNetUpdate();
-	SetLifeSpan(1.15f);
+
+	// Randomize timing slightly so repeated scares never feel mechanically identical.
+	const float CloseDuration = FMath::FRandRange(1.30f, 1.60f);
+	const float CloseLock = FMath::FRandRange(0.86f, 1.04f);
+	SetLifeSpan(CloseDuration);
 
 	if (TargetPC)
 	{
 		const FLinearColor ImpactColor = ActiveVariant.LightColor.A > 0.0f ? ActiveVariant.LightColor : PresentationLightColor;
-		const FVector FocusLocation = BHJumpscareCloseFaceFocusLocation(ViewLocation, Forward, ActiveVariant);
+		const FVector FocusLocation = BHResolveJumpscareCloseFocusLocation(ViewLocation, Forward, ActiveVariant);
 		TargetPC->ClientSnapViewToFlatFocus(FocusLocation);
 
 		FBHClientHorrorCue Cue;
 		Cue.EventType = EBHScareEventType::MonsterCharge;
 		Cue.FocusLocation = FocusLocation;
-		Cue.DurationSeconds = 1.35f;
-		Cue.LockSeconds = 0.92f;
+		Cue.DurationSeconds = CloseDuration;
+		Cue.LockSeconds = CloseLock;
 		Cue.ShakeIntensity = FMath::Clamp(FMath::Max(ActiveVariant.CameraShakeIntensity, 0.96f), 0.0f, 1.0f);
 		Cue.CameraJitterDuration = FMath::Clamp(FMath::Max(ActiveVariant.CameraJitterDuration, 1.25f), 0.0f, 3.0f);
 		Cue.CameraJitterFrequency = 52.0f;
@@ -711,11 +677,16 @@ void ABHJumpscareMonster::TriggerContactJumpscare()
 		Cue.bLockInput = true;
 		Cue.bCloseRangeFocus = true;
 		Cue.bUpperBodyCloseVisual = true;
+		Cue.FOVPunch = FMath::Clamp(ActiveVariant.ImpactFOVPunch, 0.0f, 30.0f);
+		Cue.HitStopSeconds = FMath::Clamp(ActiveVariant.ImpactHitStopSeconds, 0.0f, 0.25f);
+		Cue.RumbleIntensity = FMath::Clamp(ActiveVariant.ImpactRumbleIntensity, 0.0f, 1.0f);
+		Cue.ImpactStinger = ActiveVariant.ImpactStinger;
+		Cue.bLayeredImpactAudio = true;
 		TargetPC->ClientPlayHorrorCue(Cue);
 	}
 }
 
-void ABHJumpscareMonster::Configure(ABHCharacter* NewTarget, float NewSpeed, float NewLifetime, float NewHoldSeconds)
+void ABHJumpscareMonster::Configure(ABHCharacter* NewTarget, float NewSpeed, float NewLifetime, float NewHoldSeconds, bool bNewPlayChargeEffects)
 {
 	Target = NewTarget;
 	ChargeSpeed = FMath::Max(400.0f, NewSpeed);
@@ -723,6 +694,7 @@ void ABHJumpscareMonster::Configure(ABHCharacter* NewTarget, float NewSpeed, flo
 	MaxLifetime = FMath::Clamp(NewLifetime, FMath::Max(1.0f, HoldSeconds + 0.8f), 12.0f);
 	bContactJumpscareTriggered = false;
 	bUseScriptedPath = false;
+	bPlayChargeEffects = bNewPlayChargeEffects;
 	bScriptedFaceLookAtTarget = false;
 	bScriptedPlayChargeEffects = true;
 	bCloseupPresentation = false;
@@ -744,6 +716,7 @@ void ABHJumpscareMonster::ConfigureScriptedPath(const TArray<FVector>& NewPathPo
 	MaxLifetime = FMath::Clamp(NewLifetime, 0.4f, 8.0f);
 	bContactJumpscareTriggered = false;
 	bUseScriptedPath = ScriptedPathPoints.Num() >= 2;
+	bPlayChargeEffects = true;
 	bScriptedFaceLookAtTarget = bUseScriptedPath && bNewFaceLookAtTarget;
 	bScriptedPlayChargeEffects = bNewPlayChargeEffects;
 	bCloseupPresentation = false;
@@ -798,7 +771,7 @@ void ABHJumpscareMonster::ConfigurePresentation(USkeletalMesh* NewSkeletalMesh, 
 			MonsterMesh->SetHiddenInGame(true);
 			MonsterMesh->SetVisibility(false, true);
 		}
-		bUsingScpVisual = true;
+		bUsingImportedVisual = true;
 		SetProxyPartsVisible(false);
 	}
 	else if (NewStaticMesh && MonsterMesh)
@@ -816,7 +789,7 @@ void ABHJumpscareMonster::ConfigurePresentation(USkeletalMesh* NewSkeletalMesh, 
 			SkeletalMonsterMesh->SetHiddenInGame(true);
 			SkeletalMonsterMesh->SetVisibility(false, true);
 		}
-		bUsingScpVisual = true;
+		bUsingImportedVisual = true;
 		SetProxyPartsVisible(false);
 	}
 
@@ -839,10 +812,12 @@ void ABHJumpscareMonster::ConfigureCloseupPresentation(const FBHJumpscareVariant
 	ScriptedLookAtTarget.Reset();
 	ScriptedPathPoints.Reset();
 	bUseScriptedPath = false;
+	bPlayChargeEffects = false;
 	bScriptedFaceLookAtTarget = false;
 	bScriptedPlayChargeEffects = false;
 	bContactJumpscareTriggered = true;
 	bCloseupPresentation = true;
+	CloseupStartTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	MaxLifetime = FMath::Clamp(NewLifetime, 0.2f, 5.0f);
 	HoldSeconds = 0.0f;
 
@@ -934,7 +909,7 @@ void ABHJumpscareMonster::UseProxyFallbackVisual()
 		VariantVisualActor->DestroyChildActor();
 	}
 
-	bUsingScpVisual = BHVariantIdIsScp096(JumpscareVariantId) || BHVariantIdIsScp096(ActiveVariant.VariantId);
+	bUsingImportedVisual = false;
 	ApplyVisualRootScale();
 }
 

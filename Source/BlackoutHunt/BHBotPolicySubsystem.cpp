@@ -153,7 +153,7 @@ FBHBotPolicyResult UBHBotPolicySubsystem::ScoreCandidates(const FBHBotPolicyFeat
 	TotalScoreSeconds += FPlatformTime::Seconds() - StartSeconds;
 	++ScoreCalls;
 	const double AverageMs = ScoreCalls > 0 ? (TotalScoreSeconds / static_cast<double>(ScoreCalls)) * 1000.0 : 0.0;
-	if (AverageMs > 4.0 && ScoreCalls > 16)
+	if (bPolicyFileLoaded && AverageMs > 4.0 && ScoreCalls > 16)
 	{
 		bDisabledForBudget = true;
 		bPolicyFileLoaded = false;

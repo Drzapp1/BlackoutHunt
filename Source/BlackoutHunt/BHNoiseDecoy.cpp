@@ -10,8 +10,8 @@ ABHNoiseDecoy::ABHNoiseDecoy()
 	PrimaryActorTick.TickInterval = 0.033f;
 	bReplicates = true;
 	SetReplicateMovement(true);
-	NetUpdateFrequency = 12.0f;
-	MinNetUpdateFrequency = 4.0f;
+	SetNetUpdateFrequency(12.0f);
+	SetMinNetUpdateFrequency(4.0f);
 	InitialLifeSpan = 8.0f;
 	AgeSeconds = 0.0f;
 

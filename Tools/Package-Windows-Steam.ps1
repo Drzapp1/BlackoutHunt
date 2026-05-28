@@ -90,7 +90,7 @@ bRelaunchInSteam=false
 GameServerQueryPort=27015
 bAllowP2PPacketRelay=true
 P2PConnectionTimeout=90
-GameVersion=0.2.0-beta.6
+GameVersion=0.5.0-beta.1
 
 [/Script/OnlineSubsystemSteam.SteamNetDriver]
 NetConnectionClassName="/Script/OnlineSubsystemSteam.SteamNetConnection"

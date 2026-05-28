@@ -261,16 +261,6 @@ FString ABHGameState::GetPhaseText() const
 		return TEXT("Classroom Lobby");
 	}
 
-	if (RoundPhase == EBHRoundPhase::Intermission)
-	{
-		return TEXT("Train Intermission");
-	}
-
-	if (RoundPhase == EBHRoundPhase::FinalEscape)
-	{
-		return TEXT("Final Escape");
-	}
-
 	if (bBotMode && RoundPhase == EBHRoundPhase::Lobby)
 	{
 		return TEXT("Bot Lobby");

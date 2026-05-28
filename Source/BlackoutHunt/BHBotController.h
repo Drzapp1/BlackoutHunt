@@ -44,9 +44,7 @@ private:
 	class ABHGameMode* GetBHGameMode() const;
 
 	void Think();
-	void ThinkSurvivor(ABHCharacter* BotCharacter, class ABHPlayerState* BotPS, class ABHGameState* BHGS);
-	void ThinkTeacher(ABHCharacter* BotCharacter, class ABHPlayerState* BotPS, class ABHGameState* BHGS);
-	void ThinkFakeHunter(ABHCharacter* BotCharacter, class ABHPlayerState* BotPS, class ABHGameState* BHGS);
+	void ThinkWithCandidates(ABHCharacter* BotCharacter, class ABHPlayerState* BotPS, class ABHGameState* BHGS, const TCHAR* EmptyPatrolLabel);
 	void BuildDecisionCandidates(ABHCharacter* BotCharacter, class ABHPlayerState* BotPS, class ABHGameState* BHGS, TArray<FBHBotDecisionCandidate>& OutCandidates);
 	void BuildSurvivorDecisionCandidates(ABHCharacter* BotCharacter, class ABHGameState* BHGS, TArray<FBHBotDecisionCandidate>& OutCandidates);
 	void BuildTeacherDecisionCandidates(ABHCharacter* BotCharacter, bool bCanCapture, TArray<FBHBotDecisionCandidate>& OutCandidates);
@@ -71,6 +69,8 @@ private:
 	void LogUnreachableOnce(AActor* Target, const FString& Reason);
 	void StartStateTreeIfAvailable();
 	bool ShouldUseStateTreeBrain() const;
+	bool ShouldFallbackFromStateTree(FString& OutReason) const;
+	void ActivateStateTreePolicyFallback(const FString& Reason);
 
 	UFUNCTION()
 	void OnTargetPerceptionUpdated(AActor* Actor, FAIStimulus Stimulus);
@@ -136,6 +136,7 @@ private:
 	bool bHasPatrolDestination;
 	bool bUseStateTreeAI;
 	bool bStateTreeBrainRunning;
+	bool bStateTreePolicyFallbackActivated;
 
 	UPROPERTY(VisibleAnywhere, Category = "AI")
 	TObjectPtr<UStateTreeAIComponent> StateTreeAIComponent;

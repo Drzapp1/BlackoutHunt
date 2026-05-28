@@ -6,8 +6,8 @@ ABHAmbientEmitter::ABHAmbientEmitter()
 {
 	bReplicates = true;
 	SetReplicateMovement(false);
-	NetUpdateFrequency = 1.0f;
-	MinNetUpdateFrequency = 0.25f;
+	SetNetUpdateFrequency(1.0f);
+	SetMinNetUpdateFrequency(0.25f);
 
 	Synth = CreateDefaultSubobject<UBHSynthComponent>(TEXT("Synth"));
 	SetRootComponent(Synth);

@@ -4,16 +4,20 @@ param(
     [int]$ClientCount = 2,
     [ValidateSet("Development", "Shipping")]
     [string]$Configuration = "Development",
-    [string]$TestFilter = "BlackoutHunt.*",
+    [string]$TestFilter = "BlackoutHunt",
     [string]$PreferredUnrealRoot = "D:\UE_5.7",
     [string]$ExistingPackageRoot = "",
-    [switch]$SkipPackage
+    [switch]$SkipPackage,
+    [switch]$SkipRuntimeLogGate,
+    [switch]$SkipClassroomPackageVerify,
+    [string[]]$RuntimeLogAllowedPattern = @()
 )
 
 $ErrorActionPreference = "Stop"
 
 $projectRoot = [System.IO.Path]::GetFullPath((Resolve-Path "$PSScriptRoot\.."))
 $project = Join-Path $projectRoot "BlackoutHunt.uproject"
+$gateStartUtc = (Get-Date).ToUniversalTime()
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $runRoot = Join-Path $projectRoot "Saved\Stability\$timestamp"
 $logRoot = Join-Path $runRoot "Logs"
@@ -29,7 +33,8 @@ else {
     Join-Path $runRoot "Package"
 }
 $reportPath = Join-Path $runRoot "STABILITY_GATE_REPORT.md"
-$failurePattern = "(?i)(Fatal error:|Unhandled Exception|EXCEPTION_ACCESS_VIOLATION|Assertion failed:|Ensure condition failed|Automation Test Failed|LogAutomationController: Error|BH_AUTOMATION.*FAIL:|FAIL:join timeout|FAIL:auto|FAIL:unknown)"
+$runtimeLogGateScript = Join-Path $PSScriptRoot "Test-RuntimeLogs.ps1"
+$classroomPackageVerifyScript = Join-Path $PSScriptRoot "Verify-ClassroomPackage.ps1"
 
 New-Item -ItemType Directory -Force -Path $runRoot, $logRoot | Out-Null
 if (-not $SkipPackage) {
@@ -86,6 +91,45 @@ function Invoke-LoggedProcess {
     }
 }
 
+function Invoke-RuntimeLogGate {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Path,
+        [switch]$ExpectAutomationMarkers,
+        [string[]]$RequiredAutomationMarker = @(),
+        [string]$AutomationTag = ""
+    )
+
+    if ($SkipRuntimeLogGate) {
+        Write-ReportLine "- runtime_log_gate: skipped"
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $runtimeLogGateScript)) {
+        throw "Runtime log gate script was not found: $runtimeLogGateScript"
+    }
+
+    Write-ReportLine "- runtime_log_gate_path: $($Path -join ', ')"
+    $arguments = @{
+        Path = $Path
+    }
+    if ($RuntimeLogAllowedPattern.Count -gt 0) {
+        $arguments.AllowedFindingPattern = $RuntimeLogAllowedPattern
+    }
+    if ($ExpectAutomationMarkers) {
+        $arguments.ExpectAutomationMarkers = $true
+        if ($RequiredAutomationMarker.Count -gt 0) {
+            $arguments.RequiredAutomationMarker = $RequiredAutomationMarker
+        }
+        if (-not [string]::IsNullOrWhiteSpace($AutomationTag)) {
+            $arguments.AutomationTag = $AutomationTag
+            Write-ReportLine "- automation_tag: $AutomationTag"
+        }
+        Write-ReportLine "- required_automation_markers: $($RequiredAutomationMarker -join ', ')"
+    }
+
+    & $runtimeLogGateScript @arguments
+}
+
 function Assert-LogsClean {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -93,27 +137,53 @@ function Assert-LogsClean {
         return
     }
 
-    $matches = Get-ChildItem -LiteralPath $Path -Recurse -File -Force |
-        Where-Object { $_.Extension -in ".log", ".txt", ".err", ".out" } |
-        Select-String -Pattern $failurePattern -List
-
-    if ($matches) {
-        $failureLog = Join-Path $runRoot "failure-matches.txt"
-        $matches | ForEach-Object { "$($_.Path):$($_.LineNumber): $($_.Line)" } |
-            Set-Content -LiteralPath $failureLog -Encoding ASCII
-        throw "Failure signatures were found. See $failureLog"
+    $logFile = Get-ChildItem -LiteralPath $Path -Recurse -File -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension.ToLowerInvariant() -in @(".log", ".txt", ".err", ".out") } |
+        Select-Object -First 1
+    if (-not $logFile) {
+        Write-ReportLine "- runtime_log_gate_skipped_no_logs: $Path"
+        return
     }
+
+    Invoke-RuntimeLogGate -Path @($Path)
+}
+
+function Invoke-ClassroomPackageVerification {
+    param([Parameter(Mandatory = $true)][string]$Root)
+
+    if ($SkipClassroomPackageVerify) {
+        Write-ReportLine "- classroom_package_verify: skipped"
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $classroomPackageVerifyScript)) {
+        throw "Classroom package verification script was not found: $classroomPackageVerifyScript"
+    }
+
+    Write-ReportLine "- classroom_package_verify_root: $Root"
+    & $classroomPackageVerifyScript -PackageRoot $Root
 }
 
 function Copy-SavedArtifacts {
     $snapshotRoot = Join-Path $runRoot "SavedSnapshot"
     New-Item -ItemType Directory -Force -Path $snapshotRoot | Out-Null
     foreach ($relative in @("Saved\Logs", "Saved\Crashes")) {
-        $source = Join-Path $projectRoot $relative
-        if (Test-Path -LiteralPath $source) {
-            $target = Join-Path $snapshotRoot $relative
-            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
-            Copy-Item -LiteralPath $source -Destination $target -Recurse -Force
+        $sourceRoot = Join-Path $projectRoot $relative
+        if (Test-Path -LiteralPath $sourceRoot) {
+            $targetRoot = Join-Path $snapshotRoot $relative
+            $copiedCount = 0
+            foreach ($artifact in Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Force -ErrorAction SilentlyContinue) {
+                if ($artifact.LastWriteTimeUtc -lt $gateStartUtc) {
+                    continue
+                }
+
+                $artifactRelative = $artifact.FullName.Substring($sourceRoot.Length).TrimStart('\', '/')
+                $target = Join-Path $targetRoot $artifactRelative
+                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+                Copy-Item -LiteralPath $artifact.FullName -Destination $target -Force
+                ++$copiedCount
+            }
+            Write-ReportLine "- saved_artifacts_copied_${relative}: $copiedCount"
         }
     }
 }
@@ -196,46 +266,84 @@ function Invoke-SoakPass {
     }
 
     $processes = New-Object System.Collections.Generic.List[System.Diagnostics.Process]
+    $automationChecks = New-Object System.Collections.Generic.List[object]
     try {
-        $hostLog = Join-Path $passRoot "host.log"
+        $hostRoot = Join-Path $passRoot "host"
+        $hostUserDir = Join-Path $hostRoot "UserDir"
+        New-Item -ItemType Directory -Force -Path $hostUserDir | Out-Null
+        $hostLog = Join-Path $hostRoot "host.log"
+        $hostMarkerLog = Join-Path $hostUserDir "Saved\Logs\BlackoutHuntAutomation.log"
+        $hostTag = "$Name-host-$timestamp"
         $hostArgs = @(
             "-BHAutomation=1",
             "-BHAutoHost=LiveFacility",
             "-BHAutoReady=1",
             "-BHAutoMinPlayers=$($ClientCount + 1)",
             "-BHAutoQuitSeconds=$seconds",
-            "-BHAutomationTag=$Name-host-$timestamp",
+            "-BHAutomationTag=$hostTag",
+            "-UserDir=$hostUserDir",
             "-d3d11",
             "-windowed",
             "-ResX=1280",
             "-ResY=720",
+            "-NoSound",
             "-log",
             "-abslog=$hostLog"
         ) + $networkArgs
-        $processes.Add((Start-GameProcess -ExePath $ExePath -Arguments $hostArgs -Name "$Name host"))
+        $hostProcess = Start-GameProcess -ExePath $ExePath -Arguments $hostArgs -Name "$Name host"
+        Write-ReportLine "- ${Name}_host_pid: $($hostProcess.Id)"
+        Write-ReportLine "- ${Name}_host_marker_log: $hostMarkerLog"
+        $processes.Add($hostProcess)
+        $automationChecks.Add([pscustomobject]@{
+            LogPaths = [string[]]@($hostRoot)
+            Tag = $hostTag
+            RequiredMarkers = [string[]]@("BH_AUTOMATION_BOOT", "HOST_LISTENING", "READY_SET", "ROUND_STARTED", "CLEAN_QUIT")
+        })
         Start-Sleep -Seconds 10
 
         for ($index = 1; $index -le $ClientCount; ++$index) {
-            $clientLog = Join-Path $passRoot "client-$index.log"
+            $clientRoot = Join-Path $passRoot "client-$index"
+            $clientUserDir = Join-Path $clientRoot "UserDir"
+            New-Item -ItemType Directory -Force -Path $clientUserDir | Out-Null
+            $clientLog = Join-Path $clientRoot "client-$index.log"
+            $clientMarkerLog = Join-Path $clientUserDir "Saved\Logs\BlackoutHuntAutomation.log"
+            $clientTag = "$Name-client-$index-$timestamp"
             $clientArgs = @(
                 "-BHAutomation=1",
                 "-BHAutoJoin=127.0.0.1:7777",
                 "-BHAutoReady=1",
                 "-BHAutoQuitSeconds=$seconds",
-                "-BHAutomationTag=$Name-client-$index-$timestamp",
+                "-BHAutomationTag=$clientTag",
+                "-UserDir=$clientUserDir",
                 "-d3d11",
                 "-windowed",
                 "-ResX=1280",
                 "-ResY=720",
+                "-NoSound",
                 "-log",
                 "-abslog=$clientLog"
             ) + $networkArgs
-            $processes.Add((Start-GameProcess -ExePath $ExePath -Arguments $clientArgs -Name "$Name client $index"))
+            $clientProcess = Start-GameProcess -ExePath $ExePath -Arguments $clientArgs -Name "$Name client $index"
+            Write-ReportLine "- ${Name}_client_${index}_pid: $($clientProcess.Id)"
+            Write-ReportLine "- ${Name}_client_${index}_marker_log: $clientMarkerLog"
+            $processes.Add($clientProcess)
+            $automationChecks.Add([pscustomobject]@{
+                LogPaths = [string[]]@($clientRoot)
+                Tag = $clientTag
+                RequiredMarkers = [string[]]@("BH_AUTOMATION_BOOT", "JOIN_ATTEMPT", "JOINED", "READY_SET", "ROUND_STARTED", "CLEAN_QUIT")
+            })
             Start-Sleep -Seconds 4
         }
 
         Wait-GameProcesses -Processes $processes.ToArray() -TimeoutSeconds ($seconds + 180)
-        Assert-LogsClean -Path $passRoot
+        Invoke-RuntimeLogGate -Path @($passRoot)
+        foreach ($automationCheck in $automationChecks) {
+            Invoke-RuntimeLogGate `
+                -Path $automationCheck.LogPaths `
+                -ExpectAutomationMarkers `
+                -AutomationTag $automationCheck.Tag `
+                -RequiredAutomationMarker $automationCheck.RequiredMarkers
+        }
     }
     finally {
         foreach ($process in $processes) {
@@ -256,7 +364,9 @@ Set-Content -LiteralPath $reportPath -Encoding ASCII -Value @(
     "- package_root: $packageRoot",
     "- normal_soak_minutes: $NormalSoakMinutes",
     "- degraded_soak_minutes: $DegradedSoakMinutes",
-    "- client_count: $ClientCount"
+    "- client_count: $ClientCount",
+    "- runtime_log_gate: $(-not $SkipRuntimeLogGate)",
+    "- classroom_package_verify: $(-not $SkipClassroomPackageVerify)"
 )
 
 Start-Transcript -LiteralPath (Join-Path $logRoot "transcript.txt") | Out-Null
@@ -328,6 +438,15 @@ try {
 
     $gameExe = Get-PackagedGameExe -Root $packageRoot
     Write-ReportLine "- packaged_exe: $gameExe"
+
+    if ($SkipPackage) {
+        Invoke-Step "Classroom Package Verification" {
+            Invoke-ClassroomPackageVerification -Root $packageRoot
+        }
+    }
+    else {
+        Write-ReportLine "- classroom_package_verify: skipped for temporary non-classroom package"
+    }
 
     Invoke-Step "Normal Network Soak" {
         Invoke-SoakPass -Name "normal-soak" -ExePath $gameExe -Minutes $NormalSoakMinutes

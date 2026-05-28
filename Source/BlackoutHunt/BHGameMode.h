@@ -200,6 +200,9 @@ protected:
 	void TickDirector();
 	void TriggerScareEvent();
 	bool TriggerRevisionThemedAmbientScare(ABHCharacter* Target);
+	// Occasional dread builder: a flicker + faint whisper/footstep near the target that resolves to
+	// nothing. Makes the real scares land harder. Returns true if a fake-out was emitted this tick.
+	bool TriggerFakeOutTensionCue(ABHCharacter* Target);
 	void TriggerMonsterChargeJumpscare(ABHCharacter* Target);
 	void TriggerMonsterChargeJumpscareWithVariant(ABHCharacter* Target, const FBHJumpscareVariant& Variant, const FString& Message, float FearAmount, float DreadAmount);
 	bool ChooseWhisperJumpscareVariant(FBHJumpscareVariant& OutVariant) const;
@@ -219,6 +222,11 @@ protected:
 		float Score = -1.0f;
 	};
 	bool ResolveVisibleJumpscareSpawn(ABHCharacter* Target, ABHPlayerController* TargetPC, const TArray<FVector>& Candidates, float FocusHeight, float MinDistance, float MaxDistance, float PathRadius, FBHResolvedJumpscareSpawn& OutSpawn) const;
+	// Resolves a spawn that does NOT need to be in the player's view (used for the behind / ceiling-drop
+	// approaches). ZOffset raises the candidate above the floor; bPreferClose scores nearer spots higher.
+	bool ResolveDirectionalJumpscareSpawn(ABHCharacter* Target, const TArray<FVector>& Candidates, float FocusHeight, float MinDistance, float MaxDistance, float PathRadius, float ZOffset, bool bPreferClose, FBHResolvedJumpscareSpawn& OutSpawn) const;
+	// Picks a monster-charge approach with an even mix, avoiding an immediate repeat of the last one.
+	EBHJumpscareApproach ChooseMonsterChargeApproach();
 	void SendJumpscareChargeCue(ABHCharacter* Target, const FBHJumpscareVariant& Variant, const FVector& FocusLocation, const FString& Message, float HoldDuration, float AudioVolume = 1.0f, bool bCloseRangeFocus = false) const;
 	void TriggerCloseOverlayJumpscare(ABHCharacter* Target, const FBHJumpscareVariant& Variant, const FString& Message, float HoldDuration, float FearAmount, float DreadAmount);
 #if WITH_DEV_AUTOMATION_TESTS
@@ -310,14 +318,23 @@ protected:
 
 	TArray<FVector> SurvivorSpawns;
 	TArray<FVector> ScarePoints;
+	UPROPERTY(Transient)
 	TArray<TObjectPtr<ABHBreaker>> BreakerActors;
+	UPROPERTY(Transient)
 	TArray<TObjectPtr<ABHDoor>> DoorActors;
+	UPROPERTY(Transient)
 	TArray<TObjectPtr<ABHExitGate>> ExitGates;
+	UPROPERTY(Transient)
 	TArray<TObjectPtr<ABHFlickerLight>> FlickerLights;
+	UPROPERTY(Transient)
 	TArray<TObjectPtr<ABHBlockActor>> StationSignalBlocks;
+	UPROPERTY(Transient)
 	TArray<TObjectPtr<ABHFlickerLight>> StationSignalLights;
+	UPROPERTY(Transient)
 	TArray<TObjectPtr<ABHObjectiveStation>> ObjectiveStations;
+	UPROPERTY(Transient)
 	TArray<TObjectPtr<ABHEscapeStationManager>> EscapeStationManagers;
+	UPROPERTY(Transient)
 	TObjectPtr<ABHTrainIntermissionManager> TrainIntermissionManager;
 	UPROPERTY(Transient)
 	TObjectPtr<ABHStaticBlockField> StaticBlockField;
@@ -359,6 +376,10 @@ protected:
 	float NoiseRadiusMultiplier;
 	float LastDirectorScareTime;
 	float LastMonsterChargeTime;
+	float LastFakeOutTime = -1000.0f;
+	// Anti-repetition state so back-to-back monster scares don't reuse the same variant/approach.
+	FName LastJumpscareVariantId;
+	EBHJumpscareApproach LastJumpscareApproach = EBHJumpscareApproach::HeadOn;
 	float LastColdCallTime;
 	float LastPresenceWhisperTime;
 	float LastWhisperJumpscareTime;
@@ -372,12 +393,13 @@ protected:
 	bool bTrainIntermissionLevel;
 	int32 RuntimeStageIndex;
 	EBHRoundPhase PendingIntermissionResult;
+	UPROPERTY(Transient)
 	TObjectPtr<ANavMeshBoundsVolume> RuntimeNavBounds;
+	UPROPERTY(Transient)
 	TArray<TObjectPtr<ABHBotController>> BotControllers;
 	TArray<FBHBotStimulus> BotWorldStimuli;
 	TArray<FBHBotObjectiveClaim> BotObjectiveClaims;
 	TArray<FBHBotTargetCooldown> BotTargetCooldowns;
-	TMap<TObjectKey<AActor>, FVector> BotApproachPointCache;
 	TMap<TObjectKey<APlayerState>, float> SpectatorEncouragementTimes;
 	TSet<FString> LoggedBotTacticalWarnings;
 	TSet<FString> TelemetryUsedLockerKeys;

@@ -144,8 +144,39 @@ bool FBHTrainEconomyTest::RunTest(const FString& Parameters)
 	ABHPlayerState* ResetPS = NewObject<ABHPlayerState>();
 	ResetPS->SetPlayerName(TEXT("Teacher Persist"));
 	TestTrue(TEXT("Travel restore still finds player after capture point reset."), GameInstance->RestoreTravelPlayerState(ResetPS));
-	TestEqual(TEXT("Final recap reset clears current capture points."), ResetPS->HunterPoints, 0);
-	TestEqual(TEXT("Final recap reset clears lifetime capture points."), ResetPS->LifetimeHunterPoints, 0);
+	TestEqual(TEXT("Capture point reset clears current capture points."), ResetPS->HunterPoints, 0);
+	TestEqual(TEXT("Capture point reset clears lifetime capture points."), ResetPS->LifetimeHunterPoints, 0);
+
+	ABHPlayerState* CapturedTravelPS = NewObject<ABHPlayerState>();
+	TestNotNull(TEXT("Captured travel player state can be created."), CapturedTravelPS);
+	CapturedTravelPS->SetPlayerName(TEXT("Captured Persist"));
+	CapturedTravelPS->SetRole(EBHPlayerRole::Survivor);
+	CapturedTravelPS->SetDesiredRole(EBHPlayerRole::FakeHunter);
+	CapturedTravelPS->SetLifeState(EBHPlayerLifeState::Captured);
+	CapturedTravelPS->SetFakeHunterEligible(true);
+	CapturedTravelPS->AddQuestionPoints(64);
+	TestTrue(TEXT("Captured travel player can hold a powerup charge."), CapturedTravelPS->AddPowerupCharge(EBHPowerupType::StaminaBoost, 2));
+	CapturedTravelPS->SetPowerupCooldown(EBHPowerupType::StaminaBoost, 1234.0f);
+	GameInstance->PersistTravelPlayerState(CapturedTravelPS);
+
+	ABHPlayerState* RestoredCapturedPS = NewObject<ABHPlayerState>();
+	RestoredCapturedPS->SetPlayerName(TEXT("Captured Persist"));
+	TestTrue(TEXT("Travel restore finds captured survivor progress."), GameInstance->RestoreTravelPlayerState(RestoredCapturedPS));
+	TestEqual(TEXT("Travel restore makes captured survivor playable again."), RestoredCapturedPS->LifeState, EBHPlayerLifeState::Alive);
+	TestFalse(TEXT("Travel restore clears one-round Hall Monitor eligibility."), RestoredCapturedPS->bFakeHunterEligible);
+	TestEqual(TEXT("Travel restore keeps earned question points for the train run."), RestoredCapturedPS->QuestionPoints, 64);
+	TestEqual(TEXT("Travel restore keeps bought/earned powerup charges."), RestoredCapturedPS->GetPowerupCharges(EBHPowerupType::StaminaBoost), 1);
+	TestEqual(TEXT("Travel restore drops stale server-time powerup cooldowns."), RestoredCapturedPS->GetPowerupCooldownEnd(EBHPowerupType::StaminaBoost), 0.0f);
+
+	GameInstance->ResetPersistentTrainRunProgress();
+	ABHPlayerState* FreshLobbyPS = NewObject<ABHPlayerState>();
+	FreshLobbyPS->SetPlayerName(TEXT("Captured Persist"));
+	TestTrue(TEXT("Final train-run reset still finds the player."), GameInstance->RestoreTravelPlayerState(FreshLobbyPS));
+	TestEqual(TEXT("Final train-run reset clears question points."), FreshLobbyPS->QuestionPoints, 0);
+	TestEqual(TEXT("Final train-run reset clears lifetime question points."), FreshLobbyPS->LifetimeQuestionPoints, 0);
+	TestEqual(TEXT("Final train-run reset clears powerup inventory."), FreshLobbyPS->GetPowerupCharges(EBHPowerupType::StaminaBoost), 0);
+	TestEqual(TEXT("Final train-run reset leaves player alive for the next lobby."), FreshLobbyPS->LifeState, EBHPlayerLifeState::Alive);
+	TestFalse(TEXT("Final train-run reset clears stale Hall Monitor eligibility."), FreshLobbyPS->bFakeHunterEligible);
 
 	return true;
 }

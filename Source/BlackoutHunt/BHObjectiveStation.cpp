@@ -357,14 +357,18 @@ ABHObjectiveStation::ABHObjectiveStation()
 	QuestionType = EBHQuestionType::MultipleChoice;
 	QuestionDifficulty = EBHQuestionDifficulty::Easy;
 	QuestionDiagramType = EBHDiagramType::None;
+	QuestionNumericAnswer = 0.0f;
+	QuestionNumericTolerance = 0.0f;
 	RevisionQuestionsSolved = 0;
 	RevisionQuestionsRequired = 1;
 	RevisionQuestionStep = 0;
 	RevisionCounterType = EBHRevisionCounterNodeType::None;
 	bTeacherMirrorTrapNode = false;
+	bRevisionReviewQuestion = false;
 	bUseAdaptiveQuestionOverride = false;
 	AdaptiveQuestionTopic = EBHPhysicsTopic::ForcesAndMotion;
 	AdaptiveQuestionDifficulty = EBHQuestionDifficulty::Easy;
+	PendingReviewQuestionId = TEXT("");
 	WorkSeconds = 5.5f;
 	LastNoiseTime = -999.0f;
 	LastAnswerTime = -999.0f;
@@ -461,6 +465,8 @@ void ABHObjectiveStation::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	DOREPLIFETIME(ABHObjectiveStation, QuestionDiagramType);
 	DOREPLIFETIME(ABHObjectiveStation, QuestionSubtopic);
 	DOREPLIFETIME(ABHObjectiveStation, QuestionFormula);
+	DOREPLIFETIME(ABHObjectiveStation, QuestionNumericAnswer);
+	DOREPLIFETIME(ABHObjectiveStation, QuestionNumericTolerance);
 	DOREPLIFETIME(ABHObjectiveStation, QuestionExplanation);
 	DOREPLIFETIME(ABHObjectiveStation, RevisionTeamSummary);
 	DOREPLIFETIME(ABHObjectiveStation, RevisionQuestionsSolved);
@@ -468,6 +474,7 @@ void ABHObjectiveStation::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	DOREPLIFETIME(ABHObjectiveStation, RevisionQuestionStep);
 	DOREPLIFETIME(ABHObjectiveStation, RevisionCounterType);
 	DOREPLIFETIME(ABHObjectiveStation, bTeacherMirrorTrapNode);
+	DOREPLIFETIME(ABHObjectiveStation, bRevisionReviewQuestion);
 }
 
 bool ABHObjectiveStation::CanInteract_Implementation(ABHCharacter* Character) const
@@ -926,6 +933,14 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 
 	const bool bCorrect = EvaluatedAnswerIndex == CorrectAnswerIndex;
 	const FString EvaluatedSelectedAnswer = QuestionChoices.IsValidIndex(EvaluatedAnswerIndex) ? QuestionChoices[EvaluatedAnswerIndex] : FString();
+	return FinalizeRevisionAnswer(Character, PC, bCorrect, EvaluatedSelectedAnswer, RevisionParticipants, bActiveRevisionMode);
+}
+
+// Shared post-evaluation path for both multiple-choice and typed-numeric answers.
+// Records the result (using the actual chosen/typed answer text for distractor
+// analytics), advances the revision node, applies feedback, and handles the wrong path.
+bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPlayerController* PC, bool bCorrect, const FString& EvaluatedSelectedAnswer, TArray<ABHCharacter*>& RevisionParticipants, bool bActiveRevisionMode)
+{
 	if (bCorrect)
 	{
 		bool bRevisionNodeUnlocked = true;
@@ -1068,6 +1083,95 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 	return false;
 }
 
+bool ABHObjectiveStation::SubmitNumericAnswer(ABHCharacter* Character, float Value)
+{
+	if (!HasAuthority())
+	{
+		return false;
+	}
+
+	const ABHPlayerState* BHPS = Character ? Character->GetBHPlayerState() : nullptr;
+	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	ABHPlayerController* PC = Character ? Cast<ABHPlayerController>(Character->GetController()) : nullptr;
+	const bool bAliveSurvivor = BHPS && BHPS->IsAliveSurvivor();
+	const bool bAliveMonitorCanAnswer = BHPS
+		&& BHPS->PlayerRole == EBHPlayerRole::FakeHunter
+		&& BHPS->LifeState == EBHPlayerLifeState::Alive
+		&& BHGS
+		&& BHGS->bRevisionMode;
+	const bool bRoleWarmup = BHStationAllowsWarmup(BHGS);
+	if (!bDirectorActive || bCompleted || !BHPS || (!bAliveSurvivor && !bAliveMonitorCanAnswer) || !BHGS || (BHGS->RoundPhase != EBHRoundPhase::Hunt && !bRoleWarmup))
+	{
+		if (PC)
+		{
+			PC->ClientShowStatusMessage(TEXT("That question is not available right now."), 2.75f);
+		}
+		return false;
+	}
+
+	// Typed numeric entry only applies to Calculation questions; everything else uses 1-4.
+	if (QuestionType != EBHQuestionType::Calculation)
+	{
+		return false;
+	}
+
+	if (bQuestionSolved)
+	{
+		return true;
+	}
+
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	if (Now - LastAnswerTime < 0.45f)
+	{
+		return false;
+	}
+	LastAnswerTime = Now;
+
+	// Validate against the question's target value within tolerance. The bank authors a
+	// tolerance (e.g. 0.1) for calculation questions; fall back to a tiny epsilon if absent.
+	const float Tolerance = FMath::Max(QuestionNumericTolerance, 0.0001f);
+	const bool bWithinTolerance = FMath::Abs(Value - QuestionNumericAnswer) <= Tolerance;
+	const FString TypedAnswer = FString::Printf(TEXT("%g (typed)"), Value);
+
+	if (bRoleWarmup)
+	{
+		if (bWithinTolerance)
+		{
+			bQuestionSolved = true;
+			QuestionFeedback = FString::Printf(TEXT("Warmup correct: %s Hold E to try the %s. The live Hunt reloads this node."), *QuestionExplanation, *GetStationName());
+			bQuestionFeedbackCorrect = true;
+			WorkProgress = FMath::Max(WorkProgress, 0.18f);
+			if (Character)
+			{
+				Character->RecoverStamina(8.0f);
+				Character->RefillFlashlight(4.0f);
+			}
+			if (PC)
+			{
+				PC->ClientShowStatusMessage(TEXT("Warmup correct. No report, XP, or mastery changes recorded."), 3.0f);
+			}
+		}
+		else
+		{
+			QuestionFeedback = QuestionHint.IsEmpty()
+				? TEXT("Warmup miss. Type another value; no report data recorded.")
+				: FString::Printf(TEXT("Warmup miss. Hint: %s No report data recorded."), *QuestionHint);
+			bQuestionFeedbackCorrect = false;
+			if (PC)
+			{
+				PC->ClientShowStatusMessage(TEXT("Warmup answer only. No detention mark or report entry recorded."), 3.0f);
+			}
+		}
+		ApplyStationVisuals();
+		return bWithinTolerance;
+	}
+
+	// Numeric entry is individual (you type your own value), so credit the submitter
+	// rather than a voting team; FinalizeRevisionAnswer adds the submitter when empty.
+	TArray<ABHCharacter*> RevisionParticipants;
+	return FinalizeRevisionAnswer(Character, PC, bWithinTolerance, TypedAnswer, RevisionParticipants, true);
+}
+
 bool ABHObjectiveStation::IsDirectorActive() const
 {
 	return bDirectorActive;
@@ -1170,6 +1274,16 @@ FString ABHObjectiveStation::GetQuestionFormula() const
 	return QuestionFormula;
 }
 
+float ABHObjectiveStation::GetQuestionNumericAnswer() const
+{
+	return QuestionNumericAnswer;
+}
+
+float ABHObjectiveStation::GetQuestionNumericTolerance() const
+{
+	return QuestionNumericTolerance;
+}
+
 FString ABHObjectiveStation::GetQuestionExplanation() const
 {
 	return QuestionExplanation;
@@ -1198,6 +1312,11 @@ EBHRevisionCounterNodeType ABHObjectiveStation::GetRevisionCounterType() const
 bool ABHObjectiveStation::IsTeacherMirrorTrapNode() const
 {
 	return bTeacherMirrorTrapNode;
+}
+
+bool ABHObjectiveStation::IsReviewQuestion() const
+{
+	return bRevisionReviewQuestion;
 }
 
 void ABHObjectiveStation::CompleteObjective()
@@ -1254,6 +1373,7 @@ void ABHObjectiveStation::QueueAdaptiveQuestionForParticipants(const TArray<ABHC
 
 	float LowestMastery = TNumericLimits<float>::Max();
 	bool bFoundPlan = false;
+	PendingReviewQuestionId.Reset();
 	for (ABHCharacter* Participant : Participants)
 	{
 		const ABHPlayerState* ParticipantPS = Participant ? Participant->GetPlayerState<ABHPlayerState>() : nullptr;
@@ -1273,6 +1393,8 @@ void ABHObjectiveStation::QueueAdaptiveQuestionForParticipants(const TArray<ABHC
 			LowestMastery = CandidateMastery;
 			AdaptiveQuestionTopic = CandidateTopic;
 			AdaptiveQuestionDifficulty = CandidateDifficulty;
+			// Re-test the player who most needs help on a question they missed.
+			PendingReviewQuestionId = ParticipantPS->PeekRevisionReview();
 		}
 	}
 
@@ -1281,18 +1403,34 @@ void ABHObjectiveStation::QueueAdaptiveQuestionForParticipants(const TArray<ABHC
 
 void ABHObjectiveStation::ConfigureQuestion()
 {
+	bRevisionReviewQuestion = false;
 	if (ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
 	{
 		if (BHGM->IsRevisionMode())
 		{
 			RevisionQuestionsRequired = FMath::Max(1, RevisionQuestionsRequired);
-			const EBHPhysicsTopic Topic = bUseAdaptiveQuestionOverride ? AdaptiveQuestionTopic : FBHRevisionQuestionBank::TopicForStationType(StationType);
 			FBHRevisionQuestion Selected;
 			const FVector Location = GetActorLocation();
 			const int32 LocationSeed = FMath::Abs(FMath::RoundToInt(Location.X * 0.13f + Location.Y * 0.07f + static_cast<int32>(StationType) * 131.0f + RevisionQuestionStep * 911.0f + FMath::RandRange(0, 100000)));
-			const bool bSelected = bUseAdaptiveQuestionOverride
-				? FBHRevisionQuestionBank::SelectQuestionByDifficulty(Topic, AdaptiveQuestionDifficulty, LocationSeed, Selected)
-				: FBHRevisionQuestionBank::SelectQuestion(Topic, BHGM->GetRevisionDifficultyMix(), LocationSeed, BHGM->GetRevisionWeakTopics(), Selected);
+
+			// Spaced repetition: if the targeted participant has a previously missed
+			// question queued, re-ask that exact question before normal selection.
+			bool bSelected = false;
+			bool bReviewSelected = false;
+			if (!PendingReviewQuestionId.IsEmpty() && FBHRevisionQuestionBank::FindQuestion(PendingReviewQuestionId, Selected))
+			{
+				bSelected = true;
+				bReviewSelected = true;
+			}
+			else
+			{
+				const EBHPhysicsTopic Topic = bUseAdaptiveQuestionOverride ? AdaptiveQuestionTopic : FBHRevisionQuestionBank::TopicForStationType(StationType);
+				bSelected = bUseAdaptiveQuestionOverride
+					? FBHRevisionQuestionBank::SelectQuestionByDifficulty(Topic, AdaptiveQuestionDifficulty, LocationSeed, Selected)
+					: FBHRevisionQuestionBank::SelectQuestion(Topic, BHGM->GetRevisionDifficultyMix(), LocationSeed, BHGM->GetRevisionWeakTopics(), Selected);
+			}
+			bRevisionReviewQuestion = bReviewSelected;
+			PendingReviewQuestionId.Reset();
 			bUseAdaptiveQuestionOverride = false;
 			if (bSelected)
 			{
@@ -1318,6 +1456,8 @@ void ABHObjectiveStation::ConfigureQuestion()
 				bQuestionSolved = false;
 				QuestionHint = Selected.Hint;
 				QuestionFormula = Selected.Answer.Formula;
+				QuestionNumericAnswer = Selected.Answer.NumericAnswer;
+				QuestionNumericTolerance = Selected.Answer.NumericTolerance;
 				QuestionExplanation = Selected.Explanation;
 				QuestionFeedback = TEXT("");
 				bQuestionFeedbackCorrect = false;
@@ -1349,6 +1489,8 @@ void ABHObjectiveStation::ConfigureQuestion()
 		bQuestionSolved = true;
 		QuestionHint = TEXT("");
 		QuestionFormula = TEXT("");
+		QuestionNumericAnswer = 0.0f;
+		QuestionNumericTolerance = 0.0f;
 		QuestionExplanation = TEXT("");
 		QuestionFeedback = TEXT("");
 		bQuestionFeedbackCorrect = false;
@@ -1383,6 +1525,8 @@ void ABHObjectiveStation::ConfigureQuestion()
 	bQuestionSolved = false;
 	QuestionHint = Selected.Hint;
 	QuestionFormula = TEXT("");
+	QuestionNumericAnswer = 0.0f;
+	QuestionNumericTolerance = 0.0f;
 	QuestionExplanation = Selected.Hint;
 	QuestionFeedback = TEXT("");
 	bQuestionFeedbackCorrect = false;

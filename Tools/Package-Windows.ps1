@@ -61,7 +61,9 @@ start "" "%~dp0BlackoutHunt.exe" -d3d11 -BHVirtualBoxSafe -ResX=1280 -ResY=720 -
 Blackout Hunt classroom graphics launch notes
 
 Use Launch-BlackoutHunt-DX11.cmd on older Windows machines.
-Use Launch-BlackoutHunt-DX11-Low.cmd for VM or low-spec validation.
+Use Launch-BlackoutHunt-DX11-Low.cmd for VM or low-spec validation. It forces D3D11, 1280x720 windowed mode, and the VirtualBox-safe renderer path.
+
+On a new install, Auto graphics also routes software, unknown, integrated, or low-VRAM GPUs to Low 4GB plus 1280x720 windowed mode unless the local user already saved a resolution. The Settings panel and Host Preflight graphics line show the active preset, cap, resolution, and render scale.
 
 If Windows still shows "A D3D11-compatible GPU is required", the machine is not exposing Direct3D feature level 11.0 / Shader Model 5.0 to Unreal. Check:
 
@@ -88,6 +90,36 @@ function Copy-ClassroomPackageNotices {
     }
 
     Copy-Item -LiteralPath $noticeSource -Destination (Join-Path $PackageRoot "THIRD-PARTY-NOTICES.txt") -Force
+}
+
+function Write-NoAccountQuickstart {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PackageRoot
+    )
+
+    $quickstart = @'
+Blackout Hunt no-account online quickstart
+
+Use this package when players should join without Steam, Epic, Google, Microsoft, or any other account.
+
+Host:
+1. Launch BlackoutHunt.exe.
+2. Choose Guest if the account panel appears.
+3. Use LIVE CLASSROOM, or host a normal map and click START INTERNET TUNNEL if players are not on the same LAN.
+4. If Playit setup opens, create or select a Custom UDP tunnel to 127.0.0.1:7777.
+5. Use COPY JOIN CODE and send the BH1:... code to players.
+
+Client:
+1. Launch BlackoutHunt.exe.
+2. Choose Guest if the account panel appears.
+3. Paste the BH1:... code into HOST / IP / CODE.
+4. Click JOIN GAME.
+
+LAN/direct IP also works when UDP 7777 reaches the host.
+'@
+
+    Set-Content -LiteralPath (Join-Path $PackageRoot "NO-ACCOUNT-ONLINE.txt") -Value $quickstart -Encoding ASCII
 }
 
 if (-not $Configuration) {
@@ -164,6 +196,7 @@ finally {
 if ($Classroom) {
     Copy-AppLocalDependenciesToPackageRoot -SourceRoot $appLocalDependenciesX64 -PackageRoot $archive
     Write-ClassroomLaunchHelpers -PackageRoot $archive
+    Write-NoAccountQuickstart -PackageRoot $archive
     Copy-ClassroomPackageNotices -PackageRoot $archive
     & "$PSScriptRoot\Verify-ClassroomPackage.ps1" -PackageRoot $archive -ExpectedAppLocalDependencyRoot $appLocalDependenciesX64
 }

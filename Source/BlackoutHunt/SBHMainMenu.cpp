@@ -278,6 +278,99 @@ namespace
 		return TEXT("Facility");
 	}
 
+	bool MenuRunbookPhaseIsAtLeastHunt(const EBHRoundPhase Phase)
+	{
+		return Phase == EBHRoundPhase::Hunt
+			|| Phase == EBHRoundPhase::FinalEscape
+			|| Phase == EBHRoundPhase::Intermission
+			|| Phase == EBHRoundPhase::SurvivorsWin
+			|| Phase == EBHRoundPhase::HunterWin;
+	}
+
+	bool MenuRunbookPhaseIsAfterSetup(const EBHRoundPhase Phase)
+	{
+		return Phase == EBHRoundPhase::Prep || MenuRunbookPhaseIsAtLeastHunt(Phase);
+	}
+
+	bool MenuRunbookPhaseIsPostRound(const EBHRoundPhase Phase)
+	{
+		return Phase == EBHRoundPhase::Intermission
+			|| Phase == EBHRoundPhase::SurvivorsWin
+			|| Phase == EBHRoundPhase::HunterWin;
+	}
+
+	FString MenuRunbookPhaseText(const ABHGameState* GameState)
+	{
+		return GameState ? GameState->GetPhaseText() : FString(TEXT("No session"));
+	}
+
+	struct FBHMenuRunbookRosterCounts
+	{
+		int32 HumanPlayers = 0;
+		int32 HumanReady = 0;
+		int32 HumanQueuedRoles = 0;
+		int32 HumanTeacherQueued = 0;
+		int32 ActiveTeachers = 0;
+	};
+
+	FBHMenuRunbookRosterCounts MenuBuildRunbookRosterCounts(const ABHGameState* GameState)
+	{
+		FBHMenuRunbookRosterCounts Counts;
+		if (!GameState)
+		{
+			return Counts;
+		}
+
+		for (APlayerState* RawPlayerState : GameState->PlayerArray)
+		{
+			const ABHPlayerState* PlayerState = Cast<ABHPlayerState>(RawPlayerState);
+			if (!PlayerState || PlayerState->IsABot())
+			{
+				continue;
+			}
+
+			++Counts.HumanPlayers;
+			if (PlayerState->bReady)
+			{
+				++Counts.HumanReady;
+			}
+			if (PlayerState->DesiredRole != EBHPlayerRole::Unassigned)
+			{
+				++Counts.HumanQueuedRoles;
+			}
+			if (PlayerState->DesiredRole == EBHPlayerRole::Hunter)
+			{
+				++Counts.HumanTeacherQueued;
+			}
+			if (PlayerState->PlayerRole == EBHPlayerRole::Hunter)
+			{
+				++Counts.ActiveTeachers;
+			}
+		}
+
+		return Counts;
+	}
+
+	FLinearColor MenuRunbookStatusCompleteColor()
+	{
+		return FLinearColor(0.48f, 0.86f, 0.60f, 1.0f);
+	}
+
+	FLinearColor MenuRunbookStatusWaitingColor()
+	{
+		return FLinearColor(0.94f, 0.72f, 0.38f, 1.0f);
+	}
+
+	FLinearColor MenuRunbookStatusNeutralColor()
+	{
+		return FLinearColor(0.62f, 0.74f, 0.72f, 1.0f);
+	}
+
+	FLinearColor MenuRunbookStatusBlockedColor()
+	{
+		return FLinearColor(0.86f, 0.58f, 0.34f, 1.0f);
+	}
+
 	int32 MenuAllRevisionTopicMask()
 	{
 		return FBHRevisionQuestionBank::TopicMaskBit(EBHPhysicsTopic::ForcesAndMotion)
@@ -5106,6 +5199,17 @@ FReply SBHMainMenu::OnJumpscareVariantClicked(FString VariantToken)
 	return FReply::Handled();
 }
 
+FReply SBHMainMenu::OnOpenAtmosphereConsoleClicked()
+{
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		StatusText = FText::FromString(TEXT("Opening atmosphere tuning."));
+		PC->ShowAtmosphereConsole();
+	}
+
+	return FReply::Handled();
+}
+
 FReply SBHMainMenu::OnAtmosphereTestClicked(FString Command)
 {
 	if (ABHPlayerController* PC = PlayerController.Get())
@@ -5731,9 +5835,10 @@ FText SBHMainMenu::GetPlayerIdentityText() const
 	}
 
 	const UEnum* RoleEnum = StaticEnum<EBHPlayerRole>();
+	const FString RoleName = RoleEnum ? RoleEnum->GetNameStringByValue(static_cast<int64>(BHPS->PlayerRole)) : FString(TEXT("Unassigned"));
 	return FText::FromString(FString::Printf(TEXT("Avatar %d | Role %s | Color %.2f %.2f %.2f"),
 		BHPS->AvatarIndex + 1,
-		*RoleEnum->GetNameStringByValue(static_cast<int64>(BHPS->PlayerRole)),
+		*RoleName,
 		BHPS->AvatarColor.R,
 		BHPS->AvatarColor.G,
 		BHPS->AvatarColor.B));
@@ -6372,6 +6477,248 @@ FSlateColor SBHMainMenu::GetClassroomPreflightStatusColor() const
 	}
 
 	return FSlateColor(FLinearColor(0.86f, 0.58f, 0.34f, 1.0f));
+}
+
+FText SBHMainMenu::GetClassroomRunbookStepStatusText(EBHClassroomRunbookStep Step) const
+{
+	const ABHPlayerController* PC = PlayerController.Get();
+	const UWorld* World = PC ? PC->GetWorld() : nullptr;
+	const ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
+	const UBHGameInstance* BHGI = World ? World->GetGameInstance<UBHGameInstance>() : nullptr;
+	const FBHMenuRunbookRosterCounts RosterCounts = MenuBuildRunbookRosterCounts(BHGS);
+
+	if (!CanUseClassroomHostControls())
+	{
+		return FText::FromString(TEXT("Host machine only"));
+	}
+
+	switch (Step)
+	{
+	case EBHClassroomRunbookStep::Preflight:
+		if (PC)
+		{
+			const FBHClassroomPreflightSummary Summary = PC->GetClassroomPreflightSummaryForMenu();
+			return FText::FromString(Summary.ReadyStatus.IsEmpty() ? FString(TEXT("Check preflight")) : Summary.ReadyStatus);
+		}
+		return FText::FromString(TEXT("Preflight unavailable"));
+	case EBHClassroomRunbookStep::MapPreset:
+	{
+		FString MapName = MenuNormalizeClassroomMapName(SelectedLiveClassroomMap);
+		if (BHGS && BHGS->bRevisionMode)
+		{
+			MapName = MenuNormalizeClassroomMapName(!BHGS->NextLevelName.IsEmpty() ? BHGS->NextLevelName : BHGS->ActiveLevelName);
+		}
+
+		FBHLessonPreset Preset;
+		FString Message;
+		if (PC && PC->GetSelectedLessonPresetForMenu(Preset, Message))
+		{
+			return FText::FromString(FString::Printf(TEXT("%s / %s"), *MapName, *Preset.DisplayName));
+		}
+		return FText::FromString(FString::Printf(TEXT("%s / choose preset"), *MapName));
+	}
+	case EBHClassroomRunbookStep::ManualQuestions:
+		return FText::FromString(TEXT("Optional backup from selected preset"));
+	case EBHClassroomRunbookStep::Tunnel:
+	{
+		const FString Address = BHGI ? BHGI->GetPreferredClassroomJoinAddress(MenuDefaultGamePort) : FString();
+		return FText::FromString(Address.IsEmpty()
+			? FString(TEXT("No join endpoint yet"))
+			: FString::Printf(TEXT("Endpoint ready: %s"), *Address));
+	}
+	case EBHClassroomRunbookStep::Students:
+		if (!BHGS)
+		{
+			return FText::FromString(TEXT("Host Live Classroom first"));
+		}
+		if (RosterCounts.HumanPlayers <= 1)
+		{
+			return FText::FromString(TEXT("Waiting for students"));
+		}
+		return FText::FromString(FString::Printf(TEXT("%d connected, %d ready"), RosterCounts.HumanPlayers, RosterCounts.HumanReady));
+	case EBHClassroomRunbookStep::Roles:
+		if (!BHGS)
+		{
+			return FText::FromString(TEXT("Host Live Classroom first"));
+		}
+		if (BHGS->RoundPhase != EBHRoundPhase::Lobby)
+		{
+			return FText::FromString(RosterCounts.ActiveTeachers > 0
+				? FString::Printf(TEXT("%d Teacher active"), RosterCounts.ActiveTeachers)
+				: FString(TEXT("Roles active")));
+		}
+		if (RosterCounts.HumanTeacherQueued > 0)
+		{
+			return FText::FromString(FString::Printf(TEXT("%d Teacher queued"), RosterCounts.HumanTeacherQueued));
+		}
+		if (RosterCounts.HumanQueuedRoles > 0)
+		{
+			return FText::FromString(FString::Printf(TEXT("%d roles queued"), RosterCounts.HumanQueuedRoles));
+		}
+		return FText::FromString(TEXT("Auto roles if unchanged"));
+	case EBHClassroomRunbookStep::ReadyGate:
+		if (!BHGS)
+		{
+			return FText::FromString(TEXT("Host Live Classroom first"));
+		}
+		if (BHGS->RoundPhase != EBHRoundPhase::Lobby)
+		{
+			return FText::FromString(FString::Printf(TEXT("Gate cleared: %s"), *MenuRunbookPhaseText(BHGS)));
+		}
+		return FText::FromString(FString::Printf(TEXT("%d/%d ready"), RosterCounts.HumanReady, RosterCounts.HumanPlayers));
+	case EBHClassroomRunbookStep::Warmup:
+		if (!BHGS)
+		{
+			return FText::FromString(TEXT("Starts after ready gate"));
+		}
+		if (BHGS->RoundPhase == EBHRoundPhase::Prep)
+		{
+			return FText::FromString(TEXT("Warmup active"));
+		}
+		return FText::FromString(MenuRunbookPhaseIsAfterSetup(BHGS->RoundPhase) ? FString(TEXT("Complete")) : FString(TEXT("Starts when all ready")));
+	case EBHClassroomRunbookStep::Hunt:
+		if (!BHGS)
+		{
+			return FText::FromString(TEXT("Not started"));
+		}
+		if (BHGS->RoundPhase == EBHRoundPhase::Prep)
+		{
+			return FText::FromString(TEXT("Ready to start Hunt"));
+		}
+		if (BHGS->RoundPhase == EBHRoundPhase::Hunt)
+		{
+			return FText::FromString(TEXT("Hunt live"));
+		}
+		if (BHGS->RoundPhase == EBHRoundPhase::FinalEscape)
+		{
+			return FText::FromString(TEXT("Final escape"));
+		}
+		if (MenuRunbookPhaseIsPostRound(BHGS->RoundPhase))
+		{
+			return FText::FromString(TEXT("Round complete"));
+		}
+		return FText::FromString(TEXT("Not started"));
+	case EBHClassroomRunbookStep::Board:
+		return FText::FromString(CanOpenClassroomBoard() ? TEXT("Projector view available") : TEXT("Host only"));
+	case EBHClassroomRunbookStep::Export:
+		if (!BHGS || !BHGS->bRevisionMode)
+		{
+			return FText::FromString(TEXT("Host Live Classroom first"));
+		}
+		if (MenuRunbookPhaseIsPostRound(BHGS->RoundPhase))
+		{
+			return FText::FromString(TEXT("Report export ready"));
+		}
+		if (MenuRunbookPhaseIsAtLeastHunt(BHGS->RoundPhase))
+		{
+			return FText::FromString(TEXT("Collecting round data"));
+		}
+		return FText::FromString(TEXT("Available after play"));
+	default:
+		return FText::FromString(TEXT("Pending"));
+	}
+}
+
+FSlateColor SBHMainMenu::GetClassroomRunbookStepStatusColor(EBHClassroomRunbookStep Step) const
+{
+	const ABHPlayerController* PC = PlayerController.Get();
+	const UWorld* World = PC ? PC->GetWorld() : nullptr;
+	const ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
+	const UBHGameInstance* BHGI = World ? World->GetGameInstance<UBHGameInstance>() : nullptr;
+	const FBHMenuRunbookRosterCounts RosterCounts = MenuBuildRunbookRosterCounts(BHGS);
+
+	if (!CanUseClassroomHostControls())
+	{
+		return FSlateColor(MenuRunbookStatusBlockedColor());
+	}
+
+	switch (Step)
+	{
+	case EBHClassroomRunbookStep::Preflight:
+		return FSlateColor(PC && PC->GetClassroomPreflightSummaryForMenu().bReadyForClassroom
+			? MenuRunbookStatusCompleteColor()
+			: MenuRunbookStatusWaitingColor());
+	case EBHClassroomRunbookStep::MapPreset:
+	{
+		FBHLessonPreset Preset;
+		FString Message;
+		return FSlateColor(PC && PC->GetSelectedLessonPresetForMenu(Preset, Message)
+			? MenuRunbookStatusCompleteColor()
+			: MenuRunbookStatusWaitingColor());
+	}
+	case EBHClassroomRunbookStep::ManualQuestions:
+		return FSlateColor(MenuRunbookStatusNeutralColor());
+	case EBHClassroomRunbookStep::Tunnel:
+		return FSlateColor(BHGI && !BHGI->GetPreferredClassroomJoinAddress(MenuDefaultGamePort).IsEmpty()
+			? MenuRunbookStatusCompleteColor()
+			: MenuRunbookStatusWaitingColor());
+	case EBHClassroomRunbookStep::Students:
+		return FSlateColor(BHGS && RosterCounts.HumanPlayers > 1
+			? MenuRunbookStatusCompleteColor()
+			: MenuRunbookStatusWaitingColor());
+	case EBHClassroomRunbookStep::Roles:
+		if (!BHGS)
+		{
+			return FSlateColor(MenuRunbookStatusWaitingColor());
+		}
+		return FSlateColor(BHGS->RoundPhase != EBHRoundPhase::Lobby || RosterCounts.HumanQueuedRoles > 0
+			? MenuRunbookStatusCompleteColor()
+			: MenuRunbookStatusNeutralColor());
+	case EBHClassroomRunbookStep::ReadyGate:
+		if (!BHGS)
+		{
+			return FSlateColor(MenuRunbookStatusWaitingColor());
+		}
+		return FSlateColor(BHGS->RoundPhase != EBHRoundPhase::Lobby || (RosterCounts.HumanPlayers > 0 && RosterCounts.HumanReady == RosterCounts.HumanPlayers)
+			? MenuRunbookStatusCompleteColor()
+			: MenuRunbookStatusWaitingColor());
+	case EBHClassroomRunbookStep::Warmup:
+		return FSlateColor(BHGS && MenuRunbookPhaseIsAfterSetup(BHGS->RoundPhase)
+			? MenuRunbookStatusCompleteColor()
+			: MenuRunbookStatusWaitingColor());
+	case EBHClassroomRunbookStep::Hunt:
+		return FSlateColor(BHGS && MenuRunbookPhaseIsAtLeastHunt(BHGS->RoundPhase)
+			? MenuRunbookStatusCompleteColor()
+			: MenuRunbookStatusNeutralColor());
+	case EBHClassroomRunbookStep::Board:
+		return FSlateColor(CanOpenClassroomBoard() ? MenuRunbookStatusCompleteColor() : MenuRunbookStatusWaitingColor());
+	case EBHClassroomRunbookStep::Export:
+		if (CanRunbookExportReport())
+		{
+			return FSlateColor(MenuRunbookStatusCompleteColor());
+		}
+		return FSlateColor(BHGS && BHGS->bRevisionMode ? MenuRunbookStatusNeutralColor() : MenuRunbookStatusWaitingColor());
+	default:
+		return FSlateColor(MenuRunbookStatusNeutralColor());
+	}
+}
+
+bool SBHMainMenu::CanRunbookStartHunt() const
+{
+	const ABHPlayerController* PC = PlayerController.Get();
+	const UWorld* World = PC ? PC->GetWorld() : nullptr;
+	const ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
+	return CanUseClassroomHostControls()
+		&& PC
+		&& PC->IsLocalController()
+		&& World
+		&& World->GetNetMode() == NM_ListenServer
+		&& BHGS
+		&& BHGS->RoundPhase == EBHRoundPhase::Prep;
+}
+
+bool SBHMainMenu::CanRunbookExportReport() const
+{
+	const ABHPlayerController* PC = PlayerController.Get();
+	const UWorld* World = PC ? PC->GetWorld() : nullptr;
+	const ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
+	return CanEditRevisionControls()
+		&& PC
+		&& PC->IsLocalController()
+		&& World
+		&& World->GetNetMode() == NM_ListenServer
+		&& BHGS
+		&& MenuRunbookPhaseIsPostRound(BHGS->RoundPhase);
 }
 
 EVisibility SBHMainMenu::GetRevisionControlsVisibility() const
@@ -7983,7 +8330,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRevisionControlsPanel()
 	TSharedRef<SHorizontalBox> AdminRow = SNew(SHorizontalBox);
 	AddOptionButton(AdminRow, TEXT("Show Status"), TAttribute<FSlateColor>(FSlateColor(FLinearColor(0.12f, 0.15f, 0.17f, 1.0f))), FOnClicked::CreateSP(this, &SBHMainMenu::OnRevisionStatusClicked));
 	AddOptionButton(AdminRow, TEXT("Force 60s Review"), TAttribute<FSlateColor>(FSlateColor(FLinearColor(0.12f, 0.15f, 0.17f, 1.0f))), FOnClicked::CreateSP(this, &SBHMainMenu::OnForceReviewClicked));
-	AddOptionButton(AdminRow, TEXT("Export CSV"), TAttribute<FSlateColor>(FSlateColor(FLinearColor(0.12f, 0.15f, 0.17f, 1.0f))), FOnClicked::CreateSP(this, &SBHMainMenu::OnExportRevisionReportClicked));
+	AddOptionButton(AdminRow, TEXT("Export Report"), TAttribute<FSlateColor>(FSlateColor(FLinearColor(0.12f, 0.15f, 0.17f, 1.0f))), FOnClicked::CreateSP(this, &SBHMainMenu::OnExportRevisionReportClicked));
 	AddOptionButton(AdminRow, TEXT("Export Heatmap"), TAttribute<FSlateColor>(FSlateColor(FLinearColor(0.12f, 0.15f, 0.17f, 1.0f))), FOnClicked::CreateSP(this, &SBHMainMenu::OnExportPlaytestTelemetryClicked));
 
 	return SNew(SBorder)
@@ -8170,6 +8517,167 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomPreflightPanel()
 		];
 }
 
+TSharedRef<SWidget> SBHMainMenu::BuildClassroomRunbookStep(int32 StepNumber, EBHClassroomRunbookStep Step, const FText& Title, const FText& ActionLabel, const FOnClicked& OnClicked, TAttribute<bool> ActionEnabled)
+{
+	TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox);
+	Row->AddSlot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(0.0f, 0.0f, 9.0f, 0.0f)
+		[
+			SNew(SBox)
+			.WidthOverride(28.0f)
+			.HeightOverride(28.0f)
+			.HAlign(HAlign_Center)
+			.VAlign(VAlign_Center)
+			[
+				SNew(SBorder)
+				.BorderImage(WhiteBrush())
+				.BorderBackgroundColor(FLinearColor(0.11f, 0.20f, 0.21f, 1.0f))
+				.Padding(FMargin(4.0f, 3.0f))
+				[
+					SNew(STextBlock)
+					.Justification(ETextJustify::Center)
+					.Font(MenuFont(9, FName(TEXT("Bold"))))
+					.ColorAndOpacity(FLinearColor(0.88f, 0.96f, 0.92f, 1.0f))
+					.Text(FText::FromString(FString::Printf(TEXT("%02d"), FMath::Max(1, StepNumber))))
+				]
+			]
+		];
+
+	Row->AddSlot()
+		.FillWidth(1.0f)
+		.VAlign(VAlign_Center)
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(STextBlock)
+				.Font(MenuFont(10, FName(TEXT("Bold"))))
+				.ColorAndOpacity(FLinearColor(0.84f, 0.94f, 0.90f, 1.0f))
+				.Text(Title)
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 2.0f, 0.0f, 0.0f)
+			[
+				SNew(STextBlock)
+				.AutoWrapText(true)
+				.Font(MenuFont(9))
+				.ColorAndOpacity(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateSP(this, &SBHMainMenu::GetClassroomRunbookStepStatusColor, Step)))
+				.Text(TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &SBHMainMenu::GetClassroomRunbookStepStatusText, Step)))
+			]
+		];
+
+	if (!ActionLabel.IsEmpty())
+	{
+		Row->AddSlot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(10.0f, 0.0f, 0.0f, 0.0f)
+			[
+				SNew(SBHMenuButton)
+				.IsEnabled(ActionEnabled)
+				.ButtonColorAndOpacity(FLinearColor(0.14f, 0.29f, 0.29f, 1.0f))
+				.ContentPadding(FMargin(8.0f, 5.0f))
+				.OnClicked(OnClicked)
+				[
+					SNew(STextBlock)
+					.Font(MenuFont(9, FName(TEXT("Bold"))))
+					.Text(ActionLabel)
+				]
+			];
+	}
+
+	return SNew(SBorder)
+		.BorderImage(WhiteBrush())
+		.BorderBackgroundColor(FLinearColor(0.026f, 0.036f, 0.040f, 0.96f))
+		.Padding(FMargin(8.0f, 7.0f))
+		[
+			Row
+		];
+}
+
+TSharedRef<SWidget> SBHMainMenu::BuildClassroomRunbookPanel()
+{
+	TSharedRef<SVerticalBox> StepList = SNew(SVerticalBox);
+	const TAttribute<bool> HostControlsEnabled = TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &SBHMainMenu::CanUseClassroomHostControls));
+	const TAttribute<bool> LessonControlsEnabled = TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &SBHMainMenu::CanManageLessonPresets));
+	const TAttribute<bool> BoardEnabled = TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &SBHMainMenu::CanOpenClassroomBoard));
+	const TAttribute<bool> StartHuntEnabled = TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &SBHMainMenu::CanRunbookStartHunt));
+	const TAttribute<bool> ExportEnabled = TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &SBHMainMenu::CanRunbookExportReport));
+
+	auto AddStep = [this, &StepList](int32 StepNumber, EBHClassroomRunbookStep Step, const TCHAR* Title, const TCHAR* ActionLabel, const FOnClicked& OnClicked, TAttribute<bool> ActionEnabled)
+	{
+		StepList->AddSlot()
+			.AutoHeight()
+			.Padding(0.0f, 0.0f, 0.0f, 6.0f)
+			[
+				BuildClassroomRunbookStep(
+					StepNumber,
+					Step,
+					FText::FromString(FString(Title)),
+					ActionLabel && FCString::Strlen(ActionLabel) > 0 ? FText::FromString(FString(ActionLabel)) : FText::GetEmpty(),
+					OnClicked,
+					ActionEnabled)
+			];
+	};
+
+	AddStep(1, EBHClassroomRunbookStep::Preflight, TEXT("Check Host Preflight"), TEXT("Refresh"), FOnClicked::CreateSP(this, &SBHMainMenu::OnRefreshClassroomPreflightClicked), HostControlsEnabled);
+	AddStep(2, EBHClassroomRunbookStep::MapPreset, TEXT("Choose map and lesson"), TEXT("Host Live"), FOnClicked::CreateSP(this, &SBHMainMenu::OnHostSelectedLiveClassroomClicked), HostControlsEnabled);
+	AddStep(3, EBHClassroomRunbookStep::ManualQuestions, TEXT("Prepare backup questions"), TEXT("Generate 12Q"), FOnClicked::CreateSP(this, &SBHMainMenu::OnGenerateManualQuestionSetClicked), LessonControlsEnabled);
+	AddStep(4, EBHClassroomRunbookStep::Tunnel, TEXT("Verify tunnel or join code"), TEXT("Copy Code"), FOnClicked::CreateSP(this, &SBHMainMenu::OnCopyClassroomJoinCodeClicked), HostControlsEnabled);
+	AddStep(5, EBHClassroomRunbookStep::Students, TEXT("Confirm students joined"), TEXT(""), FOnClicked(), TAttribute<bool>(false));
+	AddStep(6, EBHClassroomRunbookStep::Roles, TEXT("Assign or approve roles"), TEXT(""), FOnClicked(), TAttribute<bool>(false));
+	AddStep(7, EBHClassroomRunbookStep::ReadyGate, TEXT("Confirm ready gate"), TEXT(""), FOnClicked(), TAttribute<bool>(false));
+	AddStep(8, EBHClassroomRunbookStep::Warmup, TEXT("Run role warmup"), TEXT("Start Hunt"), FOnClicked::CreateSP(this, &SBHMainMenu::OnForceStartClicked), StartHuntEnabled);
+	AddStep(9, EBHClassroomRunbookStep::Hunt, TEXT("Run the live Hunt"), TEXT("Open Board"), FOnClicked::CreateSP(this, &SBHMainMenu::OnOpenClassroomBoardClicked), BoardEnabled);
+	AddStep(10, EBHClassroomRunbookStep::Board, TEXT("Projector board"), TEXT("Open Board"), FOnClicked::CreateSP(this, &SBHMainMenu::OnOpenClassroomBoardClicked), BoardEnabled);
+	AddStep(11, EBHClassroomRunbookStep::Export, TEXT("Post-round export"), TEXT("Export Report"), FOnClicked::CreateSP(this, &SBHMainMenu::OnExportRevisionReportClicked), ExportEnabled);
+
+	return SNew(SBox)
+		.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateSP(this, &SBHMainMenu::GetClassroomHostOnlyVisibility)))
+		[
+			SNew(SBorder)
+			.BorderImage(WhiteBrush())
+			.BorderBackgroundColor(FLinearColor(0.028f, 0.044f, 0.046f, 0.96f))
+			.Padding(10.0f)
+			[
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.FillWidth(1.0f)
+					.VAlign(VAlign_Center)
+					[
+						SNew(STextBlock)
+						.Font(MenuFont(13, FName(TEXT("Bold"))))
+						.ColorAndOpacity(FLinearColor(0.84f, 0.94f, 0.90f, 1.0f))
+						.Text(FText::FromString(TEXT("Run Class")))
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					[
+						SNew(STextBlock)
+						.Font(MenuFont(9, FName(TEXT("Bold"))))
+						.ColorAndOpacity(FLinearColor(0.58f, 0.72f, 0.70f, 1.0f))
+						.Text(FText::FromString(TEXT("Host checklist")))
+					]
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.0f, 7.0f, 0.0f, 0.0f)
+				[
+					StepList
+				]
+			]
+		];
+}
+
 TSharedRef<SWidget> SBHMainMenu::BuildClassroomPanel()
 {
 	const bool bShowLobbyRoster = IsInNetworkedGame() && !IsPracticeMode() && !IsTestMode();
@@ -8237,6 +8745,12 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomPanel()
 			.Font(MenuFont(12))
 			.ColorAndOpacity(FLinearColor(0.70f, 0.80f, 0.80f, 1.0f))
 			.Text(FText::FromString(TEXT("Projector-ready session status for live classes.")))
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 0.0f, 0.0f, 12.0f)
+		[
+			BuildClassroomRunbookPanel()
 		]
 		+ SVerticalBox::Slot()
 		.AutoHeight()
@@ -9630,13 +10144,18 @@ TSharedRef<SWidget> SBHMainMenu::BuildTestCommandPanel()
 	else
 	{
 		AddCommand(JumpscareCommands, MenuPlayActionButton(
-			FText::FromString(TEXT("SCP096 FALLBACK")),
+			FText::FromString(TEXT("PROXY FALLBACK")),
 			FText::FromString(TEXT("No configured variants were found; fires the fallback monster.")),
 			FLinearColor(0.30f, 0.12f, 0.13f, 1.0f),
-			FOnClicked::CreateSP(this, &SBHMainMenu::OnJumpscareVariantClicked, FString(TEXT("SCP096")))));
+			FOnClicked::CreateSP(this, &SBHMainMenu::OnJumpscareVariantClicked, FString(TEXT("ProxyRed")))));
 	}
 
 	TSharedRef<SVerticalBox> AtmosphereCommands = SNew(SVerticalBox);
+	AddCommand(AtmosphereCommands, MenuPlayActionButton(
+		FText::FromString(TEXT("OPEN TUNING PANEL")),
+		FText::FromString(TEXT("Opens the visual fog, sky, post-process, and flashlight slider panel.")),
+		FLinearColor(0.18f, 0.32f, 0.38f, 1.0f),
+		FOnClicked::CreateSP(this, &SBHMainMenu::OnOpenAtmosphereConsoleClicked)));
 	AddCommand(AtmosphereCommands, MenuPlayActionButton(
 		FText::FromString(TEXT("AMBIENT SCARE")),
 		FText::FromString(TEXT("Triggers a local ambient scare cue.")),

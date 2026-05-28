@@ -61,4 +61,10 @@ protected:
 	FTimerHandle CutsceneTimerHandle;
 	FTimerHandle EscapeTimerHandle;
 	bool bTriggered;
+
+	// Cache of the last content pushed to the station displays so the authority
+	// only re-wraps text and rebuilds dynamic material instances when it changes.
+	FString LastDisplayHeader;
+	FString LastDisplayBody;
+	FLinearColor LastDisplayAccent = FLinearColor::White;
 };

@@ -40,6 +40,9 @@ struct FBHTravelPlayerProgress
 	int32 HunterPoints = 0;
 	int32 LifetimeHunterPoints = 0;
 	TArray<FBHPowerupInventoryEntry> Powerups;
+	// Server time (seconds) this player disconnected during an active round, or < 0 if this entry
+	// is a normal travel snapshot rather than a pending mid-round reconnect.
+	float LeftServerWorldTime = -1.0f;
 };
 
 USTRUCT()
@@ -151,12 +154,20 @@ public:
 	bool ShouldAutoReady() const;
 	int32 GetAutomationMinReadyPlayers() const;
 	float GetAutomationQuitSeconds() const;
+	bool ShouldRequestAutomationCleanExit() const;
 	void LogAutomationMarker(const FString& Marker) const;
 	bool LogAutomationMarkerOnce(const FString& Marker);
 	void RequestCleanExit(const FString& Reason);
 	void PersistTravelPlayerState(const ABHPlayerState* PlayerState);
 	bool RestoreTravelPlayerState(ABHPlayerState* PlayerState) const;
+	// Mid-round reconnect support. MarkTravelPlayerLeftForReconnect persists the player's current
+	// state and stamps the leave time; TryGetReconnectProgress returns a copy if a matching entry
+	// is still within the grace window; ClearReconnectMark consumes it after a successful rejoin.
+	void MarkTravelPlayerLeftForReconnect(const ABHPlayerState* PlayerState, float ServerTimeSeconds);
+	bool TryGetReconnectProgress(const ABHPlayerState* PlayerState, float NowServerTimeSeconds, float GraceSeconds, FBHTravelPlayerProgress& OutProgress) const;
+	void ClearReconnectMark(const ABHPlayerState* PlayerState);
 	void ResetPersistentHunterPoints();
+	void ResetPersistentTrainRunProgress();
 	void RecordQuestionAttempt(const FBHQuestionAttemptRecord& Attempt);
 	const TArray<FBHQuestionAttemptRecord>& GetQuestionAttemptHistory() const;
 	void ClearQuestionAttemptHistory();
@@ -198,12 +209,14 @@ private:
 	FString PendingOnlineLevelName;
 	bool bOnlineSessionBusy = false;
 	bool bSteamAutoLoginAttempted = false;
+	bool bEOSAutoLoginAttempted = false;
 
 	FString GameHotspotSsid;
 	FString GameHotspotPassphrase;
 	FString LastNetworkMessage;
 	FString PublicJoinAddress;
 	FBHAutomationConfig AutomationConfig;
+	double AutomationStartTimeSeconds = 0.0;
 	bool bAutomationHostConsumed = false;
 	bool bAutomationJoinConsumed = false;
 	TSet<FString> AutomationMarkersLogged;

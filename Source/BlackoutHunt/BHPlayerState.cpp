@@ -20,6 +20,7 @@ ABHPlayerState::ABHPlayerState()
 	SpectatorRolePreference = EBHPlayerRole::Unassigned;
 	SpectatorEncouragementCount = 0;
 	RevisionStats = FBHPlayerRevisionStats();
+	RevisionReviewQueue.Reset();
 	QuestionPoints = 0;
 	LifetimeQuestionPoints = 0;
 	HunterPoints = 0;
@@ -46,6 +47,7 @@ void ABHPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLi
 	DOREPLIFETIME(ABHPlayerState, SpectatorRolePreference);
 	DOREPLIFETIME(ABHPlayerState, SpectatorEncouragementCount);
 	DOREPLIFETIME(ABHPlayerState, RevisionStats);
+	DOREPLIFETIME(ABHPlayerState, RevisionReviewQueue);
 	DOREPLIFETIME(ABHPlayerState, QuestionPoints);
 	DOREPLIFETIME(ABHPlayerState, LifetimeQuestionPoints);
 	DOREPLIFETIME(ABHPlayerState, HunterPoints);
@@ -158,6 +160,53 @@ void ABHPlayerState::AddSpectatorEncouragement()
 void ABHPlayerState::ResetRevisionStats()
 {
 	RevisionStats = FBHPlayerRevisionStats();
+	RevisionReviewQueue.Reset();
+}
+
+namespace
+{
+	// Cap the review backlog so a struggling player gets re-tested on recent
+	// misses without the queue growing without bound across a long session.
+	constexpr int32 BHMaxRevisionReviewQueue = 8;
+}
+
+void ABHPlayerState::EnqueueRevisionReview(const FString& QuestionId)
+{
+	if (QuestionId.IsEmpty())
+	{
+		return;
+	}
+
+	// Dedup: if it is already queued, move it to the back (most recently missed).
+	RevisionReviewQueue.RemoveAll([&QuestionId](const FString& Existing)
+	{
+		return Existing.Equals(QuestionId, ESearchCase::IgnoreCase);
+	});
+	RevisionReviewQueue.Add(QuestionId);
+
+	while (RevisionReviewQueue.Num() > BHMaxRevisionReviewQueue)
+	{
+		RevisionReviewQueue.RemoveAt(0);
+	}
+}
+
+bool ABHPlayerState::DequeueRevisionReview(const FString& QuestionId)
+{
+	if (QuestionId.IsEmpty())
+	{
+		return false;
+	}
+
+	const int32 Removed = RevisionReviewQueue.RemoveAll([&QuestionId](const FString& Existing)
+	{
+		return Existing.Equals(QuestionId, ESearchCase::IgnoreCase);
+	});
+	return Removed > 0;
+}
+
+FString ABHPlayerState::PeekRevisionReview() const
+{
+	return RevisionReviewQueue.Num() > 0 ? RevisionReviewQueue[0] : FString();
 }
 
 void ABHPlayerState::AddQuestionPoints(int32 Points)

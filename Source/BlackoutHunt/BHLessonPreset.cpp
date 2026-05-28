@@ -634,12 +634,19 @@ bool FBHLessonPresetStore::BuildManualQuestionSet(const FBHLessonPreset& Preset,
 	for (int32 QuestionIndex = 0; QuestionIndex < ClampedQuestionCount; ++QuestionIndex)
 	{
 		bool bAddedQuestion = false;
-		const int32 TopicStart = Topics.Num() > 0 ? (QuestionIndex + EffectiveSeed) % Topics.Num() : 0;
+		// Unsigned arithmetic keeps the seed mixing well-defined (EffectiveSeed can be near INT_MAX)
+		// and guarantees a non-negative TopicStart, avoiding a negative array index below.
+		const int32 TopicStart = Topics.Num() > 0
+			? static_cast<int32>((static_cast<uint32>(QuestionIndex) + static_cast<uint32>(EffectiveSeed)) % static_cast<uint32>(Topics.Num()))
+			: 0;
+
+		// DifficultyOrder depends only on the difficulty mix and the question index, not on
+		// the topic, so compute it once per question instead of inside the TopicOffset loop.
+		const TArray<EBHQuestionDifficulty> DifficultyOrder = BHLessonPresetDifficultyOrder(CleanPreset.DifficultyMix, QuestionIndex);
 
 		for (int32 TopicOffset = 0; TopicOffset < Topics.Num() && !bAddedQuestion; ++TopicOffset)
 		{
 			const EBHPhysicsTopic Topic = Topics[(TopicStart + TopicOffset) % Topics.Num()];
-			const TArray<EBHQuestionDifficulty> DifficultyOrder = BHLessonPresetDifficultyOrder(CleanPreset.DifficultyMix, QuestionIndex);
 
 			for (int32 DifficultyIndex = 0; DifficultyIndex < DifficultyOrder.Num() && !bAddedQuestion; ++DifficultyIndex)
 			{
@@ -647,7 +654,11 @@ bool FBHLessonPresetStore::BuildManualQuestionSet(const FBHLessonPreset& Preset,
 				for (int32 Salt = 0; Salt < 32 && !bAddedQuestion; ++Salt)
 				{
 					FBHRevisionQuestion Candidate;
-					const int32 QuestionSeed = EffectiveSeed + QuestionIndex * 1009 + TopicOffset * 97 + DifficultyIndex * 31 + Salt;
+					const int32 QuestionSeed = static_cast<int32>(static_cast<uint32>(EffectiveSeed)
+						+ static_cast<uint32>(QuestionIndex) * 1009u
+						+ static_cast<uint32>(TopicOffset) * 97u
+						+ static_cast<uint32>(DifficultyIndex) * 31u
+						+ static_cast<uint32>(Salt));
 					if (FBHRevisionQuestionBank::SelectQuestionByDifficulty(Topic, Difficulty, QuestionSeed, Candidate))
 					{
 						bAddedQuestion = BHLessonPresetAddQuestionIfUnique(Candidate, UsedQuestionIds, OutQuestionSet);

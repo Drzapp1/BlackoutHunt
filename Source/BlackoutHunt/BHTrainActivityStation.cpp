@@ -61,21 +61,7 @@ namespace
 
 	void BHConfigureActivityText(UTextRenderComponent* TextComponent, const FVector& Location, float WorldSize, const FColor& Color)
 	{
-		if (!TextComponent)
-		{
-			return;
-		}
-
-		TextComponent->SetRelativeLocation(Location);
-		TextComponent->SetRelativeRotation(FRotator(0.0f, 90.0f, 0.0f));
-		TextComponent->SetHorizontalAlignment(EHTA_Left);
-		TextComponent->SetVerticalAlignment(EVRTA_TextTop);
-		TextComponent->SetWorldSize(WorldSize);
-		TextComponent->SetTextRenderColor(Color);
-		TextComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-		TextComponent->SetCastShadow(false);
-		TextComponent->SetReceivesDecals(false);
-		TextComponent->SetBoundsScale(2.0f);
+		BHPropVisuals::ConfigureReadableText(TextComponent, Location, FRotator(0.0f, 90.0f, 0.0f), WorldSize, Color);
 	}
 }
 

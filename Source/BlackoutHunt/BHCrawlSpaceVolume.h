@@ -19,6 +19,10 @@ public:
 
 	void Configure(const FVector& NewBoxExtent);
 
+#if WITH_DEV_AUTOMATION_TESTS
+	bool DebugCanCharacterUseCrawlSpace(const ABHCharacter* Character) const;
+#endif
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -30,6 +34,7 @@ protected:
 	void OnVolumeEndOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex);
 
 	bool CanCharacterUseCrawlSpace(const ABHCharacter* Character) const;
+	void QueueRejectCharacter(ABHCharacter* Character);
 	void RejectCharacter(ABHCharacter* Character);
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")

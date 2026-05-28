@@ -86,6 +86,7 @@ $forbidden = @(
     @{ Name = "saved playtest telemetry"; Pattern = '[\\/]Saved[\\/]PlaytestTelemetry[\\/]' },
     @{ Name = "account backend env"; Pattern = '(^|[\\/])\.env$' },
     @{ Name = "Steam local values"; Pattern = '(^|[\\/])SteamValues\.local\.ini$' },
+    @{ Name = "EOS local values"; Pattern = '(^|[\\/])EOSValues\.local\.ini$' },
     @{ Name = "local credential data"; Pattern = '(^|[\\/])local_credentials\.enc\.json$' },
     @{ Name = "local profile data"; Pattern = '(^|[\\/])profile\.json$' },
     @{ Name = "local progress data"; Pattern = '(^|[\\/])progress\.json$' },

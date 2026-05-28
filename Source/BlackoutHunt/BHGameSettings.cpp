@@ -176,6 +176,7 @@ UBHGameSettings::UBHGameSettings()
 	HuntSeconds = 900;
 	RequiredBreakers = 6;
 	bAllowHostForceStart = false;
+	ReconnectGraceSeconds = 120.0f;
 	bClassroomMode = true;
 	bAllowStudentTeacherAdminControls = false;
 	bAllowTunnelHelper = true;
@@ -188,6 +189,10 @@ UBHGameSettings::UBHGameSettings()
 	FlashlightDrainPerSecond = 0.17f;
 	ScanCooldownSeconds = 25.0f;
 	DecoyCooldownSeconds = 10.0f;
+	HunterSprintDrainMultiplierMax = 0.85f;
+	HunterStaminaRecoveryMultiplier = 1.75f;
+	TeacherAxeStaminaCost = 5.0f;
+	TeacherAxeMinStamina = 2.0f;
 	BatteryRefillAmount = 45.0f;
 	AntiCampGraceSeconds = 60.0f;
 	AntiCampWarningSeconds = 50.0f;
@@ -208,7 +213,7 @@ UBHGameSettings::UBHGameSettings()
 		BHMakeMovementRoleTuning(EBHPlayerRole::Survivor, 360.0f, 900.0f, 1.0f, 120.0f, 1.0f, 1.0f, 1.0f, 0.38f, 0.55f),
 		BHMakeMovementRoleTuning(EBHPlayerRole::Tester, 360.0f, 900.0f, 1.0f, 120.0f, 1.0f, 1.0f, 1.0f, 0.38f, 0.55f),
 		BHMakeMovementRoleTuning(EBHPlayerRole::FakeHunter, 360.0f, 900.0f, 1.0f, 110.0f, 1.20f, 1.0f, 1.25f, 0.48f, 0.68f),
-		BHMakeMovementRoleTuning(EBHPlayerRole::Hunter, 315.0f, 1150.0f, 1.75f, 95.0f, 1.40f, 1.30f, 1.35f, 0.54f, 0.82f)
+		BHMakeMovementRoleTuning(EBHPlayerRole::Hunter, 315.0f, 1150.0f, 0.85f, 95.0f, 1.40f, 1.30f, 1.35f, 0.54f, 0.82f)
 	};
 	MovementAnimationProfile.bPreferAnimBlueprint = true;
 	MovementAnimationProfile.Animations = MovementAnimations;
@@ -221,26 +226,70 @@ UBHGameSettings::UBHGameSettings()
 	MovementAnimationProfile.HunterAnimInstanceClass = TSoftClassPtr<UAnimInstance>(FSoftObjectPath(TEXT("/Game/BlackoutHunt/Art/Characters/Hunter/ABP_BH_Hunter_Movement.ABP_BH_Hunter_Movement_C")));
 	JumpscareVariants = {
 		BHMakeJumpscareVariant(
-			TEXT("SCP096"),
-			TEXT("SCP-096 Prototype"),
-			0.55f,
+			TEXT("ProxyRed"),
+			TEXT("Procedural Red Proxy"),
+			1.00f,
 			0,
-			TEXT("/Game/BlackoutHunt/Art/SCP096/Skeletal/SK_SCP096.SK_SCP096"),
-			TEXT("/Game/BlackoutHunt/Art/SCP096/Skeletal/A_SCP096_Run.A_SCP096_Run"),
-			TEXT("/Game/BlackoutHunt/Art/SCP096/SM_SCP096.SM_SCP096"),
-			TEXT("/Game/BlackoutHunt/Art/SCP096/M_SCP096.M_SCP096"),
+			TEXT(""),
+			TEXT(""),
+			TEXT(""),
+			TEXT(""),
 			TEXT(""),
 			TEXT("/Game/BlackoutHunt/Audio/SW_TerrifiedScreamFaint.SW_TerrifiedScreamFaint"),
 			FVector(-20.0f, 0.0f, -88.0f),
 			FRotator(0.0f, -90.0f, 0.0f),
-			FVector(1.32f),
+			FVector(1.0f),
 			FVector(90.0f, 0.0f, -138.0f),
 			FRotator::ZeroRotator,
-			FVector(1.55f),
+			FVector(1.34f),
 			FLinearColor(1.0f, 0.02f, 0.0f, 1.0f),
 			145.0f,
 			0.96f,
 			0.70f,
+			1.10f),
+		BHMakeJumpscareVariant(
+			TEXT("ProxyCyan"),
+			TEXT("Procedural Cyan Proxy"),
+			0.72f,
+			1,
+			TEXT(""),
+			TEXT(""),
+			TEXT(""),
+			TEXT(""),
+			TEXT(""),
+			TEXT("/Game/BlackoutHunt/Audio/SW_TerrifiedScreamFaint.SW_TerrifiedScreamFaint"),
+			FVector(-20.0f, 0.0f, -88.0f),
+			FRotator(0.0f, -90.0f, 0.0f),
+			FVector(1.0f),
+			FVector(86.0f, 0.0f, -132.0f),
+			FRotator::ZeroRotator,
+			FVector(1.40f),
+			FLinearColor(0.0f, 0.78f, 1.0f, 1.0f),
+			154.0f,
+			0.86f,
+			0.58f,
+			1.00f),
+		BHMakeJumpscareVariant(
+			TEXT("ProxyViolet"),
+			TEXT("Procedural Violet Proxy"),
+			0.64f,
+			2,
+			TEXT(""),
+			TEXT(""),
+			TEXT(""),
+			TEXT(""),
+			TEXT(""),
+			TEXT("/Game/BlackoutHunt/Audio/SW_TerrifiedScreamFaint.SW_TerrifiedScreamFaint"),
+			FVector(-20.0f, 0.0f, -88.0f),
+			FRotator(0.0f, -90.0f, 0.0f),
+			FVector(1.0f),
+			FVector(82.0f, 0.0f, -136.0f),
+			FRotator::ZeroRotator,
+			FVector(1.46f),
+			FLinearColor(0.78f, 0.03f, 1.0f, 1.0f),
+			162.0f,
+			0.92f,
+			0.64f,
 			1.10f),
 		BHMakeJumpscareVariant(
 			TEXT("FabMonster01"),
@@ -347,7 +396,7 @@ UBHGameSettings::UBHGameSettings()
 
 	DefaultBotCount = 5;
 	DefaultBotDifficulty = EBHBotDifficulty::Normal;
-	bUseStateTreeAI = true;
+	bUseStateTreeAI = false;
 	HunterStateTreeAsset = TSoftObjectPtr<UStateTree>(FSoftObjectPath(TEXT("/Game/BlackoutHunt/AI/ST_BH_HunterAtmosphere.ST_BH_HunterAtmosphere")));
 	BotThinkInterval = 0.25f;
 	BotSightRange = 2800.0f;

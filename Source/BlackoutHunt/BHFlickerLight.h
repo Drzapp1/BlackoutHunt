@@ -47,6 +47,12 @@ protected:
 	void ApplyLightState();
 	void ApplyLightConfig();
 
+	// Reduced-flash comfort support. Flicker bursts are a strobe hazard, so the local
+	// machine attenuates the burst boost when the local player has Reduced flash enabled.
+	// This is purely client-side (the light ticks per-client); no replication is involved.
+	float ComputeLocalReducedFlashScale() const;
+	void RefreshLocalReducedFlashScale();
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPointLightComponent> Light;
 
@@ -92,4 +98,8 @@ protected:
 	float Phase;
 	float FlickerBurstRemainingSeconds;
 	FTimerHandle FlickerBurstTimerHandle;
+
+	// 1.0 = full burst; <1.0 attenuates the burst for a local Reduced-flash player.
+	// Refreshed when a burst starts so we avoid a per-tick controller lookup across many lights.
+	float CachedReducedFlashScale = 1.0f;
 };

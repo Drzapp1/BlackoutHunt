@@ -47,6 +47,8 @@ public:
 	void ResetRoleWarmupStateForRoundStart();
 	void ApplyAvatarStyle();
 	ABHPlayerState* GetBHPlayerState() const;
+	float GetFlashlightTuningValue(FName ParameterName) const;
+	void SetFlashlightTuningValue(FName ParameterName, float Value);
 	bool BotBeginInteract(AActor* Target);
 	void BotEndInteract(AActor* Target = nullptr);
 	void BotExitCurrentLocker();
@@ -114,6 +116,10 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Counterplay")
 	float GetTeacherCaptureCooldownRemaining() const;
+
+	// Local-only: fires a transient FOV punch + camera flinch on a jumpscare impact.
+	// FOVPunchDegrees<=0 uses the default punch; Intensity (0..1) scales magnitude. Honors reduced-camera-shake comfort.
+	void PlayJumpscareCameraImpact(float Intensity, float FOVPunchDegrees = -1.0f);
 
 #if WITH_DEV_AUTOMATION_TESTS
 	bool TryStartSpecialMoveForTest(EBHMovementSpecialState RequestedState, bool bEndProne);
@@ -195,6 +201,12 @@ protected:
 	void UpdateAntiCampPressureAuthority(float DeltaSeconds, float Speed2D, const class ABHGameState* BHGS, const ABHPlayerState* BHPS);
 	void ResetAntiCampTrackingAuthority();
 	void UpdateViewFeel(float DeltaSeconds);
+	void UpdatePOVAnimation(float DeltaSeconds);
+	// Transient jumpscare-impact envelope (0..1) shared by the FOV punch and camera flinch.
+	float GetJumpscareImpactEnvelope() const;
+	float ComputeJumpscareFOVPunch() const;
+	FRotator ComputeJumpscareCameraFlinch() const;
+	bool IsReducedCameraShakeLocal() const;
 	void UpdateFlashlightFeel(float DeltaSeconds);
 	void TryBHopJump();
 	bool TryStartSpecialMoveAuthority(EBHMovementSpecialState RequestedState, bool bEndProne, bool bEndProneRequiresInput);
@@ -594,7 +606,26 @@ protected:
 	float SmoothedMoveAlpha;
 	float SmoothedStrafeAlpha;
 	float SmoothedSprintAlpha;
+	FVector ViewFeelCameraLocation;
+	FRotator POVAnimRotationCurrent;
+	FVector POVAnimLocationCurrent;
+	float SmoothedBaseFOV = 0.0f;
+	float JumpscareImpactStartTime = -1.0f;
+	float JumpscareImpactIntensity = 0.0f;
+	float JumpscareImpactFOVPunch = 0.0f;
+	float LocalSpecialAnimStartTime;
+	EBHMovementSpecialState LocalSpecialAnimState;
 	float FlashlightPulseTime;
+	float FlashlightTuningIntensityScale = 1.0f;
+	float FlashlightTuningRadiusScale = 1.0f;
+	float FlashlightTuningVolumetricScale = 1.0f;
+	float FlashlightTuningBeamLengthScale = 1.0f;
+	float FlashlightTuningBeamOpacityScale = 1.0f;
+	float FlashlightTuningBeamBrightnessScale = 1.0f;
+	float FlashlightTuningConeScale = 1.0f;
+	float FlashlightTuningRayVisibilityScale = 1.0f;
+	float FlashlightTuningRayWidthScale = 1.0f;
+	float FlashlightTuningRayStartOffset = 48.0f;
 	float LastBHopJumpInputTime;
 	float SpecialMoveStartTime;
 	float SpecialMoveEndTime;

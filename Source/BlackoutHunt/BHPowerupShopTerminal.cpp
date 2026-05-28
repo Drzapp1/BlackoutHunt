@@ -4,6 +4,7 @@
 #include "BHPlayerController.h"
 #include "BHPlayerState.h"
 #include "BHPowerupLibrary.h"
+#include "BHPropVisuals.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/TextRenderComponent.h"
 #include "Net/UnrealNetwork.h"
@@ -40,19 +41,11 @@ ABHPowerupShopTerminal::ABHPowerupShopTerminal()
 
 	LabelText = CreateDefaultSubobject<UTextRenderComponent>(TEXT("LabelText"));
 	LabelText->SetupAttachment(SceneRoot);
-	LabelText->SetRelativeLocation(FVector(-58.0f, -58.0f, 78.0f));
-	LabelText->SetRelativeRotation(FRotator(0.0f, 90.0f, 0.0f));
-	LabelText->SetHorizontalAlignment(EHTA_Left);
-	LabelText->SetWorldSize(18.0f);
-	LabelText->SetTextRenderColor(FColor(255, 198, 74));
+	BHPropVisuals::ConfigureReadableText(LabelText, FVector(-58.0f, -58.0f, 78.0f), FRotator(0.0f, 90.0f, 0.0f), 18.0f, FColor(255, 198, 74));
 
 	DetailText = CreateDefaultSubobject<UTextRenderComponent>(TEXT("DetailText"));
 	DetailText->SetupAttachment(SceneRoot);
-	DetailText->SetRelativeLocation(FVector(-58.0f, -59.0f, 43.0f));
-	DetailText->SetRelativeRotation(FRotator(0.0f, 90.0f, 0.0f));
-	DetailText->SetHorizontalAlignment(EHTA_Left);
-	DetailText->SetWorldSize(10.5f);
-	DetailText->SetTextRenderColor(FColor(224, 242, 232));
+	BHPropVisuals::ConfigureReadableText(DetailText, FVector(-58.0f, -59.0f, 43.0f), FRotator(0.0f, 90.0f, 0.0f), 10.5f, FColor(224, 242, 232));
 }
 
 void ABHPowerupShopTerminal::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const

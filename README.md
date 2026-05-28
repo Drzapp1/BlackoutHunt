@@ -6,7 +6,7 @@ One player hosts a listen server and friends join with `host-ip-or-domain:7777`.
 
 ## Beta Release
 
-Current beta target: `0.2.0-beta.6` Windows classroom build. See `Docs\BETA_RELEASE_NOTES_0.2.0-beta.6.md` for tester scope, known limits, and validation notes.
+Current beta target: `0.5.0-beta.1` Windows classroom build. See `Docs\BETA_RELEASE_NOTES_0.5.0-beta.1.md` for tester scope, known limits, and validation notes.
 
 ## Current Gameplay
 
@@ -36,28 +36,34 @@ While a hosted game is still in the lobby, the listen-server host can open Escap
 - `Low 4GB`: 45 FPS cap, dynamic resolution, small texture pool, lower shadow/reflection cost, no volumetric fog, and software/integrated-GPU friendly renderer settings while preserving the same dark horror tonemapping/AO baseline as higher modes.
 - `High 16GB`: 120 FPS cap, 1080p/100% render scale target, larger streaming pool, full-quality meshes/materials, and dynamic resolution only when needed.
 - `Ultra`: uncapped, no dynamic resolution, full streaming pool, max view/shadow/post settings, and no intentional graphics restrictions.
-- Startup graphics scan local CPU/RAM/GPU information and defaults to the safest matching preset. The Settings panel includes Auto, adaptive on/off, adaptive FPS goal, render scale, texture quality, shadows, effects, persistent resolution, and FPS-limit controls. Adaptive graphics is on by default and adjusts render scale plus high-cost shadow/effects work against the selected FPS goal.
+- Startup graphics scan local CPU/RAM/GPU information and defaults to the safest matching preset. On a new install, software, unknown, integrated, or low-VRAM GPUs start in `Low 4GB` and apply 1280x720 windowed mode unless the local user already saved a resolution. The Settings panel includes Auto, adaptive on/off, adaptive FPS goal, render scale, texture quality, shadows, effects, persistent resolution, and FPS-limit controls. Adaptive graphics is on by default and adjusts render scale plus high-cost shadow/effects work against the selected FPS goal.
 
-For machines without a dedicated GPU, use `Low 4GB` plus the 720p windowed button. Packaged Windows classroom builds default to D3D11 and also include `Launch-BlackoutHunt-DX11.cmd` plus `Launch-BlackoutHunt-DX11-Low.cmd`. If Windows still reports that a D3D11-compatible GPU is required, the machine is not exposing Direct3D feature level 11 / Shader Model 5 to Unreal; update the graphics driver, avoid Remote Desktop, or use a different GPU/VM configuration. Headless server/testing can still use Unreal's `-nullrhi` path when rendering is not needed.
+For machines without a dedicated GPU, keep `Auto` enabled or use `Low 4GB` plus the 720p windowed button. Packaged Windows classroom builds default to D3D11 and also include `Launch-BlackoutHunt-DX11.cmd` plus `Launch-BlackoutHunt-DX11-Low.cmd`; the low launcher forces D3D11, 1280x720 windowed mode, and the VirtualBox-safe path for VM or lab-PC validation. If Windows still reports that a D3D11-compatible GPU is required, the machine is not exposing Direct3D feature level 11 / Shader Model 5 to Unreal; update the graphics driver, avoid Remote Desktop, or use a different GPU/VM configuration. Headless server/testing can still use Unreal's `-nullrhi` path when rendering is not needed.
 
 ## Controls
 
 - `WASD`: move
 - Mouse: look
-- Arrow keys: guide camera
+- Arrow keys: keyboard look/turn fallback
 - `Enter`: ready in lobby
 - `B`: host classroom board
 - `F10`: host-only force-start test shortcut when explicitly enabled
 - `F`: flashlight
 - `E`: interact / hold repair / exit locker
 - `1-4`: answer the active station question you are looking at; Physics Classroom Hall Monitors use this to unlock monitor tools
+- `M` or `I`: HUD map
+- `V`: cycle reticle style
+- `F1-F6`: use owned train/shop powerups
 - `Space`: jump / hold to bunny hop
 - `Shift`: sprint
-- `Left Ctrl`: crouch
+- `Left Ctrl`: crouch / sprint roll
+- `Left Alt`: prone / sprint slide; combine with `Space` while moving for a dive
 - `Mouse1`: Teacher capture
 - `Q`: Teacher heartbeat scan / Hall Monitor real hint
 - `R`: Teacher blackout / Hall Monitor false hint
 - `G`: Survivor decoy / Hall Monitor trap
+- `H`: late-spectator team support
+- `T`, `Y`, `U`: late-spectator next-round role request for Teacher, Survivor, or Hall Monitor
 - `Escape`: menu
 
 The HUD shows a center crosshair and an `E` prompt when you are aiming at a usable interactable.
@@ -95,7 +101,9 @@ The menu is the intended path, but the console still supports:
 - Host test start when explicitly enabled: `ForceStartRound`
 - Host classroom board: `ToggleClassroomBoard`
 
-Default Unreal listen-server port is UDP `7777`. Direct-IP internet hosting requires the host machine to be reachable on that port, usually through router port forwarding or a directly reachable network. For router-free ad-hoc hosting, use the internet tunnel helper, enter the relay allocation once, then use `COPY JOIN CODE` so players paste a single `BH1:...` value. The online lobby path uses the configured Unreal OnlineSubsystem. The project defaults to `OnlineSubsystemNull` for classroom/local testing; the Steam profile is packaged separately with `.\Tools\Package-Windows-Steam.ps1` after filling `Config\Steam\SteamValues.local.ini`. See `Docs\ONLINE_SERVICES.md`.
+Default Unreal listen-server port is UDP `7777`. Direct-IP internet hosting requires the host machine to be reachable on that port, usually through router port forwarding or a directly reachable network. For router-free ad-hoc hosting, use the internet tunnel helper, enter the relay allocation once, then use `COPY JOIN CODE` so players paste a single `BH1:...` value. The online lobby path uses the configured Unreal OnlineSubsystem. The project defaults to `OnlineSubsystemNull` for classroom/local testing; EOS and Steam profiles are packaged separately with `.\Tools\Package-Windows-EOS.ps1` or `.\Tools\Package-Windows-Steam.ps1` after filling the matching local values file. See `Docs\ONLINE_SERVICES.md`.
+
+For no-account online play, use the guest/direct-IP/Playit path instead of EOS or Steam. Package it with `.\Tools\Package-Windows-NoAccount.ps1`; clients launch the same build, choose Guest, paste the host's `BH1:...` join code, and join without any external account. See `Docs\NO_ACCOUNT_ONLINE.md`.
 
 ## Account Commands
 
@@ -123,6 +131,10 @@ For live classroom packaging and operation, see `Docs\CLASSROOM_DEPLOYMENT.md`. 
 - Build editor target: `.\Tools\Build-Editor.ps1`
 - Package Windows build: `.\Tools\Package-Windows.ps1`
 - Package classroom Windows build: `.\Tools\Package-Windows-Classroom.ps1`
+- Package no-account guest online Windows build: `.\Tools\Package-Windows-NoAccount.ps1`
+- Create EOS local values template: `.\Tools\New-EOSLocalValues.ps1`
+- Package EOS-profile Windows build: `.\Tools\Package-Windows-EOS.ps1`
+- Verify EOS-profile Windows package: `.\Tools\Verify-EOSPackage.ps1`
 - Package Steam-profile Windows build: `.\Tools\Package-Windows-Steam.ps1`
 - Verify Steam-profile Windows package: `.\Tools\Verify-SteamPackage.ps1`
 - Package Linux build from Windows: `.\Tools\Package-Linux.ps1`
@@ -151,6 +163,10 @@ The packaged Windows build is written to:
 The Steam-profile Windows package is written to:
 
 - `Builds\WindowsSteam\BlackoutHunt.exe`
+
+The EOS-profile Windows package is written to:
+
+- `Builds\WindowsEOS\BlackoutHunt.exe`
 
 The packaged Linux build is written to:
 

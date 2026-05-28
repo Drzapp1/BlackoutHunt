@@ -326,6 +326,28 @@ bool IsWhisperJumpscareVariant(const FBHJumpscareVariant& Variant)
 	return Variant.VariantId.ToString().StartsWith(TEXT("Whisper"), ESearchCase::IgnoreCase);
 }
 
+FBHJumpscareVariant MakeLegacyScp096ProxyJumpscareVariant()
+{
+	FBHJumpscareVariant Variant;
+	Variant.VariantId = TEXT("SCP096");
+	Variant.DisplayName = TEXT("SCP-096 Legacy Proxy");
+	Variant.Weight = 0.0f;
+	Variant.MinimumScareIntensity = 0;
+	Variant.LaunchSound = TSoftObjectPtr<USoundBase>(FSoftObjectPath(BHFallbackJumpscareAudioPath));
+	Variant.VisualOffset = FVector(-20.0f, 0.0f, -88.0f);
+	Variant.VisualRotation = FRotator(0.0f, -90.0f, 0.0f);
+	Variant.VisualScale = FVector(1.0f);
+	Variant.CloseVisualOffset = FVector(90.0f, 0.0f, -138.0f);
+	Variant.CloseVisualRotation = FRotator::ZeroRotator;
+	Variant.CloseVisualScale = FVector(1.55f);
+	Variant.LightColor = FLinearColor(1.0f, 0.02f, 0.0f, 1.0f);
+	Variant.FocusHeight = 145.0f;
+	Variant.CameraShakeIntensity = 0.96f;
+	Variant.FlashIntensity = 0.70f;
+	Variant.CameraJitterDuration = 1.10f;
+	return Variant;
+}
+
 TArray<FBHJumpscareVariant> GetResolvedWhisperJumpscareVariants()
 {
 	FBHWhisperDiscoveryBuckets Discovery = BHDiscoverWhisperAssets();
@@ -427,6 +449,12 @@ bool FindResolvedJumpscareVariantById(FName VariantId, FBHJumpscareVariant& OutV
 	if (VariantId.IsNone())
 	{
 		return false;
+	}
+
+	if (VariantId == FName(TEXT("SCP096")))
+	{
+		OutVariant = MakeLegacyScp096ProxyJumpscareVariant();
+		return true;
 	}
 
 	for (const FBHJumpscareVariant& Variant : GetResolvedJumpscareVariants())

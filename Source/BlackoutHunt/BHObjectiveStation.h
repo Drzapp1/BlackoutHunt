@@ -5,6 +5,8 @@
 #include "BHTypes.h"
 #include "BHObjectiveStation.generated.h"
 
+class ABHPlayerController;
+
 UCLASS()
 class BLACKOUTHUNT_API ABHObjectiveStation : public ABHInteractableActor
 {
@@ -26,6 +28,9 @@ public:
 	void ConfigureTeacherMirrorTrapNode();
 	void SetDirectorActive(bool bNewActive);
 	bool SubmitAnswer(ABHCharacter* Character, int32 AnswerIndex);
+	// Typed-numeric answer path for Calculation questions: validates the value against
+	// the question's NumericAnswer +/- tolerance, then shares the choice path's result handling.
+	bool SubmitNumericAnswer(ABHCharacter* Character, float Value);
 
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt")
 	bool IsDirectorActive() const;
@@ -79,6 +84,12 @@ public:
 	FString GetQuestionFormula() const;
 
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Question")
+	float GetQuestionNumericAnswer() const;
+
+	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Question")
+	float GetQuestionNumericTolerance() const;
+
+	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Question")
 	FString GetQuestionExplanation() const;
 
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Question")
@@ -96,9 +107,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Question")
 	bool IsTeacherMirrorTrapNode() const;
 
+	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Question")
+	bool IsReviewQuestion() const;
+
 protected:
 	void CompleteObjective();
 	void ConfigureQuestion();
+	bool FinalizeRevisionAnswer(ABHCharacter* Character, ABHPlayerController* PC, bool bCorrect, const FString& EvaluatedSelectedAnswer, TArray<ABHCharacter*>& RevisionParticipants, bool bActiveRevisionMode);
 	void QueueAdaptiveQuestionForParticipants(const TArray<ABHCharacter*>& Participants, bool bLastAnswerCorrect);
 	int32 ResolveRevisionQuestionTarget() const;
 	FString GetActionVerb() const;
@@ -186,6 +201,15 @@ protected:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Question")
 	FString QuestionFormula;
 
+	// Target numeric answer for Calculation questions (0 for non-numeric questions).
+	// Lets the HUD diagram annotate the actual value the player must compute and
+	// backs the typed numeric-entry validation path.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Question")
+	float QuestionNumericAnswer;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Question")
+	float QuestionNumericTolerance;
+
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Question")
 	FString QuestionExplanation;
 
@@ -207,6 +231,11 @@ protected:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Question")
 	bool bTeacherMirrorTrapNode;
 
+	// True when the current question was re-surfaced from a participant's review
+	// queue (a previously missed question). Drives the HUD "review" framing.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Question")
+	bool bRevisionReviewQuestion;
+
 	UPROPERTY(EditDefaultsOnly, Category = "Objective")
 	float WorkSeconds;
 
@@ -217,6 +246,9 @@ protected:
 	bool bUseAdaptiveQuestionOverride;
 	EBHPhysicsTopic AdaptiveQuestionTopic;
 	EBHQuestionDifficulty AdaptiveQuestionDifficulty;
+	// Server-only: question ID pulled from the lowest-mastery participant's review
+	// queue during adaptive planning, consumed by the next ConfigureQuestion.
+	FString PendingReviewQuestionId;
 	float LastNoiseTime;
 	float LastAnswerTime;
 };

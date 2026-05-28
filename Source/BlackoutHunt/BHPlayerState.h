@@ -38,6 +38,11 @@ public:
 	void ClearSpectatorSupportState(bool bClearRolePreference = true);
 	void AddSpectatorEncouragement();
 	void ResetRevisionStats();
+	// Per-player spaced-repetition review queue: question IDs the player answered
+	// incorrectly, oldest first, re-surfaced until answered correctly.
+	void EnqueueRevisionReview(const FString& QuestionId);
+	bool DequeueRevisionReview(const FString& QuestionId);
+	FString PeekRevisionReview() const;
 	void AddQuestionPoints(int32 Points);
 	bool SpendQuestionPoints(int32 Points);
 	int32 ApplyCaughtQuestionPointPenalty(float PenaltyFraction = 0.25f);
@@ -96,6 +101,11 @@ public:
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Revision")
 	FBHPlayerRevisionStats RevisionStats;
+
+	// Question IDs the player missed, oldest first. Replicated to the owner so the
+	// client HUD can frame a re-asked question as a review. Server-authoritative.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	TArray<FString> RevisionReviewQueue;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Train")
 	int32 QuestionPoints;

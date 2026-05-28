@@ -43,6 +43,7 @@
 #include "SBHClassroomBoard.h"
 #include "SBHMainMenu.h"
 #include "Sound/SoundBase.h"
+#include "Sound/SoundMix.h"
 #include "Sound/SoundWave.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Styling/CoreStyle.h"
@@ -5615,14 +5616,93 @@ float ABHPlayerController::GetHorrorCueFlashAlpha() const
 
 	const float Duration = HorrorCueFlashEndTime - HorrorCueFlashStartTime;
 	const float Age = Now - HorrorCueFlashStartTime;
-	const float FadeIn = FMath::Clamp(Age / FMath::Max(0.04f, Duration * 0.18f), 0.0f, 1.0f);
-	const float FadeOut = FMath::Clamp((HorrorCueFlashEndTime - Now) / FMath::Max(0.06f, Duration * 0.46f), 0.0f, 1.0f);
+	// Sharp attack, longer ease-out so the flash spikes hard then bleeds away.
+	const float FadeIn = FMath::Clamp(Age / FMath::Max(0.02f, Duration * 0.10f), 0.0f, 1.0f);
+	const float FadeOut = FMath::Clamp((HorrorCueFlashEndTime - Now) / FMath::Max(0.06f, Duration * 0.55f), 0.0f, 1.0f);
 	return FMath::Clamp(HorrorCueFlashIntensity * FMath::Min(FadeIn, FadeOut), 0.0f, 1.0f);
 }
 
 FLinearColor ABHPlayerController::GetHorrorCueFlashColor() const
 {
 	return HorrorCueFlashColor;
+}
+
+float ABHPlayerController::GetHorrorCueBlinkAlpha() const
+{
+	const UWorld* World = GetWorld();
+	if (!World || HorrorCueBlinkIntensity <= 0.0f || HorrorCueBlinkStartTime < 0.0f)
+	{
+		return 0.0f;
+	}
+
+	constexpr float BlinkDuration = 0.085f;
+	const float Age = World->GetTimeSeconds() - HorrorCueBlinkStartTime;
+	if (Age < 0.0f || Age >= BlinkDuration)
+	{
+		return 0.0f;
+	}
+
+	// Instant onset, fast linear fade — reads as a hard blink right on the hit.
+	const float Alpha = 1.0f - (Age / BlinkDuration);
+	return FMath::Clamp(HorrorCueBlinkIntensity * Alpha, 0.0f, 1.0f);
+}
+
+void ABHPlayerController::PlayJumpscareImpactAudio(const FBHClientHorrorCue& Cue, float VolumeScale)
+{
+	if (Cue.AudioAsset.IsNull())
+	{
+		return;
+	}
+
+	USoundBase* Scream = BHLoadGameplaySound(Cue.AudioAsset, TEXT("horror cue audio"));
+	if (!Scream)
+	{
+		return;
+	}
+
+	const float BaseVolume = GetEffectiveUiVolume() * FMath::Clamp(Cue.AudioVolume * VolumeScale, 0.0f, 2.0f);
+
+	// Main scream layer with slight random pitch so repeats never sound identical.
+	const float MainPitch = FMath::FRandRange(0.93f, 1.06f);
+	UGameplayStatics::PlaySound2D(this, Scream, BaseVolume, MainPitch);
+
+	// Optional pitched-down "roar" body layer built from the same asset for extra low-end weight.
+	if (Cue.bLayeredImpactAudio)
+	{
+		const float RoarPitch = FMath::FRandRange(0.55f, 0.66f);
+		UGameplayStatics::PlaySound2D(this, Scream, BaseVolume * 0.72f, RoarPitch);
+	}
+
+	// Optional designer-supplied stinger (sub-boom / transient) layered on top.
+	if (!Cue.ImpactStinger.IsNull())
+	{
+		if (USoundBase* Stinger = BHLoadGameplaySound(Cue.ImpactStinger, TEXT("horror cue stinger")))
+		{
+			UGameplayStatics::PlaySound2D(this, Stinger, BaseVolume * 0.95f, FMath::FRandRange(0.92f, 1.0f));
+		}
+	}
+
+	// Optional ambient duck: push a configured SoundMix for the scare's duration, if one is assigned.
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	if (Settings && !Settings->JumpscareDuckSoundMix.IsNull())
+	{
+		if (USoundMix* DuckMix = Settings->JumpscareDuckSoundMix.LoadSynchronous())
+		{
+			UGameplayStatics::PushSoundMixModifier(this, DuckMix);
+			TWeakObjectPtr<ABHPlayerController> WeakThis(this);
+			TWeakObjectPtr<USoundMix> WeakMix(DuckMix);
+			FTimerDelegate PopDuck;
+			PopDuck.BindLambda([WeakThis, WeakMix]()
+			{
+				if (WeakThis.IsValid() && WeakMix.IsValid())
+				{
+					UGameplayStatics::PopSoundMixModifier(WeakThis.Get(), WeakMix.Get());
+				}
+			});
+			const float DuckSeconds = FMath::Clamp(Settings->JumpscareDuckSeconds, 0.1f, 4.0f);
+			GetWorldTimerManager().SetTimer(HorrorCueDuckHandle, PopDuck, DuckSeconds, false);
+		}
+	}
 }
 
 FBHLessonPreset ABHPlayerController::BuildCurrentLessonPresetSnapshot(const FString& DisplayName, const FString& SelectedMapName) const
@@ -7381,13 +7461,7 @@ void ABHPlayerController::ClientPlayHorrorCue_Implementation(const FBHClientHorr
 		ShowLocalStatusMessage(TEXT("Audio scare cue nearby."), FMath::Max(1.2f, Cue.DurationSeconds * 0.6f));
 	}
 
-	if (!Cue.AudioAsset.IsNull())
-	{
-		if (USoundBase* Sound = BHLoadGameplaySound(Cue.AudioAsset, TEXT("horror cue audio")))
-		{
-			UGameplayStatics::PlaySound2D(this, Sound, GetEffectiveUiVolume() * FMath::Clamp(Cue.AudioVolume * JumpscareScale, 0.0f, 2.0f));
-		}
-	}
+	PlayJumpscareImpactAudio(Cue, JumpscareScale);
 
 	bool bSpawnedCueVisual = false;
 	if (!bSuppressCloseVisual && !Cue.VisualActorClass.IsNull())
@@ -7515,6 +7589,13 @@ void ABHPlayerController::ClientPlayHorrorCue_Implementation(const FBHClientHorr
 		HorrorCueFlashEndTime = Now + FMath::Clamp(Cue.DurationSeconds * 0.42f, 0.22f, 1.65f);
 		HorrorCueFlashIntensity = FMath::Clamp(Cue.FlashIntensity * FlashScale * JumpscareScale, 0.0f, 1.0f);
 		HorrorCueFlashColor = Cue.FlashColor;
+
+		// A hard black blink on the strongest scares. Suppressed under reduced-flash comfort.
+		if (!bReducedFlash && Cue.FlashIntensity >= 0.6f && Cue.bCloseRangeFocus)
+		{
+			HorrorCueBlinkStartTime = Now;
+			HorrorCueBlinkIntensity = FMath::Clamp(Cue.FlashIntensity * JumpscareScale, 0.0f, 1.0f);
+		}
 	}
 
 	// ---- Impact feel: FOV punch + camera flinch, gamepad rumble, and a brief hitstop. ----

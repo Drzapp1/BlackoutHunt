@@ -1,6 +1,7 @@
 #include "BHPropVisuals.h"
 
 #include "Components/StaticMeshComponent.h"
+#include "Components/TextRenderComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 
@@ -65,6 +66,12 @@ UMaterialInterface* WarningSignMaterial()
 {
 	static UMaterialInterface* Material = LoadMaterial(TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_WarningSign.M_BH_WarningSign"));
 	return Material ? Material : BasicMaterial();
+}
+
+UMaterialInterface* ReadableTextMaterial()
+{
+	static UMaterialInterface* Material = LoadMaterial(TEXT("/Engine/EngineMaterials/UnlitText.UnlitText"));
+	return Material;
 }
 
 void ConfigurePart(
@@ -140,5 +147,38 @@ void SetPartVisible(UStaticMeshComponent* Component, bool bVisible)
 
 	Component->SetVisibility(bVisible, true);
 	Component->SetHiddenInGame(!bVisible);
+}
+
+void ConfigureReadableText(
+	UTextRenderComponent* Component,
+	const FVector& RelativeLocation,
+	const FRotator& RelativeRotation,
+	float WorldSize,
+	const FColor& Color)
+{
+	if (!Component)
+	{
+		return;
+	}
+
+	Component->SetRelativeLocation(RelativeLocation);
+	Component->SetRelativeRotation(RelativeRotation);
+	Component->SetUsingAbsoluteScale(true);
+	Component->SetWorldScale3D(FVector::OneVector);
+	Component->SetHorizontalAlignment(EHTA_Left);
+	Component->SetVerticalAlignment(EVRTA_TextTop);
+	Component->SetWorldSize(WorldSize);
+	Component->SetTextRenderColor(Color);
+	Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Component->SetGenerateOverlapEvents(false);
+	Component->SetCanEverAffectNavigation(false);
+	Component->SetCastShadow(false);
+	Component->SetReceivesDecals(false);
+	Component->SetTranslucentSortPriority(12);
+	Component->SetBoundsScale(2.0f);
+	if (UMaterialInterface* TextMaterial = ReadableTextMaterial())
+	{
+		Component->SetTextMaterial(TextMaterial);
+	}
 }
 }

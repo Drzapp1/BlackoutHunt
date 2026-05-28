@@ -126,11 +126,6 @@ int32 UBHCreateHunterStateTreeCommandlet::Main(const FString& Params)
 		return &State;
 	};
 
-	UStateTreeState& Idle = Root.AddChildState(TEXT("Idle"));
-	Idle.SelectionBehavior = EStateTreeStateSelectionBehavior::None;
-	Idle.TasksCompletion = EStateTreeTaskCompletionType::All;
-	AddDebugTask(Idle, TEXT("Idle"));
-
 	UStateTreeState& Patrol = Root.AddChildState(TEXT("Patrol"));
 	Patrol.SelectionBehavior = EStateTreeStateSelectionBehavior::TryEnterState;
 	Patrol.TasksCompletion = EStateTreeTaskCompletionType::All;
@@ -139,6 +134,11 @@ int32 UBHCreateHunterStateTreeCommandlet::Main(const FString& Params)
 	AddDebugTask(Patrol, TEXT("Patrol"));
 	TStateTreeEditorNode<FBHStateTreeBotPatrolTask>& PatrolTask = Patrol.AddTask<FBHStateTreeBotPatrolTask>();
 	PatrolTask.GetInstanceData().AcceptanceRadius = 220.0f;
+
+	UStateTreeState& Idle = Root.AddChildState(TEXT("Idle"));
+	Idle.SelectionBehavior = EStateTreeStateSelectionBehavior::None;
+	Idle.TasksCompletion = EStateTreeTaskCompletionType::All;
+	AddDebugTask(Idle, TEXT("Idle"));
 
 	UStateTreeState* InvestigateNoise = AddIntentState(TEXT("InvestigateNoise"), EBHBotIntent::InvestigateNoise, 190.0f);
 	AddStimulusEnterCondition(*InvestigateNoise, EBHBotStimulusType::Noise, 8.0f);
@@ -167,7 +167,7 @@ int32 UBHCreateHunterStateTreeCommandlet::Main(const FString& Params)
 	AddStimulusEnterCondition(*RecoverFromStuck, EBHBotStimulusType::Unreachable, 4.0f);
 
 	TArray<UStateTreeState*> SwitchingStates;
-	SwitchingStates.Append({ &Patrol, InvestigateNoise, StalkLastSeen, ChaseVisibleSurvivor, SearchLocker, AmbushObjective, &UsePower, RecoverFromStuck });
+	SwitchingStates.Append({ &Patrol, &Idle, InvestigateNoise, StalkLastSeen, ChaseVisibleSurvivor, SearchLocker, AmbushObjective, &UsePower, RecoverFromStuck });
 	for (UStateTreeState* State : SwitchingStates)
 	{
 		if (!State)

@@ -20,6 +20,25 @@
 
 namespace
 {
+	// Survivor stress warning thresholds (fear/dread are 0..100 meters). These cutoffs
+	// drive the on-screen stress hint lines shown under the vitals readout.
+	constexpr float HudFearPanicHintThreshold = 74.0f;
+	constexpr float HudDreadPanicHintThreshold = 82.0f;
+	constexpr float HudDreadHintThreshold = 62.0f;
+	constexpr float HudFearHintThreshold = 55.0f;
+
+	// Meter warning cutoffs shared by DrawProgressBar / DrawRawMeter and the presence pill.
+	// "High" meters (fear/dread/presence) warn at/above the high threshold; the teacher
+	// signal bar uses a lower cutoff. "Low" meters (battery/stamina) warn at/below the low
+	// threshold.
+	constexpr float HudHighMeterWarningThreshold = 72.0f;
+	constexpr float HudTeacherSignalWarningThreshold = 58.0f;
+	constexpr float HudLowMeterWarningThreshold = 24.0f;
+
+	// Maximum range (in cm) over which a teacher/hunter signal is surfaced on the HUD,
+	// used both for proximity scanning and for the visible-hunter arrow distance falloff.
+	constexpr float HudTeacherSignalRangeCm = 6000.0f;
+
 	FString FormatClock(const int32 TotalSeconds)
 	{
 		const int32 ClampedSeconds = FMath::Max(0, TotalSeconds);
@@ -243,6 +262,216 @@ namespace
 		return FMath::Clamp(QuestionsPerNode - 1 + StageIndex, 1, 4);
 	}
 
+	float GuidanceDistanceMeters(float DistanceCm)
+	{
+		return FMath::Max(0.0f, DistanceCm) / 100.0f;
+	}
+
+	FString FormatGuidanceDistance(float DistanceCm)
+	{
+		return FString::Printf(TEXT("%.0fm"), GuidanceDistanceMeters(DistanceCm));
+	}
+
+	bool IsCloserObjectiveCandidate(const AActor* Actor, const FVector& Origin, float& InOutBestDistanceSq)
+	{
+		if (!Actor)
+		{
+			return false;
+		}
+
+		const float DistanceSq = FVector::DistSquared2D(Actor->GetActorLocation(), Origin);
+		if (DistanceSq >= InOutBestDistanceSq)
+		{
+			return false;
+		}
+
+		InOutBestDistanceSq = DistanceSq;
+		return true;
+	}
+
+	template <typename ActorType>
+	float ResolveGuidanceDistanceCm(const ActorType* Actor, const FVector& Origin)
+	{
+		return Actor ? FMath::Sqrt(FVector::DistSquared2D(Actor->GetActorLocation(), Origin)) : 0.0f;
+	}
+
+	const ABHBreaker* FindNearestActiveBreaker(UWorld* World, const ABHCharacter* Character, float& OutDistanceCm)
+	{
+		OutDistanceCm = 0.0f;
+		if (!World || !Character)
+		{
+			return nullptr;
+		}
+
+		const FVector Origin = Character->GetActorLocation();
+		float BestDistanceSq = TNumericLimits<float>::Max();
+		const ABHBreaker* BestBreaker = nullptr;
+		for (TActorIterator<ABHBreaker> It(World); It; ++It)
+		{
+			const ABHBreaker* Breaker = *It;
+			if (Breaker && Breaker->IsDirectorActive() && !Breaker->IsRepaired() && IsCloserObjectiveCandidate(Breaker, Origin, BestDistanceSq))
+			{
+				BestBreaker = Breaker;
+			}
+		}
+
+		OutDistanceCm = ResolveGuidanceDistanceCm(BestBreaker, Origin);
+		return BestBreaker;
+	}
+
+	const ABHObjectiveStation* FindNearestActiveStation(UWorld* World, const ABHCharacter* Character, float& OutDistanceCm)
+	{
+		OutDistanceCm = 0.0f;
+		if (!World || !Character)
+		{
+			return nullptr;
+		}
+
+		const FVector Origin = Character->GetActorLocation();
+		float BestDistanceSq = TNumericLimits<float>::Max();
+		const ABHObjectiveStation* BestStation = nullptr;
+		for (TActorIterator<ABHObjectiveStation> It(World); It; ++It)
+		{
+			const ABHObjectiveStation* Station = *It;
+			if (Station
+				&& Station->IsDirectorActive()
+				&& !Station->IsCompleted()
+				&& !Station->IsTeacherMirrorTrapNode()
+				&& IsCloserObjectiveCandidate(Station, Origin, BestDistanceSq))
+			{
+				BestStation = Station;
+			}
+		}
+
+		OutDistanceCm = ResolveGuidanceDistanceCm(BestStation, Origin);
+		return BestStation;
+	}
+
+	const ABHExitGate* FindNearestActiveExitGate(UWorld* World, const ABHCharacter* Character, float& OutDistanceCm)
+	{
+		OutDistanceCm = 0.0f;
+		if (!World || !Character)
+		{
+			return nullptr;
+		}
+
+		const FVector Origin = Character->GetActorLocation();
+		float BestDistanceSq = TNumericLimits<float>::Max();
+		const ABHExitGate* BestExitGate = nullptr;
+		for (TActorIterator<ABHExitGate> It(World); It; ++It)
+		{
+			const ABHExitGate* ExitGate = *It;
+			if (ExitGate && ExitGate->IsDirectorActive() && IsCloserObjectiveCandidate(ExitGate, Origin, BestDistanceSq))
+			{
+				BestExitGate = ExitGate;
+			}
+		}
+
+		OutDistanceCm = ResolveGuidanceDistanceCm(BestExitGate, Origin);
+		return BestExitGate;
+	}
+
+	FString BuildStationGuidanceText(const ABHObjectiveStation* Station, float DistanceCm, bool bRevisionMode)
+	{
+		const FString DistanceText = FormatGuidanceDistance(DistanceCm);
+		if (!Station)
+		{
+			return bRevisionMode
+				? FString(TEXT("Find an active class node. Answer with 1-4, then hold E after unlock."))
+				: FString(TEXT("Find an active station. Answer with 1-4, then hold E after unlock."));
+		}
+
+		const bool bNeedsAnswer = !Station->IsQuestionSolved() && Station->GetQuestionChoiceCount() > 0;
+		if (bNeedsAnswer)
+		{
+			return bRevisionMode
+				? FString::Printf(TEXT("Nearest class node %s: answer with 1-4, then hold E."), *DistanceText)
+				: FString::Printf(TEXT("Nearest task %s: answer with 1-4, then hold E."), *DistanceText);
+		}
+
+		return bRevisionMode
+			? FString::Printf(TEXT("Unlocked class node %s: hold E to finish the team task."), *DistanceText)
+			: FString::Printf(TEXT("Unlocked task %s: hold E to finish it."), *DistanceText);
+	}
+
+	FString BuildSurvivorHuntActionLine(UWorld* World, const ABHGameState* GameState, const ABHPlayerState* PlayerState, const ABHCharacter* Character)
+	{
+		if (!GameState)
+		{
+			return TEXT("Find your role objective.");
+		}
+
+		if (GameState->bExitUnlocked)
+		{
+			float ExitDistanceCm = 0.0f;
+			if (FindNearestActiveExitGate(World, Character, ExitDistanceCm))
+			{
+				return FString::Printf(TEXT("Exit open. Nearest active gate %s: press E to escape."), *FormatGuidanceDistance(ExitDistanceCm));
+			}
+			return TEXT("Exit open. Reach an active gate and press E.");
+		}
+
+		const int32 RemainingBreakers = FMath::Max(0, GameState->BreakersRequired - GameState->BreakersCompleted);
+		const int32 RemainingStations = FMath::Max(0, GameState->SideObjectivesRequired - GameState->SideObjectivesCompleted);
+		float BreakerDistanceCm = 0.0f;
+		float StationDistanceCm = 0.0f;
+		const ABHBreaker* NearestBreaker = RemainingBreakers > 0 && !GameState->bRevisionMode
+			? FindNearestActiveBreaker(World, Character, BreakerDistanceCm)
+			: nullptr;
+		const ABHObjectiveStation* NearestStation = RemainingStations > 0
+			? FindNearestActiveStation(World, Character, StationDistanceCm)
+			: nullptr;
+
+		if (GameState->bRevisionMode)
+		{
+			if (RemainingStations > 0)
+			{
+				return BuildStationGuidanceText(NearestStation, StationDistanceCm, true);
+			}
+
+			const int32 ContributionTarget = EstimateRevisionContributionTarget(GameState);
+			if (PlayerState && PlayerState->RevisionStats.MasteryPercent < GameState->RevisionIndividualThreshold)
+			{
+				return FString::Printf(TEXT("Exit locked. Correct missed topics to reach %.0f%% mastery."), GameState->RevisionIndividualThreshold);
+			}
+			if (PlayerState && PlayerState->RevisionStats.ContributionCount < ContributionTarget)
+			{
+				return FString::Printf(TEXT("Exit locked. Contribute at class nodes (%d/%d)."), PlayerState->RevisionStats.ContributionCount, ContributionTarget);
+			}
+			return TEXT("Class gates are checking mastery. Help classmates finish weak topics.");
+		}
+
+		if (NearestBreaker && (!NearestStation || BreakerDistanceCm <= StationDistanceCm))
+		{
+			return RemainingStations > 0
+				? FString::Printf(TEXT("Nearest power %s: hold E to repair. Exit also needs %d task%s."),
+					*FormatGuidanceDistance(BreakerDistanceCm),
+					RemainingStations,
+					RemainingStations == 1 ? TEXT("") : TEXT("s"))
+				: FString::Printf(TEXT("Nearest power %s: hold E until repaired."), *FormatGuidanceDistance(BreakerDistanceCm));
+		}
+
+		if (NearestStation)
+		{
+			FString StationLine = BuildStationGuidanceText(NearestStation, StationDistanceCm, false);
+			if (RemainingBreakers > 0)
+			{
+				StationLine += FString::Printf(TEXT(" Exit also needs %d breaker%s."), RemainingBreakers, RemainingBreakers == 1 ? TEXT("") : TEXT("s"));
+			}
+			return ClampHudLine(StationLine, 118);
+		}
+
+		if (RemainingBreakers > 0)
+		{
+			return FString::Printf(TEXT("Find a live breaker. Hold E to repair %d power node%s."), RemainingBreakers, RemainingBreakers == 1 ? TEXT("") : TEXT("s"));
+		}
+		if (RemainingStations > 0)
+		{
+			return FString::Printf(TEXT("Find an active station. Finish %d task%s to unlock the exit."), RemainingStations, RemainingStations == 1 ? TEXT("") : TEXT("s"));
+		}
+		return TEXT("All objectives are done. Find the active exit gate.");
+	}
+
 	FString BuildTrainActionLine(const ABHGameState* GameState, const ABHPlayerState* PlayerState)
 	{
 		if (!GameState)
@@ -304,7 +533,7 @@ namespace
 		return TEXT("Final escape active. Board any open evacuation train door.");
 	}
 
-	FString BuildHudActionLine(const ABHGameState* GameState, const ABHPlayerState* PlayerState)
+	FString BuildHudActionLine(UWorld* World, const ABHGameState* GameState, const ABHPlayerState* PlayerState, const ABHCharacter* Character)
 	{
 		if (!GameState)
 		{
@@ -319,7 +548,9 @@ namespace
 			}
 			if (PlayerState->PlayerRole == EBHPlayerRole::Spectator)
 			{
-				return TEXT("Spectating until the next lobby. Watch the objective routes.");
+				return GameState->RoundPhase == EBHRoundPhase::Lobby
+					? FString(TEXT("Spectator lobby. Queue a next-round role or wait for host assignment."))
+					: FString(TEXT("Spectator support: H encourages; T/Y/U request next-round roles."));
 			}
 			if (PlayerState->LifeState == EBHPlayerLifeState::Captured && PlayerState->PlayerRole != EBHPlayerRole::FakeHunter)
 			{
@@ -334,9 +565,15 @@ namespace
 				? FString(TEXT("Ready set. Wait for every player and the host start."))
 				: FString(TEXT("Press Enter to ready up for the classroom round."));
 		case EBHRoundPhase::Prep:
-			return PlayerState && PlayerState->IsAliveHunter()
-				? FString(TEXT("Prep phase. Learn routes; capture starts when the hunt begins."))
-				: FString(TEXT("Prep phase. Scout objectives, lockers, and escape routes."));
+			if (PlayerState && PlayerState->IsAliveHunter())
+			{
+				return TEXT("Warmup: learn routes and practice Q/R. Capture starts in Hunt.");
+			}
+			if (PlayerState && PlayerState->PlayerRole == EBHPlayerRole::FakeHunter)
+			{
+				return TEXT("Warmup: try Q real hint, R false marker, and G trap. No capture.");
+			}
+			return TEXT("Warmup: practice flashlight (F), hiding, and questions. In Hunt, finish objectives then reach the exit.");
 		case EBHRoundPhase::Intermission:
 			return BuildTrainActionLine(GameState, PlayerState);
 		case EBHRoundPhase::FinalEscape:
@@ -362,9 +599,14 @@ namespace
 
 		if (PlayerState->IsAliveHunter())
 		{
+			if (Character && Character->GetTeacherCaptureCooldownRemaining() > 0.0f)
+			{
+				return FString::Printf(TEXT("Axe recovering %ds. Use Q scan, listen for noise, and cut off routes."),
+					FMath::CeilToInt(Character->GetTeacherCaptureCooldownRemaining()));
+			}
 			return GameState->bExitUnlocked
-				? FString(TEXT("Exit open. Patrol active gates and capture visible students."))
-				: FString(TEXT("Find students. Left mouse captures; Q scans; R triggers blackout pressure."));
+				? FString(TEXT("Exit open. Patrol active gates; capture visible students away from doors."))
+				: FString(TEXT("Use Q for rough heartbeat, watch noise/CCTV pings, and capture visible students."));
 		}
 
 		if (PlayerState->PlayerRole == EBHPlayerRole::FakeHunter)
@@ -383,45 +625,7 @@ namespace
 			return TEXT("Hall Monitor: misdirect with traps and hints. You cannot capture.");
 		}
 
-		const int32 RemainingBreakers = FMath::Max(0, GameState->BreakersRequired - GameState->BreakersCompleted);
-		const int32 RemainingStations = FMath::Max(0, GameState->SideObjectivesRequired - GameState->SideObjectivesCompleted);
-		if (GameState->bExitUnlocked)
-		{
-			return GameState->RoundPhase == EBHRoundPhase::FinalEscape
-				? FString(TEXT("Board the evacuation train now."))
-				: FString(TEXT("Exit open. Reach the active gate."));
-		}
-		if (GameState->bRevisionMode)
-		{
-			if (RemainingStations > 0)
-			{
-				return FString::Printf(TEXT("Answer station questions. %d class node%s left."),
-					RemainingStations,
-				RemainingStations == 1 ? TEXT("") : TEXT("s"));
-			}
-			return TEXT("Classroom gates remain locked. Correct weak topics and help contributors catch up.");
-		}
-		if (RemainingBreakers > 0 && RemainingStations > 0)
-		{
-			return FString::Printf(TEXT("Repair %d breaker%s and finish %d station task%s to unlock the exit."),
-				RemainingBreakers,
-				RemainingBreakers == 1 ? TEXT("") : TEXT("s"),
-				RemainingStations,
-				RemainingStations == 1 ? TEXT("") : TEXT("s"));
-		}
-		if (RemainingBreakers > 0)
-		{
-			return FString::Printf(TEXT("Repair %d breaker%s to restore exit power."),
-				RemainingBreakers,
-				RemainingBreakers == 1 ? TEXT("") : TEXT("s"));
-		}
-		if (RemainingStations > 0)
-		{
-			return FString::Printf(TEXT("Complete %d station task%s to unlock the exit."),
-				RemainingStations,
-				RemainingStations == 1 ? TEXT("") : TEXT("s"));
-		}
-		return TEXT("All objectives are done. Find the active exit gate.");
+		return BuildSurvivorHuntActionLine(World, GameState, PlayerState, Character);
 	}
 
 	FString BuildHudDetailLine(const ABHGameState* GameState, const ABHPlayerState* PlayerState)
@@ -641,7 +845,7 @@ namespace
 		Character->GetActorEyesViewPoint(ViewLocation, ViewRotation);
 
 		const FVector CharacterLocation = Character->GetActorLocation();
-		constexpr float TeacherSignalRange = 6000.0f;
+		constexpr float TeacherSignalRange = HudTeacherSignalRangeCm;
 		float BestDistance = TeacherSignalRange;
 		bool bBestLineOfSight = false;
 
@@ -755,7 +959,7 @@ void ABHHUD::DrawHUD()
 	{
 		const FString TimerText = BHGS->bTestMode ? FString(TEXT("TEST LOOP")) : (BHGS->bPracticeMode ? FString(TEXT("PRACTICE")) : FString::Printf(TEXT("T-%s"), *FormatClock(BHGS->RemainingTime)));
 		const FString ExitText = BHGS->bExitUnlocked ? FString(TEXT("EXIT OPEN")) : FString(TEXT("EXIT LOCKED"));
-		const FString ActionLine = BuildHudActionLine(BHGS, BHPS).ToUpper();
+		const FString ActionLine = BuildHudActionLine(GetWorld(), BHGS, BHPS, Character).ToUpper();
 		const FString DetailLine = BuildHudDetailLine(BHGS, BHPS).ToUpper();
 		const FString AuxLine = BuildHudAuxLine(BHGS).ToUpper();
 		const FLinearColor ExitColor = BHGS->bExitUnlocked ? FLinearColor(0.73f, 0.96f, 0.64f, 0.95f) : FLinearColor(0.96f, 0.24f, 0.16f, 0.95f);
@@ -876,15 +1080,15 @@ void ABHHUD::DrawHUD()
 		DrawRawMeter(TEXT("FEAR"), Character->GetFear(), SafePad, VitalsY + 86.0f, MeterW, FLinearColor(0.92f, 0.28f, 0.20f, 0.88f), true);
 		DrawRawMeter(TEXT("DREAD"), Character->GetDread(), SafePad, VitalsY + 104.0f, MeterW, FLinearColor(0.84f, 0.18f, 0.14f, 0.90f), true);
 		FString StressHint;
-		if (bShowSurvivorWarnings && (Character->GetFear() >= 74.0f || Character->GetDread() >= 82.0f))
+		if (bShowSurvivorWarnings && (Character->GetFear() >= HudFearPanicHintThreshold || Character->GetDread() >= HudDreadPanicHintThreshold))
 		{
 			StressHint = TEXT("PANIC NOISE: SLOW DOWN OR BREAK LINE OF SIGHT");
 		}
-		else if (bShowSurvivorWarnings && Character->GetDread() >= 62.0f)
+		else if (bShowSurvivorWarnings && Character->GetDread() >= HudDreadHintThreshold)
 		{
 			StressHint = TEXT("DREAD: TASKS SLOW AND HIDING GETS RISKY");
 		}
-		else if (bShowSurvivorWarnings && Character->GetFear() >= 55.0f)
+		else if (bShowSurvivorWarnings && Character->GetFear() >= HudFearHintThreshold)
 		{
 			StressHint = TEXT("FEAR: SPRINTING GETS LOUDER");
 		}
@@ -1220,8 +1424,8 @@ void ABHHUD::DrawProgressBar(const FString& Label, float Value, float X, float Y
 	const float FillW = W * (ClampedValue / 100.0f);
 	const bool bTeacherSignal = Label.Contains(TEXT("TEACHER"));
 	const bool bTeacherVisible = bTeacherSignal && ValueText.Contains(TEXT("VISIBLE"));
-	const bool bWarnLow = (Label.Contains(TEXT("BATTERY")) || Label.Contains(TEXT("STAMINA"))) && ClampedValue <= 24.0f;
-	const bool bWarnHigh = (Label.Contains(TEXT("FEAR")) || Label.Contains(TEXT("DREAD")) || Label.Contains(TEXT("PRESENCE")) || bTeacherSignal) && (bTeacherVisible || ClampedValue >= (bTeacherSignal ? 58.0f : 72.0f));
+	const bool bWarnLow = (Label.Contains(TEXT("BATTERY")) || Label.Contains(TEXT("STAMINA"))) && ClampedValue <= HudLowMeterWarningThreshold;
+	const bool bWarnHigh = (Label.Contains(TEXT("FEAR")) || Label.Contains(TEXT("DREAD")) || Label.Contains(TEXT("PRESENCE")) || bTeacherSignal) && (bTeacherVisible || ClampedValue >= (bTeacherSignal ? HudTeacherSignalWarningThreshold : HudHighMeterWarningThreshold));
 	const bool bWarning = bWarnLow || bWarnHigh;
 	const ABHPlayerController* BHPC = PlayerOwner ? Cast<ABHPlayerController>(PlayerOwner) : nullptr;
 	const bool bHighContrast = BHPC && BHPC->IsHighContrastHudEnabled();
@@ -1292,7 +1496,7 @@ void ABHHUD::DrawVisibleHunterArrow(const ABHCharacter* Character, const FVector
 		SmoothedVisibleHunterArrowX = FMath::FInterpTo(SmoothedVisibleHunterArrowX, TargetArrowX, DeltaSeconds, 14.0f);
 	}
 	const float ArrowX = SmoothedVisibleHunterArrowX;
-	const float DistanceAlpha = 1.0f - FMath::Clamp(DistanceCm / 6000.0f, 0.0f, 1.0f);
+	const float DistanceAlpha = 1.0f - FMath::Clamp(DistanceCm / HudTeacherSignalRangeCm, 0.0f, 1.0f);
 	const float Pulse = GetWorld() ? 0.5f + 0.5f * FMath::Sin(GetWorld()->GetTimeSeconds() * 8.0f) : 1.0f;
 	const float CueAlpha = FMath::Lerp(0.74f, 0.98f, DistanceAlpha) * Strength;
 	const float ArrowY = FMath::Max(17.0f, Canvas->ClipY * 0.020f) + Pulse * 1.5f;
@@ -1473,7 +1677,7 @@ void ABHHUD::DrawRawMeter(const FString& Label, float Value, float X, float Y, f
 	const float BarW = FMath::Max(1.0f, W - LabelW - 8.0f);
 	const float BarH = 9.0f;
 	const float FillW = BarW * (ClampedValue / 100.0f);
-	const bool bWarning = bHighIsBad ? ClampedValue >= 72.0f : ClampedValue <= 24.0f;
+	const bool bWarning = bHighIsBad ? ClampedValue >= HudHighMeterWarningThreshold : ClampedValue <= HudLowMeterWarningThreshold;
 	const ABHPlayerController* BHPC = PlayerOwner ? Cast<ABHPlayerController>(PlayerOwner) : nullptr;
 	const bool bHighContrast = BHPC && BHPC->IsHighContrastHudEnabled();
 	const FLinearColor TextColor = bWarning ? FLinearColor(1.0f, 0.42f, 0.30f, 0.98f) : (bHighContrast ? FLinearColor(0.90f, 0.98f, 0.94f, 1.0f) : FLinearColor(0.62f, 0.70f, 0.68f, 0.88f));
@@ -1592,8 +1796,9 @@ void ABHHUD::DrawHorrorOverlay(const ABHCharacter* Character, const ABHGameState
 	const float PresenceAlpha = GameState ? FMath::Clamp(GameState->PresenceLevel / 100.0f, 0.0f, 1.0f) : 0.0f;
 	const ABHPlayerController* BHPC = Cast<ABHPlayerController>(PlayerOwner);
 	const float HorrorFlashAlpha = BHPC ? BHPC->GetHorrorCueFlashAlpha() : 0.0f;
+	const float HorrorBlinkAlpha = BHPC ? BHPC->GetHorrorCueBlinkAlpha() : 0.0f;
 	const float OverlayAlpha = FMath::Clamp(FMath::Max(FMath::Max(FearAlpha, DreadAlpha), PresenceAlpha) * 0.34f, 0.0f, 0.34f);
-	if (OverlayAlpha <= 0.01f && HorrorFlashAlpha <= 0.01f)
+	if (OverlayAlpha <= 0.01f && HorrorFlashAlpha <= 0.01f && HorrorBlinkAlpha <= 0.01f)
 	{
 		return;
 	}
@@ -1618,8 +1823,14 @@ void ABHHUD::DrawHorrorOverlay(const ABHCharacter* Character, const ABHGameState
 	if (HorrorFlashAlpha > 0.01f && BHPC)
 	{
 		FLinearColor FlashColor = BHPC->GetHorrorCueFlashColor();
-		FlashColor.A = FMath::Clamp(HorrorFlashAlpha * 0.34f, 0.0f, 0.34f);
+		FlashColor.A = FMath::Clamp(HorrorFlashAlpha * 0.55f, 0.0f, 0.55f);
 		DrawRect(FlashColor, 0.0f, 0.0f, Canvas->ClipX, Canvas->ClipY);
+	}
+
+	// Hard black blink drawn last so it briefly punches through everything on the moment of impact.
+	if (HorrorBlinkAlpha > 0.01f)
+	{
+		DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, FMath::Clamp(HorrorBlinkAlpha * 0.92f, 0.0f, 0.92f)), 0.0f, 0.0f, Canvas->ClipX, Canvas->ClipY);
 	}
 
 	if (PresenceAlpha >= 0.55f || DreadAlpha >= 0.65f)
@@ -2143,7 +2354,7 @@ void ABHHUD::DrawEquipmentStrip(const ABHGameState* GameState)
 	const FString PresenceText = GameState ? FString::Printf(TEXT("PRESENCE %.0f%%"), FMath::Clamp(GameState->PresenceLevel, 0.0f, 100.0f)) : FString(TEXT("PRESENCE --"));
 	const FString ExitText = GameState && GameState->bExitUnlocked ? FString(TEXT("EXIT OPEN")) : FString(TEXT("EXIT LOCKED"));
 	const FLinearColor ModeColor = GameState && GameState->bTestMode ? FLinearColor(0.95f, 0.86f, 0.42f, 1.0f) : FLinearColor(0.48f, 0.86f, 0.78f, 1.0f);
-	const FLinearColor PresenceColor = GameState && GameState->PresenceLevel >= 72.0f ? FLinearColor(1.0f, 0.28f, 0.18f, 1.0f) : FLinearColor(0.62f, 0.82f, 0.78f, 1.0f);
+	const FLinearColor PresenceColor = GameState && GameState->PresenceLevel >= HudHighMeterWarningThreshold ? FLinearColor(1.0f, 0.28f, 0.18f, 1.0f) : FLinearColor(0.62f, 0.82f, 0.78f, 1.0f);
 	const float Gap = 8.0f;
 	const float PillY = PanelY + 11.0f;
 	const float PillW = (PanelW - 38.0f - Gap * 3.0f) / 4.0f;
@@ -2222,7 +2433,12 @@ void ABHHUD::DrawQuestionPanel(const ABHObjectiveStation* Station)
 	const FString ProgressSuffix = bRevisionQuestion
 		? FString::Printf(TEXT(" %d/%d"), FMath::Clamp(Station->GetRevisionQuestionsSolved() + 1, 1, FMath::Max(1, Station->GetRevisionQuestionsRequired())), FMath::Max(1, Station->GetRevisionQuestionsRequired()))
 		: TEXT("");
-	DrawHudText(FString::Printf(TEXT("%s CHECKPOINT%s"), *Topic.ToUpper(), *ProgressSuffix), PanelX + 22.0f, PanelY + 16.0f, FLinearColor(1.0f, 0.72f, 0.36f, 1.0f), GEngine->GetSmallFont(), 0.94f);
+	const bool bReviewQuestion = bRevisionQuestion && Station->IsReviewQuestion();
+	const FString ReviewTag = bReviewQuestion ? TEXT("  -  SECOND CHANCE") : TEXT("");
+	DrawHudText(FString::Printf(TEXT("%s CHECKPOINT%s%s"), *Topic.ToUpper(), *ProgressSuffix, *ReviewTag),
+		PanelX + 22.0f, PanelY + 16.0f,
+		bReviewQuestion ? FLinearColor(0.62f, 0.92f, 1.0f, 1.0f) : FLinearColor(1.0f, 0.72f, 0.36f, 1.0f),
+		GEngine->GetSmallFont(), 0.94f);
 	if (bRevisionQuestion)
 	{
 		FString CounterText;
@@ -2409,6 +2625,14 @@ void ABHHUD::DrawRevisionDiagram(const ABHObjectiveStation* Station, float X, fl
 		DrawRect(FLinearColor(0.46f, 0.31f, 0.28f, 1.0f), Left + 318.0f, MidY - 14.0f, 96.0f, 28.0f);
 		DrawHudText(TEXT("store -> pathway -> store"), Left + 12.0f, Top + 6.0f, MainText(), GEngine->GetSmallFont(), 0.74f);
 		break;
+	}
+
+	// Caption the diagram with this question's specific subtopic so it reads as the
+	// concept under test, not a generic schematic. (Answer-safe: never reveals the value.)
+	const FString Subtopic = Station->GetQuestionSubtopic();
+	if (!Subtopic.IsEmpty())
+	{
+		DrawHudText(Subtopic.ToUpper(), X + 10.0f, Y + 4.0f, FLinearColor(0.66f, 0.82f, 0.94f, 0.92f), GEngine->GetSmallFont(), 0.62f);
 	}
 
 	if (!Station->GetQuestionFormula().IsEmpty())

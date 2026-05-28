@@ -30,3 +30,4 @@ Saved/
 !*.env.example
 Tools/AccountBackend/data/
 Config/Steam/SteamValues.local.ini
+Config/EOS/EOSValues.local.ini

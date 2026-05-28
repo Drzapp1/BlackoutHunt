@@ -976,6 +976,7 @@ void ABHGameMode::PostLogin(APlayerController* NewPlayer)
 
 	const ABHGameState* BHGS = GetGameState<ABHGameState>();
 	const bool bCanJoinRound = bPracticeMode || bTestMode || !BHGS || BHGS->RoundPhase == EBHRoundPhase::Lobby;
+	bool bReconnected = false;
 
 	if (ABHPlayerState* BHPS = NewPlayer ? NewPlayer->GetPlayerState<ABHPlayerState>() : nullptr)
 	{
@@ -991,21 +992,65 @@ void ABHGameMode::PostLogin(APlayerController* NewPlayer)
 			RequestedRole = EBHPlayerRole::FakeHunter;
 		}
 		const bool bLateJoinSpectator = !bPracticeMode && !bTestMode && !bCanJoinRound;
-		BHPS->SetReady(bPracticeMode || bTestMode);
-		BHPS->SetDesiredRole(bTestMode ? EBHPlayerRole::Tester : (bPracticeMode || bLateJoinSpectator ? EBHPlayerRole::Survivor : RequestedRole));
-		BHPS->SetRole(bTestMode ? EBHPlayerRole::Tester : (bPracticeMode ? EBHPlayerRole::Survivor : (bCanJoinRound ? EBHPlayerRole::Unassigned : EBHPlayerRole::Spectator)));
-		BHPS->SetLifeState(bCanJoinRound ? EBHPlayerLifeState::Alive : EBHPlayerLifeState::Captured);
+
+		// Mid-round reconnect: a student who dropped during an active round and returns within the
+		// grace window is restored to their exact role/state (a caught student returns as their
+		// Hall Monitor/captured state, an active survivor/teacher returns to that role) instead of
+		// being forced to spectate until the next lobby.
+		FBHTravelPlayerProgress ReconnectProgress;
+		if (bLateJoinSpectator)
+		{
+			const UBHGameSettings* RejoinSettings = GetDefault<UBHGameSettings>();
+			const float GraceSeconds = RejoinSettings ? RejoinSettings->ReconnectGraceSeconds : 0.0f;
+			const float NowServerTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+			if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
+			{
+				bReconnected = GraceSeconds > 0.0f
+					&& BHGI->TryGetReconnectProgress(BHPS, NowServerTime, GraceSeconds, ReconnectProgress);
+			}
+		}
+
+		BHPS->SetReady(bPracticeMode || bTestMode || bReconnected);
 		BHPS->SetHiddenInLocker(false);
 		BHPS->SetAvatarIndex(PlayerIndex);
 		BHPS->SetAvatarColor(AvatarColorForIndex(PlayerIndex));
 		BHPS->SetMapVote(TEXT(""));
 		BHPS->ClearFogPresetVote();
 		BHPS->ClearSpectatorSupportState();
-		if (bRevisionMode && !bTrainIntermissionLevel)
+
+		if (bReconnected)
 		{
-			BHPS->ResetRevisionStats();
+			BHPS->SetRole(ReconnectProgress.PlayerRole);
+			BHPS->SetDesiredRole(ReconnectProgress.DesiredRole);
+			BHPS->SetSpectatorRolePreference(ReconnectProgress.SpectatorRolePreference);
+			BHPS->SetLifeState(ReconnectProgress.LifeState);
+			BHPS->SetFakeHunterEligible(ReconnectProgress.bFakeHunterEligible);
+			BHPS->RevisionStats = ReconnectProgress.RevisionStats;
+			BHPS->QuestionPoints = FMath::Max(0, ReconnectProgress.QuestionPoints);
+			BHPS->LifetimeQuestionPoints = FMath::Max(BHPS->QuestionPoints, ReconnectProgress.LifetimeQuestionPoints);
+			BHPS->HunterPoints = FMath::Max(0, ReconnectProgress.HunterPoints);
+			BHPS->LifetimeHunterPoints = FMath::Max(BHPS->HunterPoints, ReconnectProgress.LifetimeHunterPoints);
+			BHPS->Powerups = ReconnectProgress.Powerups;
+			for (FBHPowerupInventoryEntry& Entry : BHPS->Powerups)
+			{
+				Entry.CooldownEndServerTime = 0.0f;
+			}
+			if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
+			{
+				BHGI->ClearReconnectMark(BHPS);
+			}
 		}
-		RestorePlayersAfterTravel(NewPlayer);
+		else
+		{
+			BHPS->SetDesiredRole(bTestMode ? EBHPlayerRole::Tester : (bPracticeMode || bLateJoinSpectator ? EBHPlayerRole::Survivor : RequestedRole));
+			BHPS->SetRole(bTestMode ? EBHPlayerRole::Tester : (bPracticeMode ? EBHPlayerRole::Survivor : (bCanJoinRound ? EBHPlayerRole::Unassigned : EBHPlayerRole::Spectator)));
+			BHPS->SetLifeState(bCanJoinRound ? EBHPlayerLifeState::Alive : EBHPlayerLifeState::Captured);
+			if (bRevisionMode && !bTrainIntermissionLevel)
+			{
+				BHPS->ResetRevisionStats();
+			}
+			RestorePlayersAfterTravel(NewPlayer);
+		}
 	}
 
 	if (bBotMode)
@@ -1043,7 +1088,18 @@ void ABHGameMode::PostLogin(APlayerController* NewPlayer)
 		RefreshBotRoster(Cast<ABHPlayerController>(NewPlayer));
 	}
 
-	if (!bCanJoinRound)
+	if (bReconnected)
+	{
+		if (ABHPlayerController* BHPC = Cast<ABHPlayerController>(NewPlayer))
+		{
+			BHPC->ClientShowStatusMessage(TEXT("Reconnected to your round. Your role and progress were restored."), 6.0f);
+		}
+		if (const ABHPlayerState* BHPS = NewPlayer ? NewPlayer->GetPlayerState<ABHPlayerState>() : nullptr)
+		{
+			BroadcastStatus(FString::Printf(TEXT("%s reconnected to the round."), *BHPS->GetPlayerName()), 3.5f);
+		}
+	}
+	else if (!bCanJoinRound)
 	{
 		if (ABHPlayerController* BHPC = Cast<ABHPlayerController>(NewPlayer))
 		{
@@ -1054,6 +1110,53 @@ void ABHGameMode::PostLogin(APlayerController* NewPlayer)
 
 void ABHGameMode::Logout(AController* Exiting)
 {
+	// Purge bot AI references to the departing player before the engine tears down
+	// their controller/pawn. The arrays hold weak pointers so they would not crash,
+	// but stale claims/cooldowns/stimuli can briefly misdirect bot planning (e.g. a
+	// bot holding a chase claim on a player who already left). Clear them now so bots
+	// re-plan immediately instead of waiting for the entries to expire.
+	const AActor* ExitingPawn = Exiting ? Exiting->GetPawn() : nullptr;
+	auto MatchesExiting = [Exiting, ExitingPawn](const TWeakObjectPtr<AActor>& Actor)
+	{
+		const AActor* Resolved = Actor.Get();
+		return Resolved && (Resolved == ExitingPawn || Resolved->GetInstigatorController() == Exiting);
+	};
+	BotObjectiveClaims.RemoveAll([Exiting, &MatchesExiting](const FBHBotObjectiveClaim& Claim)
+	{
+		return !Claim.Claimant.IsValid() || Claim.Claimant.Get() == Exiting || MatchesExiting(Claim.Target);
+	});
+	BotTargetCooldowns.RemoveAll([Exiting, &MatchesExiting](const FBHBotTargetCooldown& Cooldown)
+	{
+		return !Cooldown.Claimant.IsValid() || Cooldown.Claimant.Get() == Exiting || MatchesExiting(Cooldown.Target);
+	});
+	BotWorldStimuli.RemoveAll([&MatchesExiting](const FBHBotStimulus& Stimulus)
+	{
+		return MatchesExiting(Stimulus.SourceActor) || MatchesExiting(Stimulus.TargetActor);
+	});
+
+	// Mid-round reconnect: snapshot the leaving player's state (before the engine detaches it in
+	// Super::Logout) so they can rejoin their role within the grace window instead of being forced
+	// to spectate until the next lobby.
+	if (const UBHGameSettings* Settings = GetDefault<UBHGameSettings>())
+	{
+		const ABHGameState* BHGS = GetGameState<ABHGameState>();
+		const bool bRoundActive = BHGS
+			&& BHGS->RoundPhase != EBHRoundPhase::Lobby
+			&& BHGS->RoundPhase != EBHRoundPhase::SurvivorsWin
+			&& BHGS->RoundPhase != EBHRoundPhase::HunterWin;
+		if (!bPracticeMode && !bTestMode && bRoundActive && Settings->ReconnectGraceSeconds > 0.0f)
+		{
+			if (ABHPlayerState* BHPS = Exiting ? Exiting->GetPlayerState<ABHPlayerState>() : nullptr)
+			{
+				if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
+				{
+					const float NowServerTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+					BHGI->MarkTravelPlayerLeftForReconnect(BHPS, NowServerTime);
+				}
+			}
+		}
+	}
+
 	Super::Logout(Exiting);
 
 	if (ABHGameState* BHGS = GetGameState<ABHGameState>())
@@ -1913,6 +2016,21 @@ FBHJumpscareVariant ABHGameMode::ChooseJumpscareVariant(EBHScareEventType EventT
 		TotalWeight += FMath::Max(0.01f, Variant.Weight);
 	}
 
+	// Anti-repetition: when more than one variant is eligible, drop the one used last time so
+	// back-to-back scares never reuse the same entity.
+	if (Candidates.Num() > 1 && !LastJumpscareVariantId.IsNone())
+	{
+		for (int32 Index = 0; Index < Candidates.Num(); ++Index)
+		{
+			if (Candidates[Index] && Candidates[Index]->VariantId == LastJumpscareVariantId)
+			{
+				TotalWeight -= FMath::Max(0.01f, Candidates[Index]->Weight);
+				Candidates.RemoveAt(Index);
+				break;
+			}
+		}
+	}
+
 	if (Candidates.IsEmpty() || TotalWeight <= 0.0f)
 	{
 		FBHJumpscareVariant Fallback;
@@ -2092,6 +2210,78 @@ bool ABHGameMode::ResolveVisibleJumpscareSpawn(ABHCharacter* Target, ABHPlayerCo
 	return OutSpawn.Score >= 0.0f;
 }
 
+bool ABHGameMode::ResolveDirectionalJumpscareSpawn(ABHCharacter* Target, const TArray<FVector>& Candidates, float FocusHeight, float MinDistance, float MaxDistance, float PathRadius, float ZOffset, bool bPreferClose, FBHResolvedJumpscareSpawn& OutSpawn) const
+{
+	UWorld* World = GetWorld();
+	if (!World || !Target || Candidates.IsEmpty())
+	{
+		return false;
+	}
+
+	const FVector TargetLocation = Target->GetActorLocation();
+	const float TargetFloorZ = TargetLocation.Z - Target->GetSimpleCollisionHalfHeight();
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BHDirectionalJumpscareSpawn), false, Target);
+	Params.AddIgnoredActor(Target);
+
+	OutSpawn = FBHResolvedJumpscareSpawn();
+	float BestMetric = -FLT_MAX;
+	for (const FVector& RawCandidate : Candidates)
+	{
+		FVector Candidate = RawCandidate;
+		Candidate.Z = TargetFloorZ + 4.0f + FMath::Max(0.0f, ZOffset);
+
+		const float Distance = FVector::Dist2D(TargetLocation, Candidate);
+		if ((MinDistance > 0.0f && Distance < MinDistance) || (MaxDistance > 0.0f && Distance > MaxDistance))
+		{
+			continue;
+		}
+
+		// No view-cone requirement here — the reveal happens on contact, so we only need the spawn
+		// space and the charge path toward the target to be clear.
+		if (!BHJumpscareSpawnSpaceClear(World, Candidate, Params))
+		{
+			continue;
+		}
+		if (!BHJumpscareChargePathClear(World, Candidate, TargetLocation, PathRadius, Params))
+		{
+			continue;
+		}
+
+		// Closer spawns give a quicker, more startling reveal; allow scoring either way.
+		const float Metric = bPreferClose ? -Distance : Distance;
+		if (Metric > BestMetric)
+		{
+			BestMetric = Metric;
+			const FVector DirectionToTarget = (TargetLocation - Candidate).GetSafeNormal();
+			OutSpawn.SpawnLocation = Candidate;
+			OutSpawn.FocusLocation = Candidate + FVector(0.0f, 0.0f, FMath::Clamp(FocusHeight, 80.0f, 320.0f));
+			OutSpawn.SpawnRotation = DirectionToTarget.IsNearlyZero() ? FRotator::ZeroRotator : DirectionToTarget.Rotation();
+			OutSpawn.Score = 1.0f;
+		}
+	}
+
+	return OutSpawn.Score >= 0.0f;
+}
+
+EBHJumpscareApproach ABHGameMode::ChooseMonsterChargeApproach()
+{
+	// Even mix across all four archetypes, re-rolling once to avoid an immediate repeat.
+	const EBHJumpscareApproach Approaches[] = {
+		EBHJumpscareApproach::HeadOn,
+		EBHJumpscareApproach::Behind,
+		EBHJumpscareApproach::AlreadyThere,
+		EBHJumpscareApproach::CeilingDrop
+	};
+
+	EBHJumpscareApproach Chosen = Approaches[FMath::RandRange(0, 3)];
+	if (Chosen == LastJumpscareApproach)
+	{
+		Chosen = Approaches[FMath::RandRange(0, 3)];
+	}
+	LastJumpscareApproach = Chosen;
+	return Chosen;
+}
+
 void ABHGameMode::SendJumpscareChargeCue(ABHCharacter* Target, const FBHJumpscareVariant& Variant, const FVector& FocusLocation, const FString& Message, float HoldDuration, float AudioVolume, bool bCloseRangeFocus) const
 {
 	if (ABHPlayerController* TargetPC = Target ? Cast<ABHPlayerController>(Target->GetController()) : nullptr)
@@ -2124,6 +2314,11 @@ void ABHGameMode::SendJumpscareChargeCue(ABHCharacter* Target, const FBHJumpscar
 		Cue.bLockInput = true;
 		Cue.bCloseRangeFocus = bCloseRangeFocus;
 		Cue.bUpperBodyCloseVisual = bCloseRangeFocus;
+		Cue.FOVPunch = FMath::Clamp(Variant.ImpactFOVPunch * SensoryScale, 0.0f, 30.0f);
+		Cue.HitStopSeconds = bCloseRangeFocus ? FMath::Clamp(Variant.ImpactHitStopSeconds * SensoryScale, 0.0f, 0.25f) : 0.0f;
+		Cue.RumbleIntensity = FMath::Clamp(Variant.ImpactRumbleIntensity * SensoryScale, 0.0f, 1.0f);
+		Cue.ImpactStinger = Variant.ImpactStinger;
+		Cue.bLayeredImpactAudio = bCloseRangeFocus;
 		TargetPC->ClientPlayHorrorCue(Cue);
 	}
 }
@@ -6432,14 +6627,17 @@ void ABHGameMode::AddFoggroundsLightingPass()
 		MoonLight->SetMobility(EComponentMobility::Movable);
 		if (UDirectionalLightComponent* LightComponent = Cast<UDirectionalLightComponent>(MoonLight->GetLightComponent()))
 		{
-			LightComponent->SetIntensity(bExtremeFog ? 1.45f : (bHeavyFog ? 1.28f : 0.90f));
+			LightComponent->SetIntensity(bExtremeFog ? 1.60f : (bHeavyFog ? 1.42f : 1.02f));
 			LightComponent->SetLightColor(MoonTint);
 			LightComponent->SetIndirectLightingIntensity(bExtremeFog ? 1.12f : (bHeavyFog ? 0.98f : 0.62f));
-			LightComponent->SetVolumetricScatteringIntensity(0.10f);
+			// Eerie moonlight: strong volumetric scattering makes the moonbeam shaft visibly through the
+			// thick volumetric fog (shadows stay off to protect low-end/classroom perf; the fog's
+			// directional inscattering + a brighter moon disk give the shaft/visible-moon read).
+			LightComponent->SetVolumetricScatteringIntensity(0.85f);
 			LightComponent->SetCastShadows(false);
 			LightComponent->SetAtmosphereSunLight(true);
 			LightComponent->SetAtmosphereSunLightIndex(0);
-			LightComponent->SetAtmosphereSunDiskColorScale(FLinearColor(0.28f, 0.38f, 0.58f, 1.0f));
+			LightComponent->SetAtmosphereSunDiskColorScale(FLinearColor(0.72f, 0.84f, 1.08f, 1.0f));
 		}
 	}
 
@@ -7598,7 +7796,7 @@ void ABHGameMode::AddMoodPass(const FLinearColor& FogColor, float FogDensity, fl
 			FogComponent->SetFogCutoffDistance(0.0f);
 			FogComponent->SetDirectionalInscatteringExponent(8.0f);
 			FogComponent->SetDirectionalInscatteringStartDistance(0.0f);
-			const float DirectionalInscatterScale = bFoggrounds ? (bExtremeFog ? 1.55f : 1.42f) : (bExtremeFog ? 1.75f : 1.45f);
+			const float DirectionalInscatterScale = bFoggrounds ? (bExtremeFog ? 2.20f : 2.00f) : (bExtremeFog ? 1.75f : 1.45f);
 			FogComponent->SetDirectionalInscatteringColor(FLinearColor(FogColor.R * DirectionalInscatterScale, FogColor.G * DirectionalInscatterScale, FogColor.B * DirectionalInscatterScale, 1.0f));
 			FogComponent->SetVolumetricFog(true);
 			FogComponent->SetVolumetricFogScatteringDistribution(bFoggrounds ? (bExtremeFog ? 0.18f : 0.22f) : (bExtremeFog ? 0.38f : 0.45f));
@@ -9201,6 +9399,12 @@ void ABHGameMode::TriggerMonsterChargeJumpscareWithVariant(ABHCharacter* Target,
 		return;
 	}
 
+	// Remember the variant so the next pick can avoid an immediate repeat.
+	if (!Variant.VariantId.IsNone())
+	{
+		LastJumpscareVariantId = Variant.VariantId;
+	}
+
 	const FVector TargetLocation = Target->GetActorLocation();
 	ABHPlayerController* TargetPC = Cast<ABHPlayerController>(Target->GetController());
 	const float FocusHeight = FMath::Clamp(Variant.FocusHeight, 80.0f, 320.0f);
@@ -9233,26 +9437,85 @@ void ABHGameMode::TriggerMonsterChargeJumpscareWithVariant(ABHCharacter* Target,
 		Forward = FVector::ForwardVector;
 	}
 	const FVector Right = FVector::CrossProduct(FVector::UpVector, Forward).GetSafeNormal();
-	const FVector Directions[] = { Forward, Right, -Right, -Forward };
-	const float Distances[] = { 4600.0f, 3800.0f, 3000.0f, 2200.0f, 1500.0f };
-	for (const FVector& DirectionCandidate : Directions)
+	auto AddDirectionalCandidates = [&](const TArray<FVector>& Dirs, const TArray<float>& Dists)
 	{
-		if (DirectionCandidate.IsNearlyZero())
+		for (const FVector& Dir : Dirs)
 		{
-			continue;
+			if (Dir.IsNearlyZero())
+			{
+				continue;
+			}
+			for (float Distance : Dists)
+			{
+				FVector Candidate = TargetLocation + Dir * Distance;
+				Candidate.X = FMath::Clamp(Candidate.X, -MaxX, MaxX);
+				Candidate.Y = FMath::Clamp(Candidate.Y, -MaxY, MaxY);
+				Candidates.Add(Candidate);
+			}
 		}
+	};
 
-		for (float Distance : Distances)
-		{
-			FVector Candidate = TargetLocation + DirectionCandidate * Distance;
-			Candidate.X = FMath::Clamp(Candidate.X, -MaxX, MaxX);
-			Candidate.Y = FMath::Clamp(Candidate.Y, -MaxY, MaxY);
-			Candidates.Add(Candidate);
-		}
-	}
+	// Legacy SCP-096 keeps its scripted head-on reveal; everything else rolls an even-mix approach.
+	const EBHJumpscareApproach Approach = bLegacyScp096 ? EBHJumpscareApproach::HeadOn : ChooseMonsterChargeApproach();
 
 	FBHResolvedJumpscareSpawn ResolvedSpawn;
-	if (!ResolveVisibleJumpscareSpawn(Target, TargetPC, Candidates, FocusHeight, 900.0f, 6400.0f, 70.0f, ResolvedSpawn))
+	bool bResolved = false;
+	bool bDescend = false;
+	float UseSpeed = Speed;
+	float UseHold = HoldDuration;
+
+	switch (Approach)
+	{
+	case EBHJumpscareApproach::AlreadyThere:
+		// Already in view, close, lunges almost immediately.
+		Candidates.Reset();
+		AddDirectionalCandidates({ Forward, Right, -Right }, { 1100.0f, 1500.0f, 1900.0f, 2300.0f });
+		bResolved = ResolveVisibleJumpscareSpawn(Target, TargetPC, Candidates, FocusHeight, 600.0f, 2600.0f, 70.0f, ResolvedSpawn);
+		UseSpeed = Speed * 1.3f;
+		UseHold = 0.0f;
+		break;
+
+	case EBHJumpscareApproach::Behind:
+		// Out of view behind the player; reveal lands on contact.
+		Candidates.Reset();
+		AddDirectionalCandidates({ -Forward, Right, -Right }, { 1400.0f, 1900.0f, 2500.0f, 3200.0f });
+		bResolved = ResolveDirectionalJumpscareSpawn(Target, Candidates, FocusHeight, 900.0f, 3600.0f, 70.0f, 0.0f, /*bPreferClose=*/true, ResolvedSpawn);
+		UseHold = FMath::Min(HoldDuration, 0.5f);
+		break;
+
+	case EBHJumpscareApproach::CeilingDrop:
+		// Roughly overhead, descends onto the target.
+		Candidates.Reset();
+		AddDirectionalCandidates({ Forward, -Forward, Right, -Right }, { 120.0f, 280.0f, 440.0f });
+		bResolved = ResolveDirectionalJumpscareSpawn(Target, Candidates, FocusHeight, 0.0f, 1400.0f, 90.0f, 560.0f, /*bPreferClose=*/true, ResolvedSpawn);
+		bDescend = true;
+		UseSpeed = Speed * 0.9f;
+		UseHold = 0.0f;
+		break;
+
+	case EBHJumpscareApproach::HeadOn:
+	default:
+		AddDirectionalCandidates({ Forward, Right, -Right, -Forward }, { 4600.0f, 3800.0f, 3000.0f, 2200.0f, 1500.0f });
+		bResolved = ResolveVisibleJumpscareSpawn(Target, TargetPC, Candidates, FocusHeight, 900.0f, 6400.0f, 70.0f, ResolvedSpawn);
+		break;
+	}
+
+	// Fall back to a head-on visible spawn (then the overlay) if the chosen approach found no clear spot.
+	if (!bResolved && Approach != EBHJumpscareApproach::HeadOn)
+	{
+		Candidates.Reset();
+		for (const FVector& Point : ScarePoints)
+		{
+			Candidates.Add(Point);
+		}
+		AddDirectionalCandidates({ Forward, Right, -Right, -Forward }, { 4600.0f, 3800.0f, 3000.0f, 2200.0f, 1500.0f });
+		bResolved = ResolveVisibleJumpscareSpawn(Target, TargetPC, Candidates, FocusHeight, 900.0f, 6400.0f, 70.0f, ResolvedSpawn);
+		bDescend = false;
+		UseSpeed = Speed;
+		UseHold = HoldDuration;
+	}
+
+	if (!bResolved)
 	{
 		TriggerCloseOverlayJumpscare(Target, Variant, Message, HoldDuration, FMath::Min(FearAmount, 22.0f), FMath::Min(DreadAmount, 24.0f));
 		return;
@@ -9262,8 +9525,9 @@ void ABHGameMode::TriggerMonsterChargeJumpscareWithVariant(ABHCharacter* Target,
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	if (ABHJumpscareMonster* Monster = GetWorld()->SpawnActor<ABHJumpscareMonster>(ResolvedSpawn.SpawnLocation, ResolvedSpawn.SpawnRotation, SpawnParams))
 	{
-		Monster->Configure(Target, Speed, bPartyPace ? 7.4f : 8.6f, HoldDuration);
+		Monster->Configure(Target, UseSpeed, bPartyPace ? 7.4f : 8.6f, UseHold);
 		Monster->ConfigureVariant(Variant);
+		Monster->SetChargeDescend(bDescend);
 	}
 	else
 	{
@@ -9271,7 +9535,9 @@ void ABHGameMode::TriggerMonsterChargeJumpscareWithVariant(ABHCharacter* Target,
 		return;
 	}
 
-	RecordPlaytestTelemetryMarker(TEXT("jumpscare"), TargetLocation, FString::Printf(TEXT("monster_charge variant=%s"), *Variant.VariantId.ToString()), nullptr, Target->GetPlayerState<ABHPlayerState>());
+	const UEnum* ApproachEnum = StaticEnum<EBHJumpscareApproach>();
+	const FString ApproachName = ApproachEnum ? ApproachEnum->GetNameStringByValue(static_cast<int64>(Approach)) : FString::FromInt(static_cast<int32>(Approach));
+	RecordPlaytestTelemetryMarker(TEXT("jumpscare"), TargetLocation, FString::Printf(TEXT("monster_charge variant=%s approach=%s"), *Variant.VariantId.ToString(), *ApproachName), nullptr, Target->GetPlayerState<ABHPlayerState>());
 	if (bLegacyScp096)
 	{
 		if (TargetPC)

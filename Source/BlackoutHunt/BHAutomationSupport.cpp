@@ -104,15 +104,7 @@ FBHAutomationConfig FBHAutomationSupport::ParseCommandLine(const TCHAR* CommandL
 		return Config;
 	}
 
-	FString AutoReadyValue;
-	if (FParse::Value(SafeCommandLine, TEXT("BHAutoReady="), AutoReadyValue))
-	{
-		Config.bAutoReady = IsTruthyValue(AutoReadyValue) && !IsFalsyValue(AutoReadyValue);
-	}
-	else
-	{
-		Config.bAutoReady = FParse::Param(SafeCommandLine, TEXT("BHAutoReady"));
-	}
+	Config.bAutoReady = ParseBoolFlag(SafeCommandLine, TEXT("BHAutoReady"));
 
 	Config.AutoHost = NormalizeHostMode(ParseStringValue(SafeCommandLine, TEXT("BHAutoHost")));
 	Config.AutoJoin = ParseStringValue(SafeCommandLine, TEXT("BHAutoJoin"));

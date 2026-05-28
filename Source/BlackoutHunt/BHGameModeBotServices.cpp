@@ -861,13 +861,6 @@ void ABHGameMode::SweepExpiredBotTacticalState()
 	{
 		return !Cooldown.Claimant.IsValid() || !Cooldown.Target.IsValid() || Cooldown.ExpireTimeSeconds <= Now;
 	});
-	for (auto It = BotApproachPointCache.CreateIterator(); It; ++It)
-	{
-		if (!It.Key().ResolveObjectPtr())
-		{
-			It.RemoveCurrent();
-		}
-	}
 }
 
 bool ABHGameMode::IsExclusiveBotClaimIntent(EBHBotIntent Intent) const

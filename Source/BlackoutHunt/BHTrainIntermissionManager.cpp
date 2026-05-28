@@ -19,6 +19,16 @@
 
 namespace
 {
+// Deterministic bonus-question seed derived from the completed stage index so each
+// stage draws a stable but distinct question. Stride/offset are arbitrary primes that
+// spread consecutive stage indices apart.
+constexpr int32 BHIntermissionSeedStride = 171;
+constexpr int32 BHIntermissionSeedOffset = 31;
+
+// Local default for the arrival phase length (seconds). Unlike the other phase
+// durations, this is intentionally not driven by UBHGameSettings; keep it scoped here.
+constexpr float BHIntermissionDefaultArrivalSeconds = 5.0f;
+
 FLinearColor BHTrainPhaseAccent(EBHTrainPhase Phase)
 {
 	switch (Phase)
@@ -76,7 +86,7 @@ FString BHBuildBoardingDisplayBody(const FString& DestinationText)
 ABHTrainIntermissionManager::ABHTrainIntermissionManager()
 {
 	bReplicates = true;
-	ArrivalSeconds = 5.0f;
+	ArrivalSeconds = BHIntermissionDefaultArrivalSeconds;
 	RecapSeconds = 35.0f;
 	BonusQuestionSeconds = 60.0f;
 	ShopSeconds = 45.0f;
@@ -204,7 +214,7 @@ void ABHTrainIntermissionManager::StartIntermission()
 {
 	if (BonusTerminal)
 	{
-		BonusTerminal->LoadQuestion(SelectBonusTopic(), CompletedStageIndex * 171 + 31);
+		BonusTerminal->LoadQuestion(SelectBonusTopic(), CompletedStageIndex * BHIntermissionSeedStride + BHIntermissionSeedOffset);
 	}
 
 	if (ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr)

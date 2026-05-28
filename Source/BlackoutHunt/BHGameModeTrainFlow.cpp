@@ -37,7 +37,7 @@ void ABHGameMode::CompleteTrainIntermission(const FString& NextMapName, bool bFi
 		if (BHGI)
 		{
 			BHGI->ClearQuestionAttemptHistory();
-			BHGI->ResetPersistentHunterPoints();
+			BHGI->ResetPersistentTrainRunProgress();
 			BHGI->SetPersistentStageIndex(0);
 		}
 		const FString TravelURL = BuildTravelOptionsForLevel(TEXT("Facility"), false, 0, EBHRoundPhase::Lobby);
@@ -101,13 +101,10 @@ void ABHGameMode::RestorePlayersAfterTravel(AController* Controller)
 
 	if (bTrainIntermissionLevel)
 	{
-		if (!bRestored || BHPS->PlayerRole == EBHPlayerRole::Unassigned || BHPS->PlayerRole == EBHPlayerRole::Spectator)
-		{
-			BHPS->SetRole(EBHPlayerRole::Survivor);
-			BHPS->SetDesiredRole(EBHPlayerRole::Survivor);
-			BHPS->SetLifeState(EBHPlayerLifeState::Alive);
-		}
-		if (BHPS->PlayerRole == EBHPlayerRole::FakeHunter)
+		if (!bRestored
+			|| BHPS->PlayerRole == EBHPlayerRole::Unassigned
+			|| BHPS->PlayerRole == EBHPlayerRole::Spectator
+			|| BHPS->PlayerRole == EBHPlayerRole::FakeHunter)
 		{
 			BHPS->SetRole(EBHPlayerRole::Survivor);
 			BHPS->SetDesiredRole(EBHPlayerRole::Survivor);
@@ -126,10 +123,14 @@ void ABHGameMode::RestorePlayersAfterTravel(AController* Controller)
 			BHGS = GetWorld()->GetGameState<ABHGameState>();
 		}
 
-		if (BHGS && BHGS->RoundPhase == EBHRoundPhase::Lobby && BHPS->PlayerRole == EBHPlayerRole::Spectator)
+		if (BHGS && BHGS->RoundPhase == EBHRoundPhase::Lobby)
 		{
+			const bool bWasSpectator = BHPS->PlayerRole == EBHPlayerRole::Spectator;
 			BHPS->SetRole(EBHPlayerRole::Unassigned);
-			BHPS->SetDesiredRole(EBHPlayerRole::Unassigned);
+			if (bWasSpectator)
+			{
+				BHPS->SetDesiredRole(EBHPlayerRole::Unassigned);
+			}
 			BHPS->SetLifeState(EBHPlayerLifeState::Alive);
 			BHPS->SetHiddenInLocker(false);
 			BHPS->SetFakeHunterEligible(false);

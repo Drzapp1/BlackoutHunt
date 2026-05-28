@@ -55,7 +55,7 @@ FBHMovementRoleTuning BHMakeDefaultRoleTuning(EBHPlayerRole Role)
 	Tuning.Role = Role;
 	Tuning.WalkSpeed = Role == EBHPlayerRole::Hunter ? 315.0f : 360.0f;
 	Tuning.SprintSpeed = Role == EBHPlayerRole::Hunter ? 1150.0f : 900.0f;
-	Tuning.SprintDrainMultiplier = Role == EBHPlayerRole::Hunter ? 1.75f : 1.0f;
+	Tuning.SprintDrainMultiplier = Role == EBHPlayerRole::Hunter ? 0.85f : 1.0f;
 	Tuning.ProneSpeed = 120.0f;
 	Tuning.StaminaCostMultiplier = 1.0f;
 	Tuning.CooldownMultiplier = 1.0f;

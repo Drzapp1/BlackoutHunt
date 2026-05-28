@@ -1,6 +1,5 @@
 #include "BHCrawlSpaceVolume.h"
 #include "BHCharacter.h"
-#include "BHGameState.h"
 #include "BHPlayerState.h"
 #include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
@@ -39,6 +38,13 @@ FIntPoint BHChooseCrawlRejectDirection(const FVector& LocalLocation, const FVect
 		return FIntPoint(BHCrawlRejectAxisX, LocalLocation.X >= 0.0f ? 1 : -1);
 	}
 	return FIntPoint(BHCrawlRejectAxisY, LocalLocation.Y >= 0.0f ? 1 : -1);
+}
+
+bool BHIsCrawlLowProfileState(EBHMovementSpecialState State)
+{
+	return State == EBHMovementSpecialState::Prone
+		|| State == EBHMovementSpecialState::Sliding
+		|| State == EBHMovementSpecialState::Diving;
 }
 }
 
@@ -121,6 +127,13 @@ void ABHCrawlSpaceVolume::Configure(const FVector& NewBoxExtent)
 	}
 }
 
+#if WITH_DEV_AUTOMATION_TESTS
+bool ABHCrawlSpaceVolume::DebugCanCharacterUseCrawlSpace(const ABHCharacter* Character) const
+{
+	return CanCharacterUseCrawlSpace(Character);
+}
+#endif
+
 void ABHCrawlSpaceVolume::OnVolumeBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult)
 {
 	if (!HasAuthority())
@@ -132,13 +145,18 @@ void ABHCrawlSpaceVolume::OnVolumeBeginOverlap(UPrimitiveComponent* OverlappedCo
 	{
 		if (!CanCharacterUseCrawlSpace(Character))
 		{
-			RejectCharacter(Character);
+			QueueRejectCharacter(Character);
 		}
 	}
 }
 
 void ABHCrawlSpaceVolume::OnVolumeEndOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex)
 {
+	if (!HasAuthority())
+	{
+		return;
+	}
+
 	if (ABHCharacter* Character = Cast<ABHCharacter>(OtherActor))
 	{
 		ActiveRejectDirections.Remove(TWeakObjectPtr<ABHCharacter>(Character));
@@ -155,11 +173,31 @@ bool ABHCrawlSpaceVolume::CanCharacterUseCrawlSpace(const ABHCharacter* Characte
 
 	if (BHPS->PlayerRole == EBHPlayerRole::Survivor || BHPS->PlayerRole == EBHPlayerRole::Tester)
 	{
-		return true;
+		return BHIsCrawlLowProfileState(Character->GetMovementSpecialState());
 	}
 
-	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
-	return BHGS && BHGS->bTestMode;
+	return false;
+}
+
+void ABHCrawlSpaceVolume::QueueRejectCharacter(ABHCharacter* Character)
+{
+	if (!Character || !Volume)
+	{
+		return;
+	}
+
+	UCharacterMovementComponent* Movement = Character->GetCharacterMovement();
+	const FVector IncomingVelocity = Movement ? Movement->Velocity : Character->GetVelocity();
+	if (Movement)
+	{
+		Movement->StopMovementImmediately();
+	}
+
+	const FTransform VolumeTransform = Volume->GetComponentTransform();
+	const FVector LocalLocation = VolumeTransform.InverseTransformPosition(Character->GetActorLocation());
+	const FVector LocalVelocity = VolumeTransform.InverseTransformVectorNoScale(IncomingVelocity);
+	const FVector Extent = Volume->GetScaledBoxExtent();
+	ActiveRejectDirections.FindOrAdd(TWeakObjectPtr<ABHCharacter>(Character)) = BHChooseCrawlRejectDirection(LocalLocation, LocalVelocity, Extent);
 }
 
 void ABHCrawlSpaceVolume::RejectCharacter(ABHCharacter* Character)
@@ -205,8 +243,7 @@ void ABHCrawlSpaceVolume::RejectCharacter(ABHCharacter* Character)
 	FVector RejectedLocation = VolumeTransform.TransformPosition(LocalLocation);
 	RejectedLocation.Z = CurrentLocation.Z;
 
-	FHitResult SweepHit;
-	Character->SetActorLocation(RejectedLocation, true, &SweepHit, ETeleportType::None);
+	Character->SetActorLocation(RejectedLocation, false, nullptr, ETeleportType::TeleportPhysics);
 
 	if (Movement)
 	{

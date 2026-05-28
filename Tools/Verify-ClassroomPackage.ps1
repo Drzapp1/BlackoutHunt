@@ -20,6 +20,30 @@ if (-not $ExpectedAppLocalDependencyRoot) {
 
 $resolvedAppLocalDependencyRoot = [System.IO.Path]::GetFullPath((Resolve-Path $ExpectedAppLocalDependencyRoot))
 
+function Get-Sha256HashHex {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $hashCommand = Get-Command Get-FileHash -ErrorAction SilentlyContinue
+    if ($hashCommand) {
+        return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $bytes = $sha256.ComputeHash($stream)
+            return ([System.BitConverter]::ToString($bytes) -replace "-", "").ToLowerInvariant()
+        }
+        finally {
+            $sha256.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+
 $forbidden = @(
     @{ Name = "debug symbols"; Pattern = '\.pdb$' },
     @{ Name = "saved accounts"; Pattern = '[\\/]Saved[\\/]Account[\\/]' },
@@ -31,12 +55,18 @@ $forbidden = @(
     @{ Name = "account backend data"; Pattern = '[\\/]AccountBackend[\\/]data[\\/]' },
     @{ Name = "backend state secret"; Pattern = '(^|[\\/])state-secret\.txt$' },
     @{ Name = "backend player data"; Pattern = '(^|[\\/])players\.json$' },
+    @{ Name = "Steam local values"; Pattern = '(^|[\\/])SteamValues\.local\.ini$' },
+    @{ Name = "EOS local values"; Pattern = '(^|[\\/])EOSValues\.local\.ini$' },
     @{ Name = "local credential data"; Pattern = '(^|[\\/])local_credentials\.enc\.json$' },
     @{ Name = "local profile data"; Pattern = '(^|[\\/])profile\.json$' },
     @{ Name = "local progress data"; Pattern = '(^|[\\/])progress\.json$' },
     @{ Name = "credential or secret file"; Pattern = '(^|[\\/])[^\\/]*(secret|credential|token|oauth|apikey|api_key)[^\\/]*\.(json|txt|ini|env|key|pem|pfx|ppk)$' },
     @{ Name = "source asset archive"; Pattern = '(^|[\\/])(fnati-classic-undying|low-poly-character-base-mesh|scp-096)\.zip$' },
     @{ Name = "raw content source file"; Pattern = '(^|[\\/])(?:BlackoutHunt[\\/])?Content[\\/].*\.(fbx|gltf|glb|blend|obj|psd|psb|ma|mb|max|zip)$' },
+    @{ Name = "risky SCP096 prototype asset"; Pattern = '(^|[\\/])(?:BlackoutHunt[\\/])?Content[\\/]BlackoutHunt[\\/]Art[\\/]SCP096[\\/]' },
+    @{ Name = "risky SCP096 prototype external actor/object data"; Pattern = '(^|[\\/])(?:BlackoutHunt[\\/])?Content[\\/]__(?:ExternalActors|ExternalObjects)__[\\/]BlackoutHunt[\\/]Art[\\/]SCP096[\\/]' },
+    @{ Name = "unapproved Whisper jumpscare asset"; Pattern = '(^|[\\/])(?:BlackoutHunt[\\/])?Content[\\/]BlackoutHunt[\\/]Art[\\/]Jumpscares[\\/]Whisper[\\/]' },
+    @{ Name = "unapproved Whisper jumpscare external actor/object data"; Pattern = '(^|[\\/])(?:BlackoutHunt[\\/])?Content[\\/]__(?:ExternalActors|ExternalObjects)__[\\/]BlackoutHunt[\\/]Art[\\/]Jumpscares[\\/]Whisper[\\/]' },
     @{ Name = "risky low-poly hider asset"; Pattern = '(^|[\\/])(?:BlackoutHunt[\\/])?Content[\\/]BlackoutHunt[\\/]Art[\\/]Characters[\\/]Hider[\\/]' },
     @{ Name = "risky FNaTI hunter asset"; Pattern = '(^|[\\/])(?:BlackoutHunt[\\/])?Content[\\/]BlackoutHunt[\\/]Art[\\/]Characters[\\/]Hunter[\\/]' },
     @{ Name = "raw imported art source directory"; Pattern = '(^|[\\/])(?:BlackoutHunt[\\/])?Content[\\/]BlackoutHunt[\\/]Art[\\/].*[\\/]SourceFiles[\\/]' },
@@ -58,7 +88,6 @@ $requiredAlwaysCookPaths = @(
     "/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Materials",
     "/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Meshes",
     "/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Sounds",
-    "/Game/BlackoutHunt/Art/Jumpscares/Whisper",
     "/Game/BlackoutHunt/Art/Characters/Quaternius",
     "/Game/BlackoutHunt/Art/Characters/FreeAnimationLibrary",
     "/Game/BlackoutHunt/Art/Weapons/KayKit",
@@ -76,21 +105,30 @@ $requiredNeverCookPaths = @(
     "/Game/BlackoutHunt/Art/Characters/Hider",
     "/Game/BlackoutHunt/Art/Characters/Hunter",
     "/Game/BlackoutHunt/Art/Downloaded",
+    "/Game/BlackoutHunt/Art/SCP096",
+    "/Game/BlackoutHunt/Art/Jumpscares/Whisper",
+    "/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Input",
+    "/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Blueprints/FirstPerson",
     "/Game/Free_Jumpscares"
+)
+
+$requiredDisallowedConfigFiles = @(
+    "BlackoutHunt/Config/EOS/EOSValues.local.ini",
+    "BlackoutHunt/Config/Steam/SteamValues.local.ini"
 )
 
 $forbiddenAlwaysCookPaths = @(
     "/Game/BlackoutHunt/Art/Jumpscares",
+    "/Game/BlackoutHunt/Art/Jumpscares/Whisper",
     "/Game/BlackoutHunt/Art/Characters",
     "/Game/BlackoutHunt/Art/Characters/Hider",
     "/Game/BlackoutHunt/Art/Characters/Hunter",
     "/Game/BlackoutHunt/Art/Downloaded",
+    "/Game/BlackoutHunt/Art/SCP096",
     "/Game/Free_Jumpscares"
 )
 
 $requiredManifestCookedAssets = @(
-    "BlackoutHunt/Content/BlackoutHunt/Art/SCP096/Skeletal/SK_SCP096.uasset",
-    "BlackoutHunt/Content/BlackoutHunt/Art/SCP096/M_SCP096.uasset",
     "BlackoutHunt/Content/BlackoutHunt/Audio/SW_TerrifiedScreamFaint.uasset"
 )
 
@@ -113,6 +151,7 @@ $requiredNoticeSnippets = @(
     "OpenGameArt",
     "Fab Free Customizable Jumpscares",
     "SCP096 prototype",
+    "Content/BlackoutHunt/Art/Jumpscares/Whisper",
     "Excluded risky/prototype content"
 )
 
@@ -177,11 +216,35 @@ function Get-PackagingPathValues {
     return @($paths)
 }
 
+function Get-ConfigArrayValues {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ConfigPath,
+        [Parameter(Mandatory = $true)]
+        [string]$Key
+    )
+
+    if (-not (Test-Path -LiteralPath $ConfigPath)) {
+        $failures.Add("packaging policy: missing config file $ConfigPath")
+        return @()
+    }
+
+    $escapedKey = [regex]::Escape($Key)
+    $values = New-Object System.Collections.Generic.List[string]
+    foreach ($line in Get-Content -LiteralPath $ConfigPath) {
+        if ($line -match "^\s*\+?$escapedKey=(.+?)\s*$") {
+            $values.Add($Matches[1].Trim().Trim('"'))
+        }
+    }
+    return @($values)
+}
+
 function Test-PackagingPolicyConfig {
     $defaultGame = Join-Path $projectRoot "Config\DefaultGame.ini"
     $alwaysCook = @(Get-PackagingPathValues -ConfigPath $defaultGame -Key "DirectoriesToAlwaysCook")
     $neverCook = @(Get-PackagingPathValues -ConfigPath $defaultGame -Key "DirectoriesToNeverCook")
     $alwaysStageNonUfs = @(Get-PackagingPathValues -ConfigPath $defaultGame -Key "DirectoriesToAlwaysStageAsNonUFS")
+    $disallowedConfigFiles = @(Get-ConfigArrayValues -ConfigPath $defaultGame -Key "DisallowedConfigFiles")
 
     foreach ($requiredPath in $requiredAlwaysCookPaths) {
         if (-not (Test-ContainsPath -Paths $alwaysCook -ExpectedPath $requiredPath)) {
@@ -202,7 +265,14 @@ function Test-PackagingPolicyConfig {
             }
         }
 
-        if ($cookPath -match '/(SourceFiles|Downloaded)($|/)' -or $cookPath -match '/Characters/(Hider|Hunter)($|/)' -or $cookPath -ieq "/Game/Free_Jumpscares") {
+        if (
+            $cookPath -match '/(SourceFiles|Downloaded)($|/)' -or
+            $cookPath -match '/Characters/(Hider|Hunter)($|/)' -or
+            $cookPath -match '/Art/SCP096($|/)' -or
+            $cookPath -match '/Jumpscares/Whisper($|/)' -or
+            $cookPath -match '/Jumpscares/FreeCustomizableJumpscares/(Input|Blueprints/FirstPerson)($|/)' -or
+            $cookPath -ieq "/Game/Free_Jumpscares"
+        ) {
             $failures.Add("packaging policy: DirectoriesToAlwaysCook includes risky source path $cookPath")
         }
     }
@@ -210,6 +280,12 @@ function Test-PackagingPolicyConfig {
     foreach ($stagePath in $alwaysStageNonUfs) {
         if ($stagePath -ine "BlackoutHunt/Art/UI") {
             $failures.Add("packaging policy: unexpected DirectoriesToAlwaysStageAsNonUFS path $stagePath")
+        }
+    }
+
+    foreach ($requiredConfigFile in $requiredDisallowedConfigFiles) {
+        if (-not (Test-ContainsPath -Paths $disallowedConfigFiles -ExpectedPath $requiredConfigFile)) {
+            $failures.Add("packaging policy: missing required DisallowedConfigFiles path $requiredConfigFile")
         }
     }
 }
@@ -233,6 +309,7 @@ function Test-AssetPolicyDocs {
     $documentedPolicyPaths += @(Get-PackagingPathValues -ConfigPath $defaultGame -Key "DirectoriesToAlwaysCook")
     $documentedPolicyPaths += @(Get-PackagingPathValues -ConfigPath $defaultGame -Key "DirectoriesToNeverCook")
     $documentedPolicyPaths += @(Get-PackagingPathValues -ConfigPath $defaultGame -Key "DirectoriesToAlwaysStageAsNonUFS")
+    $documentedPolicyPaths += @(Get-ConfigArrayValues -ConfigPath $defaultGame -Key "DisallowedConfigFiles")
 
     foreach ($policyPath in ($documentedPolicyPaths | Sort-Object -Unique)) {
         if ($docText.IndexOf($policyPath, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
@@ -361,7 +438,7 @@ if (-not $playitFiles) {
 }
 else {
     foreach ($playit in $playitFiles) {
-        $hash = (Get-FileHash -LiteralPath $playit.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        $hash = Get-Sha256HashHex -Path $playit.FullName
         if ($hash -ne $ExpectedPlayitSha256.ToLowerInvariant()) {
             $relative = $playit.FullName.Substring($resolvedPackageRoot.Length).TrimStart('\', '/')
             $failures.Add("playit.exe hash mismatch: $relative has $hash")

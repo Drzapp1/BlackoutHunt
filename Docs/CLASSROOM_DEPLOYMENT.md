@@ -5,6 +5,7 @@ This guide is for live classroom use where one teacher machine hosts Blackout Hu
 ## Classroom Defaults
 
 - The project defaults to classroom mode in `Config/DefaultGame.ini`.
+- The default join limit is 32 players (`MaxPlayers`), sized for a full class plus the teacher host. Students who try to join a full lobby are returned to the menu with a "class is full" message; the host can also soft-kick stuck players to free a slot.
 - External Google/Microsoft login and backend sync are disabled by default.
 - Local username/password profiles remain available on each machine.
 - Network hosting, direct-IP join, and the Playit tunnel fallback remain available without requiring administrator rights.
@@ -17,13 +18,14 @@ This guide is for live classroom use where one teacher machine hosts Blackout Hu
 - The Classroom tab can generate a local 12-question printable manual set from the selected lesson preset, including hints and a teacher answer key.
 - Scare intensity levels are `Off`, `Low`, `Horror`, and `Chaos`. `Horror` is the default live-classroom level and is tuned for frequent automatic scares.
 - Every connected player must ready up before a normal live round starts. The listen-server host can soft-kick stuck or misjoined human players from the lobby roster; kicked students return to the main menu and may rejoin.
+- Students are automatically re-tested on questions they get wrong. A missed question is re-asked (shown as a "SECOND CHANCE" review) at the student's next objective station or train bonus terminal, and keeps coming back until they answer it correctly. This is a priority, not a blocker, so it never stalls a round.
 - Caught students who return as Hall Monitors still count toward Physics Classroom participation, class mastery, and individual mastery. Their trap and hint tools stay locked until they meet the answer-team contribution target.
 - The host can open a projector-friendly classroom board from the Classroom tab or `B`. It shows phase, timer, the preferred join address, readiness, role mix, objective progress, and revision mastery without showing student locations or answer keys.
 
 ## Teacher-Hosted Classroom
 
 1. Extract the packaged Windows classroom zip and start `BlackoutHunt.exe` on the teacher machine. The classroom package includes app-local Windows runtime DLLs, so normal game launch should not require administrator rights or a separate VC++ Redistributable install.
-2. Choose the `LIVE CLASSROOM` button for the map you want from the Play menu, or host a normal map if you are not running Physics Classroom. Before students join, open the Classroom tab and check Host Preflight for `Ready`, `Needs tunnel`, or `Missing endpoint`.
+2. Choose the `LIVE CLASSROOM` button for the map you want from the Play menu, or host a normal map if you are not running Physics Classroom. Before students join, open the Classroom tab and follow the host-only `Run Class` checklist for preflight, map/preset, join code, roster/ready, warmup, board, and post-round export status.
 3. The game shows the preferred classroom join address when the listen server is open. For the owned beta tunnel this is `blackouthunt.playit.plus:24761`.
 4. Students enter an in-game lobby name if prompted, then choose the saved classroom endpoint or type `blackouthunt.playit.plus:24761`.
 5. If the Playit tunnel is not ready, the classroom preflight starts the verified bundled Playit agent and reports either the configured classroom endpoint or a clear setup-required status.
@@ -45,6 +47,7 @@ Students may not:
 - kick other players
 - force-start rounds
 - change match/classroom settings
+- use the `Run Class` checklist actions
 - run bot/debug commands
 - start or stop tunnel helpers
 - trigger targeted/admin scares
@@ -68,6 +71,20 @@ The `Generate 12Q` button writes a teacher-local Markdown question set from the 
 Saved\ClassroomPresets\QuestionSets
 ```
 
+## Classroom Reports
+
+At the end of a Physics Classroom round, the host writes a local classroom report automatically. The host can also use `Export Report` from the Classroom tab, or the `ExportRevisionReport` console command, to write the current report on demand.
+
+Reports are saved under:
+
+```text
+Saved\ClassReports
+```
+
+Each export keeps the existing CSV files for spreadsheet workflows and also writes a teacher-local `*_teacher_recap.md` file. The Markdown recap summarizes the session settings, map, preset, topic focus, difficulty mix, mastery targets, weak topics, common misconceptions, students needing follow-up by lobby display name, a suggested next preset/focus, objective progress, and a printable class recap section.
+
+The teacher recap may include question text, answer explanations, and lobby display names. Keep it on the host machine and review it before projecting or sharing. Reports do not include IP addresses, online account IDs, credentials, heatmap locations, saved account data, or tunnel setup details.
+
 ## Playtest Telemetry Heatmaps
 
 Host machines can explicitly export anonymous playtest telemetry from the Classroom tab with `Export Heatmap`, or from the console with `ExportPlaytestTelemetry`. The export writes CSV files under:
@@ -79,6 +96,20 @@ Saved\PlaytestTelemetry
 The event CSV is designed for spreadsheet heatmaps or quick map overlays. It records event type, map/stage/round phase, world location, anonymous session-local player tags, role labels, question/topic metadata, and counts. Useful rows include captures, exit route choices, escapes, objective starts/completions/stalls, unused lockers, CCTV detections, scare cues, jumpscares, Teacher scans, wrong-answer noise, battery pickups, and flashlight starvation.
 
 Telemetry is local, teacher/developer-controlled, and not exported automatically. The anonymous tags are generated from runtime-only player/object IDs and reset with the local telemetry session; the export does not write player names, IP addresses, online account IDs, credentials, answer keys, or local account data.
+
+After exporting heatmap telemetry, generate a map playtest evidence report with:
+
+```powershell
+.\Tools\New-PlaytestEvidenceReport.ps1
+```
+
+By default the tool reads telemetry event CSV files from `Saved\PlaytestTelemetry` and writes a Markdown report under:
+
+```text
+Saved\PlaytestEvidence
+```
+
+Use `-InputPath <file-or-folder>` to analyze a specific export folder, `-OutputRoot <folder>` to choose another local report folder, `-BucketSize 1000` to tune rough world-coordinate grouping, and `-Top 8` to adjust how many clusters appear per section. The report summarizes capture zones, objective stalls, locker use, route/exit choices, CCTV hotspots, scare frequency, battery starvation, and wrong-answer topic/difficulty clusters when those rows exist. If an export has too little data, the report says so instead of inventing conclusions. It intentionally omits session IDs, player tags, account/network data, selected answer text, and answer keys.
 
 ## Tunnel Fallback
 
@@ -96,6 +127,15 @@ The game verifies the bundled `playit.exe` hash before launching it. If verifica
 The school-safe Live Classroom path is tunnel-only by default. It binds the listen server to `127.0.0.1`, so Windows should not ask a standard student or teacher account to allow inbound public/private network access.
 
 Direct LAN hosting still exists through `Host LAN`, normal direct-IP host commands, or by setting `bClassroomLoopbackOnlyHost=False` in an IT-managed build. Those paths listen on UDP `7777` on the teacher machine network interface and can trigger the Windows Firewall consent prompt. On school PCs, do not rely on the game to create that firewall rule; have IT pre-authorize the executable/port or use the default Playit classroom endpoint.
+
+## Low-Spec And Locked-Down Machines
+
+The primary student path is simply to double-click `BlackoutHunt.exe`. On weak hardware this is usually enough:
+
+- When the game detects integrated or software graphics, it automatically applies a conservative graphics preset and 1280x720 windowed mode on first launch, so a machine that reaches the menu is already in a safe profile. Students can then leave Auto graphics on, or pick `Low 4GB` / `720p Windowed` from in-game Settings (also surfaced as quick controls in the Classroom workflow).
+- Do not ask students to run `.cmd`, `.bat`, PowerShell, or console commands. Locked-down school accounts often block console execution, which can make the packaged `Launch-BlackoutHunt-DX11*.cmd` files unusable. Treat those `.cmd` files as IT/developer fallbacks only, until console execution is proven on the actual school image.
+- The only failure in-game Settings cannot fix is a machine that cannot reach the menu because the engine fails to select a usable renderer at default settings. For that case, an optional non-console launcher that forces DX11/windowed/720p at process start is provided as source under `Tools\LowSpecLauncher`. It must be built and validated on the real school image before being added to a classroom package (see its README); it is not auto-staged into releases.
+- Machines that expose only Microsoft Basic Display Adapter, Remote Desktop software graphics, an unsupported VM graphics path, or a pre-DX11 GPU cannot meet Unreal's Direct3D feature level 11.0 requirement and should be identified quickly rather than debugged during class.
 
 ## Windows Hotspot
 
@@ -115,7 +155,7 @@ Do not distribute a packaged build that already contains `Saved\Account`, `Saved
 
 ## Classroom Preflight And Support Bundle
 
-The host-only Classroom tab includes Host Preflight. It is designed for a standard teacher account without administrator access. It shows the beta version, map/classroom mode, Playit endpoint, join-code readiness, loopback/direct-LAN state, admin-access expectation, tunnel and hotspot permissions, online subsystem, graphics/RHI status, package root, runtime executable folder, runtime log path, support bundle folder, support-bundle tool state, and deployment guide path. Buttons let the host refresh the summary, copy the classroom join code, start the verified Playit helper, open logs/package/support folders, create a support bundle when the tool is present, and open this guide. Remote student clients do not get these host setup controls.
+The host-only Classroom tab includes Host Preflight. It is designed for a standard teacher account without administrator access. It shows the beta version, map/classroom mode, Playit endpoint, join-code readiness, loopback/direct-LAN state, admin-access expectation, tunnel and hotspot permissions, online subsystem, graphics/RHI status, active graphics preset, resolution state, package root, runtime executable folder, runtime log path, support bundle folder, support-bundle tool state, and deployment guide path. Buttons let the host refresh the summary, copy the classroom join code, start the verified Playit helper, open logs/package/support folders, create a support bundle when the tool is present, and open this guide. Remote student clients do not get these host setup controls.
 
 For locked-down school PCs, `Admin access` should read that administrator rights are not required for the Live Classroom defaults. If it mentions direct LAN or firewall policy, use the Playit/loopback classroom path or ask IT for a managed build instead of trying to elevate the teacher account.
 
@@ -150,6 +190,28 @@ The script runs `Tools\Verify-ClassroomPackage.ps1` after packaging. Verificatio
 - a missing or hash-mismatched `playit.exe`
 - missing app-local Windows runtime DLLs beside the root launcher or packaged Win64 Shipping executable
 
+After packaging, run the local packaged classroom smoke test:
+
+```powershell
+.\Tools\Run-PackagedClassroomSmoke.ps1
+```
+
+This launches one packaged Live Classroom host and two packaged clients on local loopback, auto-readies them, waits for the host/client join, ready, round-start, and clean-quit automation markers, and writes a report under `Saved\PackagedClassroomSmoke\<timestamp>\SMOKE_REPORT.md`. The run does not use external accounts, public matchmaking, administrator rights, or the Playit tunnel; automation-only Live Classroom startup skips the tunnel helper and clients join `127.0.0.1:7777` directly. If `Builds\Windows` is missing, build it first with `.\Tools\Package-Windows-Classroom.ps1`.
+
+After any packaged manual or automated run, scan the runtime logs:
+
+```powershell
+.\Tools\Test-RuntimeLogs.ps1 -Path .\Builds\Windows\BlackoutHunt\Saved\Logs
+```
+
+The gate fails on crashes, ensures, missing runtime DLLs, severe asset/map load failures, net driver or travel failures, repeated soft-load warning spam, automation failure markers, and missing required automation markers when `-ExpectAutomationMarkers` is used. Output is intentionally limited to a rule name, path, line number, and sanitized first matching line. `-AllowedFindingPattern` is a developer-only escape hatch for reviewed exceptions and should not be used for release validation.
+
+To run the broader stability gate against an existing classroom package, including classroom package verification and runtime log checks, use:
+
+```powershell
+.\Tools\Run-StabilityGate.ps1 -SkipPackage -ExistingPackageRoot .\Builds\Windows -Configuration Shipping
+```
+
 Linux groundwork is available through:
 
 ```powershell
@@ -163,9 +225,11 @@ Native Linux validation is still a separate release task.
 - Build editor target: `.\Tools\Build-Editor.ps1`
 - Package classroom Windows build: `.\Tools\Package-Windows-Classroom.ps1`
 - Confirm package verification passes.
+- Run packaged host plus two client smoke test: `.\Tools\Run-PackagedClassroomSmoke.ps1`.
+- Scan packaged runtime logs after smoke/manual runs: `.\Tools\Test-RuntimeLogs.ps1 -Path .\Builds\Windows\BlackoutHunt\Saved\Logs`.
 - Create and review a classroom preflight/support bundle: `.\Tools\New-ClassroomSupportBundle.ps1`
 - On a clean Windows machine, confirm a standard user can extract the zip and launch `BlackoutHunt.exe` without administrator rights or VC++ Redistributable installation.
-- On low-spec or lab machines, confirm `Launch-BlackoutHunt-DX11.cmd` and `Launch-BlackoutHunt-DX11-Low.cmd` start the game. If the D3D11-compatible GPU error appears, confirm the machine is not using Microsoft Basic Display Adapter, hidden hardware acceleration through Remote Desktop, or a VM graphics path without Direct3D feature level 11.0.
+- On low-spec or lab machines, first confirm a standard user can double-click `BlackoutHunt.exe` and reach the menu, then switch weak machines to `Low 4GB` and 1280x720 windowed mode from in-game Settings. Treat `Launch-BlackoutHunt-DX11.cmd` and `Launch-BlackoutHunt-DX11-Low.cmd` as IT/developer fallbacks until the real school Windows image proves `.cmd` execution is allowed; they are not a classroom instruction for locked-down student accounts. If the D3D11-compatible GPU error appears, confirm the machine is not using Microsoft Basic Display Adapter, hidden hardware acceleration through Remote Desktop, or a VM graphics path without Direct3D feature level 11.0.
 - Host a Live Classroom lobby from the teacher machine and confirm the join address is the configured Playit endpoint.
 - Join with at least two student clients through the saved classroom endpoint.
 - Confirm the classroom path does not show a Windows Firewall public/private networks prompt on a standard school account.

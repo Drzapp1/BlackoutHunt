@@ -50,6 +50,21 @@ private:
 		Settings
 	};
 
+	enum class EBHClassroomRunbookStep : uint8
+	{
+		Preflight,
+		MapPreset,
+		ManualQuestions,
+		Tunnel,
+		Students,
+		Roles,
+		ReadyGate,
+		Warmup,
+		Hunt,
+		Board,
+		Export
+	};
+
 	FReply OnStartClicked();
 	FReply OnStartAccountClicked();
 	FReply OnStartGuideClicked();
@@ -118,6 +133,7 @@ private:
 	FReply OnPracticeRefreshClicked();
 	FReply OnPracticeJumpscareClicked();
 	FReply OnJumpscareVariantClicked(FString VariantToken);
+	FReply OnOpenAtmosphereConsoleClicked();
 	FReply OnAtmosphereTestClicked(FString Command);
 	FReply OnTesterResourcesClicked();
 	FReply OnTesterTrainClicked();
@@ -228,6 +244,10 @@ private:
 	FText GetClassroomPreflightStatusText() const;
 	FText GetClassroomPreflightText() const;
 	FSlateColor GetClassroomPreflightStatusColor() const;
+	FText GetClassroomRunbookStepStatusText(EBHClassroomRunbookStep Step) const;
+	FSlateColor GetClassroomRunbookStepStatusColor(EBHClassroomRunbookStep Step) const;
+	bool CanRunbookStartHunt() const;
+	bool CanRunbookExportReport() const;
 	EVisibility GetRevisionControlsVisibility() const;
 	FText GetRevisionControlsSummaryText() const;
 	FSlateColor GetRevisionControlsSummaryColor() const;
@@ -260,6 +280,8 @@ private:
 	TSharedRef<SWidget> BuildLessonPresetPanel();
 	TSharedRef<SWidget> BuildRevisionControlsPanel();
 	TSharedRef<SWidget> BuildClassroomPreflightPanel();
+	TSharedRef<SWidget> BuildClassroomRunbookPanel();
+	TSharedRef<SWidget> BuildClassroomRunbookStep(int32 StepNumber, EBHClassroomRunbookStep Step, const FText& Title, const FText& ActionLabel, const FOnClicked& OnClicked, TAttribute<bool> ActionEnabled);
 	TSharedRef<SWidget> BuildClassroomPanel();
 	TSharedRef<SWidget> BuildGuidePanel();
 	TSharedRef<SWidget> BuildControlsPanel();
