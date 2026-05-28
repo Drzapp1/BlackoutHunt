@@ -102,6 +102,13 @@ ABHSecurityCamera::ABHSecurityCamera()
 	StatusLight->SetCastShadows(false);
 	FeedCapture->SetRelativeLocation(FVector(54.0f, 0.0f, 0.0f));
 	FeedCapture->FOVAngle = 44.0f;
+	// Capture the fully post-processed, tonemapped LDR image with an opaque alpha. The
+	// default SCS_SceneColorHDR writes linear HDR colour with a non-opaque alpha, which
+	// renders black/transparent once it is sampled by the monitor's UI feed material.
+	FeedCapture->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
+	// CaptureScene() is also driven manually (and at a low tick rate), so persist the
+	// rendering state between captures to avoid a black first frame on the feed.
+	FeedCapture->bAlwaysPersistRenderingState = true;
 	FeedCapture->bCaptureEveryFrame = false;
 	FeedCapture->bCaptureOnMovement = false;
 	FeedCapture->SetActive(false);

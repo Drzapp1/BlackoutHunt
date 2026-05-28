@@ -386,8 +386,11 @@ void ABHSecurityMonitor::RefreshLiveFeed()
 	static bool bSearchedFeedMaterial = false;
 	if (!bSearchedFeedMaterial)
 	{
+		// Use the engine Widget3DPassThrough material: it exposes the "SlateUI" texture
+		// parameter that we bind the feed render target to, and it reliably displays the
+		// capture. The custom /Game M_Camera_Screen material was skipped because its
+		// texture parameter name is not guaranteed to match, which left the screen black.
 		static const TCHAR* FeedMaterialPaths[] = {
-			TEXT("/Game/SecurityCameras/Materials/Special/M_Camera_Screen.M_Camera_Screen"),
 			TEXT("/Engine/EngineMaterials/Widget3DPassThrough.Widget3DPassThrough"),
 			TEXT("/Engine/EngineMaterials/Widget3DPassThrough_Translucent.Widget3DPassThrough_Translucent"),
 			TEXT("/Engine/EngineMaterials/Widget3DPassThrough_Masked_OneSided.Widget3DPassThrough_Masked_OneSided")
@@ -450,6 +453,11 @@ int32 ABHSecurityMonitor::ResolveLiveFeedResolution() const
 	{
 		QualityLevel = Settings->GetTextureQuality();
 	}
+
+	// Custom/unknown scalability levels can still report -1 (or otherwise fall outside
+	// the expected range). Clamp into the valid 0..3 band so the switch maps an unknown
+	// low-end machine to the cheapest feed res rather than the most expensive default.
+	QualityLevel = FMath::Clamp(QualityLevel, 0, 3);
 
 	switch (QualityLevel)
 	{
@@ -545,7 +553,6 @@ bool ABHSecurityMonitor::TrySendHallMonitorFalsePing(ABHCharacter* Character, AB
 		}
 	}
 
-	LastFalsePingTimes.Add(Character, Now);
 	const FVector FakeLocation = ResolveFalsePingLocation(Character, Camera);
 	int32 HunterRecipients = 0;
 	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
@@ -563,6 +570,13 @@ bool ABHSecurityMonitor::TrySendHallMonitorFalsePing(ABHCharacter* Character, AB
 		PC->ClientShowCCTVReveal(nullptr, FakeLocation + FVector(0.0f, 0.0f, 80.0f), TEXT("MOTION"), BHHallMonitorFalseCCTVMarkerSeconds);
 		PC->ClientShowStatusMessage(FString::Printf(TEXT("CCTV motion: %s, %.0fm away. Verify before chase."), *BHMonitorCompassFromDelta(Delta), DistanceMeters), 3.0f);
 		++HunterRecipients;
+	}
+
+	// Only burn the cooldown when the ping actually reached a hunter; a ping with
+	// no recipient does nothing, so it should not cost the FakeHunter their cooldown.
+	if (HunterRecipients > 0)
+	{
+		LastFalsePingTimes.Add(Character, Now);
 	}
 
 	if (InteractingPC)
