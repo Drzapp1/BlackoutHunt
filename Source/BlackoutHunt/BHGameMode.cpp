@@ -6750,7 +6750,7 @@ void ABHGameMode::AddFoggroundsLightingPass()
 			SkyLightComponent->SetIntensity(bExtremeFog ? 1.12f : (bHeavyFog ? 0.98f : 0.68f));
 			SkyLightComponent->SetLightColor(SkyTint);
 			SkyLightComponent->SetLowerHemisphereColor(FLinearColor(0.120f, 0.150f, 0.170f, 1.0f));
-			SkyLightComponent->SetVolumetricScatteringIntensity(0.10f);
+			SkyLightComponent->SetVolumetricScatteringIntensity(0.25f);
 			SkyLightComponent->SetRealTimeCaptureEnabled(true);
 			SkyLightComponent->SetCaptureIsDirty();
 		}
