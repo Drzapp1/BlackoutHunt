@@ -2471,14 +2471,31 @@ void ABHHUD::DrawQuestionPanel(const ABHObjectiveStation* Station)
 		}
 	}
 
-	for (int32 Index = 0; Index < ChoiceCount; ++Index)
+	// Calculation questions use typed numeric entry instead of multiple choice, so the
+	// student must actually compute the value rather than recognise it among options.
+	if (bRevisionQuestion && Station->GetQuestionType() == EBHQuestionType::Calculation)
 	{
-		const float ChoiceY = ChoiceStartY + Index * 32.0f;
-		const FLinearColor RowColor = Index % 2 == 0 ? FLinearColor(0.045f, 0.052f, 0.050f, 0.80f) : FLinearColor(0.034f, 0.041f, 0.040f, 0.80f);
-		DrawRect(RowColor, PanelX + 26.0f, ChoiceY - 5.0f, PanelW - 52.0f, 27.0f);
-		DrawRect(FLinearColor(0.95f, 0.56f, 0.18f, 0.34f), PanelX + 26.0f, ChoiceY - 5.0f, 3.0f, 27.0f);
-		DrawKeyBox(FString::Printf(TEXT("%d"), Index + 1), PanelX + 38.0f, ChoiceY - 2.0f, 26.0f, 21.0f, FLinearColor(0.95f, 0.56f, 0.18f, 0.94f), true);
-		DrawWrappedHudText(Station->GetQuestionChoice(Index), PanelX + 76.0f, ChoiceY + 1.0f, PanelW - 116.0f, FLinearColor(0.88f, 0.92f, 0.88f, 1.0f), GEngine->GetSmallFont(), 0.82f, 14.0f, 1);
+		const ABHCharacter* LocalChar = Cast<ABHCharacter>(GetOwningPawn());
+		const FString Typed = LocalChar ? LocalChar->GetNumericAnswerEntry() : FString();
+		const float EntryY = ChoiceStartY + 4.0f;
+		DrawRect(FLinearColor(0.05f, 0.06f, 0.06f, 0.86f), PanelX + 26.0f, EntryY - 5.0f, PanelW - 52.0f, 30.0f);
+		DrawRect(FLinearColor(0.30f, 0.78f, 0.95f, 0.42f), PanelX + 26.0f, EntryY - 5.0f, 3.0f, 30.0f);
+		DrawKeyBox(TEXT("0-9"), PanelX + 38.0f, EntryY - 2.0f, 40.0f, 22.0f, FLinearColor(0.40f, 0.82f, 0.96f, 0.94f), true);
+		const FString Shown = Typed.IsEmpty() ? TEXT("_") : (Typed + TEXT("_"));
+		DrawHudText(FString::Printf(TEXT("Your answer: %s"), *Shown), PanelX + 92.0f, EntryY + 2.0f, FLinearColor(0.92f, 0.98f, 1.0f, 1.0f), GEngine->GetSmallFont(), 0.92f);
+		DrawWrappedHudText(TEXT("Type the value (digits, . and -). Backspace edits. Press Enter to submit."), PanelX + 28.0f, EntryY + 28.0f, PanelW - 56.0f, FLinearColor(0.66f, 0.78f, 0.84f, 0.92f), GEngine->GetSmallFont(), 0.62f, 11.0f, 1);
+	}
+	else
+	{
+		for (int32 Index = 0; Index < ChoiceCount; ++Index)
+		{
+			const float ChoiceY = ChoiceStartY + Index * 32.0f;
+			const FLinearColor RowColor = Index % 2 == 0 ? FLinearColor(0.045f, 0.052f, 0.050f, 0.80f) : FLinearColor(0.034f, 0.041f, 0.040f, 0.80f);
+			DrawRect(RowColor, PanelX + 26.0f, ChoiceY - 5.0f, PanelW - 52.0f, 27.0f);
+			DrawRect(FLinearColor(0.95f, 0.56f, 0.18f, 0.34f), PanelX + 26.0f, ChoiceY - 5.0f, 3.0f, 27.0f);
+			DrawKeyBox(FString::Printf(TEXT("%d"), Index + 1), PanelX + 38.0f, ChoiceY - 2.0f, 26.0f, 21.0f, FLinearColor(0.95f, 0.56f, 0.18f, 0.94f), true);
+			DrawWrappedHudText(Station->GetQuestionChoice(Index), PanelX + 76.0f, ChoiceY + 1.0f, PanelW - 116.0f, FLinearColor(0.88f, 0.92f, 0.88f, 1.0f), GEngine->GetSmallFont(), 0.82f, 14.0f, 1);
+		}
 	}
 
 	if (!Station->GetQuestionFeedback().IsEmpty())

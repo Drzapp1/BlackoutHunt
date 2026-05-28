@@ -840,6 +840,18 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 		return bCorrect;
 	}
 
+	// Firm-but-safe anti-gaming: after a wrong answer the station holds answer submission for a
+	// few seconds so the student actually reads the correction instead of cycling 1-4. The hold
+	// only delays input — the player is never pinned and can walk away and return.
+	if (Now < CorrectionHoldUntil)
+	{
+		if (PC)
+		{
+			PC->ClientShowStatusMessage(FString::Printf(TEXT("Read the correction first. Retry in %.0fs."), FMath::Max(0.0f, CorrectionHoldUntil - Now) + 0.5f), 2.0f);
+		}
+		return false;
+	}
+
 	int32 EvaluatedAnswerIndex = AnswerIndex;
 	TArray<ABHCharacter*> RevisionParticipants;
 	const bool bActiveRevisionMode = BHGS && BHGS->bRevisionMode;
@@ -962,12 +974,14 @@ bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPla
 				{
 					RevisionParticipants.Add(Character);
 				}
+				// A correct answer counts as a correction when the loaded question was itself a
+				// re-surfaced review (a question the targeted student had previously missed).
+				const bool bCorrection = bRevisionReviewQuestion;
 				for (ABHCharacter* Participant : RevisionParticipants)
 				{
-					const bool bCorrection = PendingCorrectionCharacters.Contains(Participant);
 					BHGM->RecordRevisionAnswer(Participant, RevisionQuestion, true, bCorrection, EvaluatedSelectedAnswer, RevisionTeamSummary);
-					PendingCorrectionCharacters.Remove(Participant);
 				}
+				PendingCorrectionCharacters.Reset();
 			}
 
 			RevisionQuestionsRequired = FMath::Max(1, RevisionQuestionsRequired);
@@ -978,6 +992,10 @@ bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPla
 			RevisionTeamPlayerIds.Reset();
 			RevisionTeamSummary = TEXT("");
 		}
+
+		// A correct answer clears the anti-gaming hold/streak for this station.
+		ConsecutiveWrongAtStation = 0;
+		CorrectionHoldUntil = 0.0f;
 
 		const FString ActionVerb = GetActionVerb().ToLower();
 		if (Character)
@@ -1032,6 +1050,13 @@ bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPla
 		return true;
 	}
 
+	// --- Wrong answer path ---
+	// Capture the missed question's teaching text before any reload overwrites it.
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	const FString MissedExplanation = QuestionExplanation;
+	const FString MissedHint = QuestionHint;
+	const FString MissedTopic = QuestionTopic;
+
 	if (bActiveRevisionMode)
 	{
 		FBHRevisionQuestion RevisionQuestion;
@@ -1052,33 +1077,57 @@ bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPla
 			}
 			for (ABHCharacter* Participant : RevisionParticipants)
 			{
+				// RecordRevisionAnswer enqueues this question for spaced review and applies the
+				// topic-mastery decay; the missed question resurfaces later, not right now.
 				BHGM->RecordRevisionAnswer(Participant, RevisionQuestion, false, false, EvaluatedSelectedAnswer, RevisionTeamSummary);
-				PendingCorrectionCharacters.Add(Participant);
 			}
 		}
 	}
 
-	QuestionFeedback = bActiveRevisionMode
-		? FString::Printf(TEXT("Wrong. Hint: %s Correction: %s"), *QuestionHint, *QuestionExplanation)
-		: (QuestionHint.IsEmpty()
-			? TEXT("Wrong. The room got quieter.")
-			: FString::Printf(TEXT("Wrong. Hint: %s"), *QuestionHint));
-	bQuestionFeedbackCorrect = false;
-	WorkProgress = FMath::Max(0.0f, WorkProgress - 0.18f);
+	// Shared wrong-answer pressure (retained); the detention mark scales on repeated misses.
 	if (Character)
 	{
 		Character->AddFear(15.0f);
 		Character->AddDread(22.0f);
-		Character->ApplyDetentionMark(38.0f);
+		Character->ApplyDetentionMark(38.0f + 8.0f * static_cast<float>(FMath::Min(ConsecutiveWrongAtStation, 3)));
 	}
-	if (PC)
-	{
-		PC->ClientShowStatusMessage(TEXT("Wrong answer. The Teacher heard that."), 3.25f);
-	}
+	WorkProgress = FMath::Max(0.0f, WorkProgress - 0.18f);
 	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
 	{
 		BHGM->NotifyLoudNoise(GetActorLocation(), TEXT("wrong answer"));
 	}
+
+	// Escalating correction hold: each consecutive wrong answer extends the time the student must
+	// spend reading the correction before answering again. Input-only; the player can walk away.
+	++ConsecutiveWrongAtStation;
+	const float HoldSeconds = FMath::Clamp(3.0f + 1.5f * static_cast<float>(ConsecutiveWrongAtStation - 1), 3.0f, 9.0f);
+	CorrectionHoldUntil = Now + HoldSeconds;
+	bQuestionFeedbackCorrect = false;
+
+	if (bActiveRevisionMode)
+	{
+		// Anti-echo: never leave the just-revealed answer on screen to be re-entered. Load a
+		// fresh, eased adaptive question; the missed one is already queued for spaced review.
+		QueueAdaptiveQuestionForParticipants(RevisionParticipants, false);
+		++RevisionQuestionStep;
+		ConfigureQuestion();
+		QuestionFeedback = FString::Printf(TEXT("Wrong. Correction (%s): %s Hint: %s A new question loaded — read the correction, then answer in %.0fs."), *MissedTopic, *MissedExplanation, *MissedHint, HoldSeconds);
+		if (PC)
+		{
+			PC->ClientShowStatusMessage(FString::Printf(TEXT("Wrong. Read the correction; a new question loaded. Retry in %.0fs."), HoldSeconds), 3.5f);
+		}
+	}
+	else
+	{
+		QuestionFeedback = MissedHint.IsEmpty()
+			? TEXT("Wrong. The room got quieter.")
+			: FString::Printf(TEXT("Wrong. Hint: %s"), *MissedHint);
+		if (PC)
+		{
+			PC->ClientShowStatusMessage(TEXT("Wrong answer. The Teacher heard that."), 3.25f);
+		}
+	}
+	ApplyStationVisuals();
 
 	return false;
 }
@@ -1164,6 +1213,17 @@ bool ABHObjectiveStation::SubmitNumericAnswer(ABHCharacter* Character, float Val
 		}
 		ApplyStationVisuals();
 		return bWithinTolerance;
+	}
+
+	// Correction hold (see SubmitAnswer): block resubmission until the student has had a few
+	// seconds with the correction after a wrong answer.
+	if (Now < CorrectionHoldUntil)
+	{
+		if (PC)
+		{
+			PC->ClientShowStatusMessage(FString::Printf(TEXT("Read the correction first. Retry in %.0fs."), FMath::Max(0.0f, CorrectionHoldUntil - Now) + 0.5f), 2.0f);
+		}
+		return false;
 	}
 
 	// Numeric entry is individual (you type your own value), so credit the submitter

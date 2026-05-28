@@ -251,4 +251,10 @@ protected:
 	FString PendingReviewQuestionId;
 	float LastNoiseTime;
 	float LastAnswerTime;
+	// Server-only anti-gaming state. After a wrong answer the station holds answer submission
+	// until this server time so the student reads the correction instead of brute-forcing the
+	// four choices; the hold escalates with consecutive wrong answers. Neither pins the player
+	// in place — they can always walk away from the station.
+	float CorrectionHoldUntil = 0.0f;
+	int32 ConsecutiveWrongAtStation = 0;
 };

@@ -1560,6 +1560,15 @@ void ABHCharacter::Tick(float DeltaSeconds)
 	ApplyKeyboardLook(DeltaSeconds);
 	MovementFailurePulse = FMath::FInterpTo(MovementFailurePulse, 0.0f, DeltaSeconds, 5.5f);
 
+	// Track the question station the local player is aiming at so typed numeric entry knows
+	// when a Calculation question is active. Owning-client/host human pawns only.
+	if (IsLocallyControlled() && IsPlayerControlled())
+	{
+		AActor* FocusActor = nullptr;
+		FindInteractableFromView(FocusActor, 225.0f);
+		SetClientFocusedQuestionStation(Cast<ABHObjectiveStation>(FocusActor));
+	}
+
 	if (HasAuthority() && IsSpecialMoveActive())
 	{
 		UpdateSpecialMoveAuthority(DeltaSeconds);
@@ -1981,6 +1990,21 @@ void ABHCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCompone
 	PlayerInputComponent->BindKey(EKeys::NumPadTwo, IE_Pressed, this, &ABHCharacter::SubmitAnswerTwo);
 	PlayerInputComponent->BindKey(EKeys::NumPadThree, IE_Pressed, this, &ABHCharacter::SubmitAnswerThree);
 	PlayerInputComponent->BindKey(EKeys::NumPadFour, IE_Pressed, this, &ABHCharacter::SubmitAnswerFour);
+	// Typed numeric entry for Calculation questions. These top-row keys are otherwise unused;
+	// keys 1-4 reuse the answer handlers (routed to digit entry when a calc question is focused).
+	PlayerInputComponent->BindKey(EKeys::Five, IE_Pressed, this, &ABHCharacter::NumericEntryFive);
+	PlayerInputComponent->BindKey(EKeys::Six, IE_Pressed, this, &ABHCharacter::NumericEntrySix);
+	PlayerInputComponent->BindKey(EKeys::Seven, IE_Pressed, this, &ABHCharacter::NumericEntrySeven);
+	PlayerInputComponent->BindKey(EKeys::Eight, IE_Pressed, this, &ABHCharacter::NumericEntryEight);
+	PlayerInputComponent->BindKey(EKeys::Nine, IE_Pressed, this, &ABHCharacter::NumericEntryNine);
+	PlayerInputComponent->BindKey(EKeys::Zero, IE_Pressed, this, &ABHCharacter::NumericEntryZero);
+	PlayerInputComponent->BindKey(EKeys::Period, IE_Pressed, this, &ABHCharacter::NumericEntryDecimal);
+	PlayerInputComponent->BindKey(EKeys::Decimal, IE_Pressed, this, &ABHCharacter::NumericEntryDecimal);
+	PlayerInputComponent->BindKey(EKeys::Hyphen, IE_Pressed, this, &ABHCharacter::NumericEntryMinus);
+	PlayerInputComponent->BindKey(EKeys::Subtract, IE_Pressed, this, &ABHCharacter::NumericEntryMinus);
+	PlayerInputComponent->BindKey(EKeys::BackSpace, IE_Pressed, this, &ABHCharacter::NumericEntryBackspace);
+	// Enter is the existing "Ready" action; ToggleReady() submits a typed numeric answer
+	// when a calculation question is focused, otherwise it toggles ready as before.
 }
 
 void ABHCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -2504,6 +2528,15 @@ void ABHCharacter::TryBHopJump()
 
 void ABHCharacter::ToggleReady()
 {
+	// Enter doubles as "submit typed answer" when a calculation question is focused with a
+	// pending numeric entry. Outside that context it toggles lobby readiness as before, so
+	// there is no conflict (a focused calc question only exists mid-Hunt, never in the lobby).
+	if (IsCalculationEntryActive() && !NumericAnswerEntry.IsEmpty())
+	{
+		ConfirmNumericAnswer();
+		return;
+	}
+
 	if (ABHPlayerController* BHPC = Cast<ABHPlayerController>(GetController()))
 	{
 		const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
@@ -3183,6 +3216,14 @@ void ABHCharacter::DropDecoy()
 
 void ABHCharacter::SubmitAnswer(int32 AnswerIndex)
 {
+	// When a calculation question is focused, the 1-4 keys type digits 1-4 into the numeric
+	// buffer instead of submitting a multiple-choice answer. All other questions are unchanged.
+	if (IsCalculationEntryActive())
+	{
+		NumericEntryDigit(AnswerIndex + 1);
+		return;
+	}
+
 	if (!CanAct())
 	{
 		SendStatusMessage(bHiddenInLocker ? TEXT("You cannot answer while hiding.") : TEXT("You cannot answer right now."));
@@ -3190,6 +3231,85 @@ void ABHCharacter::SubmitAnswer(int32 AnswerIndex)
 	}
 
 	ServerSubmitAnswer(AnswerIndex);
+}
+
+void ABHCharacter::SetClientFocusedQuestionStation(ABHObjectiveStation* Station)
+{
+	// Pushed by the local HUD each frame. Clearing the buffer when the focused question
+	// changes prevents a value typed at one station leaking into another.
+	if (ClientFocusedQuestionStation.Get() != Station)
+	{
+		ClientFocusedQuestionStation = Station;
+		NumericAnswerEntry.Reset();
+	}
+}
+
+bool ABHCharacter::IsCalculationEntryActive() const
+{
+	const ABHObjectiveStation* Station = ClientFocusedQuestionStation.Get();
+	return Station != nullptr
+		&& Station->IsDirectorActive()
+		&& !Station->IsCompleted()
+		&& !Station->IsQuestionSolved()
+		&& Station->GetQuestionType() == EBHQuestionType::Calculation;
+}
+
+void ABHCharacter::NumericEntryDigit(int32 Digit)
+{
+	if (!IsLocallyControlled() || !IsCalculationEntryActive() || NumericAnswerEntry.Len() >= 12)
+	{
+		return;
+	}
+	NumericAnswerEntry.AppendChar(static_cast<TCHAR>('0' + FMath::Clamp(Digit, 0, 9)));
+}
+
+void ABHCharacter::NumericEntryDecimal()
+{
+	if (!IsLocallyControlled() || !IsCalculationEntryActive() || NumericAnswerEntry.Len() >= 12 || NumericAnswerEntry.Contains(TEXT(".")))
+	{
+		return;
+	}
+	NumericAnswerEntry.AppendChar(TCHAR('.'));
+}
+
+void ABHCharacter::NumericEntryMinus()
+{
+	// A leading minus only; meaningless mid-number.
+	if (!IsLocallyControlled() || !IsCalculationEntryActive() || !NumericAnswerEntry.IsEmpty())
+	{
+		return;
+	}
+	NumericAnswerEntry.AppendChar(TCHAR('-'));
+}
+
+void ABHCharacter::NumericEntryBackspace()
+{
+	if (!IsLocallyControlled() || !IsCalculationEntryActive() || NumericAnswerEntry.IsEmpty())
+	{
+		return;
+	}
+	NumericAnswerEntry.LeftChopInline(1);
+}
+
+void ABHCharacter::ConfirmNumericAnswer()
+{
+	if (!IsLocallyControlled() || !IsCalculationEntryActive() || NumericAnswerEntry.IsEmpty())
+	{
+		return;
+	}
+	if (!CanAct())
+	{
+		SendStatusMessage(bHiddenInLocker ? TEXT("You cannot answer while hiding.") : TEXT("You cannot answer right now."));
+		return;
+	}
+	const float Value = FCString::Atof(*NumericAnswerEntry);
+	ServerSubmitNumericAnswer(Value);
+	NumericAnswerEntry.Reset();
+}
+
+void ABHCharacter::ServerSubmitNumericAnswer_Implementation(float Value)
+{
+	SubmitNumericAnswerAuthority(Value);
 }
 
 void ABHCharacter::SubmitAnswerOne()
@@ -6460,6 +6580,27 @@ bool ABHCharacter::SubmitAnswerAuthority(ABHObjectiveStation* Station, int32 Ans
 	}
 
 	return Station->SubmitAnswer(this, AnswerIndex);
+}
+
+bool ABHCharacter::SubmitNumericAnswerAuthority(float Value)
+{
+	if (!CanAct())
+	{
+		return false;
+	}
+
+	// Numeric entry only ever targets the objective station the player is aiming at; the
+	// train bonus terminal stays multiple-choice (its focus is never cached for numeric entry).
+	AActor* Target = nullptr;
+	FindInteractableFromView(Target, 225.0f);
+	ABHObjectiveStation* Station = Cast<ABHObjectiveStation>(Target);
+	if (!Station || !IsValidInteractionTarget(Station))
+	{
+		SendStatusMessage(TEXT("Aim at a calculation station, type your answer, then press Enter."));
+		return false;
+	}
+
+	return Station->SubmitNumericAnswer(this, Value);
 }
 
 void ABHCharacter::ClientReceiveScanResult_Implementation(const FVector& TargetLocation, bool bTargetHidden, bool bFoundTarget)

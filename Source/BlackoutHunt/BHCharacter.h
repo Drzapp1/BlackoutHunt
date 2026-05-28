@@ -164,6 +164,26 @@ protected:
 	void SubmitAnswerTwo();
 	void SubmitAnswerThree();
 	void SubmitAnswerFour();
+	// Typed numeric entry for Calculation questions. Digit keys build a local buffer that
+	// the owning client submits with Enter; multiple-choice questions are unaffected.
+	void NumericEntryDigit(int32 Digit);
+	void NumericEntryDecimal();
+	void NumericEntryMinus();
+	void NumericEntryBackspace();
+	void ConfirmNumericAnswer();
+	// Param-less key wrappers (UInputComponent::BindKey requires member functions).
+	void NumericEntryZero() { NumericEntryDigit(0); }
+	void NumericEntryFive() { NumericEntryDigit(5); }
+	void NumericEntrySix() { NumericEntryDigit(6); }
+	void NumericEntrySeven() { NumericEntryDigit(7); }
+	void NumericEntryEight() { NumericEntryDigit(8); }
+	void NumericEntryNine() { NumericEntryDigit(9); }
+	bool IsCalculationEntryActive() const;
+	void SetClientFocusedQuestionStation(class ABHObjectiveStation* Station);
+public:
+	// Read by the HUD to render the in-progress typed answer for calculation questions.
+	const FString& GetNumericAnswerEntry() const { return NumericAnswerEntry; }
+protected:
 	void UsePowerupSlotOne();
 	void UsePowerupSlotTwo();
 	void UsePowerupSlotThree();
@@ -193,6 +213,7 @@ protected:
 	bool UseHunterPowerAuthority(bool bShowFailureMessages);
 	bool DropDecoyAuthority(bool bShowFailureMessages);
 	bool SubmitAnswerAuthority(ABHObjectiveStation* Station, int32 AnswerIndex, bool bUseViewFallback, bool bShowFailureMessages);
+	bool SubmitNumericAnswerAuthority(float Value);
 	void EmitFootstepStimulus(float Strength, const FString& Reason, EBHFootstepSurface Surface = EBHFootstepSurface::Default);
 	EBHFootstepSurface ResolveFootstepSurface(const FHitResult* KnownGroundHit = nullptr) const;
 	FBHFootstepSurfaceProfile GetFootstepSurfaceProfile(EBHFootstepSurface Surface) const;
@@ -282,6 +303,9 @@ protected:
 
 	UFUNCTION(Server, Reliable)
 	void ServerSubmitAnswer(int32 AnswerIndex);
+
+	UFUNCTION(Server, Reliable)
+	void ServerSubmitNumericAnswer(float Value);
 
 	UFUNCTION(Server, Reliable)
 	void ServerUsePowerup(EBHPowerupType Type);
@@ -572,6 +596,11 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<ABHLocker> CurrentLocker;
+
+	// Owning-client only: the calculation question the local player is looking at, pushed by
+	// the HUD each frame, plus the digits they have typed but not yet submitted.
+	TWeakObjectPtr<class ABHObjectiveStation> ClientFocusedQuestionStation;
+	FString NumericAnswerEntry;
 
 	float LastScanTime;
 	float LastHunterPowerTime;

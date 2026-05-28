@@ -86,6 +86,39 @@ bool FBHJumpscareVariantDefaultsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHJumpscareImpactFieldDefaultsTest,
+	"BlackoutHunt.Horror.JumpscareImpactFieldDefaults",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHJumpscareImpactFieldDefaultsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	// A freshly-constructed variant ships with sane impact defaults so configured/discovered
+	// variants get a real FOV punch, hitstop, and rumble without per-asset authoring.
+	const FBHJumpscareVariant Defaults;
+	TestTrue(TEXT("Default FOV punch is a meaningful zoom-in."), Defaults.ImpactFOVPunch >= 8.0f && Defaults.ImpactFOVPunch <= 30.0f);
+	TestTrue(TEXT("Default hitstop is brief and within the comfort clamp."), Defaults.ImpactHitStopSeconds > 0.0f && Defaults.ImpactHitStopSeconds <= 0.25f);
+	TestTrue(TEXT("Default rumble is strong but not maxed."), Defaults.ImpactRumbleIntensity > 0.0f && Defaults.ImpactRumbleIntensity <= 1.0f);
+
+	// The legacy proxy and resolved variants must keep the impact fields in valid ranges so the
+	// client cue never sends out-of-range punches/hitstops.
+	FBHJumpscareVariant LegacyProxy;
+	TestTrue(TEXT("Legacy SCP096 proxy resolves."), FindResolvedJumpscareVariantById(FName(TEXT("SCP096")), LegacyProxy));
+	TestTrue(TEXT("Legacy proxy FOV punch stays in range."), LegacyProxy.ImpactFOVPunch >= 0.0f && LegacyProxy.ImpactFOVPunch <= 30.0f);
+	TestTrue(TEXT("Legacy proxy hitstop stays in range."), LegacyProxy.ImpactHitStopSeconds >= 0.0f && LegacyProxy.ImpactHitStopSeconds <= 0.25f);
+
+	for (const FBHJumpscareVariant& Variant : GetResolvedJumpscareVariants())
+	{
+		const FString Context = FString::Printf(TEXT("Variant %s"), *Variant.VariantId.ToString());
+		TestTrue(*FString::Printf(TEXT("%s FOV punch in range."), *Context), Variant.ImpactFOVPunch >= 0.0f && Variant.ImpactFOVPunch <= 30.0f);
+		TestTrue(*FString::Printf(TEXT("%s hitstop in range."), *Context), Variant.ImpactHitStopSeconds >= 0.0f && Variant.ImpactHitStopSeconds <= 0.25f);
+		TestTrue(*FString::Printf(TEXT("%s rumble in range."), *Context), Variant.ImpactRumbleIntensity >= 0.0f && Variant.ImpactRumbleIntensity <= 1.0f);
+	}
+
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHWhisperJumpscareDiscoveryTest,
 	"BlackoutHunt.Horror.WhisperJumpscareDiscovery",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

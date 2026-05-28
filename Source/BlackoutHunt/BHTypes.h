@@ -1029,6 +1029,58 @@ struct FBHRevisionAnswerPayload
 	float NumericTolerance = 0.0f;
 };
 
+// Optional per-question parameters that let a diagram render the question's actual
+// values (e.g. a real resistor value, lever distance, wave amplitude, ray angle) so the
+// player must read the visual to answer. Carries only the givens shown on screen -- never
+// the answer. Empty by default, in which case the HUD draws the generic schematic.
+USTRUCT(BlueprintType)
+struct FBHDiagramParams
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	float ValueA = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	float ValueB = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	float ValueC = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	float ValueD = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	FString LabelA;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	FString LabelB;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	FString LabelC;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	FString LabelD;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	FString XAxis;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	FString YAxis;
+
+	// Reused per diagram type: incident ray angle (RayDiagram), amplitude fraction (Wave),
+	// or lever ratio. Zero leaves the generic shape untouched.
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	float AngleOrShape = 0.0f;
+
+	// Optional illustrated diagram texture (object path). Empty => procedural rendering.
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	FString ImageSoftPath;
+
+	bool HasValues() const { return !LabelA.IsEmpty() || !LabelB.IsEmpty() || !LabelC.IsEmpty() || !LabelD.IsEmpty(); }
+	bool HasImage() const { return !ImageSoftPath.IsEmpty(); }
+};
+
 USTRUCT(BlueprintType)
 struct FBHRevisionQuestion
 {
@@ -1060,6 +1112,9 @@ struct FBHRevisionQuestion
 
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
 	FBHRevisionAnswerPayload Answer;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	FBHDiagramParams Diagram;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
 	FString Hint;

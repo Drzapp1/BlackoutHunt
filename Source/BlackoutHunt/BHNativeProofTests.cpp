@@ -12,6 +12,7 @@
 #include "BHCosmeticUnlocks.h"
 #include "BHDoor.h"
 #include "BHFootstepSurfaceComponent.h"
+#include "BHGameInstance.h"
 #include "BHGameMode.h"
 #include "BHGameSettings.h"
 #include "BHGameState.h"
@@ -1740,6 +1741,76 @@ bool FBHExitGateBlockedReasonClarityTest::RunTest(const FString& Parameters)
 	Prompt = ExitGate->GetInteractionPromptInfo_Implementation(Character);
 	TestTrue(TEXT("Hall Monitor exit block remains role-specific."),
 		Prompt.DisabledReason.ToString().Contains(TEXT("HALL MONITORS CANNOT ESCAPE")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHReconnectRestoresRoleWithinGraceTest,
+	"BlackoutHunt.Network.ReconnectRestoresRoleWithinGrace",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHReconnectRestoresRoleWithinGraceTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FBHScopedAutomationWorld TestWorld(TEXT("BlackoutHuntProof"));
+	UWorld* World = TestWorld.Get();
+	TestNotNull(TEXT("Test world is created."), World);
+	if (!World)
+	{
+		return false;
+	}
+
+	UBHGameInstance* GameInstance = NewObject<UBHGameInstance>();
+	ABHPlayerState* PlayerState = World->SpawnActor<ABHPlayerState>();
+	TestNotNull(TEXT("Reconnect game instance is created."), GameInstance);
+	TestNotNull(TEXT("Departing player state spawns."), PlayerState);
+	if (!GameInstance || !PlayerState)
+	{
+		return false;
+	}
+
+	// A caught student who became a Hall Monitor drops mid-round.
+	PlayerState->SetPlayerName(TEXT("Student-Reconnect"));
+	PlayerState->SetRole(EBHPlayerRole::FakeHunter);
+	PlayerState->SetDesiredRole(EBHPlayerRole::Survivor);
+	PlayerState->SetLifeState(EBHPlayerLifeState::Captured);
+	PlayerState->SetFakeHunterEligible(true);
+	PlayerState->QuestionPoints = 30;
+
+	const float LeaveTime = 100.0f;
+	GameInstance->MarkTravelPlayerLeftForReconnect(PlayerState, LeaveTime);
+
+	// The student rejoins on a fresh connection with reset state but the same lobby name.
+	ABHPlayerState* RejoinState = World->SpawnActor<ABHPlayerState>();
+	TestNotNull(TEXT("Rejoining player state spawns."), RejoinState);
+	if (!RejoinState)
+	{
+		return false;
+	}
+	RejoinState->SetPlayerName(TEXT("Student-Reconnect"));
+	RejoinState->SetRole(EBHPlayerRole::Spectator);
+	RejoinState->SetLifeState(EBHPlayerLifeState::Alive);
+
+	// Within the grace window the cached state is recognized by display name and restored.
+	FBHTravelPlayerProgress Progress;
+	const bool bWithinGrace = GameInstance->TryGetReconnectProgress(RejoinState, LeaveTime + 90.0f, 120.0f, Progress);
+	TestTrue(TEXT("Reconnect within grace is recognized by display name."), bWithinGrace);
+	TestEqual(TEXT("Reconnect restores the cached role."), Progress.PlayerRole, EBHPlayerRole::FakeHunter);
+	TestEqual(TEXT("Reconnect restores the cached captured life state."), Progress.LifeState, EBHPlayerLifeState::Captured);
+	TestTrue(TEXT("Reconnect restores Hall Monitor eligibility."), Progress.bFakeHunterEligible);
+	TestEqual(TEXT("Reconnect restores banked question points."), Progress.QuestionPoints, 30);
+
+	// Past the grace window the reconnect is rejected and the player falls back to spectator.
+	FBHTravelPlayerProgress ExpiredProgress;
+	const bool bExpired = GameInstance->TryGetReconnectProgress(RejoinState, LeaveTime + 200.0f, 120.0f, ExpiredProgress);
+	TestFalse(TEXT("Reconnect past the grace window is rejected."), bExpired);
+
+	// After a successful rejoin consumes the mark, it is not offered again.
+	GameInstance->ClearReconnectMark(RejoinState);
+	FBHTravelPlayerProgress ClearedProgress;
+	const bool bAfterClear = GameInstance->TryGetReconnectProgress(RejoinState, LeaveTime + 10.0f, 120.0f, ClearedProgress);
+	TestFalse(TEXT("Reconnect mark is one-shot after a successful rejoin."), bAfterClear);
 
 	return true;
 }

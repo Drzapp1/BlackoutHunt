@@ -14,6 +14,7 @@ PrepSeconds=45
 HuntSeconds=900
 RequiredBreakers=6
 bAllowHostForceStart=False
+ReconnectGraceSeconds=120.0
 InteractDistance=550.0
 CaptureDistance=220.0
 FlashlightDrainPerSecond=0.17
@@ -48,6 +49,7 @@ bDefaultHighContrastHud=False
 - `HuntSeconds`: hunt phase length.
 - `RequiredBreakers`: repaired breakers required before the exit unlocks.
 - `bAllowHostForceStart`: enables the host-only `F10` / `ForceStartRound` test shortcut when explicitly turned on for supervised test sessions. Classroom releases keep it disabled.
+- `ReconnectGraceSeconds`: how long after a student drops mid-round they can rejoin straight back into their role and progress (revision stats, points, powerups, and life state are restored) before falling back to a late-join spectator. Defaults to `120`. Set to `0` to disable mid-round reconnect restore. Reconnect is matched by lobby display name, so a returning student should use the same name.
 - `InteractDistance`: range for doors, lockers, breakers, batteries, switches, terminals, and exit.
 - `CaptureDistance`: Teacher capture range.
 - `FlashlightDrainPerSecond`: battery drain while flashlight is on. `0.17` gives roughly 10 minutes from full charge.
@@ -74,6 +76,33 @@ bDefaultHighContrastHud=False
 - `bDefaultHighContrastHud`: default local preference for stronger HUD text and meter contrast.
 
 After changing these defaults, rebuild/package to bake them into the distributable build. For editor testing, restarting PIE or the editor is usually enough.
+
+## Jumpscare Feel
+
+Each jumpscare is described by a `FBHJumpscareVariant` (configured in `JumpscareVariants` or auto-discovered from the Whisper art root). Beyond the existing shake/flash fields, three impact knobs drive the moment of contact:
+
+- `ImpactFOVPunch` (deg, 0–30, default `14`): how far the field of view snaps inward on contact before easing back. `0` disables the FOV punch for that variant.
+- `ImpactHitStopSeconds` (0–0.25, default `0.07`): a brief client-local slow-motion "hitstop" on the hit. Only the scared player feels it. Suppressed for players with reduced jumpscares.
+- `ImpactRumbleIntensity` (0–1, default `0.85`): gamepad rumble strength on the hit. Suppressed for players with reduced jumpscares.
+- `ImpactStinger` (optional sound): an extra audio layer (e.g. a low sub-boom or sharp transient) played alongside the main impact scream. The scream is always pitch-randomized, and on a close-range impact it is also doubled with a pitched-down "roar" layer for low-end weight.
+
+Project-wide audio ducking (optional, on `BHGameSettings`):
+
+- `JumpscareDuckSoundMix`: a `SoundMix` asset pushed for the scare's duration to duck ambient audio under the impact. Leave unset to disable (no SoundMix ships by default — author one with the desired class adjustments to enable ducking).
+- `JumpscareDuckSeconds` (0.1–4.0, default `1.4`): how long the duck mix stays pushed.
+
+Comfort scaling still applies to everything above: `bDefaultReducedFlash` quarters the flash and skips the black-blink, `bDefaultReducedCameraShake` quarters the FOV punch / flinch / jitter, and `bDefaultReducedJumpscares` softens the close-up and skips the hitstop and rumble.
+
+### Approach variety and dread
+
+Monster-charge scares now roll one of four approaches with an even mix, never repeating the previous one back-to-back:
+
+- **Head-On** — spawns in view ahead and charges (the classic).
+- **Behind** — spawns out of view behind the player; the reveal lands on contact.
+- **Already There** — spawns close and already in view, then lunges almost immediately.
+- **Ceiling Drop** — spawns roughly overhead and descends onto the player.
+
+The chosen variant is also de-duplicated against the previous scare. Separately, the director occasionally fires a **fake-out** (a faint whisper/footstep behind the player plus a brief light flicker that resolves to nothing) to build dread; it has its own 25s cooldown and does not consume the monster cooldown. These behaviors are code-side and scale with the existing revision scare-intensity setting (intensity `0` disables scares entirely).
 
 ## Revision Review Loop (Spaced Repetition)
 

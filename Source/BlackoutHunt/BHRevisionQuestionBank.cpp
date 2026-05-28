@@ -6,6 +6,25 @@
 
 namespace
 {
+// Optional diagram parameters authored alongside a spec so the HUD can render the
+// question's actual values. Default-initialized members let the ~430 existing rows that
+// omit it compile unchanged (trailing aggregate init).
+struct FRevisionDiagram
+{
+	float ValueA = 0.0f;
+	float ValueB = 0.0f;
+	float ValueC = 0.0f;
+	float ValueD = 0.0f;
+	const TCHAR* LabelA = nullptr;
+	const TCHAR* LabelB = nullptr;
+	const TCHAR* LabelC = nullptr;
+	const TCHAR* LabelD = nullptr;
+	const TCHAR* XAxis = nullptr;
+	const TCHAR* YAxis = nullptr;
+	float AngleOrShape = 0.0f;
+	const TCHAR* ImageSoftPath = nullptr;
+};
+
 struct FRevisionSpec
 {
 	const TCHAR* Subtopic;
@@ -19,6 +38,7 @@ struct FRevisionSpec
 	const TCHAR* Formula;
 	float NumericAnswer;
 	float NumericTolerance;
+	FRevisionDiagram Diagram = {};
 };
 
 TArray<FString> MakeChoices(std::initializer_list<const TCHAR*> Values)
@@ -44,7 +64,13 @@ EBHQuestionDifficulty DifficultyFor(EBHQuestionType Type, int32 Index)
 	case EBHQuestionType::FormulaFill:
 		return Index == 0 ? EBHQuestionDifficulty::Easy : (Index < 4 ? EBHQuestionDifficulty::Medium : EBHQuestionDifficulty::Hard);
 	case EBHQuestionType::GraphReading:
-		return Index == 0 ? EBHQuestionDifficulty::Easy : (Index < 3 ? EBHQuestionDifficulty::Medium : EBHQuestionDifficulty::Hard);
+		// Indices 0-3 keep the original 1E/2M/1H shape; indices 4-9 are the new visual
+		// questions added per build-half as 2 Easy / 2 Medium / 2 Hard.
+		if (Index <= 3)
+		{
+			return Index == 0 ? EBHQuestionDifficulty::Easy : (Index < 3 ? EBHQuestionDifficulty::Medium : EBHQuestionDifficulty::Hard);
+		}
+		return Index < 6 ? EBHQuestionDifficulty::Easy : (Index < 8 ? EBHQuestionDifficulty::Medium : EBHQuestionDifficulty::Hard);
 	case EBHQuestionType::DragDropMatching:
 	case EBHQuestionType::Ordering:
 		return Index == 0 ? EBHQuestionDifficulty::Easy : (Index == 1 ? EBHQuestionDifficulty::Medium : EBHQuestionDifficulty::Hard);
@@ -109,6 +135,18 @@ void AddSpecs(TArray<FBHRevisionQuestion>& Bank, EBHPhysicsTopic Topic, const TC
 		Question.Answer.Formula = Spec.Formula ? FString(Spec.Formula) : FString();
 		Question.Answer.NumericAnswer = Spec.NumericAnswer;
 		Question.Answer.NumericTolerance = FMath::Max(0.0f, Spec.NumericTolerance);
+		Question.Diagram.ValueA = Spec.Diagram.ValueA;
+		Question.Diagram.ValueB = Spec.Diagram.ValueB;
+		Question.Diagram.ValueC = Spec.Diagram.ValueC;
+		Question.Diagram.ValueD = Spec.Diagram.ValueD;
+		Question.Diagram.LabelA = Spec.Diagram.LabelA ? FString(Spec.Diagram.LabelA) : FString();
+		Question.Diagram.LabelB = Spec.Diagram.LabelB ? FString(Spec.Diagram.LabelB) : FString();
+		Question.Diagram.LabelC = Spec.Diagram.LabelC ? FString(Spec.Diagram.LabelC) : FString();
+		Question.Diagram.LabelD = Spec.Diagram.LabelD ? FString(Spec.Diagram.LabelD) : FString();
+		Question.Diagram.XAxis = Spec.Diagram.XAxis ? FString(Spec.Diagram.XAxis) : FString();
+		Question.Diagram.YAxis = Spec.Diagram.YAxis ? FString(Spec.Diagram.YAxis) : FString();
+		Question.Diagram.AngleOrShape = Spec.Diagram.AngleOrShape;
+		Question.Diagram.ImageSoftPath = Spec.Diagram.ImageSoftPath ? FString(Spec.Diagram.ImageSoftPath) : FString();
 		Question.Hint = Spec.Hint;
 		Question.CorrectionPrompt = Spec.CorrectionPrompt;
 		Question.Explanation = Spec.Explanation;
@@ -648,7 +686,7 @@ void BuildEnergyExtension(TArray<FBHRevisionQuestion>& Bank)
 TArray<FBHRevisionQuestion> BuildQuestionBank()
 {
 	TArray<FBHRevisionQuestion> Bank;
-	Bank.Reserve(320);
+	Bank.Reserve(368);
 	BuildForces(Bank);
 	BuildElectricity(Bank);
 	BuildWaves(Bank);
@@ -689,7 +727,7 @@ bool FBHRevisionQuestionBank::Validate(FString& OutSummary)
 	int32 DifficultyCounts[4][3] = {};
 	int32 TypeCounts[7] = {0, 0, 0, 0, 0, 0, 0};
 	TSet<FString> Ids;
-	bool bValid = Bank.Num() == 320;
+	bool bValid = Bank.Num() == 368;
 	for (const FBHRevisionQuestion& Question : Bank)
 	{
 		if (Question.Id.IsEmpty() || Ids.Contains(Question.Id) || Question.Prompt.IsEmpty() || Question.Hint.IsEmpty() || Question.Explanation.IsEmpty() || Question.Answer.Choices.Num() != 4 || !Question.Answer.Choices.IsValidIndex(Question.Answer.CorrectChoiceIndex))
@@ -706,13 +744,13 @@ bool FBHRevisionQuestionBank::Validate(FString& OutSummary)
 
 	for (int32 Index = 0; Index < 4; ++Index)
 	{
-		bValid = bValid && TopicCounts[Index] == 80;
-		bValid = bValid && DifficultyCounts[Index][0] == 24;
-		bValid = bValid && DifficultyCounts[Index][1] == 32;
-		bValid = bValid && DifficultyCounts[Index][2] == 24;
+		bValid = bValid && TopicCounts[Index] == 92;
+		bValid = bValid && DifficultyCounts[Index][0] == 28;
+		bValid = bValid && DifficultyCounts[Index][1] == 36;
+		bValid = bValid && DifficultyCounts[Index][2] == 28;
 	}
 
-	const int32 ExpectedTypeCounts[7] = {80, 40, 56, 48, 32, 32, 32};
+	const int32 ExpectedTypeCounts[7] = {80, 40, 56, 48, 80, 32, 32};
 	for (int32 Index = 0; Index < 7; ++Index)
 	{
 		bValid = bValid && TypeCounts[Index] == ExpectedTypeCounts[Index];

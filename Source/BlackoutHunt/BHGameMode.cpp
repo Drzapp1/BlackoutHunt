@@ -569,6 +569,71 @@ float RevisionTopicMastery(const FBHPlayerRevisionStats& Stats, EBHPhysicsTopic 
 	}
 }
 
+void SetRevisionTopicMastery(FBHPlayerRevisionStats& Stats, EBHPhysicsTopic Topic, float Value)
+{
+	const float Clamped = FMath::Clamp(Value, 0.0f, 100.0f);
+	switch (Topic)
+	{
+	case EBHPhysicsTopic::ForcesAndMotion:
+		Stats.ForcesMastery = Clamped;
+		break;
+	case EBHPhysicsTopic::Electricity:
+		Stats.ElectricityMastery = Clamped;
+		break;
+	case EBHPhysicsTopic::Waves:
+		Stats.WavesMastery = Clamped;
+		break;
+	case EBHPhysicsTopic::Energy:
+		Stats.EnergyMastery = Clamped;
+		break;
+	default:
+		break;
+	}
+}
+
+// Overall mastery is the mean of the ENABLED topics' mastery (RevisionTopicMask). Disabled
+// topics are excluded so a class focused on one topic is not penalised for the others.
+float MeanEnabledTopicMastery(const FBHPlayerRevisionStats& Stats, int32 TopicMask)
+{
+	float Sum = 0.0f;
+	int32 Count = 0;
+	for (int32 Index = 0; Index < 4; ++Index)
+	{
+		const EBHPhysicsTopic Topic = static_cast<EBHPhysicsTopic>(Index);
+		if ((TopicMask & FBHRevisionQuestionBank::TopicMaskBit(Topic)) == 0)
+		{
+			continue;
+		}
+		Sum += RevisionTopicMastery(Stats, Topic);
+		++Count;
+	}
+	if (Count <= 0)
+	{
+		// No enabled topics in the mask (shouldn't happen) — fall back to all four.
+		return (Stats.ForcesMastery + Stats.ElectricityMastery + Stats.WavesMastery + Stats.EnergyMastery) * 0.25f;
+	}
+	return Sum / static_cast<float>(Count);
+}
+
+// True if the student still has an unresolved missed question queued for the given topic.
+// Used to hold a topic's mastery below the review ceiling until the student clears it.
+bool HasOutstandingReviewInTopic(const ABHPlayerState* BHPS, EBHPhysicsTopic Topic)
+{
+	if (!BHPS)
+	{
+		return false;
+	}
+	for (const FString& QueuedId : BHPS->RevisionReviewQueue)
+	{
+		FBHRevisionQuestion Queued;
+		if (FBHRevisionQuestionBank::FindQuestion(QueuedId, Queued) && Queued.Topic == Topic)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 EBHPhysicsTopic WeakestTopicForStats(const FBHPlayerRevisionStats& Stats, int32 TopicMask)
 {
 	EBHPhysicsTopic WeakTopic = EBHPhysicsTopic::ForcesAndMotion;
@@ -2265,7 +2330,8 @@ bool ABHGameMode::ResolveDirectionalJumpscareSpawn(ABHCharacter* Target, const T
 
 EBHJumpscareApproach ABHGameMode::ChooseMonsterChargeApproach()
 {
-	// Even mix across all four archetypes, re-rolling once to avoid an immediate repeat.
+	// Even mix across the archetypes, but pick only from those other than the last one used so two
+	// monster scares in a row never share an approach.
 	const EBHJumpscareApproach Approaches[] = {
 		EBHJumpscareApproach::HeadOn,
 		EBHJumpscareApproach::Behind,
@@ -2273,11 +2339,16 @@ EBHJumpscareApproach ABHGameMode::ChooseMonsterChargeApproach()
 		EBHJumpscareApproach::CeilingDrop
 	};
 
-	EBHJumpscareApproach Chosen = Approaches[FMath::RandRange(0, 3)];
-	if (Chosen == LastJumpscareApproach)
+	TArray<EBHJumpscareApproach, TInlineAllocator<4>> Pool;
+	for (EBHJumpscareApproach Approach : Approaches)
 	{
-		Chosen = Approaches[FMath::RandRange(0, 3)];
+		if (Approach != LastJumpscareApproach)
+		{
+			Pool.Add(Approach);
+		}
 	}
+
+	const EBHJumpscareApproach Chosen = Pool.IsEmpty() ? EBHJumpscareApproach::HeadOn : Pool[FMath::RandRange(0, Pool.Num() - 1)];
 	LastJumpscareApproach = Chosen;
 	return Chosen;
 }
@@ -3080,7 +3151,7 @@ void ABHGameMode::GetAdaptiveRevisionPlan(const ABHPlayerState* PlayerState, boo
 		*FBHRevisionQuestionBank::DifficultyToString(OutDifficulty));
 }
 
-void ABHGameMode::RecordRevisionAnswer(ABHCharacter* Character, const FBHRevisionQuestion& Question, bool bCorrect, bool bCorrection, const FString& SelectedAnswer, const FString& TeamSummary)
+void ABHGameMode::RecordRevisionAnswer(ABHCharacter* Character, const FBHRevisionQuestion& Question, bool bCorrect, bool bCorrection, const FString& SelectedAnswer, const FString& TeamSummary, bool bCountsAsContribution)
 {
 	ABHPlayerState* BHPS = Character ? Character->GetPlayerState<ABHPlayerState>() : nullptr;
 	if (!bRevisionMode || !IsRevisionParticipantState(BHPS))
@@ -3092,45 +3163,56 @@ void ABHGameMode::RecordRevisionAnswer(ABHCharacter* Character, const FBHRevisio
 	const int32 PreviousContributionCount = Stats.ContributionCount;
 	Stats.Attempts = FMath::Max(0, Stats.Attempts + 1);
 	int32 PointsEarned = 0;
+
+	// Demonstrated + durable mastery (see Docs/REVISION_QUALITY_PLAN.md): harder questions move
+	// the needle more, gains shrink as a topic approaches mastery (so it cannot be trivially
+	// capped by a few lucky answers), and a miss decays the topic — so blind guessing on
+	// 25%-odds multiple choice nets a negative trend rather than steady progress.
+	float TopicMastery = RevisionTopicMastery(Stats, Question.Topic);
 	if (bCorrect)
 	{
 		Stats.CorrectAnswers = FMath::Max(0, Stats.CorrectAnswers + 1);
-		Stats.ContributionCount = FMath::Max(0, Stats.ContributionCount + 1);
-		PointsEarned = FBHPowerupLibrary::QuestionPointValue(Question.Difficulty, false);
+		if (bCountsAsContribution)
+		{
+			Stats.ContributionCount = FMath::Max(0, Stats.ContributionCount + 1);
+		}
+		// First-time-correct pays full shop points; recovering a previously-missed question pays
+		// half (you earn full value by knowing it first time) but still grants full mastery.
+		const int32 BasePoints = FBHPowerupLibrary::QuestionPointValue(Question.Difficulty, false);
+		PointsEarned = bCorrection ? FMath::Max(1, BasePoints / 2) : BasePoints;
 		BHPS->AddQuestionPoints(PointsEarned);
 		if (bCorrection)
 		{
 			Stats.CorrectionsCompleted = FMath::Max(0, Stats.CorrectionsCompleted + 1);
 		}
 
-		const float TopicGain = 24.0f * FMath::Max(0.75f, Question.MasteryWeight);
-		switch (Question.Topic)
-		{
-		case EBHPhysicsTopic::ForcesAndMotion:
-			Stats.ForcesMastery = FMath::Clamp(Stats.ForcesMastery + TopicGain, 0.0f, 100.0f);
-			break;
-		case EBHPhysicsTopic::Electricity:
-			Stats.ElectricityMastery = FMath::Clamp(Stats.ElectricityMastery + TopicGain, 0.0f, 100.0f);
-			break;
-		case EBHPhysicsTopic::Waves:
-			Stats.WavesMastery = FMath::Clamp(Stats.WavesMastery + TopicGain, 0.0f, 100.0f);
-			break;
-		case EBHPhysicsTopic::Energy:
-			Stats.EnergyMastery = FMath::Clamp(Stats.EnergyMastery + TopicGain, 0.0f, 100.0f);
-			break;
-		}
+		const float DiffMult = FMath::Clamp(Question.MasteryWeight, 1.0f, 1.5f);
+		const float Headroom = FMath::Max(1.0f - (TopicMastery / 100.0f) * 0.6f, 0.25f);
+		TopicMastery = TopicMastery + 15.0f * DiffMult * Headroom;
 	}
 	else
 	{
 		Stats.HintCount = FMath::Max(0, Stats.HintCount + 1);
+		// Decay on a miss. A careless easy miss costs the most; a hard miss the least.
+		float MissDiffMult = 1.0f;
+		switch (Question.Difficulty)
+		{
+		case EBHQuestionDifficulty::Easy:
+			MissDiffMult = 1.2f;
+			break;
+		case EBHQuestionDifficulty::Hard:
+			MissDiffMult = 0.8f;
+			break;
+		default:
+			MissDiffMult = 1.0f;
+			break;
+		}
+		TopicMastery = TopicMastery - 7.0f * MissDiffMult;
 	}
 
-	const int32 MasteredAnswers = Stats.CorrectAnswers + Stats.CorrectionsCompleted;
-	Stats.MasteryPercent = Stats.Attempts > 0 ? FMath::Clamp(100.0f * static_cast<float>(MasteredAnswers) / static_cast<float>(Stats.Attempts), 0.0f, 100.0f) : 0.0f;
-	BHPS->RevisionStats = Stats;
-
-	// Spaced-repetition review loop: a miss queues the exact question to be
-	// re-asked later; answering it correctly clears it from the queue.
+	// Spaced-repetition review loop: a miss queues the exact question to be re-asked later;
+	// answering it correctly clears it. Done before the review-gate check below so a topic the
+	// student has just fully cleared can rise above the review ceiling on this same answer.
 	if (bCorrect)
 	{
 		BHPS->DequeueRevisionReview(Question.Id);
@@ -3140,7 +3222,21 @@ void ABHGameMode::RecordRevisionAnswer(ABHCharacter* Character, const FBHRevisio
 		BHPS->EnqueueRevisionReview(Question.Id);
 	}
 
-	if (bCorrect && BHPS->PlayerRole == EBHPlayerRole::FakeHunter)
+	// Review-gated ceiling: a topic is held at <= 80% while the student still has an unresolved
+	// missed question in it. You must clear your own mistakes to fully master a topic, which
+	// keeps the spaced-repetition loop meaningful instead of optional.
+	if (HasOutstandingReviewInTopic(BHPS, Question.Topic))
+	{
+		TopicMastery = FMath::Min(TopicMastery, 80.0f);
+	}
+	SetRevisionTopicMastery(Stats, Question.Topic, TopicMastery);
+
+	// Unified overall mastery = mean of the enabled topics' mastery (removes the old
+	// ratio-vs-additive desync; every HUD/report/gate reader keeps working with a better value).
+	Stats.MasteryPercent = MeanEnabledTopicMastery(Stats, RevisionTopicMask);
+	BHPS->RevisionStats = Stats;
+
+	if (bCorrect && bCountsAsContribution && BHPS->PlayerRole == EBHPlayerRole::FakeHunter)
 	{
 		const int32 RequiredContributions = GetRevisionMinimumContributionTarget();
 		if (PreviousContributionCount < RequiredContributions && Stats.ContributionCount >= RequiredContributions)
@@ -8825,6 +8921,62 @@ void ABHGameMode::PublishDangerObjectiveBeat(const FVector& Location, const FStr
 	BHGS->SetObjectiveBeats(Beats);
 }
 
+bool ABHGameMode::TriggerFakeOutTensionCue(ABHCharacter* Target)
+{
+	UWorld* World = GetWorld();
+	if (!World || !Target)
+	{
+		return false;
+	}
+
+	const float Now = World->GetTimeSeconds();
+	if (Now - LastFakeOutTime < 25.0f)
+	{
+		return false;
+	}
+	LastFakeOutTime = Now;
+
+	const FVector TargetLocation = Target->GetActorLocation();
+	FVector Forward = Target->GetActorForwardVector().GetSafeNormal2D();
+	if (Forward.IsNearlyZero())
+	{
+		Forward = FVector::ForwardVector;
+	}
+	const FVector Right = FVector::CrossProduct(FVector::UpVector, Forward).GetSafeNormal();
+
+	// Place the phantom sound behind or beside the player, out of view, so it reads as "something there".
+	const FVector SideDir = (FMath::FRand() < 0.5f) ? Right : -Right;
+	const FVector Behind = -Forward * FMath::FRandRange(420.0f, 760.0f) + SideDir * FMath::FRandRange(-220.0f, 220.0f);
+	const FVector CueLocation = TargetLocation + Behind + FVector(0.0f, 0.0f, 70.0f);
+
+	// Faint whisper/footstep emitter + a brief light flicker that resolves to nothing.
+	SpawnAmbient(CueLocation, FMath::FRandRange(300.0f, 360.0f), 0.30f, 0.42f, 2.6f, 1.4f);
+	CutLightsForJumpscare(TargetLocation, CueLocation, 760.0f, 0.45f);
+
+	// A very subtle physical tension on the target — low shake, no input lock, no flash.
+	if (ABHPlayerController* TargetPC = Cast<ABHPlayerController>(Target->GetController()))
+	{
+		const float SensoryScale = GetScareSensoryScale();
+		FBHClientHorrorCue Cue;
+		Cue.EventType = EBHScareEventType::Whisper;
+		Cue.FocusLocation = CueLocation;
+		Cue.DurationSeconds = 0.9f;
+		Cue.LockSeconds = 0.0f;
+		Cue.ShakeIntensity = FMath::Clamp(0.10f * SensoryScale, 0.0f, 1.0f);
+		Cue.CameraJitterDuration = 0.35f * SensoryScale;
+		Cue.CameraJitterFrequency = 24.0f;
+		Cue.FlashIntensity = 0.0f;
+		Cue.bSnapToFocus = false;
+		Cue.bLockInput = false;
+		Cue.bCloseRangeFocus = false;
+		TargetPC->ClientPlayHorrorCue(Cue);
+	}
+
+	Target->AddDread(6.0f);
+	RecordPlaytestTelemetryMarker(TEXT("scare_cue"), TargetLocation, TEXT("fake_out_tension"), nullptr, Target->GetPlayerState<ABHPlayerState>());
+	return true;
+}
+
 void ABHGameMode::TriggerScareEvent()
 {
 	if (bRevisionMode && RevisionScareIntensity <= 0)
@@ -8904,6 +9056,14 @@ void ABHGameMode::TriggerScareEvent()
 		{
 			ScareLocation = NearbyScares[FMath::RandRange(0, NearbyScares.Num() - 1)];
 		}
+	}
+
+	// Occasionally build dread with a fake-out that resolves to nothing instead of a real scare.
+	// Its own 25s cooldown keeps it rare, and it doesn't consume the monster cooldown.
+	if (GetEffectiveScareIntensity() > 0 && FMath::FRand() < 0.22f && TriggerFakeOutTensionCue(Target))
+	{
+		LastDirectorScareTime = GetWorld()->GetTimeSeconds();
+		return;
 	}
 
 	float MonsterCooldown = bPartyPace ? 24.0f : 38.0f;
