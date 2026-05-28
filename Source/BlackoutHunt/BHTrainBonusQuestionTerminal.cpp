@@ -173,66 +173,59 @@ bool ABHTrainBonusQuestionTerminal::SubmitAnswer(ABHCharacter* Character, int32 
 
 	const FString CorrectChoice = Question.Answer.Choices[Question.Answer.CorrectChoiceIndex];
 	const bool bCorrect = AnswerIndex == Question.Answer.CorrectChoiceIndex;
-	const int32 Points = bCorrect ? FBHPowerupLibrary::QuestionPointValue(Question.Difficulty, true) : 0;
+	const FString SelectedAnswer = Question.Answer.Choices.IsValidIndex(AnswerIndex) ? Question.Answer.Choices[AnswerIndex] : FString();
+
+	// Route the answer through the unified classroom authority so bonus answers BUILD topic
+	// mastery (and therefore count toward the class escape) just like station answers — but pass
+	// bCountsAsContribution=false so they do not satisfy the team-station hall-monitor gate.
+	// RecordRevisionAnswer also owns the spaced-repetition queue + attempt telemetry in revision
+	// mode and returns the bonus shop points it awarded.
+	ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr;
+	int32 Awarded = 0;
+	EBHPhysicsTopic NextTopic = Question.Topic;
+	if (BHGM && BHGM->IsRevisionMode())
+	{
+		Awarded = BHGM->RecordRevisionAnswer(Character, Question, bCorrect, bCurrentQuestionIsReview, SelectedAnswer, FString(), /*bCountsAsContribution=*/false, /*bBonusPoints=*/true);
+		EBHQuestionDifficulty NextDifficulty = EBHQuestionDifficulty::Easy;
+		FString NextReason;
+		BHGM->GetAdaptiveRevisionPlan(BHPS, bCorrect, NextTopic, NextDifficulty, NextReason);
+	}
+	else
+	{
+		// Non-revision fallback: award locally and keep the spaced-repetition queue.
+		if (bCorrect)
+		{
+			Awarded = FBHPowerupLibrary::QuestionPointValue(Question.Difficulty, true);
+			BHPS->AddQuestionPoints(Awarded);
+			BHPS->DequeueRevisionReview(Question.Id);
+		}
+		else
+		{
+			BHPS->EnqueueRevisionReview(Question.Id);
+		}
+	}
+
 	if (bCorrect)
 	{
-		BHPS->AddQuestionPoints(Points);
 		Character->RecoverStamina(10.0f);
 		Character->AddFear(-5.0f);
-		FeedbackText = FString::Printf(TEXT("Correct. +%d shop points, stamina recovered, fear lowered. %s"), Points, *Question.Explanation);
+		FeedbackText = FString::Printf(TEXT("Correct. +%d shop points, stamina recovered, mastery banked. %s"), Awarded, *Question.Explanation);
 	}
 	else
 	{
 		Character->AddFear(4.0f);
-		FeedbackText = FString::Printf(TEXT("Wrong. No bonus points; pressure rises. Answer: %s. %s"), *CorrectChoice, *Question.Explanation);
+		// Hold resubmission so the student reads the correction before retrying.
+		CorrectionHoldUntil = Now + 4.0f;
+		FeedbackText = FString::Printf(TEXT("Wrong. No bonus points; pressure rises and mastery dipped. Answer: %s. %s Read the correction before retrying."), *CorrectChoice, *Question.Explanation);
 	}
 	bFeedbackCorrect = bCorrect;
-
-	// Spaced-repetition review loop: a miss queues the exact question to be
-	// re-asked later; answering it correctly clears it from the queue.
-	if (bCorrect)
-	{
-		BHPS->DequeueRevisionReview(Question.Id);
-	}
-	else
-	{
-		BHPS->EnqueueRevisionReview(Question.Id);
-	}
-
-	FBHQuestionAttemptRecord Record;
-	Record.PlayerName = BHPS->GetPlayerName();
-	Record.QuestionId = Question.Id;
-	Record.TopicName = Question.TopicName;
-	Record.QuestionText = Question.Prompt;
-	Record.QuestionSubtopic = Question.Subtopic;
-	Record.SelectedAnswer = Question.Answer.Choices.IsValidIndex(AnswerIndex) ? Question.Answer.Choices[AnswerIndex] : FString();
-	Record.CorrectAnswer = CorrectChoice;
-	Record.Explanation = Question.Explanation;
-	Record.Difficulty = Question.Difficulty;
-	Record.QuestionType = Question.Type;
-	Record.Topic = Question.Topic;
-	Record.bCorrect = bCorrect;
-	Record.PointsEarned = Points;
-	Record.TimestampSeconds = Now;
-	if (const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr)
-	{
-		Record.StageIndex = BHGS->TrainStageIndex;
-	}
-	if (const ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
-	{
-		BHGM->GetAdaptiveRevisionPlan(BHPS, bCorrect, Record.AdaptiveRecommendedTopic, Record.AdaptiveRecommendedDifficulty, Record.AdaptiveReason);
-	}
-	if (UBHGameInstance* BHGI = GetWorld() ? GetWorld()->GetGameInstance<UBHGameInstance>() : nullptr)
-	{
-		BHGI->RecordQuestionAttempt(Record);
-	}
 
 	if (PC)
 	{
 		PC->ClientShowStatusMessage(FeedbackText.Left(180), 4.0f);
 	}
 
-	LoadQuestion(Record.AdaptiveRecommendedTopic, FMath::Rand(), BHPS, bCorrect);
+	LoadQuestion(NextTopic, FMath::Rand(), BHPS, bCorrect);
 	return true;
 }
 
@@ -240,6 +233,7 @@ void ABHTrainBonusQuestionTerminal::LoadQuestion(EBHPhysicsTopic PreferredTopic,
 {
 	FBHRevisionQuestion NewQuestion;
 	bool bSelected = false;
+	bool bReviewSelected = false;
 
 	// Spaced repetition: re-ask a previously missed question before normal selection.
 	if (AdaptivePlayerState)
@@ -248,6 +242,7 @@ void ABHTrainBonusQuestionTerminal::LoadQuestion(EBHPhysicsTopic PreferredTopic,
 		if (!ReviewId.IsEmpty() && FBHRevisionQuestionBank::FindQuestion(ReviewId, NewQuestion))
 		{
 			bSelected = true;
+			bReviewSelected = true;
 		}
 	}
 
@@ -274,6 +269,7 @@ void ABHTrainBonusQuestionTerminal::LoadQuestion(EBHPhysicsTopic PreferredTopic,
 	if (bSelected)
 	{
 		Question = NewQuestion;
+		bCurrentQuestionIsReview = bReviewSelected;
 	}
 	RefreshDisplay();
 }

@@ -77,6 +77,11 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Question")
 	EBHDiagramType GetQuestionDiagramType() const;
 
+	// Optional data-driven diagram parameters (resistor/voltage values, lever distances,
+	// wave amplitude, ray angle, optional image path) for the active question. Empty for
+	// questions without visual givens, in which case the HUD draws the generic schematic.
+	const FBHDiagramParams& GetQuestionDiagram() const { return QuestionDiagram; }
+
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Question")
 	FString GetQuestionSubtopic() const;
 

@@ -59,4 +59,10 @@ protected:
 	bool bFeedbackCorrect;
 
 	float LastAnswerServerTime;
+	// Server-only anti-gaming hold: after a wrong answer, block resubmission until this server
+	// time so the student reads the correction. Input-only — never pins the player.
+	float CorrectionHoldUntil = 0.0f;
+	// True when the loaded question was re-surfaced from the player's spaced-repetition review
+	// queue (a previously missed question), so a correct answer counts as a correction.
+	bool bCurrentQuestionIsReview = false;
 };
