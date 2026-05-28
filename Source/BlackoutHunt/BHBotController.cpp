@@ -1740,6 +1740,12 @@ void ABHBotController::LogUnreachableOnce(AActor* Target, const FString& Reason)
 
 ABHCharacter* ABHBotController::FindVisibleSurvivor(float Range, bool bIncludeHidden) const
 {
+	const APawn* SelfPawn = GetPawn();
+	if (!GetWorld() || !SelfPawn)
+	{
+		return nullptr;
+	}
+
 	ABHCharacter* Best = nullptr;
 	float BestDistSq = TNumericLimits<float>::Max();
 	for (TActorIterator<ABHCharacter> It(GetWorld()); It; ++It)
@@ -1751,7 +1757,7 @@ ABHCharacter* ABHBotController::FindVisibleSurvivor(float Range, bool bIncludeHi
 			continue;
 		}
 
-		const float DistSq = FVector::DistSquared(Candidate->GetActorLocation(), GetPawn()->GetActorLocation());
+		const float DistSq = FVector::DistSquared(Candidate->GetActorLocation(), SelfPawn->GetActorLocation());
 		if (DistSq < BestDistSq)
 		{
 			BestDistSq = DistSq;
@@ -1763,6 +1769,12 @@ ABHCharacter* ABHBotController::FindVisibleSurvivor(float Range, bool bIncludeHi
 
 ABHCharacter* ABHBotController::FindVisibleTeacherThreat(float Range) const
 {
+	const APawn* SelfPawn = GetPawn();
+	if (!GetWorld() || !SelfPawn)
+	{
+		return nullptr;
+	}
+
 	ABHCharacter* Best = nullptr;
 	float BestDistSq = TNumericLimits<float>::Max();
 	for (TActorIterator<ABHCharacter> It(GetWorld()); It; ++It)
@@ -1774,7 +1786,7 @@ ABHCharacter* ABHBotController::FindVisibleTeacherThreat(float Range) const
 			continue;
 		}
 
-		const float DistSq = FVector::DistSquared(Candidate->GetActorLocation(), GetPawn()->GetActorLocation());
+		const float DistSq = FVector::DistSquared(Candidate->GetActorLocation(), SelfPawn->GetActorLocation());
 		if (DistSq < BestDistSq)
 		{
 			BestDistSq = DistSq;
