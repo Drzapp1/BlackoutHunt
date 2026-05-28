@@ -32,6 +32,7 @@ public:
 	void ConfigureScriptedPath(const TArray<FVector>& NewPathPoints, float NewSpeed = 3200.0f, float NewLifetime = 2.0f, AActor* NewLookAtTarget = nullptr, bool bNewFaceLookAtTarget = false, bool bNewPlayChargeEffects = true);
 	void ConfigurePresentation(USkeletalMesh* NewSkeletalMesh, UAnimSequence* NewRunAnimation, UStaticMesh* NewStaticMesh, UMaterialInterface* NewMaterial, USoundBase* NewLaunchSound, const FLinearColor& NewLightColor, float NewFocusHeight);
 	void ConfigureVariant(const FBHJumpscareVariant& NewVariant);
+	void ConfigureCloseupPresentation(const FBHJumpscareVariant& NewVariant, float NewLifetime = 1.35f, bool bUpperBodyOnly = true);
 	float GetCameraFocusHeight() const { return CameraFocusHeight; }
 	FName GetJumpscareVariantId() const { return JumpscareVariantId; }
 
@@ -41,10 +42,14 @@ protected:
 	void ApplyVisuals();
 	void ApplyConfiguredPresentation();
 	void ApplyConfiguredVariant();
+	void UseProxyFallbackVisual();
 	void SetProxyPartsVisible(bool bVisible);
 	void SetCloseupUpperBodyOnly();
 	void TriggerContactJumpscare();
 	void TickScriptedPath(float DeltaSeconds);
+	FVector GetEffectiveVariantVisualScale() const;
+	FVector FitVisualScaleToTargetHeight(const FVector& RequestedScale, float UnscaledHeight) const;
+	void ApplyVisualRootScale();
 
 	UFUNCTION()
 	void OnRep_JumpscareVariantId();
@@ -115,6 +120,7 @@ protected:
 	bool bScriptedPlayChargeEffects;
 	int32 ScriptedPathIndex;
 	bool bUsingScpVisual;
+	bool bCloseupPresentation;
 	float CameraFocusHeight;
 	TWeakObjectPtr<AActor> ScriptedLookAtTarget;
 	TArray<FVector> ScriptedPathPoints;
@@ -122,6 +128,7 @@ protected:
 	FVector PresentationVisualOffset;
 	FRotator PresentationVisualRotation;
 	FVector PresentationVisualScale;
+	FVector BaseVisualRootScale;
 
 	UPROPERTY(ReplicatedUsing = OnRep_JumpscareVariantId)
 	FName JumpscareVariantId;

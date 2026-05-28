@@ -1,6 +1,115 @@
 #include "BHGameState.h"
 #include "Net/UnrealNetwork.h"
 
+namespace
+{
+	FString BHPluralSuffix(int32 Count)
+	{
+		return Count == 1 ? FString() : FString(TEXT("s"));
+	}
+
+	FString BHGameStateTrainPhaseLabel(EBHTrainPhase Phase)
+	{
+		switch (Phase)
+		{
+		case EBHTrainPhase::Arrival:
+			return TEXT("Arrival");
+		case EBHTrainPhase::Recap:
+			return TEXT("Recap");
+		case EBHTrainPhase::BonusQuestion:
+			return TEXT("Bonus");
+		case EBHTrainPhase::Shop:
+			return TEXT("Shop");
+		case EBHTrainPhase::StationStop:
+			return TEXT("Station stop");
+		case EBHTrainPhase::Departing:
+			return TEXT("Departing");
+		case EBHTrainPhase::Inactive:
+		default:
+			return TEXT("Train");
+		}
+	}
+
+	FString BHGameStateFinalEscapeLabel(EBHFinalEscapeState State)
+	{
+		switch (State)
+		{
+		case EBHFinalEscapeState::Locked:
+			return TEXT("Locked");
+		case EBHFinalEscapeState::Cutscene:
+			return TEXT("Unlocking");
+		case EBHFinalEscapeState::EscapeActive:
+			return TEXT("Board now");
+		case EBHFinalEscapeState::Departed:
+			return TEXT("Departed");
+		case EBHFinalEscapeState::Failed:
+			return TEXT("Failed");
+		case EBHFinalEscapeState::Inactive:
+		default:
+			return TEXT("Inactive");
+		}
+	}
+
+	FString BHGameStateClock(float Seconds)
+	{
+		const int32 ClampedSeconds = FMath::Max(0, FMath::CeilToInt(Seconds));
+		return FString::Printf(TEXT("%02d:%02d"), ClampedSeconds / 60, ClampedSeconds % 60);
+	}
+
+	FString BHGameStateTrainAction(EBHTrainPhase Phase)
+	{
+		switch (Phase)
+		{
+		case EBHTrainPhase::Arrival:
+			return TEXT("Next: board now; recap starts when doors close.");
+		case EBHTrainPhase::Recap:
+			return TEXT("Next: read recap boards; snacks, drinks, and minigames are optional while you wait.");
+		case EBHTrainPhase::BonusQuestion:
+			return TEXT("Next: answer the bonus terminal with 1-4, or play minigames for small role points.");
+		case EBHTrainPhase::Shop:
+			return TEXT("Next: buy upgrades at role-eligible terminals; food, drinks, and minigames stay optional.");
+		case EBHTrainPhase::StationStop:
+			return TEXT("Next: board before departure; outside players are pulled aboard.");
+		case EBHTrainPhase::Departing:
+			return TEXT("Next: hold position while the next route loads.");
+		case EBHTrainPhase::Inactive:
+		default:
+			return TEXT("Next: wait for train route data.");
+		}
+	}
+
+	FString BHGameStateTrainDoorStatus(EBHTrainPhase Phase)
+	{
+		switch (Phase)
+		{
+		case EBHTrainPhase::Arrival:
+		case EBHTrainPhase::StationStop:
+			return TEXT("doors open");
+		case EBHTrainPhase::Departing:
+			return TEXT("doors closed for departure");
+		case EBHTrainPhase::Recap:
+		case EBHTrainPhase::BonusQuestion:
+		case EBHTrainPhase::Shop:
+			return TEXT("doors closed while moving");
+		case EBHTrainPhase::Inactive:
+		default:
+			return TEXT("doors pending");
+		}
+	}
+
+	FString BHGameStateProgressCount(const TCHAR* Label, int32 Completed, int32 Required)
+	{
+		if (Required <= 0)
+		{
+			return FString::Printf(TEXT("%s clear"), Label);
+		}
+
+		const int32 ClampedRequired = FMath::Max(1, Required);
+		const int32 ClampedCompleted = FMath::Clamp(Completed, 0, ClampedRequired);
+		return FString::Printf(TEXT("%s %d/%d"), Label, ClampedCompleted, ClampedRequired);
+	}
+}
+
 ABHGameState::ABHGameState()
 {
 	RoundPhase = EBHRoundPhase::Lobby;
@@ -25,6 +134,7 @@ ABHGameState::ABHGameState()
 	PresenceLevel = 0.0f;
 	PresenceText = TEXT("The building is listening.");
 	PresencePulse = 0;
+	ObjectiveBeats.Reset();
 	bPracticeMode = false;
 	bTestMode = false;
 	bBotMode = false;
@@ -38,6 +148,7 @@ ABHGameState::ABHGameState()
 	RevisionIndividualThreshold = 50.0f;
 	RevisionRoundDuration = 600;
 	RevisionScareIntensity = 3;
+	RevisionContributionTarget = 1;
 	RevisionClassMasteryAverage = 0.0f;
 	RevisionWeakTopic = EBHPhysicsTopic::ForcesAndMotion;
 	RevisionReviewTimeRemaining = 0;
@@ -86,6 +197,7 @@ void ABHGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 	DOREPLIFETIME(ABHGameState, PresenceLevel);
 	DOREPLIFETIME(ABHGameState, PresenceText);
 	DOREPLIFETIME(ABHGameState, PresencePulse);
+	DOREPLIFETIME(ABHGameState, ObjectiveBeats);
 	DOREPLIFETIME(ABHGameState, bPracticeMode);
 	DOREPLIFETIME(ABHGameState, bTestMode);
 	DOREPLIFETIME(ABHGameState, bBotMode);
@@ -99,6 +211,7 @@ void ABHGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 	DOREPLIFETIME(ABHGameState, RevisionIndividualThreshold);
 	DOREPLIFETIME(ABHGameState, RevisionRoundDuration);
 	DOREPLIFETIME(ABHGameState, RevisionScareIntensity);
+	DOREPLIFETIME(ABHGameState, RevisionContributionTarget);
 	DOREPLIFETIME(ABHGameState, RevisionClassMasteryAverage);
 	DOREPLIFETIME(ABHGameState, RevisionWeakTopic);
 	DOREPLIFETIME(ABHGameState, RevisionReviewTimeRemaining);
@@ -168,7 +281,7 @@ FString ABHGameState::GetPhaseText() const
 	case EBHRoundPhase::Lobby:
 		return TEXT("Lobby");
 	case EBHRoundPhase::Prep:
-		return TEXT("Survivor Prep");
+		return TEXT("Role Warmup");
 	case EBHRoundPhase::Hunt:
 		return TEXT("Hunt");
 	case EBHRoundPhase::Intermission:
@@ -181,6 +294,188 @@ FString ABHGameState::GetPhaseText() const
 		return TEXT("Teacher Wins");
 	default:
 		return TEXT("Unknown");
+	}
+}
+
+FString ABHGameState::GetRoundModifierText() const
+{
+	return GetRoundModifierTextFor(RoundModifier);
+}
+
+FString ABHGameState::GetRoundModifierHint() const
+{
+	return GetRoundModifierHintFor(RoundModifier);
+}
+
+FString ABHGameState::GetPublicObjectiveActionText() const
+{
+	switch (RoundPhase)
+	{
+	case EBHRoundPhase::Lobby:
+		return TEXT("Next: ready up, then wait for the host start.");
+	case EBHRoundPhase::Prep:
+		return TEXT("Next: warm up roles and routes before the hunt starts.");
+	case EBHRoundPhase::Intermission:
+		return BHGameStateTrainAction(TrainPhase);
+	case EBHRoundPhase::FinalEscape:
+		if (FinalEscapeState == EBHFinalEscapeState::Cutscene)
+		{
+			return TEXT("Next: hold position while evacuation doors unlock; Teacher release is delayed.");
+		}
+		if (FinalEscapeState == EBHFinalEscapeState::Departed || FinalEscapeState == EBHFinalEscapeState::Failed)
+		{
+			return TEXT("Next: wait for the round result.");
+		}
+		return TEXT("Next: board any open evacuation train door before departure.");
+	case EBHRoundPhase::SurvivorsWin:
+		return TEXT("Next: survivors escaped; returning to lobby.");
+	case EBHRoundPhase::HunterWin:
+		return TEXT("Next: Teacher wins; returning to lobby.");
+	case EBHRoundPhase::Hunt:
+	default:
+		break;
+	}
+
+	if (bExitUnlocked)
+	{
+		return TEXT("Next: reach the active exit gate.");
+	}
+
+	const int32 RemainingBreakers = FMath::Max(0, BreakersRequired - BreakersCompleted);
+	const int32 RemainingStations = FMath::Max(0, SideObjectivesRequired - SideObjectivesCompleted);
+	if (bRevisionMode)
+	{
+		if (RevisionReviewTimeRemaining > 0)
+		{
+			return TEXT("Next: review the weak topic and correct missed answers.");
+		}
+		if (RemainingStations > 0)
+		{
+			return FString::Printf(TEXT("Next: answer station questions; %d class node%s left."),
+				RemainingStations,
+				*BHPluralSuffix(RemainingStations));
+		}
+		if (RevisionClassMasteryAverage < RevisionClassThreshold)
+		{
+			return FString::Printf(TEXT("Next: raise class mastery to %.0f%%."), RevisionClassThreshold);
+		}
+		return FString::Printf(TEXT("Next: help everyone reach %.0f%% mastery and %d contribution%s."),
+			RevisionIndividualThreshold,
+			FMath::Max(1, RevisionContributionTarget),
+			*BHPluralSuffix(FMath::Max(1, RevisionContributionTarget)));
+	}
+
+	if (RemainingBreakers > 0 && RemainingStations > 0)
+	{
+		return FString::Printf(TEXT("Next: repair %d breaker%s and finish %d station task%s."),
+			RemainingBreakers,
+			*BHPluralSuffix(RemainingBreakers),
+			RemainingStations,
+			*BHPluralSuffix(RemainingStations));
+	}
+	if (RemainingBreakers > 0)
+	{
+		return FString::Printf(TEXT("Next: repair %d breaker%s to restore exit power."),
+			RemainingBreakers,
+			*BHPluralSuffix(RemainingBreakers));
+	}
+	if (RemainingStations > 0)
+	{
+		return FString::Printf(TEXT("Next: complete %d station task%s to unlock the exit."),
+			RemainingStations,
+			*BHPluralSuffix(RemainingStations));
+	}
+	return TEXT("Next: all objectives are complete; find the active exit gate.");
+}
+
+FString ABHGameState::GetObjectiveProgressText() const
+{
+	if (RoundPhase == EBHRoundPhase::Intermission)
+	{
+		const float ServerNow = GetServerWorldTimeSeconds();
+		const FString Destination = TrainDestinationName.IsEmpty() ? FString(TEXT("next stop")) : TrainDestinationName;
+		return FString::Printf(TEXT("Train %s | %s | Destination %s | %s"),
+			*BHGameStateTrainPhaseLabel(TrainPhase),
+			*BHGameStateClock(TrainPhaseEndServerTime - ServerNow),
+			*Destination,
+			*BHGameStateTrainDoorStatus(TrainPhase));
+	}
+
+	if (RoundPhase == EBHRoundPhase::FinalEscape)
+	{
+		const float ServerNow = GetServerWorldTimeSeconds();
+		if (FinalEscapeState == EBHFinalEscapeState::Cutscene)
+		{
+			return FString::Printf(TEXT("Final train | Unlocking | Control %s | Teacher release %s | Departs %s"),
+				*BHGameStateClock(FinalEscapeCutsceneEndServerTime - ServerNow),
+				*BHGameStateClock(HunterReleaseServerTime - ServerNow),
+				*BHGameStateClock(FinalEscapeEndServerTime - ServerNow));
+		}
+
+		const FString ReleaseText = HunterReleaseServerTime > ServerNow
+			? FString::Printf(TEXT("Teacher release %s"), *BHGameStateClock(HunterReleaseServerTime - ServerNow))
+			: FString(TEXT("Teacher released"));
+		return FString::Printf(TEXT("Final train | %s | Departs %s | %s"),
+			*BHGameStateFinalEscapeLabel(FinalEscapeState),
+			*BHGameStateClock(FinalEscapeEndServerTime - ServerNow),
+			*ReleaseText);
+	}
+
+	const FString ExitText = bExitUnlocked ? FString(TEXT("Exit open")) : FString(TEXT("Exit locked"));
+	if (bRevisionMode)
+	{
+		return FString::Printf(TEXT("Class %.0f%%/%.0f%% | %s | Contribution target %d | %s"),
+			RevisionClassMasteryAverage,
+			RevisionClassThreshold,
+			*BHGameStateProgressCount(TEXT("Nodes"), SideObjectivesCompleted, SideObjectivesRequired),
+			FMath::Max(1, RevisionContributionTarget),
+			*ExitText);
+	}
+
+	return FString::Printf(TEXT("%s | %s | Presence %.0f%% | %s"),
+		*BHGameStateProgressCount(TEXT("Power"), BreakersCompleted, BreakersRequired),
+		*BHGameStateProgressCount(TEXT("Side tasks"), SideObjectivesCompleted, SideObjectivesRequired),
+		FMath::Clamp(PresenceLevel, 0.0f, 100.0f),
+		*ExitText);
+}
+
+FString ABHGameState::GetRoundModifierTextFor(EBHRoundModifier Modifier)
+{
+	switch (Modifier)
+	{
+	case EBHRoundModifier::LightsOut:
+		return TEXT("Lights Out");
+	case EBHRoundModifier::LoudFooting:
+		return TEXT("Loud Footing");
+	case EBHRoundModifier::JammedDoors:
+		return TEXT("Jammed Doors");
+	case EBHRoundModifier::DeadCCTV:
+		return TEXT("Dead CCTV");
+	case EBHRoundModifier::PanicSurge:
+		return TEXT("Panic Surge");
+	case EBHRoundModifier::None:
+	default:
+		return TEXT("None");
+	}
+}
+
+FString ABHGameState::GetRoundModifierHintFor(EBHRoundModifier Modifier)
+{
+	switch (Modifier)
+	{
+	case EBHRoundModifier::LightsOut:
+		return TEXT("More circuits start dark; use lit routes and breaker rooms.");
+	case EBHRoundModifier::LoudFooting:
+		return TEXT("Footsteps carry farther; slow movement is safer.");
+	case EBHRoundModifier::JammedDoors:
+		return TEXT("More doors start shut; plan alternate chase loops.");
+	case EBHRoundModifier::DeadCCTV:
+		return TEXT("Several camera feeds are offline, leaving blind spots.");
+	case EBHRoundModifier::PanicSurge:
+		return TEXT("Presence rises faster and scare pressure cycles sooner.");
+	case EBHRoundModifier::None:
+	default:
+		return TEXT("Standard map rules.");
 	}
 }
 
@@ -250,6 +545,11 @@ void ABHGameState::SetPresenceState(float NewPresenceLevel, const FString& NewPr
 	PresencePulse = FMath::Max(0, NewPresencePulse);
 }
 
+void ABHGameState::SetObjectiveBeats(const TArray<FBHObjectiveBeat>& NewObjectiveBeats)
+{
+	ObjectiveBeats = NewObjectiveBeats;
+}
+
 void ABHGameState::SetPracticeMode(bool bNewPracticeMode)
 {
 	bPracticeMode = bNewPracticeMode;
@@ -277,6 +577,11 @@ void ABHGameState::SetRevisionOptions(EBHRevisionMode NewRevisionMode, int32 New
 	RevisionIndividualThreshold = FMath::Clamp(NewIndividualThreshold, 0.0f, 100.0f);
 	RevisionRoundDuration = FMath::Clamp(NewRoundDuration, 60, 3600);
 	RevisionScareIntensity = FMath::Clamp(NewScareIntensity, 0, 3);
+}
+
+void ABHGameState::SetRevisionContributionTarget(int32 NewContributionTarget)
+{
+	RevisionContributionTarget = FMath::Clamp(NewContributionTarget, 1, 4);
 }
 
 void ABHGameState::SetRevisionSummary(float NewClassMasteryAverage, EBHPhysicsTopic NewWeakTopic, int32 NewReviewTimeRemaining, const FString& NewReviewText)

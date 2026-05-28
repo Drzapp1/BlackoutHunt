@@ -47,6 +47,20 @@ void ABHEscapeStationManager::Tick(float DeltaSeconds)
 	UpdateStationDisplays();
 }
 
+void ABHEscapeStationManager::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (GetWorld())
+	{
+		GetWorldTimerManager().ClearTimer(CutsceneTimerHandle);
+		GetWorldTimerManager().ClearTimer(EscapeTimerHandle);
+		GetWorldTimerManager().ClearAllTimersForObject(this);
+	}
+
+	HunterDoorProximitySeconds.Reset();
+	HunterPenaltyEndTimes.Reset();
+	Super::EndPlay(EndPlayReason);
+}
+
 void ABHEscapeStationManager::RegisterEscapeDoor(ABHTrainDoor* Door)
 {
 	if (Door)
@@ -90,7 +104,7 @@ void ABHEscapeStationManager::TriggerFinalEscape()
 		if (ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get()))
 		{
 			PC->ClientSetJumpscareInputLocked(true);
-			PC->ClientShowStatusMessage(TEXT("Exit system unlocked. Evacuation train arriving."), CutsceneSeconds);
+			PC->ClientShowStatusMessage(FString::Printf(TEXT("Evacuation train arriving. Control returns in %.0fs; Teacher release is delayed and door camping is disrupted."), CutsceneSeconds), CutsceneSeconds);
 		}
 	}
 
@@ -153,7 +167,7 @@ void ABHEscapeStationManager::FinishCutscene()
 		if (ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get()))
 		{
 			PC->ClientSetJumpscareInputLocked(false);
-			PC->ClientShowStatusMessage(TEXT("Reach the evacuation train. Teacher release delayed."), 4.5f);
+			PC->ClientShowStatusMessage(FString::Printf(TEXT("Reach any green train door. Teacher held %.0fs after unlock; camping a door disrupts capture pressure."), HunterReleaseDelaySeconds), 4.5f);
 		}
 	}
 
@@ -198,13 +212,23 @@ void ABHEscapeStationManager::UpdateStationDisplays()
 	if (BHGS->FinalEscapeState == EBHFinalEscapeState::Cutscene)
 	{
 		Header = TEXT("EVACUATION TRAIN ARRIVING");
-		Body = TEXT("Cinematic cameras active. Doors unlocking.");
+		const int32 ControlCountdown = FMath::Max(0, FMath::CeilToInt(BHGS->FinalEscapeCutsceneEndServerTime - Now));
+		const int32 HunterReleaseCountdown = FMath::Max(0, FMath::CeilToInt(BHGS->HunterReleaseServerTime - Now));
+		Body = FString::Printf(TEXT("Doors unlocking in %02d:%02d.\nTeacher release in %02d:%02d.\nGet ready to sprint to a green doorway."),
+			ControlCountdown / 60,
+			ControlCountdown % 60,
+			HunterReleaseCountdown / 60,
+			HunterReleaseCountdown % 60);
 		Accent = FLinearColor(1.0f, 0.74f, 0.22f, 1.0f);
 	}
 	else if (BHGS->FinalEscapeState == EBHFinalEscapeState::EscapeActive)
 	{
 		Header = TEXT("TRAIN DEPARTS");
-		Body = FString::Printf(TEXT("%02d:%02d\nUse any green subway door.\nNo single camp point controls the platform."), Countdown / 60, Countdown % 60);
+		const int32 HunterReleaseCountdown = FMath::Max(0, FMath::CeilToInt(BHGS->HunterReleaseServerTime - Now));
+		const FString HunterLine = BHGS->bHunterInputFrozen
+			? FString::Printf(TEXT("Teacher held %02d:%02d."), HunterReleaseCountdown / 60, HunterReleaseCountdown % 60)
+			: FString(TEXT("Teacher active. Door camping disrupts capture."));
+		Body = FString::Printf(TEXT("%02d:%02d\nUse any green subway door.\n%s\nSurvivors board; others pressure routes."), Countdown / 60, Countdown % 60, *HunterLine);
 		Accent = FLinearColor(0.20f, 1.0f, 0.48f, 1.0f);
 	}
 	else if (BHGS->FinalEscapeState == EBHFinalEscapeState::Departed)

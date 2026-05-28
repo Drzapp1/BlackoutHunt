@@ -930,6 +930,7 @@ void UBHAccountSubsystem::RecordRoundResult(EBHPlayerRole Role, EBHPlayerLifeSta
 
 	Progress.XP += EarnedXP;
 	Progress.LastUpdatedUtc = UtcNowString();
+	SanitizeProgressCosmetics();
 	SaveProgress();
 
 	FString Message;
@@ -966,6 +967,85 @@ bool UBHAccountSubsystem::HasLocalCredential() const
 	return IFileManager::Get().FileExists(*GetCredentialPath());
 }
 
+bool UBHAccountSubsystem::IsCosmeticUnlocked(EBHCosmeticCategory Category, int32 Index) const
+{
+	return BHCosmeticIsUnlocked(Category, Index, Progress.XP);
+}
+
+int32 UBHAccountSubsystem::GetSelectedCosmeticIndex(EBHCosmeticCategory Category) const
+{
+	switch (Category)
+	{
+	case EBHCosmeticCategory::Outfit:
+		return BHCosmeticClampUnlockedIndex(Category, Progress.SelectedAvatarIndex, Progress.XP);
+	case EBHCosmeticCategory::ShirtColor:
+		return BHCosmeticClampUnlockedIndex(Category, Progress.SelectedAvatarColorIndex, Progress.XP);
+	case EBHCosmeticCategory::Headwear:
+		return BHCosmeticClampUnlockedIndex(Category, Progress.SelectedAvatarHeadwearIndex, Progress.XP);
+	case EBHCosmeticCategory::Gear:
+		return 0;
+	default:
+		return 0;
+	}
+}
+
+bool UBHAccountSubsystem::SetSelectedCosmetic(EBHCosmeticCategory Category, int32 Index, FString& OutMessage)
+{
+	const int32 ClampedIndex = BHCosmeticClampIndex(Category, Index);
+	const int32 RequiredXP = BHCosmeticRequiredXP(Category, ClampedIndex);
+	if (!BHCosmeticIsUnlocked(Category, ClampedIndex, Progress.XP))
+	{
+		OutMessage = FString::Printf(
+			TEXT("%s %s unlocks at %d XP. Current XP: %d."),
+			BHCosmeticCategoryName(Category),
+			BHCosmeticItemName(Category, ClampedIndex),
+			RequiredXP,
+			Progress.XP);
+		SetLastAccountMessage(OutMessage);
+		return false;
+	}
+
+	switch (Category)
+	{
+	case EBHCosmeticCategory::Outfit:
+		Progress.SelectedAvatarIndex = ClampedIndex;
+		break;
+	case EBHCosmeticCategory::ShirtColor:
+		Progress.SelectedAvatarColorIndex = ClampedIndex;
+		break;
+	case EBHCosmeticCategory::Headwear:
+		Progress.SelectedAvatarHeadwearIndex = ClampedIndex;
+		break;
+	case EBHCosmeticCategory::Gear:
+		Progress.SelectedAvatarGearIndex = 0;
+		break;
+	default:
+		OutMessage = TEXT("Unknown cosmetic category.");
+		SetLastAccountMessage(OutMessage);
+		return false;
+	}
+
+	Progress.LastUpdatedUtc = UtcNowString();
+	SanitizeProgressCosmetics();
+	SaveProgress();
+
+	OutMessage = FString::Printf(
+		TEXT("%s cosmetic saved: %s."),
+		BHCosmeticCategoryName(Category),
+		BHCosmeticItemName(Category, ClampedIndex));
+	SetLastAccountMessage(OutMessage);
+	return true;
+}
+
+FString UBHAccountSubsystem::GetCosmeticSummary() const
+{
+	return FString::Printf(
+		TEXT("Outfit: %s | Shirt: %s | Headwear: %s"),
+		BHCosmeticItemName(EBHCosmeticCategory::Outfit, GetSelectedCosmeticIndex(EBHCosmeticCategory::Outfit)),
+		BHCosmeticItemName(EBHCosmeticCategory::ShirtColor, GetSelectedCosmeticIndex(EBHCosmeticCategory::ShirtColor)),
+		BHCosmeticItemName(EBHCosmeticCategory::Headwear, GetSelectedCosmeticIndex(EBHCosmeticCategory::Headwear)));
+}
+
 FString UBHAccountSubsystem::GetAccountSummary() const
 {
 	const FString ProviderName = Profile.Provider.IsEmpty() ? TEXT("guest") : Profile.Provider;
@@ -979,6 +1059,8 @@ FString UBHAccountSubsystem::GetAccountSummary() const
 		Progress.HunterWins,
 		Progress.SurvivorWins,
 		Progress.Escapes);
+
+	Summary += FString::Printf(TEXT("\nCosmetics: %s"), *GetCosmeticSummary());
 
 	Summary += HasLocalCredential()
 		? TEXT("\nEncrypted local credentials: saved")
@@ -1117,6 +1199,15 @@ void UBHAccountSubsystem::SaveProgress() const
 	FFileHelper::SaveStringToFile(JsonObjectToString(ProgressToJson()), *GetProgressPath());
 }
 
+void UBHAccountSubsystem::SanitizeProgressCosmetics()
+{
+	Progress.XP = FMath::Max(0, Progress.XP);
+	Progress.SelectedAvatarIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Outfit, Progress.SelectedAvatarIndex, Progress.XP);
+	Progress.SelectedAvatarColorIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::ShirtColor, Progress.SelectedAvatarColorIndex, Progress.XP);
+	Progress.SelectedAvatarHeadwearIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Headwear, Progress.SelectedAvatarHeadwearIndex, Progress.XP);
+	Progress.SelectedAvatarGearIndex = 0;
+}
+
 TSharedRef<FJsonObject> UBHAccountSubsystem::ProfileToJson() const
 {
 	TSharedRef<FJsonObject> JsonObject = MakeShared<FJsonObject>();
@@ -1143,6 +1234,10 @@ TSharedRef<FJsonObject> UBHAccountSubsystem::ProgressToJson() const
 	JsonObject->SetNumberField(TEXT("escapes"), Progress.Escapes);
 	JsonObject->SetNumberField(TEXT("xp"), Progress.XP);
 	JsonObject->SetStringField(TEXT("selected_avatar_url"), Progress.SelectedAvatarUrl);
+	JsonObject->SetNumberField(TEXT("selected_avatar_index"), Progress.SelectedAvatarIndex);
+	JsonObject->SetNumberField(TEXT("selected_avatar_color_index"), Progress.SelectedAvatarColorIndex);
+	JsonObject->SetNumberField(TEXT("selected_avatar_headwear_index"), Progress.SelectedAvatarHeadwearIndex);
+	JsonObject->SetNumberField(TEXT("selected_avatar_gear_index"), Progress.SelectedAvatarGearIndex);
 	JsonObject->SetStringField(TEXT("last_updated_utc"), Progress.LastUpdatedUtc);
 	return JsonObject;
 }
@@ -1175,7 +1270,12 @@ void UBHAccountSubsystem::ApplyProgressJson(const TSharedPtr<FJsonObject>& JsonO
 	Progress.Escapes = JsonInt(JsonObject, TEXT("escapes"));
 	Progress.XP = JsonInt(JsonObject, TEXT("xp"));
 	Progress.SelectedAvatarUrl = JsonString(JsonObject, TEXT("selected_avatar_url"));
+	Progress.SelectedAvatarIndex = JsonInt(JsonObject, TEXT("selected_avatar_index"));
+	Progress.SelectedAvatarColorIndex = JsonInt(JsonObject, TEXT("selected_avatar_color_index"));
+	Progress.SelectedAvatarHeadwearIndex = JsonInt(JsonObject, TEXT("selected_avatar_headwear_index"));
+	Progress.SelectedAvatarGearIndex = JsonInt(JsonObject, TEXT("selected_avatar_gear_index"));
 	Progress.LastUpdatedUtc = JsonString(JsonObject, TEXT("last_updated_utc"));
+	SanitizeProgressCosmetics();
 }
 
 void UBHAccountSubsystem::ApplyBackendPlayerJson(const TSharedPtr<FJsonObject>& PlayerObject, const FString& SessionToken)

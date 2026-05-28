@@ -1,4 +1,5 @@
 #include "BHPlayerState.h"
+#include "BHCosmeticUnlocks.h"
 #include "Net/UnrealNetwork.h"
 
 ABHPlayerState::ABHPlayerState()
@@ -16,9 +17,13 @@ ABHPlayerState::ABHPlayerState()
 	bHasFogPresetVote = false;
 	FogPresetVote = EBHFogPreset::Heavy;
 	bFakeHunterEligible = false;
+	SpectatorRolePreference = EBHPlayerRole::Unassigned;
+	SpectatorEncouragementCount = 0;
 	RevisionStats = FBHPlayerRevisionStats();
 	QuestionPoints = 0;
 	LifetimeQuestionPoints = 0;
+	HunterPoints = 0;
+	LifetimeHunterPoints = 0;
 }
 
 void ABHPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -38,9 +43,13 @@ void ABHPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLi
 	DOREPLIFETIME(ABHPlayerState, bHasFogPresetVote);
 	DOREPLIFETIME(ABHPlayerState, FogPresetVote);
 	DOREPLIFETIME(ABHPlayerState, bFakeHunterEligible);
+	DOREPLIFETIME(ABHPlayerState, SpectatorRolePreference);
+	DOREPLIFETIME(ABHPlayerState, SpectatorEncouragementCount);
 	DOREPLIFETIME(ABHPlayerState, RevisionStats);
 	DOREPLIFETIME(ABHPlayerState, QuestionPoints);
 	DOREPLIFETIME(ABHPlayerState, LifetimeQuestionPoints);
+	DOREPLIFETIME(ABHPlayerState, HunterPoints);
+	DOREPLIFETIME(ABHPlayerState, LifetimeHunterPoints);
 	DOREPLIFETIME(ABHPlayerState, Powerups);
 }
 
@@ -81,7 +90,7 @@ void ABHPlayerState::SetHiddenInLocker(bool bNewHidden)
 
 void ABHPlayerState::SetAvatarIndex(int32 NewAvatarIndex)
 {
-	AvatarIndex = FMath::Max(0, NewAvatarIndex);
+	AvatarIndex = BHCosmeticClampIndex(EBHCosmeticCategory::Outfit, NewAvatarIndex);
 }
 
 void ABHPlayerState::SetAvatarColor(const FLinearColor& NewAvatarColor)
@@ -91,11 +100,12 @@ void ABHPlayerState::SetAvatarColor(const FLinearColor& NewAvatarColor)
 
 void ABHPlayerState::SetAvatarHeadwearIndex(int32 NewHeadwearIndex)
 {
-	AvatarHeadwearIndex = 0;
+	AvatarHeadwearIndex = BHCosmeticClampIndex(EBHCosmeticCategory::Headwear, NewHeadwearIndex);
 }
 
 void ABHPlayerState::SetAvatarGearIndex(int32 NewGearIndex)
 {
+	(void)NewGearIndex;
 	AvatarGearIndex = 0;
 }
 
@@ -121,6 +131,30 @@ void ABHPlayerState::SetFakeHunterEligible(bool bNewEligible)
 	bFakeHunterEligible = bNewEligible;
 }
 
+void ABHPlayerState::SetSpectatorRolePreference(EBHPlayerRole NewRole)
+{
+	if (NewRole != EBHPlayerRole::Hunter && NewRole != EBHPlayerRole::Survivor && NewRole != EBHPlayerRole::FakeHunter)
+	{
+		NewRole = EBHPlayerRole::Unassigned;
+	}
+
+	SpectatorRolePreference = NewRole;
+}
+
+void ABHPlayerState::ClearSpectatorSupportState(bool bClearRolePreference)
+{
+	if (bClearRolePreference)
+	{
+		SpectatorRolePreference = EBHPlayerRole::Unassigned;
+	}
+	SpectatorEncouragementCount = 0;
+}
+
+void ABHPlayerState::AddSpectatorEncouragement()
+{
+	SpectatorEncouragementCount = FMath::Max(0, SpectatorEncouragementCount + 1);
+}
+
 void ABHPlayerState::ResetRevisionStats()
 {
 	RevisionStats = FBHPlayerRevisionStats();
@@ -142,6 +176,33 @@ bool ABHPlayerState::SpendQuestionPoints(int32 Points)
 	}
 
 	QuestionPoints -= ClampedPoints;
+	return true;
+}
+
+int32 ABHPlayerState::ApplyCaughtQuestionPointPenalty(float PenaltyFraction)
+{
+	const float ClampedFraction = FMath::Clamp(PenaltyFraction, 0.0f, 1.0f);
+	const int32 Penalty = FMath::Min(QuestionPoints, FMath::CeilToInt(static_cast<float>(QuestionPoints) * ClampedFraction));
+	QuestionPoints = FMath::Max(0, QuestionPoints - Penalty);
+	return Penalty;
+}
+
+void ABHPlayerState::AddHunterPoints(int32 Points)
+{
+	const int32 ClampedPoints = FMath::Max(0, Points);
+	HunterPoints = FMath::Max(0, HunterPoints + ClampedPoints);
+	LifetimeHunterPoints = FMath::Max(0, LifetimeHunterPoints + ClampedPoints);
+}
+
+bool ABHPlayerState::SpendHunterPoints(int32 Points)
+{
+	const int32 ClampedPoints = FMath::Max(0, Points);
+	if (HunterPoints < ClampedPoints)
+	{
+		return false;
+	}
+
+	HunterPoints -= ClampedPoints;
 	return true;
 }
 

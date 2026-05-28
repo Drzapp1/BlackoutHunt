@@ -34,9 +34,15 @@ public:
 	void SetFogPresetVote(EBHFogPreset NewFogPresetVote);
 	void ClearFogPresetVote();
 	void SetFakeHunterEligible(bool bNewEligible);
+	void SetSpectatorRolePreference(EBHPlayerRole NewRole);
+	void ClearSpectatorSupportState(bool bClearRolePreference = true);
+	void AddSpectatorEncouragement();
 	void ResetRevisionStats();
 	void AddQuestionPoints(int32 Points);
 	bool SpendQuestionPoints(int32 Points);
+	int32 ApplyCaughtQuestionPointPenalty(float PenaltyFraction = 0.25f);
+	void AddHunterPoints(int32 Points);
+	bool SpendHunterPoints(int32 Points);
 	int32 GetPowerupCharges(EBHPowerupType Type) const;
 	bool AddPowerupCharge(EBHPowerupType Type, int32 MaxCharges);
 	bool ConsumePowerupCharge(EBHPowerupType Type);
@@ -82,6 +88,12 @@ public:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt")
 	bool bFakeHunterEligible;
 
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Spectator")
+	EBHPlayerRole SpectatorRolePreference;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Spectator")
+	int32 SpectatorEncouragementCount;
+
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Revision")
 	FBHPlayerRevisionStats RevisionStats;
 
@@ -90,6 +102,12 @@ public:
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Train")
 	int32 LifetimeQuestionPoints;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Train")
+	int32 HunterPoints;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Train")
+	int32 LifetimeHunterPoints;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Powerups")
 	TArray<FBHPowerupInventoryEntry> Powerups;

@@ -17,6 +17,7 @@ public:
 	ABHEscapeStationManager();
 
 	virtual void Tick(float DeltaSeconds) override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	void RegisterEscapeDoor(ABHTrainDoor* Door);
 	void RegisterDisplay(ABHTrainDisplayActor* Display);

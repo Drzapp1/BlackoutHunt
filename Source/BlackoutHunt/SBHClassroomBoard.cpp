@@ -163,6 +163,14 @@ namespace
 			return TEXT("-");
 		}
 
+		if (PlayerState->PlayerRole == EBHPlayerRole::Spectator)
+		{
+			return FString::Printf(
+				TEXT("Late join support %d  Pref: %s"),
+				FMath::Max(0, PlayerState->SpectatorEncouragementCount),
+				*BoardRoleName(PlayerState->SpectatorRolePreference));
+		}
+
 		if (GameState && GameState->bRevisionMode)
 		{
 			const FBHPlayerRevisionStats& Stats = PlayerState->RevisionStats;
@@ -186,6 +194,11 @@ namespace
 		if (!PlayerState)
 		{
 			return TEXT("-");
+		}
+
+		if (PlayerState->PlayerRole == EBHPlayerRole::Spectator)
+		{
+			return TEXT("Next lobby");
 		}
 
 		if (!GameState || !GameState->bRevisionMode)
@@ -429,11 +442,13 @@ FString SBHClassroomBoard::BuildRosterSignature() const
 
 		const FBHPlayerRevisionStats& Stats = BHPlayerState->RevisionStats;
 		Signature += FString::Printf(
-			TEXT("|%s:%d:%d:%d:%d:%d:%d:%d:%d:%.1f:%.1f:%.1f:%.1f:%.1f"),
+			TEXT("|%s:%d:%d:%d:%d:%d:%d:%d:%d:%d:%d:%.1f:%.1f:%.1f:%.1f:%.1f"),
 			*BoardPlayerName(BHPlayerState),
 			BHPlayerState->bReady ? 1 : 0,
 			static_cast<int32>(BHPlayerState->PlayerRole),
 			static_cast<int32>(BHPlayerState->DesiredRole),
+			static_cast<int32>(BHPlayerState->SpectatorRolePreference),
+			BHPlayerState->SpectatorEncouragementCount,
 			static_cast<int32>(BHPlayerState->LifeState),
 			Stats.Attempts,
 			Stats.CorrectAnswers,
@@ -660,6 +675,7 @@ FText SBHClassroomBoard::GetRoleMixText() const
 	int32 Teachers = 0;
 	int32 Students = 0;
 	int32 Monitors = 0;
+	int32 Spectators = 0;
 	int32 Captured = 0;
 	int32 Escaped = 0;
 	for (APlayerState* RawPlayerState : GameState->PlayerArray)
@@ -682,6 +698,10 @@ FText SBHClassroomBoard::GetRoleMixText() const
 		{
 			++Students;
 		}
+		else if (BHPlayerState->PlayerRole == EBHPlayerRole::Spectator)
+		{
+			++Spectators;
+		}
 
 		if (BHPlayerState->LifeState == EBHPlayerLifeState::Captured)
 		{
@@ -693,7 +713,7 @@ FText SBHClassroomBoard::GetRoleMixText() const
 		}
 	}
 
-	return FText::FromString(FString::Printf(TEXT("%d teachers  %d students  %d monitors  %d/%d done"), Teachers, Students, Monitors, Escaped, Captured + Escaped));
+	return FText::FromString(FString::Printf(TEXT("%d teachers  %d students  %d monitors  %d spectators  %d/%d done"), Teachers, Students, Monitors, Spectators, Escaped, Captured + Escaped));
 }
 
 FText SBHClassroomBoard::GetObjectiveText() const
@@ -704,16 +724,10 @@ FText SBHClassroomBoard::GetObjectiveText() const
 		return FText::FromString(TEXT("Host a classroom session to populate the board."));
 	}
 
-	const FString Objective = GameState->ObjectiveText.IsEmpty() ? TEXT("Restore power and reach the exit.") : GameState->ObjectiveText;
-	const FString ExitText = GameState->bExitUnlocked ? TEXT("Exit open") : TEXT("Exit locked");
 	return FText::FromString(FString::Printf(
-		TEXT("%s  |  Power %d/%d  Side Tasks %d/%d  |  %s"),
-		*Objective,
-		GameState->BreakersCompleted,
-		GameState->BreakersRequired,
-		GameState->SideObjectivesCompleted,
-		GameState->SideObjectivesRequired,
-		*ExitText));
+		TEXT("%s  |  %s"),
+		*GameState->GetPublicObjectiveActionText(),
+		*GameState->GetObjectiveProgressText()));
 }
 
 FText SBHClassroomBoard::GetRevisionText() const

@@ -1,11 +1,16 @@
 #include "BHCharacter.h"
+#include "BHCosmeticUnlocks.h"
 #include "BHAlarmTrap.h"
+#include "BHBlockActor.h"
 #include "BHEscapeStationManager.h"
+#include "BHFootstepSurfaceComponent.h"
 #include "BHGameMode.h"
 #include "BHGameSettings.h"
 #include "BHGameState.h"
 #include "BHInteractableInterface.h"
 #include "BHLocker.h"
+#include "BHMovementAnimInstance.h"
+#include "BHMovementTuningAsset.h"
 #include "BHNoiseDecoy.h"
 #include "BHObjectiveStation.h"
 #include "BHPlayerController.h"
@@ -15,6 +20,7 @@
 #include "BHTrainBonusQuestionTerminal.h"
 #include "Animation/AnimSequence.h"
 #include "Camera/CameraComponent.h"
+#include "CollisionShape.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/InputComponent.h"
 #include "Components/MeshComponent.h"
@@ -23,7 +29,9 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SpotLightComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Curves/CurveFloat.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/OverlapResult.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -32,8 +40,13 @@
 #include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
+#include "Misc/PackageName.h"
 #include "Net/UnrealNetwork.h"
+#include "NiagaraFunctionLibrary.h"
+#include "NiagaraSystem.h"
 #include "Perception/AISense_Hearing.h"
+#include "PhysicalMaterials/PhysicalMaterial.h"
+#include "Sound/SoundBase.h"
 #include "EngineUtils.h"
 
 namespace
@@ -46,6 +59,34 @@ constexpr float BHHunterHueLightIntensity = 185.0f;
 constexpr float BHHunterHueLightRadius = 320.0f;
 constexpr float BHBHopJumpBufferSeconds = 0.16f;
 constexpr float BHPostLandingStaminaRecoveryLockSeconds = 0.18f;
+constexpr float BHProneCapsuleHalfHeight = 34.0f;
+constexpr float BHProneCameraOffsetZ = -48.0f;
+constexpr float BHSlideCameraOffsetZ = -32.0f;
+constexpr float BHDiveCameraOffsetZ = -38.0f;
+constexpr float BHProneStaminaRecoveryMultiplier = 0.55f;
+constexpr float BHTeacherMeleeSwingDuration = 0.54f;
+constexpr float BHTeacherMeleeSwingMinRestartSeconds = 0.18f;
+constexpr float BHTeacherMeleeHitFlashDuration = 0.22f;
+constexpr float BHTeacherCaptureWindupSeconds = 0.30f;
+constexpr float BHTeacherCaptureAttackSeconds = 0.62f;
+constexpr float BHTeacherCaptureSuccessRecoverySeconds = 0.62f;
+constexpr float BHTeacherCaptureMissRecoverySeconds = 1.05f;
+constexpr float BHTeacherCaptureDoorSlamRecoverySeconds = 1.20f;
+constexpr float BHTeacherCaptureFlashlightStaggerRecoverySeconds = 1.35f;
+constexpr float BHTeacherCaptureStaminaCost = 8.0f;
+constexpr float BHTeacherCaptureMinStamina = 4.0f;
+constexpr float BHTeacherCaptureRangeForgiveness = 28.0f;
+constexpr float BHTeacherCaptureVerticalTolerance = 140.0f;
+constexpr float BHTeacherCaptureArcMinDot = 0.05f;
+constexpr float BHTeacherCaptureEvasionGraceSeconds = 0.64f;
+constexpr float BHTeacherFlashlightStaggerRange = 980.0f;
+constexpr float BHTeacherFlashlightStaggerDot = 0.74f;
+constexpr float BHTeacherFlashlightStaggerBatteryCost = 22.0f;
+constexpr float BHTeacherCaptureMoveMultiplier = 0.54f;
+const FVector BHTeacherWeaponIdleLocation(18.0f, 36.0f, -22.0f);
+const FRotator BHTeacherWeaponIdleRotation(5.0f, 0.0f, -23.0f);
+
+FBHMovementAnimationProfile BHResolveMovementAnimationProfile();
 
 FString BHCompassFromDelta(const FVector& Delta)
 {
@@ -68,6 +109,14 @@ FString BHCompassFromDelta(const FVector& Delta)
 	const FString NS = Delta.Y >= 0.0f ? TEXT("north") : TEXT("south");
 	const FString EW = Delta.X >= 0.0f ? TEXT("east") : TEXT("west");
 	return FString::Printf(TEXT("%s-%s"), *NS, *EW);
+}
+
+bool BHIsRoleWarmupPhase(const ABHGameState* GameState)
+{
+	return GameState
+		&& GameState->RoundPhase == EBHRoundPhase::Prep
+		&& !GameState->bPracticeMode
+		&& !GameState->bTestMode;
 }
 
 void BHConfigureAvatarPart(
@@ -284,6 +333,24 @@ UMaterialInterface* BHQuaterniusMaterial(const TCHAR* AssetName)
 	return LoadObject<UMaterialInterface>(nullptr, *Path);
 }
 
+UStaticMesh* BHTeacherWeaponImportedMesh()
+{
+	static const TCHAR* CandidatePaths[] = {
+		TEXT("/Game/BlackoutHunt/Art/Weapons/KayKit/SM_BH_Axe_1H.SM_BH_Axe_1H"),
+		TEXT("/Game/BlackoutHunt/Art/Weapons/KayKit/axe_1handed.axe_1handed")
+	};
+
+	for (const TCHAR* Path : CandidatePaths)
+	{
+		if (UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, Path))
+		{
+			return Mesh;
+		}
+	}
+
+	return nullptr;
+}
+
 void BHSetAccessoryPiece(
 	UStaticMeshComponent* Part,
 	UStaticMesh* Mesh,
@@ -363,8 +430,157 @@ const TCHAR* BHQuaterniusAnimationPath(FName AnimationName)
 	{
 		return TEXT("/Game/BlackoutHunt/Art/Characters/Quaternius/Animations/A_BH_Q_Death.A_BH_Q_Death");
 	}
+	if (AnimationName == FName(TEXT("IdleWeapon")))
+	{
+		return TEXT("/Game/BlackoutHunt/Art/Characters/Quaternius/Animations/BH_Q_AnimationsCharacterArmature_Idle_Sword.BH_Q_AnimationsCharacterArmature_Idle_Sword");
+	}
+	if (AnimationName == FName(TEXT("MeleeSwing")))
+	{
+		return TEXT("/Game/BlackoutHunt/Art/Characters/Quaternius/Animations/BH_Q_AnimationsCharacterArmature_Sword_Slash.BH_Q_AnimationsCharacterArmature_Sword_Slash");
+	}
 
 	return TEXT("/Game/BlackoutHunt/Art/Characters/Quaternius/Animations/A_BH_Q_Idle.A_BH_Q_Idle");
+}
+
+const TCHAR* BHFreeAnimationLibraryPath(FName AnimationName)
+{
+	if (AnimationName == FName(TEXT("Roll")))
+	{
+		return TEXT("/Game/BlackoutHunt/Art/Characters/FreeAnimationLibrary/A_BH_FAL_Roll.A_BH_FAL_Roll");
+	}
+	if (AnimationName == FName(TEXT("Slide")))
+	{
+		return TEXT("/Game/BlackoutHunt/Art/Characters/FreeAnimationLibrary/A_BH_FAL_Slide.A_BH_FAL_Slide");
+	}
+	if (AnimationName == FName(TEXT("ProneIdle")))
+	{
+		return TEXT("/Game/BlackoutHunt/Art/Characters/FreeAnimationLibrary/A_BH_FAL_Prone_Idle.A_BH_FAL_Prone_Idle");
+	}
+	if (AnimationName == FName(TEXT("ProneCrawl")))
+	{
+		return TEXT("/Game/BlackoutHunt/Art/Characters/FreeAnimationLibrary/A_BH_FAL_Prone_Crawl.A_BH_FAL_Prone_Crawl");
+	}
+	if (AnimationName == FName(TEXT("Dive")))
+	{
+		return TEXT("/Game/BlackoutHunt/Art/Characters/FreeAnimationLibrary/A_BH_FAL_Dive.A_BH_FAL_Dive");
+	}
+
+	return nullptr;
+}
+
+const TSoftObjectPtr<UAnimSequence>* BHConfiguredMovementAnimation(const FBHMovementAnimationSet& AnimationSet, FName AnimationName)
+{
+	if (AnimationName == FName(TEXT("Idle")))
+	{
+		return &AnimationSet.Idle;
+	}
+	if (AnimationName == FName(TEXT("Walk")))
+	{
+		return &AnimationSet.Walk;
+	}
+	if (AnimationName == FName(TEXT("Run")))
+	{
+		return &AnimationSet.Run;
+	}
+	if (AnimationName == FName(TEXT("Roll")))
+	{
+		return &AnimationSet.Roll;
+	}
+	if (AnimationName == FName(TEXT("Slide")))
+	{
+		return &AnimationSet.Slide;
+	}
+	if (AnimationName == FName(TEXT("Dive")))
+	{
+		return &AnimationSet.Dive;
+	}
+	if (AnimationName == FName(TEXT("ProneIdle")))
+	{
+		return &AnimationSet.ProneIdle;
+	}
+	if (AnimationName == FName(TEXT("ProneCrawl")))
+	{
+		return &AnimationSet.ProneCrawl;
+	}
+	return nullptr;
+}
+
+UAnimSequence* BHLoadConfiguredMovementAnimation(FName AnimationName)
+{
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	if (!Settings || !Settings->bUseImportedMovementAnimations)
+	{
+		return nullptr;
+	}
+
+	const FBHMovementAnimationProfile AnimationProfile = BHResolveMovementAnimationProfile();
+	const TSoftObjectPtr<UAnimSequence>* ConfiguredAnimation = BHConfiguredMovementAnimation(AnimationProfile.Animations, AnimationName);
+	return ConfiguredAnimation && !ConfiguredAnimation->IsNull()
+		? ConfiguredAnimation->LoadSynchronous()
+		: nullptr;
+}
+
+UAnimSequence* BHLoadRoleMovementAnimation(FName AnimationName)
+{
+	if (UAnimSequence* ConfiguredAnimation = BHLoadConfiguredMovementAnimation(AnimationName))
+	{
+		return ConfiguredAnimation;
+	}
+
+	return LoadObject<UAnimSequence>(nullptr, BHQuaterniusAnimationPath(AnimationName));
+}
+
+bool BHIsTransientSpecialMove(EBHMovementSpecialState State)
+{
+	return State == EBHMovementSpecialState::Rolling
+		|| State == EBHMovementSpecialState::Sliding
+		|| State == EBHMovementSpecialState::Diving;
+}
+
+FName BHAnimationNameForSpecialState(EBHMovementSpecialState State, bool bMoving)
+{
+	switch (State)
+	{
+	case EBHMovementSpecialState::Rolling:
+		return FName(TEXT("Roll"));
+	case EBHMovementSpecialState::Sliding:
+		return FName(TEXT("Slide"));
+	case EBHMovementSpecialState::Diving:
+		return FName(TEXT("Dive"));
+	case EBHMovementSpecialState::Prone:
+		return bMoving ? FName(TEXT("ProneCrawl")) : FName(TEXT("ProneIdle"));
+	default:
+		return NAME_None;
+	}
+}
+
+UAnimSequence* BHLoadSpecialAnimation(EBHMovementSpecialState State, bool bMoving)
+{
+	const FName AnimationName = BHAnimationNameForSpecialState(State, bMoving);
+	if (AnimationName == NAME_None)
+	{
+		return nullptr;
+	}
+
+	if (UAnimSequence* ConfiguredAnimation = BHLoadConfiguredMovementAnimation(AnimationName))
+	{
+		return ConfiguredAnimation;
+	}
+
+	if (const TCHAR* FreeLibraryPath = BHFreeAnimationLibraryPath(AnimationName))
+	{
+		if (UAnimSequence* Animation = LoadObject<UAnimSequence>(nullptr, FreeLibraryPath))
+		{
+			return Animation;
+		}
+	}
+
+	if (State == EBHMovementSpecialState::Rolling)
+	{
+		return LoadObject<UAnimSequence>(nullptr, TEXT("/Game/BlackoutHunt/Art/Characters/Quaternius/Animations/BH_Q_AnimationsCharacterArmature_Roll.BH_Q_AnimationsCharacterArmature_Roll"));
+	}
+
+	return nullptr;
 }
 
 bool BHUsesHunterMovementProfile(const ABHPlayerState* BHPS)
@@ -372,19 +588,425 @@ bool BHUsesHunterMovementProfile(const ABHPlayerState* BHPS)
 	return BHPS && BHPS->PlayerRole == EBHPlayerRole::Hunter;
 }
 
+FBHMovementSpecialTuning BHMakeDefaultMovementSpecialTuning(EBHMovementSpecialState State)
+{
+	FBHMovementSpecialTuning Tuning;
+	Tuning.State = State;
+	Tuning.LowStaminaText = FText::FromString(TEXT("Too exhausted for that move."));
+	Tuning.CooldownText = FText::FromString(TEXT("Movement cooling down."));
+	Tuning.BlockedText = FText::FromString(TEXT("Not enough room for that move."));
+
+	switch (State)
+	{
+	case EBHMovementSpecialState::Rolling:
+		Tuning.DurationSeconds = 0.55f;
+		Tuning.StaminaCost = 12.0f;
+		Tuning.CooldownSeconds = 1.25f;
+		Tuning.NoiseStrength = 0.72f;
+		Tuning.Curve.Distance = 420.0f;
+		Tuning.Curve.MinForwardClearance = 210.0f;
+		Tuning.Curve.MaxDropHeight = 64.0f;
+		break;
+	case EBHMovementSpecialState::Sliding:
+		Tuning.DurationSeconds = 0.75f;
+		Tuning.StaminaCost = 16.0f;
+		Tuning.CooldownSeconds = 1.60f;
+		Tuning.NoiseStrength = 1.06f;
+		Tuning.Curve.Distance = 620.0f;
+		Tuning.Curve.MinForwardClearance = 310.0f;
+		Tuning.Curve.MaxDropHeight = 58.0f;
+		break;
+	case EBHMovementSpecialState::Diving:
+		Tuning.DurationSeconds = 0.65f;
+		Tuning.StaminaCost = 22.0f;
+		Tuning.CooldownSeconds = 2.40f;
+		Tuning.NoiseStrength = 1.24f;
+		Tuning.Curve.Distance = 510.0f;
+		Tuning.Curve.VerticalImpulse = 115.0f;
+		Tuning.Curve.MinForwardClearance = 285.0f;
+		Tuning.Curve.MaxDropHeight = 86.0f;
+		break;
+	default:
+		break;
+	}
+
+	return Tuning;
+}
+
+FBHMovementRoleTuning BHMakeDefaultMovementRoleTuning(EBHPlayerRole Role)
+{
+	FBHMovementRoleTuning Tuning;
+	Tuning.Role = Role;
+	Tuning.WalkSpeed = 360.0f;
+	Tuning.SprintSpeed = 900.0f;
+	Tuning.SprintDrainMultiplier = 1.0f;
+	Tuning.ProneSpeed = 120.0f;
+	Tuning.StaminaCostMultiplier = 1.0f;
+	Tuning.CooldownMultiplier = 1.0f;
+	Tuning.NoiseMultiplier = 1.0f;
+	Tuning.ProneNoiseMultiplier = 0.38f;
+	Tuning.ProneVisibilityMultiplier = 0.55f;
+	if (Role == EBHPlayerRole::Hunter)
+	{
+		Tuning.WalkSpeed = 315.0f;
+		Tuning.SprintSpeed = 1150.0f;
+		Tuning.SprintDrainMultiplier = 1.75f;
+		Tuning.ProneSpeed = 95.0f;
+		Tuning.StaminaCostMultiplier = 1.40f;
+		Tuning.CooldownMultiplier = 1.30f;
+		Tuning.NoiseMultiplier = 1.35f;
+		Tuning.ProneNoiseMultiplier = 0.54f;
+		Tuning.ProneVisibilityMultiplier = 0.82f;
+	}
+	else if (Role == EBHPlayerRole::FakeHunter)
+	{
+		Tuning.ProneSpeed = 110.0f;
+		Tuning.StaminaCostMultiplier = 1.20f;
+		Tuning.NoiseMultiplier = 1.25f;
+		Tuning.ProneNoiseMultiplier = 0.48f;
+		Tuning.ProneVisibilityMultiplier = 0.68f;
+	}
+	Tuning.SpecialMoves = {
+		BHMakeDefaultMovementSpecialTuning(EBHMovementSpecialState::Rolling),
+		BHMakeDefaultMovementSpecialTuning(EBHMovementSpecialState::Sliding),
+		BHMakeDefaultMovementSpecialTuning(EBHMovementSpecialState::Diving)
+	};
+	return Tuning;
+}
+
+EBHPlayerRole BHEffectiveMovementRole(const ABHPlayerState* BHPS)
+{
+	if (!BHPS || BHPS->PlayerRole == EBHPlayerRole::Unassigned || BHPS->PlayerRole == EBHPlayerRole::Spectator)
+	{
+		return EBHPlayerRole::Survivor;
+	}
+	return BHPS->PlayerRole;
+}
+
+const FBHMovementRoleTuning* BHFindRoleTuning(const TArray<FBHMovementRoleTuning>& Tunings, EBHPlayerRole Role)
+{
+	for (const FBHMovementRoleTuning& Tuning : Tunings)
+	{
+		if (Tuning.Role == Role)
+		{
+			return &Tuning;
+		}
+	}
+	return nullptr;
+}
+
+FBHMovementRoleTuning BHResolveMovementRoleTuning(const ABHPlayerState* BHPS)
+{
+	const EBHPlayerRole Role = BHEffectiveMovementRole(BHPS);
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	if (Settings)
+	{
+		if (!Settings->DefaultMovementTuningAsset.IsNull())
+		{
+			if (const UBHMovementTuningAsset* Asset = Settings->DefaultMovementTuningAsset.LoadSynchronous())
+			{
+				return Asset->ResolveRoleTuning(Role);
+			}
+		}
+
+		if (const FBHMovementRoleTuning* ConfigTuning = BHFindRoleTuning(Settings->MovementRoleTunings, Role))
+		{
+			return *ConfigTuning;
+		}
+	}
+	return BHMakeDefaultMovementRoleTuning(Role);
+}
+
+FBHMovementSpecialTuning BHGetSpecialMoveTuning(const ABHPlayerState* BHPS, EBHMovementSpecialState State)
+{
+	const FBHMovementRoleTuning RoleTuning = BHResolveMovementRoleTuning(BHPS);
+	for (const FBHMovementSpecialTuning& Tuning : RoleTuning.SpecialMoves)
+	{
+		if (Tuning.State == State)
+		{
+			return Tuning;
+		}
+	}
+	return BHMakeDefaultMovementSpecialTuning(State);
+}
+
+FBHMovementAnimationProfile BHResolveMovementAnimationProfile()
+{
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	if (Settings)
+	{
+		if (!Settings->DefaultMovementTuningAsset.IsNull())
+		{
+			if (const UBHMovementTuningAsset* Asset = Settings->DefaultMovementTuningAsset.LoadSynchronous())
+			{
+				return Asset->AnimationProfile;
+			}
+		}
+		return Settings->MovementAnimationProfile;
+	}
+	return FBHMovementAnimationProfile();
+}
+
+UClass* BHLoadMovementAnimInstanceClass(const ABHPlayerState* BHPS)
+{
+	const FBHMovementAnimationProfile Profile = BHResolveMovementAnimationProfile();
+	if (!Profile.bPreferAnimBlueprint)
+	{
+		return nullptr;
+	}
+
+	const TSoftClassPtr<UAnimInstance>& AnimClass = BHPS && BHPS->PlayerRole == EBHPlayerRole::Hunter
+		? Profile.HunterAnimInstanceClass
+		: Profile.QuaterniusAnimInstanceClass;
+	return AnimClass.IsNull() ? nullptr : AnimClass.LoadSynchronous();
+}
+
 float BHRoleWalkSpeed(const ABHPlayerState* BHPS, float DefaultWalkSpeed)
 {
-	return BHUsesHunterMovementProfile(BHPS) ? 315.0f : DefaultWalkSpeed;
+	const FBHMovementRoleTuning Tuning = BHResolveMovementRoleTuning(BHPS);
+	return Tuning.WalkSpeed > 0.0f ? Tuning.WalkSpeed : DefaultWalkSpeed;
 }
 
 float BHRoleSprintSpeed(const ABHPlayerState* BHPS, float DefaultSprintSpeed)
 {
-	return BHUsesHunterMovementProfile(BHPS) ? 1150.0f : DefaultSprintSpeed;
+	const FBHMovementRoleTuning Tuning = BHResolveMovementRoleTuning(BHPS);
+	return Tuning.SprintSpeed > 0.0f ? Tuning.SprintSpeed : DefaultSprintSpeed;
 }
 
 float BHRoleSprintDrainMultiplier(const ABHPlayerState* BHPS)
 {
-	return BHUsesHunterMovementProfile(BHPS) ? 1.75f : 1.0f;
+	return BHResolveMovementRoleTuning(BHPS).SprintDrainMultiplier;
+}
+
+float BHRoleProneSpeed(const ABHPlayerState* BHPS)
+{
+	return BHResolveMovementRoleTuning(BHPS).ProneSpeed;
+}
+
+float BHRoleSpecialStaminaMultiplier(const ABHPlayerState* BHPS)
+{
+	return BHResolveMovementRoleTuning(BHPS).StaminaCostMultiplier;
+}
+
+float BHRoleSpecialCooldownMultiplier(const ABHPlayerState* BHPS)
+{
+	return BHResolveMovementRoleTuning(BHPS).CooldownMultiplier;
+}
+
+float BHRoleSpecialNoiseMultiplier(const ABHPlayerState* BHPS)
+{
+	return BHResolveMovementRoleTuning(BHPS).NoiseMultiplier;
+}
+
+float BHRoleProneNoiseMultiplier(const ABHPlayerState* BHPS)
+{
+	return BHResolveMovementRoleTuning(BHPS).ProneNoiseMultiplier;
+}
+
+float BHMovementCurveAlpha(const FBHMovementSpecialTuning& Tuning, float NormalizedTime)
+{
+	const float ClampedTime = FMath::Clamp(NormalizedTime, 0.0f, 1.0f);
+	if (!Tuning.Curve.DistanceCurve.IsNull())
+	{
+		if (const UCurveFloat* Curve = Tuning.Curve.DistanceCurve.LoadSynchronous())
+		{
+			return FMath::Clamp(Curve->GetFloatValue(ClampedTime), 0.0f, 1.0f);
+		}
+	}
+
+	return ClampedTime * ClampedTime * (3.0f - 2.0f * ClampedTime);
+}
+
+const TCHAR* BHFootstepSurfaceToken(EBHFootstepSurface Surface)
+{
+	switch (Surface)
+	{
+	case EBHFootstepSurface::Concrete:
+		return TEXT("concrete");
+	case EBHFootstepSurface::Tile:
+		return TEXT("tile");
+	case EBHFootstepSurface::Metal:
+		return TEXT("metal");
+	case EBHFootstepSurface::Wet:
+		return TEXT("wet");
+	case EBHFootstepSurface::Gravel:
+		return TEXT("gravel");
+	case EBHFootstepSurface::Glass:
+		return TEXT("glass");
+	case EBHFootstepSurface::Soft:
+		return TEXT("soft");
+	default:
+		return TEXT("default");
+	}
+}
+
+FBHFootstepSurfaceProfile BHDefaultFootstepProfile(EBHFootstepSurface Surface)
+{
+	FBHFootstepSurfaceProfile Profile;
+	Profile.Surface = Surface;
+	switch (Surface)
+	{
+	case EBHFootstepSurface::Concrete:
+		Profile.NoiseMultiplier = 1.05f;
+		Profile.HearingRadiusBase = 1700.0f;
+		Profile.HearingRadiusScale = 1850.0f;
+		Profile.AtmosphereMultiplier = 1.05f;
+		break;
+	case EBHFootstepSurface::Tile:
+		Profile.NoiseMultiplier = 1.24f;
+		Profile.HearingRadiusBase = 1850.0f;
+		Profile.HearingRadiusScale = 2050.0f;
+		Profile.AtmosphereMultiplier = 1.14f;
+		break;
+	case EBHFootstepSurface::Metal:
+		Profile.NoiseMultiplier = 1.42f;
+		Profile.HearingRadiusBase = 2050.0f;
+		Profile.HearingRadiusScale = 2300.0f;
+		Profile.AtmosphereMultiplier = 1.22f;
+		break;
+	case EBHFootstepSurface::Wet:
+		Profile.NoiseMultiplier = 1.18f;
+		Profile.HearingRadiusBase = 1900.0f;
+		Profile.HearingRadiusScale = 2150.0f;
+		Profile.AtmosphereMultiplier = 1.24f;
+		break;
+	case EBHFootstepSurface::Gravel:
+		Profile.NoiseMultiplier = 1.34f;
+		Profile.HearingRadiusBase = 1950.0f;
+		Profile.HearingRadiusScale = 2200.0f;
+		Profile.AtmosphereMultiplier = 1.18f;
+		break;
+	case EBHFootstepSurface::Glass:
+		Profile.NoiseMultiplier = 1.58f;
+		Profile.HearingRadiusBase = 2150.0f;
+		Profile.HearingRadiusScale = 2500.0f;
+		Profile.AtmosphereMultiplier = 1.32f;
+		break;
+	case EBHFootstepSurface::Soft:
+		Profile.NoiseMultiplier = 0.62f;
+		Profile.HearingRadiusBase = 1100.0f;
+		Profile.HearingRadiusScale = 1250.0f;
+		Profile.AtmosphereMultiplier = 0.74f;
+		break;
+	default:
+		Profile.NoiseMultiplier = 1.0f;
+		Profile.HearingRadiusBase = 1600.0f;
+		Profile.HearingRadiusScale = 1700.0f;
+		Profile.AtmosphereMultiplier = 1.0f;
+		break;
+	}
+	return Profile;
+}
+
+EBHFootstepSurface BHSurfaceFromName(const FString& Name)
+{
+	if (Name.Contains(TEXT("Glass"), ESearchCase::IgnoreCase))
+	{
+		return EBHFootstepSurface::Glass;
+	}
+	if (Name.Contains(TEXT("Metal"), ESearchCase::IgnoreCase) || Name.Contains(TEXT("Steel"), ESearchCase::IgnoreCase) || Name.Contains(TEXT("Plate"), ESearchCase::IgnoreCase))
+	{
+		return EBHFootstepSurface::Metal;
+	}
+	if (Name.Contains(TEXT("Tile"), ESearchCase::IgnoreCase) || Name.Contains(TEXT("Ceramic"), ESearchCase::IgnoreCase))
+	{
+		return EBHFootstepSurface::Tile;
+	}
+	if (Name.Contains(TEXT("Water"), ESearchCase::IgnoreCase) || Name.Contains(TEXT("Wet"), ESearchCase::IgnoreCase) || Name.Contains(TEXT("Puddle"), ESearchCase::IgnoreCase))
+	{
+		return EBHFootstepSurface::Wet;
+	}
+	if (Name.Contains(TEXT("Gravel"), ESearchCase::IgnoreCase) || Name.Contains(TEXT("Dirt"), ESearchCase::IgnoreCase))
+	{
+		return EBHFootstepSurface::Gravel;
+	}
+	if (Name.Contains(TEXT("Snow"), ESearchCase::IgnoreCase) || Name.Contains(TEXT("Grass"), ESearchCase::IgnoreCase) || Name.Contains(TEXT("Vegetation"), ESearchCase::IgnoreCase) || Name.Contains(TEXT("Carpet"), ESearchCase::IgnoreCase))
+	{
+		return EBHFootstepSurface::Soft;
+	}
+	if (Name.Contains(TEXT("Concrete"), ESearchCase::IgnoreCase) || Name.Contains(TEXT("Plaster"), ESearchCase::IgnoreCase))
+	{
+		return EBHFootstepSurface::Concrete;
+	}
+	return EBHFootstepSurface::Default;
+}
+
+EBHFootstepSurface BHSurfaceFromActorTags(const AActor* Actor)
+{
+	if (!Actor)
+	{
+		return EBHFootstepSurface::Default;
+	}
+
+	static const TPair<FName, EBHFootstepSurface> SurfaceTags[] = {
+		{TEXT("Surface_Glass"), EBHFootstepSurface::Glass},
+		{TEXT("Surface_Metal"), EBHFootstepSurface::Metal},
+		{TEXT("Surface_Tile"), EBHFootstepSurface::Tile},
+		{TEXT("Surface_Wet"), EBHFootstepSurface::Wet},
+		{TEXT("Surface_Gravel"), EBHFootstepSurface::Gravel},
+		{TEXT("Surface_Soft"), EBHFootstepSurface::Soft},
+		{TEXT("Surface_Concrete"), EBHFootstepSurface::Concrete}
+	};
+
+	for (const TPair<FName, EBHFootstepSurface>& SurfaceTag : SurfaceTags)
+	{
+		if (Actor->ActorHasTag(SurfaceTag.Key))
+		{
+			return SurfaceTag.Value;
+		}
+	}
+	return BHSurfaceFromName(Actor->GetName());
+}
+
+bool BHCharacterSoftObjectPathExists(const FSoftObjectPath& ObjectPath)
+{
+	if (ObjectPath.IsNull())
+	{
+		return false;
+	}
+
+	static TMap<FSoftObjectPath, bool> OptionalAssetPathCache;
+	if (const bool* bCachedExists = OptionalAssetPathCache.Find(ObjectPath))
+	{
+		return *bCachedExists;
+	}
+
+	const FString PackageName = ObjectPath.GetLongPackageName();
+	const bool bExists = !PackageName.IsEmpty() && FPackageName::DoesPackageExist(PackageName);
+	OptionalAssetPathCache.Add(ObjectPath, bExists);
+	return bExists;
+}
+
+void BHLogMissingOptionalCharacterAssetOnce(const FSoftObjectPath& ObjectPath, const TCHAR* Context)
+{
+	if (ObjectPath.IsNull())
+	{
+		return;
+	}
+
+	static TSet<FSoftObjectPath> MissingOptionalAssets;
+	if (MissingOptionalAssets.Contains(ObjectPath))
+	{
+		return;
+	}
+
+	MissingOptionalAssets.Add(ObjectPath);
+	UE_LOG(LogTemp, Verbose, TEXT("BlackoutHunt %s missing, using silent fallback: %s"), Context, *ObjectPath.ToString());
+}
+
+FVector BHFootstepCueLocation(const ABHCharacter* Character)
+{
+	if (!Character)
+	{
+		return FVector::ZeroVector;
+	}
+
+	FVector Location = Character->GetActorLocation();
+	if (const UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
+	{
+		Location.Z -= FMath::Max(0.0f, Capsule->GetScaledCapsuleHalfHeight() - 8.0f);
+	}
+	return Location;
 }
 
 float BHHorrorThresholdAlpha(float Value, float Threshold, float FullValue)
@@ -568,6 +1190,27 @@ ABHCharacter::ABHCharacter()
 	RoleGearLeftStrapMesh = CreateAvatarMesh(TEXT("RoleGearLeftStrapMesh"), RoleModelRoot);
 	RoleGearRightStrapMesh = CreateAvatarMesh(TEXT("RoleGearRightStrapMesh"), RoleModelRoot);
 	RoleGearDetailMesh = CreateAvatarMesh(TEXT("RoleGearDetailMesh"), RoleModelRoot);
+	TeacherWeaponRoot = CreateJoint(TEXT("TeacherWeaponRoot"), RoleModelRoot);
+	TeacherWeaponMesh = CreateAvatarMesh(TEXT("TeacherWeaponMesh"), TeacherWeaponRoot);
+	TeacherWeaponHandleMesh = CreateAvatarMesh(TEXT("TeacherWeaponHandleMesh"), TeacherWeaponRoot);
+	TeacherWeaponHeadMesh = CreateAvatarMesh(TEXT("TeacherWeaponHeadMesh"), TeacherWeaponRoot);
+	TeacherWeaponBladeMesh = CreateAvatarMesh(TEXT("TeacherWeaponBladeMesh"), TeacherWeaponRoot);
+	TeacherWeaponGripMesh = CreateAvatarMesh(TEXT("TeacherWeaponGripMesh"), TeacherWeaponRoot);
+	UStaticMeshComponent* WeaponParts[] = {
+		TeacherWeaponMesh,
+		TeacherWeaponHandleMesh,
+		TeacherWeaponHeadMesh,
+		TeacherWeaponBladeMesh,
+		TeacherWeaponGripMesh,
+		TeacherWeaponTrailMesh
+	};
+	for (UStaticMeshComponent* WeaponPart : WeaponParts)
+	{
+		if (WeaponPart)
+		{
+			WeaponPart->SetOwnerNoSee(false);
+		}
+	}
 
 	ConfigureLowPolyAvatar();
 
@@ -646,8 +1289,15 @@ ABHCharacter::ABHCharacter()
 	DecoyCooldownSeconds = FMath::Max(0.0f, Settings->DecoyCooldownSeconds);
 	StaminaDrainPerSecond = 20.0f;
 	StaminaRecoveryPerSecond = 14.0f;
+	MovementSpecialState = EBHMovementSpecialState::None;
+	bTeacherCaptureAttackActive = false;
+	TeacherCaptureAttackStartServerTime = -999.0f;
+	TeacherCaptureAttackResolveServerTime = -999.0f;
+	TeacherCaptureAttackEndServerTime = -999.0f;
+	TeacherCaptureNextAllowedServerTime = -999.0f;
 	bFlashlightOn = false;
 	FlashlightBattery = 100.0f;
+	bFlashlightEmptyTelemetryReported = false;
 	Stamina = MaxStamina;
 	Fear = 0.0f;
 	Dread = 0.0f;
@@ -659,6 +1309,8 @@ ABHCharacter::ABHCharacter()
 	LastDecoyTime = -999.0f;
 	LastSprintNoiseTime = -999.0f;
 	LastFootstepStimulusTime = -999.0f;
+	LastFlashlightAudioCueTime = -999.0f;
+	LastTeacherProximityAudioTime = -999.0f;
 	FootstepStimulusDistanceAccumulator = 0.0f;
 	StaminaRecoveryLockedUntil = -999.0f;
 	LastStaminaWarningTime = -999.0f;
@@ -667,6 +1319,13 @@ ABHCharacter::ABHCharacter()
 	LastForcedBreathNoiseTime = -999.0f;
 	LastPanicBreathNoiseTime = -999.0f;
 	LastDetentionNoiseTime = -999.0f;
+	AntiCampMoveBurstSeconds = 0.0f;
+	AntiCampMoveBurstDistance = 0.0f;
+	AntiCampLastSatisfiedTime = -999.0f;
+	AntiCampLastMeaningfulMoveTime = -999.0f;
+	AntiCampLastSampleLocation = FVector::ZeroVector;
+	LastAntiCampWarningTime = -999.0f;
+	LastAntiCampNoiseTime = -999.0f;
 	HiddenSeconds = 0.0f;
 	DefaultCameraFOV = 90.0f;
 	DefaultCameraLocation = FVector(0.0f, 0.0f, 64.0f);
@@ -680,13 +1339,35 @@ ABHCharacter::ABHCharacter()
 	SmoothedSprintAlpha = 0.0f;
 	FlashlightPulseTime = 0.0f;
 	LastBHopJumpInputTime = -999.0f;
+	SpecialMoveStartTime = -999.0f;
+	SpecialMoveEndTime = -999.0f;
+	SpecialMoveCooldownEndTime = -999.0f;
+	SpecialMoveDistanceTravelled = 0.0f;
+	SpecialMoveDirection = FVector::ForwardVector;
+	LastCaptureEvasionTime = -999.0f;
+	LastTeacherCounterplayHintTime = -999.0f;
+	DefaultCapsuleHalfHeight = GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight();
+	DefaultCapsuleRadius = GetCapsuleComponent()->GetUnscaledCapsuleRadius();
+	MovementFailurePulse = 0.0f;
+	LastMovementFailureTime = -999.0f;
+	LastMovementFailureReason = FString();
 	bKeyboardLookLeft = false;
 	bKeyboardLookRight = false;
 	bKeyboardLookUp = false;
 	bKeyboardLookDown = false;
 	bBHopJumpQueued = false;
+	bSprintInputHeld = false;
+	bProneInputHeld = false;
+	bSpecialMoveEndsProne = false;
+	bSpecialMoveEndProneRequiresInput = false;
+	bProneCollisionApplied = false;
+	bTeacherCaptureAttackResolved = false;
+	SpecialMoveNoiseEventMask = 0;
+	CosmeticMovementSpecialState = EBHMovementSpecialState::None;
 	bUsingRoleModel = false;
 	LastRoleAnimationName = NAME_None;
+	TeacherMeleeSwingStartTime = -999.0f;
+	TeacherMeleeSwingEndTime = -999.0f;
 	LastAppliedAvatarIndex = INDEX_NONE;
 	LastAppliedAvatarRole = EBHPlayerRole::Unassigned;
 	LastAppliedAvatarColor = FLinearColor::Transparent;
@@ -758,6 +1439,21 @@ void ABHCharacter::Tick(float DeltaSeconds)
 	Super::Tick(DeltaSeconds);
 
 	ApplyKeyboardLook(DeltaSeconds);
+	MovementFailurePulse = FMath::FInterpTo(MovementFailurePulse, 0.0f, DeltaSeconds, 5.5f);
+
+	if (HasAuthority() && IsSpecialMoveActive())
+	{
+		UpdateSpecialMoveAuthority(DeltaSeconds);
+		if (GetWorld() && GetWorld()->GetTimeSeconds() >= SpecialMoveEndTime)
+		{
+			FinishSpecialMoveAuthority();
+		}
+	}
+
+	if (HasAuthority())
+	{
+		UpdateTeacherCaptureAttackAuthority(DeltaSeconds);
+	}
 
 	if (HasAuthority() && bFlashlightOn)
 	{
@@ -767,14 +1463,25 @@ void ABHCharacter::Tick(float DeltaSeconds)
 		if (bInfiniteFlashlight)
 		{
 			FlashlightBattery = 100.0f;
+			bFlashlightEmptyTelemetryReported = false;
 		}
 		else
 		{
+			const float PreviousBattery = FlashlightBattery;
 			FlashlightBattery = FMath::Max(0.0f, FlashlightBattery - FlashlightDrainPerSecond * DeltaSeconds);
 			if (FlashlightBattery <= 0.0f)
 			{
+				if (PreviousBattery > 0.0f && !bFlashlightEmptyTelemetryReported)
+				{
+					if (ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
+					{
+						BHGM->RecordPlaytestTelemetryMarker(TEXT("battery_starved"), GetActorLocation(), TEXT("flashlight_empty"), GetBHPlayerState());
+					}
+					bFlashlightEmptyTelemetryReported = true;
+				}
 				bFlashlightOn = false;
 				ApplyFlashlightState();
+				BroadcastFlashlightAudioCue(false, true);
 			}
 		}
 	}
@@ -790,21 +1497,26 @@ void ABHCharacter::Tick(float DeltaSeconds)
 			if (!bHiddenInLocker && GetCharacterMovement() && GetCharacterMovement()->IsMovingOnGround() && Speed2D > 120.0f)
 			{
 				FootstepStimulusDistanceAccumulator += Speed2D * DeltaSeconds;
-				const bool bLikelySprinting = Speed2D > WalkSpeed * 1.18f;
-				const float StepDistance = (bLikelySprinting ? 275.0f : 420.0f) / FMath::Lerp(1.0f, 1.22f, StressNoiseAlpha);
-				const float StepCooldown = (bLikelySprinting ? 0.72f : 1.45f) / FMath::Lerp(1.0f, 1.18f, StressNoiseAlpha);
+				const bool bProneMove = IsProne();
+				const bool bLikelySprinting = !bProneMove && Speed2D > WalkSpeed * 1.18f;
+				const float StepDistance = (bProneMove ? 245.0f : (bLikelySprinting ? 275.0f : 420.0f)) / FMath::Lerp(1.0f, 1.22f, StressNoiseAlpha);
+				const float StepCooldown = (bProneMove ? 1.35f : (bLikelySprinting ? 0.72f : 1.45f)) / FMath::Lerp(1.0f, 1.18f, StressNoiseAlpha);
 				const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 				if (FootstepStimulusDistanceAccumulator >= StepDistance && Now - LastFootstepStimulusTime >= StepCooldown)
 				{
 					FootstepStimulusDistanceAccumulator = 0.0f;
 					LastFootstepStimulusTime = Now;
-					const float StepStrength = (bLikelySprinting ? 1.0f : 0.42f) * BHHorrorNoiseMultiplier(this, BHPS);
+					const EBHFootstepSurface Surface = ResolveFootstepSurface();
+					const float StepStrength = (bProneMove ? 0.30f * BHRoleProneNoiseMultiplier(BHPS) : (bLikelySprinting ? 1.0f : 0.42f)) * BHHorrorNoiseMultiplier(this, BHPS);
 					const bool bPanickedStep = StressNoiseAlpha >= 0.55f;
 					EmitFootstepStimulus(
 						StepStrength,
-						bPanickedStep
+						bProneMove
+							? TEXT("prone crawl")
+							: (bPanickedStep
 							? (bLikelySprinting ? TEXT("panicked running footstep") : TEXT("unsteady footstep"))
-							: (bLikelySprinting ? TEXT("running footstep") : TEXT("careful footstep")));
+							: (bLikelySprinting ? TEXT("running footstep") : TEXT("careful footstep"))),
+						Surface);
 				}
 			}
 			else
@@ -851,6 +1563,11 @@ void ABHCharacter::Tick(float DeltaSeconds)
 				const float DarknessDreadBonus = bFlashlightOn ? 0.0f : 4.5f;
 				Dread = FMath::Clamp(Dread + (5.0f + 18.0f * DistanceAlpha + HiddenDreadBonus + DarknessDreadBonus) * DeltaSeconds, 0.0f, 100.0f);
 
+				if (!bHiddenInLocker && NearestHunterDistance <= 1550.0f)
+				{
+					SendTeacherProximityAudioCue(DistanceAlpha, bHunterHasSight);
+				}
+
 				if (bHiddenInLocker && NearestHunterDistance <= BHHorrorCloseThreatRange)
 				{
 					const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
@@ -858,6 +1575,19 @@ void ABHCharacter::Tick(float DeltaSeconds)
 					{
 						LastHidingPanicMessageTime = Now;
 						SendStatusMessage(TEXT("Something is outside the door. Stay still."));
+						if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+						{
+							const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+							FBHScareEventSpec Spec;
+							Spec.EventType = EBHScareEventType::LockerKnock;
+							Spec.Target = this;
+							Spec.Origin = CurrentLocker ? CurrentLocker->GetActorLocation() : GetActorLocation();
+							Spec.Intensity = FMath::Clamp(0.46f + DistanceAlpha * 0.38f, 0.0f, 1.0f);
+							Spec.AudioAsset = Settings ? Settings->LockerKnockSound : TSoftObjectPtr<USoundBase>();
+							Spec.Message = TEXT("The locker knocks from outside. Stay still.");
+							Spec.FlashIntensity = 0.02f;
+							BHGM->TriggerAtmosphereCue(Spec);
+						}
 					}
 				}
 			}
@@ -885,6 +1615,8 @@ void ABHCharacter::Tick(float DeltaSeconds)
 			{
 				Dread = FMath::Clamp(Dread + AmbientDreadPerSecond * DeltaSeconds, 0.0f, 100.0f);
 			}
+
+			UpdateAntiCampPressureAuthority(DeltaSeconds, Speed2D, BHGS, BHPS);
 
 			if (bHiddenInLocker && HiddenSeconds > 12.0f)
 			{
@@ -939,6 +1671,7 @@ void ABHCharacter::Tick(float DeltaSeconds)
 		else
 		{
 			HiddenSeconds = 0.0f;
+			ResetAntiCampTrackingAuthority();
 			Fear = FMath::Max(0.0f, Fear - 8.0f * DeltaSeconds);
 			Dread = FMath::Max(0.0f, Dread - 10.0f * DeltaSeconds);
 			DetentionMarkRemaining = 0.0f;
@@ -960,25 +1693,38 @@ void ABHCharacter::Tick(float DeltaSeconds)
 		const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
 		const float HunterPenaltyMultiplier = BHFinalEscapeHunterPenaltyActive(GetWorld(), this) ? 0.72f : 1.0f;
 		const float HorrorWalkMultiplier = BHHorrorWalkSpeedMultiplier(this, BHPS);
-		const float CurrentWalkSpeed = BHRoleWalkSpeed(BHPS, WalkSpeed) * HunterPenaltyMultiplier * HorrorWalkMultiplier;
+		const float TeacherCaptureMoveMultiplier = (BHPS && BHPS->IsAliveHunter() && IsTeacherCaptureAttackActive()) ? BHTeacherCaptureMoveMultiplier : 1.0f;
+		const float CurrentWalkSpeed = BHRoleWalkSpeed(BHPS, WalkSpeed) * HunterPenaltyMultiplier * TeacherCaptureMoveMultiplier * HorrorWalkMultiplier;
 		const float CurrentSprintSpeed = BHRoleSprintSpeed(BHPS, SprintSpeed)
 			* (PowerupComponent ? PowerupComponent->GetSprintSpeedMultiplier() : 1.0f)
 			* HunterPenaltyMultiplier
+			* TeacherCaptureMoveMultiplier
 			* BHHorrorSprintSpeedMultiplier(this, BHPS);
-		if (Movement)
+		if (Movement && IsProne())
+		{
+			Movement->MaxWalkSpeed = BHRoleProneSpeed(BHPS) * BHHorrorWalkSpeedMultiplier(this, BHPS);
+			Movement->MaxWalkSpeedCrouched = Movement->MaxWalkSpeed;
+		}
+		else if (Movement && IsSpecialMoveActive())
 		{
 			Movement->MaxWalkSpeedCrouched = 205.0f * HorrorWalkMultiplier;
 		}
-		if (Movement && IsPlayerControlled() && Movement->MaxWalkSpeed <= FMath::Max(WalkSpeed, CurrentWalkSpeed) + 1.0f)
+		else if (Movement)
+		{
+			Movement->MaxWalkSpeedCrouched = 205.0f * HorrorWalkMultiplier;
+		}
+		if (!IsProne() && !IsSpecialMoveActive() && Movement && IsPlayerControlled() && Movement->MaxWalkSpeed <= FMath::Max(WalkSpeed, CurrentWalkSpeed) + 1.0f)
 		{
 			Movement->MaxWalkSpeed = CurrentWalkSpeed;
 		}
-		else if (Movement && IsPlayerControlled() && Movement->MaxWalkSpeed > CurrentWalkSpeed + 1.0f && Movement->MaxWalkSpeed > CurrentSprintSpeed + 1.0f)
+		else if (!IsProne() && !IsSpecialMoveActive() && Movement && IsPlayerControlled() && Movement->MaxWalkSpeed > CurrentWalkSpeed + 1.0f && Movement->MaxWalkSpeed > CurrentSprintSpeed + 1.0f)
 		{
 			Movement->MaxWalkSpeed = CurrentSprintSpeed;
 		}
 
 		const bool bTryingToSprint = Movement
+			&& !IsProne()
+			&& !IsSpecialMoveActive()
 			&& Movement->MaxWalkSpeed >= CurrentSprintSpeed - 1.0f
 			&& GetVelocity().SizeSquared2D() > FMath::Square(30.0f);
 		if (HasAuthority())
@@ -1009,7 +1755,8 @@ void ABHCharacter::Tick(float DeltaSeconds)
 				if (Now >= StaminaRecoveryLockedUntil)
 				{
 					const float RecoveryMultiplier = BHHorrorStaminaRecoveryMultiplier(this, BHPS)
-						* (PowerupComponent ? PowerupComponent->GetStaminaRecoveryMultiplier() : 1.0f);
+						* (PowerupComponent ? PowerupComponent->GetStaminaRecoveryMultiplier() : 1.0f)
+						* (IsProne() ? BHProneStaminaRecoveryMultiplier : 1.0f);
 					Stamina = FMath::Min(MaxStamina, Stamina + StaminaRecoveryPerSecond * RecoveryMultiplier * DeltaSeconds);
 				}
 			}
@@ -1022,13 +1769,13 @@ void ABHCharacter::Tick(float DeltaSeconds)
 
 	if (const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>())
 	{
-		constexpr int32 ForcedHeadwearIndex = 0;
-		constexpr int32 ForcedGearIndex = 0;
+		const int32 HeadwearIndex = BHCosmeticClampIndex(EBHCosmeticCategory::Headwear, BHPS->AvatarHeadwearIndex);
+		const int32 GearIndex = 0;
 		const bool bAvatarChanged = BHPS->AvatarIndex != LastAppliedAvatarIndex
 			|| BHPS->PlayerRole != LastAppliedAvatarRole
 			|| !BHPS->AvatarColor.Equals(LastAppliedAvatarColor, 0.005f)
-			|| ForcedHeadwearIndex != LastAppliedAvatarHeadwearIndex
-			|| ForcedGearIndex != LastAppliedAvatarGearIndex;
+			|| HeadwearIndex != LastAppliedAvatarHeadwearIndex
+			|| GearIndex != LastAppliedAvatarGearIndex;
 		if (bAvatarChanged)
 		{
 			ApplyAvatarStyle();
@@ -1051,7 +1798,7 @@ void ABHCharacter::Landed(const FHitResult& Hit)
 	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
 	if (BHPS && BHPS->IsAliveSurvivor() && BHGS && BHGS->RoundPhase == EBHRoundPhase::Hunt)
 	{
-		EmitFootstepStimulus(0.95f * BHHorrorNoiseMultiplier(this, BHPS), TEXT("hard landing"));
+		EmitFootstepStimulus(0.95f * BHHorrorNoiseMultiplier(this, BHPS), TEXT("hard landing"), ResolveFootstepSurface(&Hit));
 	}
 }
 
@@ -1081,6 +1828,8 @@ void ABHCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCompone
 	PlayerInputComponent->BindAction(TEXT("Sprint"), IE_Released, this, &ABHCharacter::StopSprint);
 	PlayerInputComponent->BindAction(TEXT("Crouch"), IE_Pressed, this, &ABHCharacter::StartCrouch);
 	PlayerInputComponent->BindAction(TEXT("Crouch"), IE_Released, this, &ABHCharacter::StopCrouch);
+	PlayerInputComponent->BindAction(TEXT("Prone"), IE_Pressed, this, &ABHCharacter::StartProne);
+	PlayerInputComponent->BindAction(TEXT("Prone"), IE_Released, this, &ABHCharacter::StopProne);
 	PlayerInputComponent->BindAction(TEXT("Capture"), IE_Pressed, this, &ABHCharacter::TryCapture);
 	PlayerInputComponent->BindAction(TEXT("Scan"), IE_Pressed, this, &ABHCharacter::UseScan);
 	PlayerInputComponent->BindAction(TEXT("HunterPower"), IE_Pressed, this, &ABHCharacter::UseHunterPower);
@@ -1123,6 +1872,12 @@ void ABHCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 	DOREPLIFETIME(ABHCharacter, Fear);
 	DOREPLIFETIME(ABHCharacter, Dread);
 	DOREPLIFETIME(ABHCharacter, DetentionMarkRemaining);
+	DOREPLIFETIME(ABHCharacter, MovementSpecialState);
+	DOREPLIFETIME(ABHCharacter, bTeacherCaptureAttackActive);
+	DOREPLIFETIME(ABHCharacter, TeacherCaptureAttackStartServerTime);
+	DOREPLIFETIME(ABHCharacter, TeacherCaptureAttackResolveServerTime);
+	DOREPLIFETIME(ABHCharacter, TeacherCaptureAttackEndServerTime);
+	DOREPLIFETIME(ABHCharacter, TeacherCaptureNextAllowedServerTime);
 	DOREPLIFETIME(ABHCharacter, bHiddenInLocker);
 	DOREPLIFETIME(ABHCharacter, bOutOfPlay);
 }
@@ -1241,6 +1996,10 @@ void ABHCharacter::RefillFlashlight(float Amount)
 	}
 
 	FlashlightBattery = FMath::Clamp(FlashlightBattery + Amount, 0.0f, 100.0f);
+	if (FlashlightBattery > 5.0f)
+	{
+		bFlashlightEmptyTelemetryReported = false;
+	}
 }
 
 void ABHCharacter::RecoverStamina(float Amount)
@@ -1284,6 +2043,64 @@ void ABHCharacter::ClearDetentionMark()
 	}
 }
 
+void ABHCharacter::ResetRoleWarmupStateForRoundStart()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	ExitLocker();
+	EndInteractAuthority(CurrentServerInteractTarget);
+	CurrentInteractTarget = nullptr;
+	CurrentServerInteractTarget = nullptr;
+	LastScanTime = -999.0f;
+	LastHunterPowerTime = -999.0f;
+	LastDecoyTime = -999.0f;
+	LastSprintNoiseTime = -999.0f;
+	LastStaminaWarningTime = -999.0f;
+	LastHidingPanicMessageTime = -999.0f;
+	LastLockerNoiseTime = -999.0f;
+	LastForcedBreathNoiseTime = -999.0f;
+	LastPanicBreathNoiseTime = -999.0f;
+	LastDetentionNoiseTime = -999.0f;
+	LastCaptureEvasionTime = -999.0f;
+	LastTeacherCounterplayHintTime = -999.0f;
+	ResetAntiCampTrackingAuthority();
+	bTeacherCaptureAttackActive = false;
+	bTeacherCaptureAttackResolved = false;
+	TeacherCaptureAttackStartServerTime = -999.0f;
+	TeacherCaptureAttackResolveServerTime = -999.0f;
+	TeacherCaptureAttackEndServerTime = -999.0f;
+	TeacherCaptureNextAllowedServerTime = -999.0f;
+	FlashlightBattery = 100.0f;
+	bFlashlightEmptyTelemetryReported = false;
+	Stamina = MaxStamina;
+	Fear = 0.0f;
+	Dread = 0.0f;
+	DetentionMarkRemaining = 0.0f;
+	HiddenSeconds = 0.0f;
+	bFlashlightOn = false;
+	bHiddenInLocker = false;
+	bOutOfPlay = false;
+	if (ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>())
+	{
+		BHPS->SetLifeState(EBHPlayerLifeState::Alive);
+		BHPS->SetHiddenInLocker(false);
+	}
+	SetActorHiddenInGame(false);
+	if (UCapsuleComponent* Capsule = GetCapsuleComponent())
+	{
+		Capsule->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	}
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		Movement->SetMovementMode(MOVE_Walking);
+	}
+	ApplyFlashlightState();
+	ApplyHiddenState();
+}
+
 bool ABHCharacter::IsHiddenInLocker() const
 {
 	return bHiddenInLocker;
@@ -1324,9 +2141,96 @@ float ABHCharacter::GetDetentionMarkRemaining() const
 	return DetentionMarkRemaining;
 }
 
+EBHMovementSpecialState ABHCharacter::GetMovementSpecialState() const
+{
+	return MovementSpecialState;
+}
+
+bool ABHCharacter::IsProne() const
+{
+	return MovementSpecialState == EBHMovementSpecialState::Prone;
+}
+
+bool ABHCharacter::IsSpecialMoveActive() const
+{
+	return BHIsTransientSpecialMove(MovementSpecialState);
+}
+
+EBHMovementSpecialState ABHCharacter::GetCosmeticMovementSpecialState() const
+{
+	return CosmeticMovementSpecialState;
+}
+
+float ABHCharacter::GetRemainingSpecialMoveCooldown() const
+{
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	return FMath::Max(0.0f, SpecialMoveCooldownEndTime - Now);
+}
+
+FString ABHCharacter::GetLastMovementFailureReason() const
+{
+	return LastMovementFailureReason;
+}
+
+float ABHCharacter::GetMovementSightProfileMultiplier() const
+{
+	return IsProne()
+		? FMath::Clamp(BHResolveMovementRoleTuning(GetBHPlayerState()).ProneVisibilityMultiplier, 0.25f, 1.0f)
+		: 1.0f;
+}
+
+bool ABHCharacter::IsTeacherCaptureAttackActive() const
+{
+	const float Now = GetTeacherCaptureClockSeconds();
+	return bTeacherCaptureAttackActive && Now < TeacherCaptureAttackEndServerTime;
+}
+
+bool ABHCharacter::IsTeacherCaptureAttackInWindup() const
+{
+	const float Now = GetTeacherCaptureClockSeconds();
+	return IsTeacherCaptureAttackActive() && Now < TeacherCaptureAttackResolveServerTime;
+}
+
+float ABHCharacter::GetTeacherCaptureAttackProgress() const
+{
+	if (!IsTeacherCaptureAttackActive() || TeacherCaptureAttackEndServerTime <= TeacherCaptureAttackStartServerTime)
+	{
+		return 0.0f;
+	}
+
+	const float Now = GetTeacherCaptureClockSeconds();
+	return FMath::Clamp((Now - TeacherCaptureAttackStartServerTime) / FMath::Max(0.01f, TeacherCaptureAttackEndServerTime - TeacherCaptureAttackStartServerTime), 0.0f, 1.0f);
+}
+
+float ABHCharacter::GetTeacherCaptureCooldownRemaining() const
+{
+	const float Now = GetTeacherCaptureClockSeconds();
+	return FMath::Max(0.0f, TeacherCaptureNextAllowedServerTime - Now);
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+bool ABHCharacter::TryStartSpecialMoveForTest(EBHMovementSpecialState RequestedState, bool bEndProne)
+{
+	bSprintInputHeld = RequestedState == EBHMovementSpecialState::Rolling || RequestedState == EBHMovementSpecialState::Sliding;
+	return TryStartSpecialMoveAuthority(RequestedState, bEndProne, false);
+}
+
+bool ABHCharacter::TrySetProneForTest(bool bNewProne)
+{
+	return SetProneAuthority(bNewProne, false);
+}
+
+float ABHCharacter::DebugGetAntiCampIdleSecondsForTest() const
+{
+	return GetWorld() && AntiCampLastSatisfiedTime > -900.0f
+		? FMath::Max(0.0f, GetWorld()->GetTimeSeconds() - AntiCampLastSatisfiedTime)
+		: 0.0f;
+}
+#endif
+
 void ABHCharacter::MoveForward(float Value)
 {
-	if (Value != 0.0f && CanAct())
+	if (Value != 0.0f && CanAct() && !IsSpecialMoveActive())
 	{
 		AddMovementInput(GetActorForwardVector(), Value);
 	}
@@ -1334,7 +2238,7 @@ void ABHCharacter::MoveForward(float Value)
 
 void ABHCharacter::MoveRight(float Value)
 {
-	if (Value != 0.0f && CanAct())
+	if (Value != 0.0f && CanAct() && !IsSpecialMoveActive())
 	{
 		AddMovementInput(GetActorRightVector(), Value);
 	}
@@ -1407,7 +2311,7 @@ void ABHCharacter::ApplyKeyboardLook(float DeltaSeconds)
 
 void ABHCharacter::TryBHopJump()
 {
-	if (!CanAct())
+	if (!CanAct() || IsProne() || IsSpecialMoveActive())
 	{
 		StopJumping();
 		bBHopJumpQueued = false;
@@ -1440,6 +2344,12 @@ void ABHCharacter::ToggleReady()
 
 void ABHCharacter::StartInteract()
 {
+	if (IsSpecialMoveActive())
+	{
+		SendStatusMessage(TEXT("Finish the move before interacting."));
+		return;
+	}
+
 	if (bHiddenInLocker)
 	{
 		ServerExitCurrentLocker();
@@ -1471,6 +2381,7 @@ void ABHCharacter::ToggleFlashlight()
 	if (bInfiniteFlashlight)
 	{
 		FlashlightBattery = 100.0f;
+		bFlashlightEmptyTelemetryReported = false;
 	}
 
 	if (!bFlashlightOn && FlashlightBattery <= 1.0f)
@@ -1489,6 +2400,25 @@ void ABHCharacter::ToggleFlashlight()
 
 void ABHCharacter::StartJump()
 {
+	if (IsSpecialMoveActive())
+	{
+		return;
+	}
+
+	const bool bHasDiveIntent = GetVelocity().SizeSquared2D() > FMath::Square(30.0f) || GetLastMovementInputVector().SizeSquared2D() > 0.01f;
+	if (bProneInputHeld && CanAct() && bHasDiveIntent)
+	{
+		StartCosmeticSpecialMove(EBHMovementSpecialState::Diving);
+		ServerStartSpecialMove(EBHMovementSpecialState::Diving, true, false);
+		return;
+	}
+
+	if (IsProne())
+	{
+		ServerSetProne(false);
+		return;
+	}
+
 	bBHopJumpQueued = true;
 	LastBHopJumpInputTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	TryBHopJump();
@@ -1501,8 +2431,21 @@ void ABHCharacter::StopJump()
 
 void ABHCharacter::StartSprint()
 {
+	bSprintInputHeld = true;
+
 	if (!CanAct())
 	{
+		return;
+	}
+
+	if (IsSpecialMoveActive())
+	{
+		return;
+	}
+
+	if (IsProne())
+	{
+		SendStatusMessage(TEXT("Stand up before sprinting."));
 		return;
 	}
 
@@ -1524,14 +2467,36 @@ void ABHCharacter::StartSprint()
 
 void ABHCharacter::StopSprint()
 {
+	bSprintInputHeld = false;
+
 	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
 	const float HunterPenaltyMultiplier = BHFinalEscapeHunterPenaltyActive(GetWorld(), this) ? 0.72f : 1.0f;
-	GetCharacterMovement()->MaxWalkSpeed = BHRoleWalkSpeed(BHPS, WalkSpeed) * HunterPenaltyMultiplier * BHHorrorWalkSpeedMultiplier(this, BHPS);
+	GetCharacterMovement()->MaxWalkSpeed = IsProne()
+		? BHRoleProneSpeed(BHPS) * BHHorrorWalkSpeedMultiplier(this, BHPS)
+		: BHRoleWalkSpeed(BHPS, WalkSpeed) * HunterPenaltyMultiplier * BHHorrorWalkSpeedMultiplier(this, BHPS);
 	ServerSetSprinting(false);
 }
 
 void ABHCharacter::StartCrouch()
 {
+	if (IsSpecialMoveActive())
+	{
+		return;
+	}
+
+	if (IsProne())
+	{
+		ServerSetProne(false);
+		return;
+	}
+
+	if (bSprintInputHeld)
+	{
+		StartCosmeticSpecialMove(EBHMovementSpecialState::Rolling);
+		ServerStartSpecialMove(EBHMovementSpecialState::Rolling, false, false);
+		return;
+	}
+
 	if (CanAct())
 	{
 		Crouch();
@@ -1540,7 +2505,474 @@ void ABHCharacter::StartCrouch()
 
 void ABHCharacter::StopCrouch()
 {
-	UnCrouch();
+	if (!IsProne())
+	{
+		UnCrouch();
+	}
+}
+
+void ABHCharacter::StartProne()
+{
+	bProneInputHeld = true;
+
+	if (!CanAct() || IsSpecialMoveActive())
+	{
+		return;
+	}
+
+	if (bSprintInputHeld)
+	{
+		StartCosmeticSpecialMove(EBHMovementSpecialState::Sliding);
+		ServerStartSpecialMove(EBHMovementSpecialState::Sliding, true, true);
+		return;
+	}
+
+	ServerSetProne(!IsProne());
+}
+
+void ABHCharacter::StopProne()
+{
+	bProneInputHeld = false;
+	if (MovementSpecialState == EBHMovementSpecialState::Sliding && bSpecialMoveEndProneRequiresInput)
+	{
+		bSpecialMoveEndsProne = false;
+	}
+}
+
+void ABHCharacter::SetMovementFailureReason(const FString& Reason)
+{
+	LastMovementFailureReason = Reason;
+	LastMovementFailureTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	MovementFailurePulse = 1.0f;
+	if (!Reason.IsEmpty())
+	{
+		SendStatusMessage(Reason);
+	}
+}
+
+void ABHCharacter::ClientSpecialMoveRejected_Implementation(EBHMovementSpecialState RejectedState, const FString& Reason)
+{
+	if (CosmeticMovementSpecialState == RejectedState)
+	{
+		ClearCosmeticSpecialMove();
+	}
+	SetMovementFailureReason(Reason);
+}
+
+void ABHCharacter::StartCosmeticSpecialMove(EBHMovementSpecialState State)
+{
+	if (HasAuthority() || !BHIsTransientSpecialMove(State))
+	{
+		return;
+	}
+
+	CosmeticMovementSpecialState = State;
+	LastRoleAnimationName = NAME_None;
+}
+
+void ABHCharacter::ClearCosmeticSpecialMove()
+{
+	if (CosmeticMovementSpecialState != EBHMovementSpecialState::None)
+	{
+		CosmeticMovementSpecialState = EBHMovementSpecialState::None;
+		LastRoleAnimationName = NAME_None;
+	}
+}
+
+bool ABHCharacter::ValidateSpecialMoveSpaceAuthority(EBHMovementSpecialState RequestedState, const FBHMovementSpecialTuning& Tuning, FString& OutFailureReason) const
+{
+	const UCapsuleComponent* Capsule = GetCapsuleComponent();
+	const UCharacterMovementComponent* Movement = GetCharacterMovement();
+	if (!GetWorld() || !Capsule || !Movement)
+	{
+		return true;
+	}
+	if (!GetWorld()->GetPhysicsScene())
+	{
+		return true;
+	}
+
+	const FVector Forward = GetActorForwardVector().GetSafeNormal2D();
+	if (Forward.IsNearlyZero())
+	{
+		OutFailureReason = TEXT("No movement direction.");
+		return false;
+	}
+
+	const float HalfHeight = (RequestedState == EBHMovementSpecialState::Sliding || RequestedState == EBHMovementSpecialState::Diving)
+		? BHProneCapsuleHalfHeight
+		: DefaultCapsuleHalfHeight;
+	const FCollisionShape Shape = FCollisionShape::MakeCapsule(DefaultCapsuleRadius * 0.92f, HalfHeight);
+	const FVector Start = GetActorLocation();
+	const float Clearance = FMath::Max(64.0f, Tuning.Curve.MinForwardClearance);
+	const FVector End = Start + Forward * Clearance;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BHSpecialMoveForwardTrace), false, this);
+	FHitResult ForwardHit;
+	if (GetWorld()->SweepSingleByChannel(ForwardHit, Start, End, FQuat::Identity, Capsule->GetCollisionObjectType(), Shape, Params) && ForwardHit.bBlockingHit)
+	{
+		OutFailureReason = Tuning.BlockedText.IsEmpty() ? TEXT("Not enough room for that move.") : Tuning.BlockedText.ToString();
+		return false;
+	}
+
+	const float ProbeDistance = FMath::Max(64.0f, Tuning.Curve.FloorProbeDistance);
+	const FVector FloorStart = End + FVector(0.0f, 0.0f, HalfHeight + 16.0f);
+	const FVector FloorEnd = End - FVector(0.0f, 0.0f, ProbeDistance + HalfHeight);
+	FHitResult FloorHit;
+	if (!GetWorld()->LineTraceSingleByChannel(FloorHit, FloorStart, FloorEnd, Capsule->GetCollisionObjectType(), Params) || !FloorHit.bBlockingHit)
+	{
+		OutFailureReason = TEXT("No floor ahead.");
+		return false;
+	}
+
+	const float MinWalkableZ = FMath::Cos(FMath::DegreesToRadians(FMath::Clamp(Tuning.Curve.MaxSlopeDegrees, 0.0f, 89.0f)));
+	if (FloorHit.ImpactNormal.Z < MinWalkableZ)
+	{
+		OutFailureReason = TEXT("Slope is too steep.");
+		return false;
+	}
+
+	const float CurrentFloorZ = Start.Z - Capsule->GetScaledCapsuleHalfHeight();
+	const float Drop = FMath::Max(0.0f, CurrentFloorZ - FloorHit.ImpactPoint.Z);
+	if (Drop > FMath::Max(0.0f, Tuning.Curve.MaxDropHeight))
+	{
+		OutFailureReason = TEXT("Drop ahead is too high.");
+		return false;
+	}
+
+	return true;
+}
+
+void ABHCharacter::EmitSpecialMoveNoiseAuthority(EBHMovementSpecialState State, FName NoiseEvent, float EventMultiplier)
+{
+	if (!HasAuthority() || !GetWorld())
+	{
+		return;
+	}
+
+	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	const FBHMovementSpecialTuning Tuning = BHGetSpecialMoveTuning(BHPS, State);
+	const float NoiseStrength = Tuning.NoiseStrength * FMath::Max(0.0f, EventMultiplier) * BHRoleSpecialNoiseMultiplier(BHPS) * BHHorrorNoiseMultiplier(this, BHPS);
+	if (NoiseStrength <= 0.0f)
+	{
+		return;
+	}
+
+	const FString NoiseReason = NoiseEvent.IsNone() ? TEXT("special movement") : NoiseEvent.ToString();
+	EmitFootstepStimulus(NoiseStrength, NoiseReason, ResolveFootstepSurface());
+	if (NoiseStrength >= 1.0f)
+	{
+		if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+		{
+			BHGM->NotifyLoudNoise(GetActorLocation(), NoiseReason);
+		}
+	}
+}
+
+void ABHCharacter::UpdateSpecialMoveAuthority(float DeltaSeconds)
+{
+	if (!HasAuthority() || !IsSpecialMoveActive() || !GetWorld())
+	{
+		return;
+	}
+
+	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	const FBHMovementSpecialTuning Tuning = BHGetSpecialMoveTuning(BHPS, MovementSpecialState);
+	const float Duration = FMath::Max(0.01f, Tuning.DurationSeconds);
+	const float NormalizedTime = FMath::Clamp((GetWorld()->GetTimeSeconds() - SpecialMoveStartTime) / Duration, 0.0f, 1.0f);
+	const float TargetDistance = FMath::Max(0.0f, Tuning.Curve.Distance) * BHMovementCurveAlpha(Tuning, NormalizedTime);
+	const float DeltaDistance = FMath::Max(0.0f, TargetDistance - SpecialMoveDistanceTravelled);
+	if (DeltaDistance > KINDA_SMALL_NUMBER && !SpecialMoveDirection.IsNearlyZero())
+	{
+		FHitResult MoveHit;
+		AddActorWorldOffset(SpecialMoveDirection.GetSafeNormal2D() * DeltaDistance, true, &MoveHit, ETeleportType::None);
+		SpecialMoveDistanceTravelled += MoveHit.bBlockingHit ? DeltaDistance * MoveHit.Time : DeltaDistance;
+		if (MoveHit.bBlockingHit)
+		{
+			SpecialMoveEndTime = GetWorld()->GetTimeSeconds();
+		}
+	}
+
+	if (MovementSpecialState == EBHMovementSpecialState::Rolling && NormalizedTime >= 0.34f && !(SpecialMoveNoiseEventMask & 0x01))
+	{
+		SpecialMoveNoiseEventMask |= 0x01;
+		EmitSpecialMoveNoiseAuthority(MovementSpecialState, FName(TEXT("roll impact")), 1.0f);
+	}
+	else if (MovementSpecialState == EBHMovementSpecialState::Sliding && NormalizedTime >= 0.42f && !(SpecialMoveNoiseEventMask & 0x02))
+	{
+		SpecialMoveNoiseEventMask |= 0x02;
+		EmitSpecialMoveNoiseAuthority(MovementSpecialState, FName(TEXT("slide scrape")), 0.65f);
+	}
+	else if (MovementSpecialState == EBHMovementSpecialState::Diving && NormalizedTime >= 0.82f && !(SpecialMoveNoiseEventMask & 0x04))
+	{
+		SpecialMoveNoiseEventMask |= 0x04;
+		EmitSpecialMoveNoiseAuthority(MovementSpecialState, FName(TEXT("dive landing")), 1.0f);
+	}
+}
+
+bool ABHCharacter::TryStartSpecialMoveAuthority(EBHMovementSpecialState RequestedState, bool bEndProne, bool bEndProneRequiresInput)
+{
+	if (!HasAuthority() || !CanAct() || !GetWorld())
+	{
+		ClientSpecialMoveRejected(RequestedState, TEXT("You cannot move right now."));
+		return false;
+	}
+
+	const bool bRequestedTransient = BHIsTransientSpecialMove(RequestedState);
+	const bool bDiveFromProne = RequestedState == EBHMovementSpecialState::Diving && IsProne();
+	if (!bRequestedTransient || IsSpecialMoveActive() || (IsProne() && !bDiveFromProne))
+	{
+		ClientSpecialMoveRejected(RequestedState, TEXT("Finish the current move first."));
+		return false;
+	}
+
+	UCharacterMovementComponent* Movement = GetCharacterMovement();
+	if (!Movement || !Movement->IsMovingOnGround())
+	{
+		ClientSpecialMoveRejected(RequestedState, TEXT("Get your footing first."));
+		return false;
+	}
+
+	if ((RequestedState == EBHMovementSpecialState::Rolling || RequestedState == EBHMovementSpecialState::Sliding) && !bSprintInputHeld)
+	{
+		ClientSpecialMoveRejected(RequestedState, TEXT("Sprint first."));
+		return false;
+	}
+
+	const bool bHasMoveIntent = GetVelocity().SizeSquared2D() > FMath::Square(25.0f) || GetLastMovementInputVector().SizeSquared2D() > 0.01f || bSprintInputHeld;
+	if (RequestedState == EBHMovementSpecialState::Diving && !bHasMoveIntent)
+	{
+		ClientSpecialMoveRejected(RequestedState, TEXT("Move before diving."));
+		return false;
+	}
+
+	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	const FBHMovementSpecialTuning BaseTuning = BHGetSpecialMoveTuning(BHPS, RequestedState);
+	const float StaminaCost = BaseTuning.StaminaCost
+		* BHRoleSpecialStaminaMultiplier(BHPS)
+		* (PowerupComponent ? PowerupComponent->GetStaminaDrainMultiplier() : 1.0f);
+	if (Stamina < StaminaCost)
+	{
+		const FString Reason = BaseTuning.LowStaminaText.IsEmpty() ? TEXT("Too exhausted for that move.") : BaseTuning.LowStaminaText.ToString();
+		SetMovementFailureReason(Reason);
+		ClientSpecialMoveRejected(RequestedState, Reason);
+		return false;
+	}
+
+	const float Now = GetWorld()->GetTimeSeconds();
+	if (Now < SpecialMoveCooldownEndTime)
+	{
+		const FString CooldownLabel = BaseTuning.CooldownText.IsEmpty() ? TEXT("Movement cooling down:") : BaseTuning.CooldownText.ToString();
+		const FString Reason = FString::Printf(TEXT("%s %ds."), *CooldownLabel, FMath::CeilToInt(SpecialMoveCooldownEndTime - Now));
+		SetMovementFailureReason(Reason);
+		ClientSpecialMoveRejected(RequestedState, Reason);
+		return false;
+	}
+
+	FString SpaceFailureReason;
+	if (!ValidateSpecialMoveSpaceAuthority(RequestedState, BaseTuning, SpaceFailureReason))
+	{
+		SetMovementFailureReason(SpaceFailureReason);
+		ClientSpecialMoveRejected(RequestedState, SpaceFailureReason);
+		return false;
+	}
+
+	Stamina = FMath::Max(0.0f, Stamina - StaminaCost);
+	StaminaRecoveryLockedUntil = Now + FMath::Max(0.20f, BaseTuning.DurationSeconds);
+	SpecialMoveStartTime = Now;
+	SpecialMoveEndTime = Now + BaseTuning.DurationSeconds;
+	SpecialMoveCooldownEndTime = SpecialMoveEndTime + BaseTuning.CooldownSeconds * BHRoleSpecialCooldownMultiplier(BHPS);
+	SpecialMoveDistanceTravelled = 0.0f;
+	SpecialMoveDirection = GetActorForwardVector().GetSafeNormal2D();
+	LastCaptureEvasionTime = Now;
+	SpecialMoveNoiseEventMask = 0;
+	bSpecialMoveEndsProne = bEndProne;
+	bSpecialMoveEndProneRequiresInput = bEndProneRequiresInput;
+	bBHopJumpQueued = false;
+	ClearCosmeticSpecialMove();
+
+	if (bIsCrouched)
+	{
+		UnCrouch();
+	}
+
+	MovementSpecialState = RequestedState;
+	ApplyMovementSpecialState();
+
+	if (RequestedState == EBHMovementSpecialState::Rolling)
+	{
+		EmitSpecialMoveNoiseAuthority(RequestedState, FName(TEXT("roll start")), 0.45f);
+	}
+	else if (RequestedState == EBHMovementSpecialState::Sliding)
+	{
+		EmitSpecialMoveNoiseAuthority(RequestedState, FName(TEXT("slide start")), 0.82f);
+	}
+	else if (RequestedState == EBHMovementSpecialState::Diving)
+	{
+		EmitSpecialMoveNoiseAuthority(RequestedState, FName(TEXT("dive launch")), 0.78f);
+	}
+
+	ForceNetUpdate();
+	return true;
+}
+
+void ABHCharacter::FinishSpecialMoveAuthority()
+{
+	if (!HasAuthority() || !IsSpecialMoveActive())
+	{
+		return;
+	}
+
+	const bool bShouldEndProne = bSpecialMoveEndsProne && (!bSpecialMoveEndProneRequiresInput || bProneInputHeld);
+	MovementSpecialState = bShouldEndProne ? EBHMovementSpecialState::Prone : EBHMovementSpecialState::None;
+	SpecialMoveStartTime = -999.0f;
+	SpecialMoveEndTime = -999.0f;
+	SpecialMoveDistanceTravelled = 0.0f;
+	SpecialMoveNoiseEventMask = 0;
+	bSpecialMoveEndsProne = false;
+	bSpecialMoveEndProneRequiresInput = false;
+	ClearCosmeticSpecialMove();
+	ApplyMovementSpecialState();
+	ForceNetUpdate();
+}
+
+bool ABHCharacter::SetProneAuthority(bool bNewProne, bool bShowFailureMessages)
+{
+	if (!HasAuthority())
+	{
+		return false;
+	}
+
+	if (bNewProne)
+	{
+		if (!CanAct() || IsSpecialMoveActive())
+		{
+			return false;
+		}
+		if (IsProne())
+		{
+			return true;
+		}
+		if (bIsCrouched)
+		{
+			UnCrouch();
+		}
+		bSprintInputHeld = false;
+		MovementSpecialState = EBHMovementSpecialState::Prone;
+		LastCaptureEvasionTime = GetWorld() ? GetWorld()->GetTimeSeconds() : LastCaptureEvasionTime;
+		ApplyMovementSpecialState();
+		ForceNetUpdate();
+		return true;
+	}
+
+	if (!IsProne())
+	{
+		return true;
+	}
+
+	if (!CanStandFromProne())
+	{
+		if (bShowFailureMessages)
+		{
+			SetMovementFailureReason(TEXT("No room to stand up."));
+		}
+		return false;
+	}
+
+	MovementSpecialState = EBHMovementSpecialState::None;
+	ApplyMovementSpecialState();
+	ForceNetUpdate();
+	return true;
+}
+
+bool ABHCharacter::CanStandFromProne() const
+{
+	const UCapsuleComponent* Capsule = GetCapsuleComponent();
+	if (!GetWorld() || !Capsule)
+	{
+		return true;
+	}
+
+	const float CurrentHalfHeight = Capsule->GetUnscaledCapsuleHalfHeight();
+	const FVector TestLocation = GetActorLocation() + FVector(0.0f, 0.0f, FMath::Max(0.0f, DefaultCapsuleHalfHeight - CurrentHalfHeight));
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BHProneStandTrace), false, this);
+	const FCollisionShape StandingShape = FCollisionShape::MakeCapsule(DefaultCapsuleRadius, DefaultCapsuleHalfHeight);
+	return !GetWorld()->OverlapBlockingTestByChannel(TestLocation, FQuat::Identity, Capsule->GetCollisionObjectType(), StandingShape, Params);
+}
+
+void ABHCharacter::ApplyMovementSpecialState()
+{
+	const bool bNeedsLowCapsule = IsProne()
+		|| MovementSpecialState == EBHMovementSpecialState::Sliding
+		|| MovementSpecialState == EBHMovementSpecialState::Diving;
+	SetProneCollisionApplied(bNeedsLowCapsule);
+	RefreshMovementSpeedFromState();
+	if (MovementSpecialState != EBHMovementSpecialState::None || CosmeticMovementSpecialState != EBHMovementSpecialState::None)
+	{
+		ClearCosmeticSpecialMove();
+	}
+	LastRoleAnimationName = NAME_None;
+}
+
+void ABHCharacter::RefreshMovementSpeedFromState()
+{
+	UCharacterMovementComponent* Movement = GetCharacterMovement();
+	if (!Movement)
+	{
+		return;
+	}
+
+	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	const float HunterPenaltyMultiplier = BHFinalEscapeHunterPenaltyActive(GetWorld(), this) ? 0.72f : 1.0f;
+	const float TeacherCaptureMoveMultiplier = (BHPS && BHPS->IsAliveHunter() && IsTeacherCaptureAttackActive()) ? BHTeacherCaptureMoveMultiplier : 1.0f;
+	const float WalkSpeedNow = BHRoleWalkSpeed(BHPS, WalkSpeed) * HunterPenaltyMultiplier * TeacherCaptureMoveMultiplier * BHHorrorWalkSpeedMultiplier(this, BHPS);
+	const float SprintSpeedNow = BHRoleSprintSpeed(BHPS, SprintSpeed)
+		* (PowerupComponent ? PowerupComponent->GetSprintSpeedMultiplier() : 1.0f)
+		* HunterPenaltyMultiplier
+		* TeacherCaptureMoveMultiplier
+		* BHHorrorSprintSpeedMultiplier(this, BHPS);
+
+	if (IsProne())
+	{
+		const float ProneSpeed = BHRoleProneSpeed(BHPS) * BHHorrorWalkSpeedMultiplier(this, BHPS);
+		Movement->MaxWalkSpeed = ProneSpeed;
+		Movement->MaxWalkSpeedCrouched = ProneSpeed;
+		return;
+	}
+
+	if (IsSpecialMoveActive())
+	{
+		const FBHMovementSpecialTuning SpecialTuning = BHGetSpecialMoveTuning(BHPS, MovementSpecialState);
+		const float SpecialMoveSpeed = SpecialTuning.DurationSeconds > KINDA_SMALL_NUMBER
+			? SpecialTuning.Curve.Distance / SpecialTuning.DurationSeconds
+			: WalkSpeedNow;
+		Movement->MaxWalkSpeed = FMath::Max(WalkSpeedNow, SpecialMoveSpeed);
+		return;
+	}
+
+	Movement->MaxWalkSpeed = bSprintInputHeld && Stamina > MaxStamina * 0.08f ? SprintSpeedNow : WalkSpeedNow;
+	Movement->MaxWalkSpeedCrouched = 205.0f * BHHorrorWalkSpeedMultiplier(this, BHPS);
+}
+
+void ABHCharacter::SetProneCollisionApplied(bool bApplied)
+{
+	if (bProneCollisionApplied == bApplied)
+	{
+		return;
+	}
+
+	UCapsuleComponent* Capsule = GetCapsuleComponent();
+	if (!Capsule)
+	{
+		bProneCollisionApplied = bApplied;
+		return;
+	}
+
+	const float CurrentHalfHeight = Capsule->GetUnscaledCapsuleHalfHeight();
+	const float TargetHalfHeight = bApplied ? BHProneCapsuleHalfHeight : DefaultCapsuleHalfHeight;
+	const FVector TargetLocation = GetActorLocation() + FVector(0.0f, 0.0f, bApplied ? -(CurrentHalfHeight - TargetHalfHeight) : (TargetHalfHeight - CurrentHalfHeight));
+	Capsule->SetCapsuleSize(DefaultCapsuleRadius, TargetHalfHeight, true);
+	SetActorLocation(TargetLocation, false, nullptr, ETeleportType::TeleportPhysics);
+	bProneCollisionApplied = bApplied;
 }
 
 void ABHCharacter::TryCapture()
@@ -1813,7 +3245,16 @@ FString ABHCharacter::GetInteractionFailureReason(AActor* Target) const
 
 	if (BHPS->PlayerRole == EBHPlayerRole::Unassigned)
 	{
-		return TEXT("Press Enter on every player to ready up. Host can kick blockers from the roster.");
+		return TEXT("Press Enter to ready up before interacting.");
+	}
+
+	if (Target && Target->GetClass()->ImplementsInterface(UBHInteractableInterface::StaticClass()))
+	{
+		const FBHInteractionPromptInfo PromptInfo = IBHInteractableInterface::Execute_GetInteractionPromptInfo(Target, const_cast<ABHCharacter*>(this));
+		if (PromptInfo.bUsePromptInfo && !PromptInfo.DisabledReason.IsEmpty())
+		{
+			return PromptInfo.DisabledReason.ToString();
+		}
 	}
 
 	if (BHGS && BHGS->RoundPhase == EBHRoundPhase::Lobby)
@@ -1823,7 +3264,7 @@ FString ABHCharacter::GetInteractionFailureReason(AActor* Target) const
 
 	if (BHGS && BHGS->RoundPhase == EBHRoundPhase::Prep)
 	{
-		return TEXT("Prep phase: hiding works for survivors. Breakers, scans, and captures start when Hunt begins.");
+		return TEXT("Role warmup: try flashlight, lockers, questions, decoys, scans, captures, and Hall Monitor tools. The real hunt resets after warmup.");
 	}
 
 	if (const ABHObjectiveStation* Station = Cast<ABHObjectiveStation>(Target))
@@ -1847,6 +3288,75 @@ void ABHCharacter::SendStatusMessage(const FString& Message) const
 	{
 		BHPC->ClientShowStatusMessage(Message, 3.25f);
 	}
+}
+
+bool ABHCharacter::ResolveHallMonitorMarkerLocation(FVector& OutLocation) const
+{
+	if (!GetWorld())
+	{
+		return false;
+	}
+
+	FVector ViewLocation = GetActorLocation() + FVector(0.0f, 0.0f, 72.0f);
+	FRotator ViewRotation = GetActorRotation();
+	if (Controller)
+	{
+		Controller->GetPlayerViewPoint(ViewLocation, ViewRotation);
+	}
+	else
+	{
+		GetActorEyesViewPoint(ViewLocation, ViewRotation);
+	}
+
+	FVector AimDirection = ViewRotation.Vector();
+	if (!AimDirection.Normalize())
+	{
+		AimDirection = GetActorForwardVector();
+	}
+
+	constexpr float MinMarkerDistance = 900.0f;
+	constexpr float MaxMarkerDistance = 4200.0f;
+	const FVector TraceEnd = ViewLocation + AimDirection * MaxMarkerDistance;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BHHallMonitorMarkerTrace), false, this);
+	Params.AddIgnoredActor(this);
+
+	FHitResult Hit;
+	FVector MarkerLocation = TraceEnd;
+	if (GetWorld()->LineTraceSingleByChannel(Hit, ViewLocation, TraceEnd, ECC_Visibility, Params) && Hit.bBlockingHit)
+	{
+		MarkerLocation = Hit.ImpactPoint;
+	}
+
+	FVector FlatDirection = MarkerLocation - GetActorLocation();
+	FlatDirection.Z = 0.0f;
+	if (!FlatDirection.Normalize())
+	{
+		FlatDirection = AimDirection;
+		FlatDirection.Z = 0.0f;
+		if (!FlatDirection.Normalize())
+		{
+			FlatDirection = GetActorForwardVector();
+			FlatDirection.Z = 0.0f;
+			if (!FlatDirection.Normalize())
+			{
+				FlatDirection = FVector::ForwardVector;
+			}
+		}
+	}
+
+	const float FlatDistance = FVector::Dist2D(MarkerLocation, GetActorLocation());
+	if (FlatDistance < MinMarkerDistance)
+	{
+		MarkerLocation = GetActorLocation() + FlatDirection * MinMarkerDistance;
+	}
+	else if (FlatDistance > MaxMarkerDistance)
+	{
+		MarkerLocation = GetActorLocation() + FlatDirection * MaxMarkerDistance;
+	}
+
+	MarkerLocation.Z = GetActorLocation().Z;
+	OutLocation = MarkerLocation;
+	return true;
 }
 
 void ABHCharacter::SendFakeHunterHint(bool bRealHint)
@@ -1890,14 +3400,28 @@ void ABHCharacter::SendFakeHunterHint(bool bRealHint)
 	}
 	else
 	{
-		const float Angle = FMath::FRandRange(-PI, PI);
-		const float Radius = FMath::FRandRange(1200.0f, 3600.0f);
-		HintLocation = GetActorLocation() + FVector(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f) * Radius;
+		if (!ResolveHallMonitorMarkerLocation(HintLocation))
+		{
+			const float Angle = FMath::FRandRange(-PI, PI);
+			const float Radius = FMath::FRandRange(1200.0f, 3600.0f);
+			HintLocation = GetActorLocation() + FVector(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f) * Radius;
+		}
 		bFoundSignal = true;
 	}
 
 	int32 HuntersNotified = 0;
 	const FString SenderName = FakePS && !FakePS->GetPlayerName().IsEmpty() ? FakePS->GetPlayerName() : FString(TEXT("Hall monitor"));
+	if (!bRealHint)
+	{
+		if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+		{
+			HuntersNotified = BHGM->NotifyHallMonitorMisdirection(HintLocation, SenderName);
+		}
+
+		SendStatusMessage(FString::Printf(TEXT("False corridor marker sent to %d Teacher(s)."), HuntersNotified));
+		return;
+	}
+
 	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
 	{
 		ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get());
@@ -1914,9 +3438,7 @@ void ABHCharacter::SendFakeHunterHint(bool bRealHint)
 		++HuntersNotified;
 	}
 
-	SendStatusMessage(bRealHint
-		? FString::Printf(TEXT("Real hint sent to %d Teacher(s)."), HuntersNotified)
-		: FString::Printf(TEXT("False hint sent to %d Teacher(s)."), HuntersNotified));
+	SendStatusMessage(FString::Printf(TEXT("Real hint sent to %d Teacher(s)."), HuntersNotified));
 }
 
 void ABHCharacter::ConfigureLowPolyAvatar()
@@ -2005,6 +3527,17 @@ void ABHCharacter::ConfigureLowPolyAvatar()
 	BHConfigureAvatarPart(RoleGearLeftStrapMesh, Cube, Material, FVector(9.0f, -15.0f, 18.0f), FRotator::ZeroRotator, FVector(0.035f, 0.022f, 0.32f));
 	BHConfigureAvatarPart(RoleGearRightStrapMesh, Cube, Material, FVector(9.0f, 15.0f, 18.0f), FRotator::ZeroRotator, FVector(0.035f, 0.022f, 0.32f));
 	BHConfigureAvatarPart(RoleGearDetailMesh, Cube, Material, FVector(14.0f, 0.0f, 16.0f), FRotator::ZeroRotator, FVector(0.02f, 0.09f, 0.10f));
+	if (TeacherWeaponRoot)
+	{
+		TeacherWeaponRoot->SetRelativeLocation(BHTeacherWeaponIdleLocation);
+		TeacherWeaponRoot->SetRelativeRotation(BHTeacherWeaponIdleRotation);
+		TeacherWeaponRoot->SetRelativeScale3D(FVector::OneVector);
+	}
+	BHConfigureAvatarPart(TeacherWeaponMesh, nullptr, Material, FVector::ZeroVector, FRotator::ZeroRotator, FVector::OneVector);
+	BHConfigureAvatarPart(TeacherWeaponHandleMesh, Cylinder, Material, FVector(0.0f, 0.0f, 12.0f), FRotator::ZeroRotator, FVector(0.045f, 0.045f, 0.58f));
+	BHConfigureAvatarPart(TeacherWeaponGripMesh, Cylinder, Material, FVector(0.0f, 0.0f, -25.0f), FRotator::ZeroRotator, FVector(0.058f, 0.058f, 0.18f));
+	BHConfigureAvatarPart(TeacherWeaponHeadMesh, Cube, Material, FVector(0.0f, 0.0f, 50.0f), FRotator::ZeroRotator, FVector(0.11f, 0.045f, 0.08f));
+	BHConfigureAvatarPart(TeacherWeaponBladeMesh, Cube, Material, FVector(0.0f, -9.0f, 49.0f), FRotator(0.0f, 0.0f, -8.0f), FVector(0.045f, 0.17f, 0.135f));
 
 	UStaticMeshComponent* RoleAccessoryParts[] = {
 		RoleHeadwearMesh,
@@ -2014,7 +3547,12 @@ void ABHCharacter::ConfigureLowPolyAvatar()
 		RoleGearAccentMesh,
 		RoleGearLeftStrapMesh,
 		RoleGearRightStrapMesh,
-		RoleGearDetailMesh
+		RoleGearDetailMesh,
+		TeacherWeaponMesh,
+		TeacherWeaponHandleMesh,
+		TeacherWeaponHeadMesh,
+		TeacherWeaponBladeMesh,
+		TeacherWeaponGripMesh
 	};
 	for (UStaticMeshComponent* Part : RoleAccessoryParts)
 	{
@@ -2055,7 +3593,11 @@ void ABHCharacter::UpdateLowPolyAvatar(float DeltaSeconds)
 		Strafe = FVector::DotProduct(GetVelocity().GetSafeNormal2D(), GetActorRightVector()) * AvatarMoveAlpha;
 	}
 
+	const EBHMovementSpecialState VisualSpecialState = MovementSpecialState != EBHMovementSpecialState::None ? MovementSpecialState : CosmeticMovementSpecialState;
 	const float CrouchAlpha = bIsCrouched ? 1.0f : 0.0f;
+	const float ProneAlpha = VisualSpecialState == EBHMovementSpecialState::Prone ? 1.0f : 0.0f;
+	const float SlideDiveAlpha = (VisualSpecialState == EBHMovementSpecialState::Sliding || VisualSpecialState == EBHMovementSpecialState::Diving) ? 1.0f : 0.0f;
+	const float LowProfileAlpha = FMath::Max(CrouchAlpha, FMath::Max(ProneAlpha, SlideDiveAlpha));
 	const float Step = FMath::Sin(AvatarAnimTime);
 	const float CounterStep = -Step;
 	const float MoveAlpha = FMath::Clamp(AvatarMoveAlpha, 0.0f, 1.0f);
@@ -2063,20 +3605,21 @@ void ABHCharacter::UpdateLowPolyAvatar(float DeltaSeconds)
 	const float BobZ = FMath::Abs(FMath::Sin(AvatarAnimTime * 2.0f)) * FMath::Lerp(0.6f, 2.8f, SprintAlpha) * MoveAlpha;
 	const float Breath = FMath::Sin(AvatarBreathTime) * FMath::Lerp(0.9f, 1.8f, HorrorAlpha);
 
-	AvatarRoot->SetRelativeLocation(FVector(0.0f, 0.0f, BobZ - CrouchAlpha * 14.0f));
+	AvatarRoot->SetRelativeLocation(FVector(0.0f, 0.0f, BobZ - CrouchAlpha * 14.0f - ProneAlpha * 44.0f - SlideDiveAlpha * 30.0f));
 
 	const FRotator TorsoRotation(
-		-FMath::Lerp(0.0f, 7.0f, SprintAlpha) * MoveAlpha - CrouchAlpha * 7.0f + Breath * 0.45f,
+		-FMath::Lerp(0.0f, 7.0f, SprintAlpha) * MoveAlpha - CrouchAlpha * 7.0f - ProneAlpha * 62.0f - SlideDiveAlpha * 36.0f + Breath * 0.45f,
 		0.0f,
 		Strafe * -5.5f);
 	if (RoleModelRoot)
 	{
-		RoleModelRoot->SetRelativeLocation(FVector(0.0f, 0.0f, -CrouchAlpha * 4.0f));
+		RoleModelRoot->SetRelativeLocation(FVector(0.0f, 0.0f, -CrouchAlpha * 4.0f - ProneAlpha * 20.0f - SlideDiveAlpha * 12.0f));
 		RoleModelRoot->SetRelativeRotation(FRotator(
 			TorsoRotation.Pitch * 0.72f,
 			Step * MoveAlpha * FMath::Lerp(1.2f, 2.8f, SprintAlpha),
 			TorsoRotation.Roll * 0.62f));
 	}
+	UpdateTeacherWeaponSwingVisuals();
 	if (BodyMesh)
 	{
 		BodyMesh->SetRelativeRotation(TorsoRotation);
@@ -2087,7 +3630,7 @@ void ABHCharacter::UpdateLowPolyAvatar(float DeltaSeconds)
 	}
 	if (WaistMesh)
 	{
-		WaistMesh->SetRelativeRotation(FRotator(CrouchAlpha * 4.0f, 0.0f, Strafe * -3.0f));
+		WaistMesh->SetRelativeRotation(FRotator(LowProfileAlpha * 4.0f, 0.0f, Strafe * -3.0f));
 	}
 	if (BackpackMesh)
 	{
@@ -2104,7 +3647,7 @@ void ABHCharacter::UpdateLowPolyAvatar(float DeltaSeconds)
 	if (HeadJoint)
 	{
 		HeadJoint->SetRelativeRotation(FRotator(
-			AimPitch * 0.42f + Breath * 0.35f - CrouchAlpha * 3.0f,
+			AimPitch * 0.42f + Breath * 0.35f - CrouchAlpha * 3.0f + ProneAlpha * 40.0f + SlideDiveAlpha * 18.0f,
 			AimYaw * 0.55f,
 			Step * MoveAlpha * 1.8f));
 	}
@@ -2114,46 +3657,46 @@ void ABHCharacter::UpdateLowPolyAvatar(float DeltaSeconds)
 	const float ElbowSwing = FMath::Lerp(8.0f, 24.0f, SprintAlpha) * MoveAlpha;
 	if (LeftShoulderJoint)
 	{
-		LeftShoulderJoint->SetRelativeRotation(FRotator(CounterStep * ArmSwing - CrouchAlpha * 10.0f, 0.0f, -ArmRoll));
+		LeftShoulderJoint->SetRelativeRotation(FRotator(CounterStep * ArmSwing - LowProfileAlpha * 10.0f - ProneAlpha * 28.0f, 0.0f, -ArmRoll));
 	}
 	if (RightShoulderJoint)
 	{
-		RightShoulderJoint->SetRelativeRotation(FRotator(Step * ArmSwing - CrouchAlpha * 10.0f, 0.0f, ArmRoll));
+		RightShoulderJoint->SetRelativeRotation(FRotator(Step * ArmSwing - LowProfileAlpha * 10.0f - ProneAlpha * 28.0f, 0.0f, ArmRoll));
 	}
 	if (LeftElbowJoint)
 	{
-		LeftElbowJoint->SetRelativeRotation(FRotator(6.0f + FMath::Max(0.0f, Step) * ElbowSwing + CrouchAlpha * 8.0f, 0.0f, 0.0f));
+		LeftElbowJoint->SetRelativeRotation(FRotator(6.0f + FMath::Max(0.0f, Step) * ElbowSwing + LowProfileAlpha * 8.0f + ProneAlpha * 18.0f, 0.0f, 0.0f));
 	}
 	if (RightElbowJoint)
 	{
-		RightElbowJoint->SetRelativeRotation(FRotator(6.0f + FMath::Max(0.0f, CounterStep) * ElbowSwing + CrouchAlpha * 8.0f, 0.0f, 0.0f));
+		RightElbowJoint->SetRelativeRotation(FRotator(6.0f + FMath::Max(0.0f, CounterStep) * ElbowSwing + LowProfileAlpha * 8.0f + ProneAlpha * 18.0f, 0.0f, 0.0f));
 	}
 
 	const float LegSwing = FMath::Lerp(15.0f, 34.0f, SprintAlpha) * MoveAlpha;
 	const float KneeSwing = FMath::Lerp(10.0f, 32.0f, SprintAlpha) * MoveAlpha;
 	if (LeftHipJoint)
 	{
-		LeftHipJoint->SetRelativeRotation(FRotator(Step * LegSwing + CrouchAlpha * 23.0f, 0.0f, -Strafe * 4.0f));
+		LeftHipJoint->SetRelativeRotation(FRotator(Step * LegSwing + LowProfileAlpha * 23.0f + ProneAlpha * 30.0f, 0.0f, -Strafe * 4.0f));
 	}
 	if (RightHipJoint)
 	{
-		RightHipJoint->SetRelativeRotation(FRotator(CounterStep * LegSwing + CrouchAlpha * 23.0f, 0.0f, -Strafe * 4.0f));
+		RightHipJoint->SetRelativeRotation(FRotator(CounterStep * LegSwing + LowProfileAlpha * 23.0f + ProneAlpha * 30.0f, 0.0f, -Strafe * 4.0f));
 	}
 	if (LeftKneeJoint)
 	{
-		LeftKneeJoint->SetRelativeRotation(FRotator(FMath::Max(0.0f, CounterStep) * KneeSwing + CrouchAlpha * 18.0f, 0.0f, 0.0f));
+		LeftKneeJoint->SetRelativeRotation(FRotator(FMath::Max(0.0f, CounterStep) * KneeSwing + LowProfileAlpha * 18.0f + ProneAlpha * 22.0f, 0.0f, 0.0f));
 	}
 	if (RightKneeJoint)
 	{
-		RightKneeJoint->SetRelativeRotation(FRotator(FMath::Max(0.0f, Step) * KneeSwing + CrouchAlpha * 18.0f, 0.0f, 0.0f));
+		RightKneeJoint->SetRelativeRotation(FRotator(FMath::Max(0.0f, Step) * KneeSwing + LowProfileAlpha * 18.0f + ProneAlpha * 22.0f, 0.0f, 0.0f));
 	}
 	if (LeftFootMesh)
 	{
-		LeftFootMesh->SetRelativeRotation(FRotator(FMath::Clamp(CounterStep * 12.0f * MoveAlpha, -12.0f, 14.0f) - CrouchAlpha * 6.0f, 0.0f, 0.0f));
+		LeftFootMesh->SetRelativeRotation(FRotator(FMath::Clamp(CounterStep * 12.0f * MoveAlpha, -12.0f, 14.0f) - LowProfileAlpha * 6.0f - ProneAlpha * 16.0f, 0.0f, 0.0f));
 	}
 	if (RightFootMesh)
 	{
-		RightFootMesh->SetRelativeRotation(FRotator(FMath::Clamp(Step * 12.0f * MoveAlpha, -12.0f, 14.0f) - CrouchAlpha * 6.0f, 0.0f, 0.0f));
+		RightFootMesh->SetRelativeRotation(FRotator(FMath::Clamp(Step * 12.0f * MoveAlpha, -12.0f, 14.0f) - LowProfileAlpha * 6.0f - ProneAlpha * 16.0f, 0.0f, 0.0f));
 	}
 }
 
@@ -2164,11 +3707,40 @@ void ABHCharacter::UpdateRoleSkeletalAnimation(float Speed2D, float MoveAlpha, f
 		return;
 	}
 
-	FName DesiredAnimation(TEXT("Idle"));
-	float DesiredPlayRate = 1.0f;
-	if (CanAct() && bGrounded && Speed2D > 35.0f && MoveAlpha > 0.08f)
+	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	if (UBHMovementAnimInstance* MovementAnim = Cast<UBHMovementAnimInstance>(RoleSkeletalMesh->GetAnimInstance()))
 	{
-		const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+		const bool bMovingProneState = MovementSpecialState == EBHMovementSpecialState::Prone && Speed2D > 20.0f;
+		MovementAnim->SetBlackoutMovementState(MovementSpecialState, CosmeticMovementSpecialState, Speed2D, bMovingProneState, bGrounded, MovementFailurePulse);
+		return;
+	}
+
+	FName DesiredAnimation(BHPS && BHPS->PlayerRole == EBHPlayerRole::Hunter ? TEXT("IdleWeapon") : TEXT("Idle"));
+	float DesiredPlayRate = 1.0f;
+	bool bLoopAnimation = true;
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	const bool bMeleeSwinging = BHPS
+		&& BHPS->PlayerRole == EBHPlayerRole::Hunter
+		&& Now < TeacherMeleeSwingEndTime;
+	if (bMeleeSwinging)
+	{
+		DesiredAnimation = FName(TEXT("MeleeSwing"));
+		DesiredPlayRate = 1.15f;
+		bLoopAnimation = false;
+	}
+	const EBHMovementSpecialState VisualState = MovementSpecialState != EBHMovementSpecialState::None ? MovementSpecialState : CosmeticMovementSpecialState;
+	if (!bMeleeSwinging && VisualState != EBHMovementSpecialState::None)
+	{
+		const bool bMovingProne = VisualState == EBHMovementSpecialState::Prone && Speed2D > 20.0f;
+		DesiredAnimation = BHAnimationNameForSpecialState(VisualState, bMovingProne);
+		bLoopAnimation = VisualState == EBHMovementSpecialState::Prone;
+		if (VisualState == EBHMovementSpecialState::Prone)
+		{
+			DesiredPlayRate = bMovingProne ? FMath::GetMappedRangeValueClamped(FVector2D(20.0f, BHRoleProneSpeed(GetPlayerState<ABHPlayerState>())), FVector2D(0.65f, 1.05f), Speed2D) : 1.0f;
+		}
+	}
+	else if (!bMeleeSwinging && CanAct() && bGrounded && Speed2D > 35.0f && MoveAlpha > 0.08f)
+	{
 		const float CurrentWalkSpeed = BHRoleWalkSpeed(BHPS, WalkSpeed);
 		const float CurrentSprintSpeed = BHRoleSprintSpeed(BHPS, SprintSpeed);
 		const bool bRunning = SprintAlpha > 0.35f || Speed2D > CurrentWalkSpeed * 1.08f;
@@ -2180,10 +3752,13 @@ void ABHCharacter::UpdateRoleSkeletalAnimation(float Speed2D, float MoveAlpha, f
 
 	if (DesiredAnimation != LastRoleAnimationName)
 	{
-		if (UAnimSequence* Animation = LoadObject<UAnimSequence>(nullptr, BHQuaterniusAnimationPath(DesiredAnimation)))
+		UAnimSequence* Animation = VisualState != EBHMovementSpecialState::None && !bMeleeSwinging
+			? BHLoadSpecialAnimation(VisualState, VisualState == EBHMovementSpecialState::Prone && Speed2D > 20.0f)
+			: BHLoadRoleMovementAnimation(DesiredAnimation);
+		if (Animation)
 		{
 			RoleSkeletalMesh->SetAnimationMode(EAnimationMode::AnimationSingleNode);
-			RoleSkeletalMesh->PlayAnimation(Animation, true);
+			RoleSkeletalMesh->PlayAnimation(Animation, bLoopAnimation);
 			LastRoleAnimationName = DesiredAnimation;
 		}
 	}
@@ -2226,6 +3801,7 @@ void ABHCharacter::SetLowPolyAvatarVisible(bool bVisible)
 void ABHCharacter::ApplyRoleModelVisuals(const ABHPlayerState* BHPS, const FLinearColor& ShirtColor, const FLinearColor& SkinColor)
 {
 	const bool bUseHunterModel = BHPS && BHPS->PlayerRole == EBHPlayerRole::Hunter;
+	const bool bUseNativeHunterModel = bUseHunterModel && BHLoadMovementAnimInstanceClass(BHPS) != nullptr;
 	bool bAppliedRoleModel = false;
 	bool bAppliedSkeletalModel = false;
 	const FVector RoleModelFeetOffset = BHRoleModelFeetAtCapsuleBaseOffset(GetCapsuleComponent(), AvatarRoot);
@@ -2235,7 +3811,7 @@ void ABHCharacter::ApplyRoleModelVisuals(const ABHPlayerState* BHPS, const FLine
 		RoleModelRoot->SetRelativeScale3D(FVector::OneVector);
 	}
 
-	if (RoleSkeletalMesh)
+	if (RoleSkeletalMesh && !bUseNativeHunterModel)
 	{
 		if (USkeletalMesh* RoleMesh = LoadObject<USkeletalMesh>(nullptr, BHSelectQuaterniusMeshPath(BHPS)))
 		{
@@ -2244,7 +3820,15 @@ void ABHCharacter::ApplyRoleModelVisuals(const ABHPlayerState* BHPS, const FLine
 			RoleSkeletalMesh->SetRelativeLocation(RoleModelFeetOffset);
 			RoleSkeletalMesh->SetRelativeRotation(FRotator(0.0f, -90.0f, 0.0f));
 			RoleSkeletalMesh->SetRelativeScale3D(FVector(1.0f));
-			RoleSkeletalMesh->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+			if (UClass* AnimClass = BHLoadMovementAnimInstanceClass(BHPS))
+			{
+				RoleSkeletalMesh->SetAnimationMode(EAnimationMode::AnimationBlueprint);
+				RoleSkeletalMesh->SetAnimInstanceClass(AnimClass);
+			}
+			else
+			{
+				RoleSkeletalMesh->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+			}
 			BHApplyQuaterniusPalette(RoleSkeletalMesh, ShirtColor);
 			LastRoleAnimationName = NAME_None;
 			bAppliedRoleModel = true;
@@ -2252,7 +3836,7 @@ void ABHCharacter::ApplyRoleModelVisuals(const ABHPlayerState* BHPS, const FLine
 		}
 	}
 
-	if (!bAppliedRoleModel && bUseHunterModel && RoleSkeletalMesh)
+	if (!bAppliedRoleModel && bUseNativeHunterModel && RoleSkeletalMesh)
 	{
 		if (USkeletalMesh* HunterMesh = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/BlackoutHunt/Art/Characters/Hunter/SK_BH_Hunter.SK_BH_Hunter")))
 		{
@@ -2261,7 +3845,15 @@ void ABHCharacter::ApplyRoleModelVisuals(const ABHPlayerState* BHPS, const FLine
 			RoleSkeletalMesh->SetRelativeLocation(RoleModelFeetOffset);
 			RoleSkeletalMesh->SetRelativeRotation(FRotator(0.0f, -90.0f, 0.0f));
 			RoleSkeletalMesh->SetRelativeScale3D(FVector(0.11f));
-			RoleSkeletalMesh->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+			if (UClass* AnimClass = BHLoadMovementAnimInstanceClass(BHPS))
+			{
+				RoleSkeletalMesh->SetAnimationMode(EAnimationMode::AnimationBlueprint);
+				RoleSkeletalMesh->SetAnimInstanceClass(AnimClass);
+			}
+			else
+			{
+				RoleSkeletalMesh->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+			}
 			if (UMaterialInterface* HunterMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/BlackoutHunt/Art/Characters/Hunter/M_BH_Hunter.M_BH_Hunter")))
 			{
 				BHApplyRoleModelMaterial(RoleSkeletalMesh, HunterMaterial, FLinearColor(0.27f, 0.026f, 0.020f, 1.0f), 0.18f);
@@ -2335,8 +3927,14 @@ void ABHCharacter::UpdateViewFeel(float DeltaSeconds)
 	const float StressTremor = (FMath::Sin(FlashlightPulseTime * 13.0f) + FMath::Sin(FlashlightPulseTime * 19.7f) * 0.45f)
 		* (FearPanicAlpha * 0.82f + DreadStrainAlpha * 0.34f);
 	const float CrouchOffset = bIsCrouched ? -14.0f : 0.0f;
+	const EBHMovementSpecialState VisualSpecialState = MovementSpecialState != EBHMovementSpecialState::None ? MovementSpecialState : CosmeticMovementSpecialState;
+	const float SpecialOffset = VisualSpecialState == EBHMovementSpecialState::Prone
+		? BHProneCameraOffsetZ
+		: (VisualSpecialState == EBHMovementSpecialState::Sliding
+			? BHSlideCameraOffsetZ
+			: (VisualSpecialState == EBHMovementSpecialState::Diving ? BHDiveCameraOffsetZ : 0.0f));
 	const FVector TargetCameraLocation = DefaultCameraLocation
-		+ FVector(0.0f, BobY - SmoothedStrafeAlpha * 1.65f, CrouchOffset + BobZ + StressTremor);
+		+ FVector(0.0f, BobY - SmoothedStrafeAlpha * 1.65f, CrouchOffset + SpecialOffset + BobZ + StressTremor);
 
 	Camera->SetRelativeLocation(FMath::VInterpTo(Camera->GetRelativeLocation(), TargetCameraLocation, DeltaSeconds, bHiddenInLocker ? 4.5f : 11.5f));
 
@@ -2386,7 +3984,13 @@ void ABHCharacter::UpdateFlashlightFeel(float DeltaSeconds)
 	const bool bExtremeFog = bFoggroundsActive && ActiveFogPreset == EBHFogPreset::Extreme;
 	const bool bHeavyFog = bFoggroundsActive && ActiveFogPreset == EBHFogPreset::Heavy;
 
-	const FVector StableEyeLocation = GetActorLocation() + FVector(0.0f, 0.0f, DefaultCameraLocation.Z + (bIsCrouched ? -14.0f : 0.0f));
+	const EBHMovementSpecialState FlashlightVisualSpecialState = MovementSpecialState != EBHMovementSpecialState::None ? MovementSpecialState : CosmeticMovementSpecialState;
+	const float FlashlightSpecialOffset = FlashlightVisualSpecialState == EBHMovementSpecialState::Prone
+		? BHProneCameraOffsetZ
+		: (FlashlightVisualSpecialState == EBHMovementSpecialState::Sliding
+			? BHSlideCameraOffsetZ
+			: (FlashlightVisualSpecialState == EBHMovementSpecialState::Diving ? BHDiveCameraOffsetZ : 0.0f));
+	const FVector StableEyeLocation = GetActorLocation() + FVector(0.0f, 0.0f, DefaultCameraLocation.Z + (bIsCrouched ? -14.0f : 0.0f) + FlashlightSpecialOffset);
 	const FRotator StableViewRotation = Controller ? Controller->GetControlRotation() : (Camera ? Camera->GetComponentRotation() : GetActorRotation());
 	Flashlight->SetWorldLocationAndRotation(StableEyeLocation, StableViewRotation);
 
@@ -2486,6 +4090,14 @@ void ABHCharacter::ApplyHiddenState()
 {
 	if (bHiddenInLocker || bOutOfPlay)
 	{
+		if (HasAuthority())
+		{
+			MovementSpecialState = EBHMovementSpecialState::None;
+			SpecialMoveEndTime = -999.0f;
+			bSpecialMoveEndsProne = false;
+			bSpecialMoveEndProneRequiresInput = false;
+		}
+		ApplyMovementSpecialState();
 		SetActorHiddenInGame(true);
 		GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		GetCharacterMovement()->DisableMovement();
@@ -2520,6 +4132,230 @@ void ABHCharacter::UpdateHunterVisualCue()
 		&& BHPS->LifeState == EBHPlayerLifeState::Alive;
 	HunterHueLight->SetVisibility(bHunterHueVisible);
 	HunterHueLight->SetIntensity(bHunterHueVisible ? BHHunterHueLightIntensity : 0.0f);
+}
+
+void ABHCharacter::ApplyTeacherWeaponVisuals(const ABHPlayerState* BHPS)
+{
+	const bool bShowWeapon = BHPS
+		&& BHPS->PlayerRole == EBHPlayerRole::Hunter
+		&& BHPS->LifeState == EBHPlayerLifeState::Alive;
+	UStaticMesh* ImportedWeaponMesh = BHTeacherWeaponImportedMesh();
+	const bool bUseImportedWeapon = bShowWeapon && ImportedWeaponMesh != nullptr;
+	const bool bShowFallbackWeapon = bShowWeapon && !bUseImportedWeapon;
+
+	if (TeacherWeaponRoot)
+	{
+		TeacherWeaponRoot->SetRelativeLocation(BHTeacherWeaponIdleLocation);
+		TeacherWeaponRoot->SetRelativeRotation(BHTeacherWeaponIdleRotation);
+		TeacherWeaponRoot->SetRelativeScale3D(FVector::OneVector);
+	}
+
+	if (TeacherWeaponMesh)
+	{
+		if (ImportedWeaponMesh)
+		{
+			TeacherWeaponMesh->SetStaticMesh(ImportedWeaponMesh);
+			TeacherWeaponMesh->SetRelativeLocation(FVector(0.0f, 0.0f, 14.0f));
+			TeacherWeaponMesh->SetRelativeRotation(FRotator(0.0f, -90.0f, 90.0f));
+			TeacherWeaponMesh->SetRelativeScale3D(FVector(0.82f));
+		}
+		BHPropVisuals::SetPartVisible(TeacherWeaponMesh, bUseImportedWeapon);
+	}
+
+	UMaterialInterface* WoodMaterial = BHQuaterniusMaterial(TEXT("DarkBrown")) ? BHQuaterniusMaterial(TEXT("DarkBrown")) : BHPropVisuals::BasicMaterial();
+	UMaterialInterface* GripMaterial = BHQuaterniusMaterial(TEXT("Black")) ? BHQuaterniusMaterial(TEXT("Black")) : BHPropVisuals::BasicMaterial();
+	UMaterialInterface* HeadMaterial = BHQuaterniusMaterial(TEXT("Metal_Dark")) ? BHQuaterniusMaterial(TEXT("Metal_Dark")) : BHPropVisuals::BasicMaterial();
+	UMaterialInterface* BladeMaterial = BHQuaterniusMaterial(TEXT("Metal")) ? BHQuaterniusMaterial(TEXT("Metal")) : HeadMaterial;
+	UStaticMesh* Cube = BHPropVisuals::CubeMesh();
+	UStaticMesh* Cylinder = BHPropVisuals::CylinderMesh();
+
+	BHSetAccessoryPiece(TeacherWeaponHandleMesh, Cylinder, WoodMaterial, FVector(0.0f, 0.0f, 12.0f), FRotator::ZeroRotator, FVector(0.045f, 0.045f, 0.58f), bShowFallbackWeapon);
+	BHSetAccessoryPiece(TeacherWeaponGripMesh, Cylinder, GripMaterial, FVector(0.0f, 0.0f, -25.0f), FRotator::ZeroRotator, FVector(0.058f, 0.058f, 0.18f), bShowFallbackWeapon);
+	BHSetAccessoryPiece(TeacherWeaponHeadMesh, Cube, HeadMaterial, FVector(0.0f, 0.0f, 50.0f), FRotator::ZeroRotator, FVector(0.11f, 0.045f, 0.08f), bShowFallbackWeapon);
+	BHSetAccessoryPiece(TeacherWeaponBladeMesh, Cube, BladeMaterial, FVector(0.0f, -9.0f, 49.0f), FRotator(0.0f, 0.0f, -8.0f), FVector(0.045f, 0.17f, 0.135f), bShowFallbackWeapon);
+
+	if (TeacherWeaponTrailMesh)
+	{
+		UStaticMesh* TrailMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
+		if (!TrailMesh)
+		{
+			TrailMesh = Cube;
+		}
+		UMaterialInterface* TrailMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/EngineVolumetrics/LightBeam/Materials/M_EV_Lightbeam_Master_01_Inst.M_EV_Lightbeam_Master_01_Inst"));
+		if (!TrailMaterial)
+		{
+			TrailMaterial = BHQuaterniusMaterial(TEXT("LightBlue")) ? BHQuaterniusMaterial(TEXT("LightBlue")) : BHPropVisuals::BasicMaterial();
+		}
+
+		if (TrailMesh)
+		{
+			TeacherWeaponTrailMesh->SetStaticMesh(TrailMesh);
+		}
+		if (!TeacherWeaponTrailMaterialInstance)
+		{
+			TeacherWeaponTrailMesh->SetMaterial(0, TrailMaterial);
+			TeacherWeaponTrailMaterialInstance = TeacherWeaponTrailMesh->CreateAndSetMaterialInstanceDynamic(0);
+		}
+		TeacherWeaponTrailMesh->SetRelativeLocation(FVector(0.0f, -12.0f, 44.0f));
+		TeacherWeaponTrailMesh->SetRelativeRotation(FRotator(0.0f, 0.0f, -12.0f));
+		TeacherWeaponTrailMesh->SetRelativeScale3D(FVector(0.10f, 0.10f, 1.0f));
+		BHPropVisuals::SetPartVisible(TeacherWeaponTrailMesh, false);
+	}
+}
+
+void ABHCharacter::PlayTeacherMeleeSwingLocal(bool bConfirmedHit)
+{
+	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	if (!BHPS || BHPS->PlayerRole != EBHPlayerRole::Hunter || BHPS->LifeState != EBHPlayerLifeState::Alive)
+	{
+		return;
+	}
+
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	if (!bConfirmedHit && Now < TeacherMeleeSwingEndTime && Now - TeacherMeleeSwingStartTime < BHTeacherMeleeSwingMinRestartSeconds)
+	{
+		return;
+	}
+	if (bConfirmedHit && Now < TeacherMeleeSwingEndTime)
+	{
+		bTeacherMeleeSwingHit = true;
+		TeacherMeleeHitFlashEndTime = Now + BHTeacherMeleeHitFlashDuration;
+		UpdateTeacherWeaponSwingVisuals();
+		return;
+	}
+
+	TeacherMeleeSwingStartTime = Now;
+	TeacherMeleeSwingEndTime = Now + BHTeacherMeleeSwingDuration;
+	bTeacherMeleeSwingHit = bConfirmedHit;
+	TeacherMeleeHitFlashEndTime = bConfirmedHit ? Now + BHTeacherMeleeHitFlashDuration : -999.0f;
+	LastRoleAnimationName = NAME_None;
+	UpdateTeacherWeaponSwingVisuals();
+}
+
+void ABHCharacter::UpdateTeacherWeaponSwingVisuals()
+{
+	if (!TeacherWeaponRoot)
+	{
+		return;
+	}
+
+	const auto HideWeaponTrail = [this]()
+	{
+		if (TeacherWeaponTrailMesh)
+		{
+			BHPropVisuals::SetPartVisible(TeacherWeaponTrailMesh, false);
+		}
+		if (HunterHueLight && HunterHueLight->IsVisible())
+		{
+			HunterHueLight->SetIntensity(BHHunterHueLightIntensity);
+		}
+	};
+
+	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	const bool bShowWeapon = BHPS
+		&& BHPS->PlayerRole == EBHPlayerRole::Hunter
+		&& BHPS->LifeState == EBHPlayerLifeState::Alive;
+	if (!bShowWeapon)
+	{
+		TeacherWeaponRoot->SetRelativeLocation(BHTeacherWeaponIdleLocation);
+		TeacherWeaponRoot->SetRelativeRotation(BHTeacherWeaponIdleRotation);
+		HideWeaponTrail();
+		return;
+	}
+
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	if (Now >= TeacherMeleeSwingEndTime || TeacherMeleeSwingEndTime <= TeacherMeleeSwingStartTime)
+	{
+		TeacherWeaponRoot->SetRelativeLocation(BHTeacherWeaponIdleLocation);
+		TeacherWeaponRoot->SetRelativeRotation(BHTeacherWeaponIdleRotation);
+		bTeacherMeleeSwingHit = false;
+		HideWeaponTrail();
+		return;
+	}
+
+	const auto LerpRotator = [](const FRotator& A, const FRotator& B, float Alpha)
+	{
+		return FRotator(
+			FMath::Lerp(A.Pitch, B.Pitch, Alpha),
+			FMath::Lerp(A.Yaw, B.Yaw, Alpha),
+			FMath::Lerp(A.Roll, B.Roll, Alpha));
+	};
+
+	const float SwingAlpha = FMath::Clamp((Now - TeacherMeleeSwingStartTime) / FMath::Max(0.01f, BHTeacherMeleeSwingDuration), 0.0f, 1.0f);
+	const float HitFlashAlpha = bTeacherMeleeSwingHit
+		? FMath::Clamp((TeacherMeleeHitFlashEndTime - Now) / FMath::Max(0.01f, BHTeacherMeleeHitFlashDuration), 0.0f, 1.0f)
+		: 0.0f;
+	const FVector WindupLocation = BHTeacherWeaponIdleLocation + FVector(-7.0f, 6.0f, 8.0f);
+	const FVector FollowThroughLocation = BHTeacherWeaponIdleLocation + FVector(16.0f + HitFlashAlpha * 4.0f, -20.0f, -7.0f - HitFlashAlpha * 2.0f);
+	const FRotator WindupRotation(-36.0f, 18.0f, -68.0f);
+	const FRotator FollowThroughRotation(44.0f + HitFlashAlpha * 5.0f, -20.0f, 48.0f + HitFlashAlpha * 8.0f);
+
+	FVector TargetLocation = BHTeacherWeaponIdleLocation;
+	FRotator TargetRotation = BHTeacherWeaponIdleRotation;
+	if (SwingAlpha < 0.28f)
+	{
+		const float T = FMath::InterpEaseInOut(0.0f, 1.0f, SwingAlpha / 0.28f, 2.0f);
+		TargetLocation = FMath::Lerp(BHTeacherWeaponIdleLocation, WindupLocation, T);
+		TargetRotation = LerpRotator(BHTeacherWeaponIdleRotation, WindupRotation, T);
+	}
+	else if (SwingAlpha < 0.68f)
+	{
+		const float T = FMath::InterpEaseIn(0.0f, 1.0f, (SwingAlpha - 0.28f) / 0.40f, 2.6f);
+		TargetLocation = FMath::Lerp(WindupLocation, FollowThroughLocation, T);
+		TargetRotation = LerpRotator(WindupRotation, FollowThroughRotation, T);
+	}
+	else
+	{
+		const float T = FMath::InterpEaseOut(0.0f, 1.0f, (SwingAlpha - 0.68f) / 0.32f, 2.0f);
+		TargetLocation = FMath::Lerp(FollowThroughLocation, BHTeacherWeaponIdleLocation, T);
+		TargetRotation = LerpRotator(FollowThroughRotation, BHTeacherWeaponIdleRotation, T);
+	}
+
+	TeacherWeaponRoot->SetRelativeLocation(TargetLocation);
+	TeacherWeaponRoot->SetRelativeRotation(TargetRotation);
+
+	const float TrailAlpha = FMath::Clamp(FMath::Sin(SwingAlpha * PI) * FMath::GetMappedRangeValueClamped(FVector2D(0.18f, 0.38f), FVector2D(0.35f, 1.0f), SwingAlpha), 0.0f, 1.0f);
+	if (TeacherWeaponTrailMesh && TrailAlpha > 0.035f)
+	{
+		const float TrailLength = FMath::Lerp(0.12f, bTeacherMeleeSwingHit ? 0.54f : 0.42f, TrailAlpha);
+		const float TrailWidth = FMath::Lerp(0.045f, 0.125f, TrailAlpha);
+		TeacherWeaponTrailMesh->SetRelativeLocation(FVector(0.0f, -12.0f - TrailAlpha * 6.0f, 44.0f + HitFlashAlpha * 2.0f));
+		TeacherWeaponTrailMesh->SetRelativeRotation(FRotator(0.0f, 0.0f, -12.0f - TrailAlpha * 18.0f));
+		TeacherWeaponTrailMesh->SetRelativeScale3D(FVector(TrailLength, TrailWidth, 1.0f));
+		BHPropVisuals::SetPartVisible(TeacherWeaponTrailMesh, true);
+
+		if (TeacherWeaponTrailMaterialInstance)
+		{
+			const FLinearColor BaseTrailColor = bTeacherMeleeSwingHit
+				? FLinearColor(1.0f, 0.62f, 0.22f, FMath::Clamp(0.10f + TrailAlpha * 0.20f, 0.0f, 0.36f))
+				: FLinearColor(0.68f, 0.90f, 1.0f, FMath::Clamp(0.07f + TrailAlpha * 0.14f, 0.0f, 0.26f));
+			const float TrailBrightness = bTeacherMeleeSwingHit ? 1.75f + HitFlashAlpha * 1.15f : 1.05f;
+			TeacherWeaponTrailMaterialInstance->SetVectorParameterValue(TEXT("Color"), BaseTrailColor);
+			TeacherWeaponTrailMaterialInstance->SetVectorParameterValue(TEXT("BaseColor"), BaseTrailColor);
+			TeacherWeaponTrailMaterialInstance->SetVectorParameterValue(TEXT("Tint"), BaseTrailColor);
+			TeacherWeaponTrailMaterialInstance->SetVectorParameterValue(TEXT("TintColor"), BaseTrailColor);
+			TeacherWeaponTrailMaterialInstance->SetVectorParameterValue(TEXT("FogColor"), BaseTrailColor);
+			TeacherWeaponTrailMaterialInstance->SetVectorParameterValue(TEXT("BeamColor"), BaseTrailColor);
+			TeacherWeaponTrailMaterialInstance->SetVectorParameterValue(TEXT("LightColor"), BaseTrailColor);
+			TeacherWeaponTrailMaterialInstance->SetVectorParameterValue(TEXT("EmissiveColor"), BaseTrailColor * TrailBrightness);
+			TeacherWeaponTrailMaterialInstance->SetVectorParameterValue(TEXT("Emissive"), BaseTrailColor * TrailBrightness);
+			TeacherWeaponTrailMaterialInstance->SetScalarParameterValue(TEXT("Opacity"), BaseTrailColor.A);
+			TeacherWeaponTrailMaterialInstance->SetScalarParameterValue(TEXT("Alpha"), BaseTrailColor.A);
+			TeacherWeaponTrailMaterialInstance->SetScalarParameterValue(TEXT("Density"), BaseTrailColor.A * 0.75f);
+			TeacherWeaponTrailMaterialInstance->SetScalarParameterValue(TEXT("Brightness"), TrailBrightness);
+			TeacherWeaponTrailMaterialInstance->SetScalarParameterValue(TEXT("Intensity"), TrailBrightness);
+			TeacherWeaponTrailMaterialInstance->SetScalarParameterValue(TEXT("Softness"), 0.82f);
+		}
+	}
+	else
+	{
+		HideWeaponTrail();
+	}
+
+	if (HunterHueLight && HunterHueLight->IsVisible())
+	{
+		HunterHueLight->SetIntensity(BHHunterHueLightIntensity * (1.0f + TrailAlpha * 0.32f + HitFlashAlpha * 0.48f));
+	}
 }
 
 void ABHCharacter::ApplyAvatarStyle()
@@ -2645,9 +4481,25 @@ void ABHCharacter::ApplyAvatarStyle()
 	BHPropVisuals::TintPart(RoleBadgeMesh, BadgeColor, BadgeEmissive);
 	ApplyRoleModelVisuals(BHPS, ShirtColor, SkinColor);
 
-	constexpr int32 HeadwearIndex = 0;
-	constexpr int32 GearIndex = 0;
+	const int32 HeadwearIndex = BHPS ? BHCosmeticClampIndex(EBHCosmeticCategory::Headwear, BHPS->AvatarHeadwearIndex) : 0;
+	const int32 GearIndex = 0;
 	const bool bShowRoleAccessories = bUsingRoleModel;
+	FVector RoleAccessoryBaseOffset = FVector::ZeroVector;
+	if (bShowRoleAccessories)
+	{
+		if (RoleSkeletalMesh && RoleSkeletalMesh->IsVisible())
+		{
+			RoleAccessoryBaseOffset = RoleSkeletalMesh->GetRelativeLocation();
+		}
+		else if (RoleStaticMesh && RoleStaticMesh->IsVisible())
+		{
+			RoleAccessoryBaseOffset = RoleStaticMesh->GetRelativeLocation();
+		}
+	}
+	const auto RoleAccessoryLocation = [&RoleAccessoryBaseOffset](const FVector& PreviewLocation)
+	{
+		return RoleAccessoryBaseOffset + PreviewLocation;
+	};
 	UStaticMesh* AccessoryCube = BHPropVisuals::CubeMesh();
 	UStaticMesh* AccessoryCylinder = BHPropVisuals::CylinderMesh();
 	UStaticMesh* AccessorySphere = BHPropVisuals::SphereMesh();
@@ -2655,7 +4507,6 @@ void ABHCharacter::ApplyAvatarStyle()
 	UMaterialInterface* AccessoryBrown = BHQuaterniusMaterial(TEXT("Brown2")) ? BHQuaterniusMaterial(TEXT("Brown2")) : BHPropVisuals::BasicMaterial();
 	UMaterialInterface* AccessoryDarkBrown = BHQuaterniusMaterial(TEXT("DarkBrown")) ? BHQuaterniusMaterial(TEXT("DarkBrown")) : AccessoryBrown;
 	UMaterialInterface* AccessoryMetal = BHQuaterniusMaterial(TEXT("Metal")) ? BHQuaterniusMaterial(TEXT("Metal")) : BHPropVisuals::BasicMaterial();
-	UMaterialInterface* AccessoryGold = BHQuaterniusMaterial(TEXT("Gold")) ? BHQuaterniusMaterial(TEXT("Gold")) : AccessoryMetal;
 	UMaterialInterface* AccessoryLight = BHQuaterniusMaterial(TEXT("LightBlue")) ? BHQuaterniusMaterial(TEXT("LightBlue")) : BHPropVisuals::BasicMaterial();
 	UMaterialInterface* AccessoryWhite = BHQuaterniusMaterial(TEXT("White")) ? BHQuaterniusMaterial(TEXT("White")) : BHPropVisuals::BasicMaterial();
 	UMaterialInterface* AccessoryColor = BHQuaterniusPaletteMaterial(ShirtColor) ? BHQuaterniusPaletteMaterial(ShirtColor) : AccessoryLight;
@@ -2684,60 +4535,31 @@ void ABHCharacter::ApplyAvatarStyle()
 	{
 		if (HeadwearIndex == 1)
 		{
-			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCylinder, AccessoryColor, FVector(7.0f, 0.0f, 74.0f), FRotator::ZeroRotator, FVector(0.30f, 0.30f, 0.075f), true);
-			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCube, AccessoryColor, FVector(23.0f, 0.0f, 68.0f), FRotator::ZeroRotator, FVector(0.12f, 0.28f, 0.025f), true);
-			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessoryCube, AccessoryWhite, FVector(6.0f, 0.0f, 78.0f), FRotator::ZeroRotator, FVector(0.055f, 0.055f, 0.018f), true);
+			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCylinder, AccessoryColor, RoleAccessoryLocation(FVector(7.0f, 0.0f, 74.0f)), FRotator::ZeroRotator, FVector(0.30f, 0.30f, 0.075f), true);
+			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCube, AccessoryColor, RoleAccessoryLocation(FVector(23.0f, 0.0f, 68.0f)), FRotator::ZeroRotator, FVector(0.12f, 0.28f, 0.025f), true);
+			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessoryCube, AccessoryWhite, RoleAccessoryLocation(FVector(6.0f, 0.0f, 78.0f)), FRotator::ZeroRotator, FVector(0.055f, 0.055f, 0.018f), true);
 		}
 		else if (HeadwearIndex == 2)
 		{
-			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCube, AccessoryBlack, FVector(23.0f, -8.0f, 60.0f), FRotator::ZeroRotator, FVector(0.025f, 0.070f, 0.035f), true);
-			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCube, AccessoryBlack, FVector(23.0f, 8.0f, 60.0f), FRotator::ZeroRotator, FVector(0.025f, 0.070f, 0.035f), true);
-			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessoryCube, AccessoryMetal, FVector(24.0f, 0.0f, 60.0f), FRotator::ZeroRotator, FVector(0.018f, 0.050f, 0.014f), true);
+			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCube, AccessoryBlack, RoleAccessoryLocation(FVector(23.0f, -8.0f, 60.0f)), FRotator::ZeroRotator, FVector(0.025f, 0.070f, 0.035f), true);
+			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCube, AccessoryBlack, RoleAccessoryLocation(FVector(23.0f, 8.0f, 60.0f)), FRotator::ZeroRotator, FVector(0.025f, 0.070f, 0.035f), true);
+			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessoryCube, AccessoryMetal, RoleAccessoryLocation(FVector(24.0f, 0.0f, 60.0f)), FRotator::ZeroRotator, FVector(0.018f, 0.050f, 0.014f), true);
 		}
 		else if (HeadwearIndex == 3)
 		{
-			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCylinder, AccessoryColor, FVector(6.0f, 0.0f, 77.0f), FRotator::ZeroRotator, FVector(0.32f, 0.32f, 0.095f), true);
-			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCube, AccessoryDarkBrown, FVector(13.0f, 0.0f, 68.0f), FRotator::ZeroRotator, FVector(0.050f, 0.32f, 0.035f), true);
-			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessorySphere, AccessoryColor, FVector(3.0f, 0.0f, 85.0f), FRotator::ZeroRotator, FVector(0.055f, 0.055f, 0.055f), true);
+			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCylinder, AccessoryColor, RoleAccessoryLocation(FVector(6.0f, 0.0f, 77.0f)), FRotator::ZeroRotator, FVector(0.32f, 0.32f, 0.095f), true);
+			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCube, AccessoryDarkBrown, RoleAccessoryLocation(FVector(13.0f, 0.0f, 68.0f)), FRotator::ZeroRotator, FVector(0.050f, 0.32f, 0.035f), true);
+			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessorySphere, AccessoryColor, RoleAccessoryLocation(FVector(3.0f, 0.0f, 85.0f)), FRotator::ZeroRotator, FVector(0.055f, 0.055f, 0.055f), true);
 		}
 		else if (HeadwearIndex == 4)
 		{
-			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCube, AccessoryBlack, FVector(11.0f, 0.0f, 67.0f), FRotator::ZeroRotator, FVector(0.045f, 0.40f, 0.080f), true);
-			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCube, AccessoryLight, FVector(23.0f, 0.0f, 64.0f), FRotator::ZeroRotator, FVector(0.055f, 0.42f, 0.115f), true);
-			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessoryCube, AccessoryMetal, FVector(24.0f, 0.0f, 57.0f), FRotator::ZeroRotator, FVector(0.018f, 0.36f, 0.012f), true);
+			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCube, AccessoryBlack, RoleAccessoryLocation(FVector(11.0f, 0.0f, 67.0f)), FRotator::ZeroRotator, FVector(0.045f, 0.40f, 0.080f), true);
+			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCube, AccessoryLight, RoleAccessoryLocation(FVector(23.0f, 0.0f, 64.0f)), FRotator::ZeroRotator, FVector(0.055f, 0.42f, 0.115f), true);
+			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessoryCube, AccessoryMetal, RoleAccessoryLocation(FVector(24.0f, 0.0f, 57.0f)), FRotator::ZeroRotator, FVector(0.018f, 0.36f, 0.012f), true);
 		}
 	}
 
-	if (bShowRoleAccessories && GearIndex > 0)
-	{
-		if (GearIndex == 1)
-		{
-			BHSetAccessoryPiece(RoleGearMesh, AccessoryCube, AccessoryBrown, FVector(-26.0f, 0.0f, 12.0f), FRotator::ZeroRotator, FVector(0.17f, 0.31f, 0.42f), true);
-			BHSetAccessoryPiece(RoleGearAccentMesh, AccessoryCube, AccessoryDarkBrown, FVector(-10.0f, 0.0f, 34.0f), FRotator::ZeroRotator, FVector(0.055f, 0.32f, 0.075f), true);
-			BHSetAccessoryPiece(RoleGearLeftStrapMesh, AccessoryCube, AccessoryBlack, FVector(9.0f, -15.0f, 18.0f), FRotator::ZeroRotator, FVector(0.035f, 0.022f, 0.32f), true);
-			BHSetAccessoryPiece(RoleGearRightStrapMesh, AccessoryCube, AccessoryBlack, FVector(9.0f, 15.0f, 18.0f), FRotator::ZeroRotator, FVector(0.035f, 0.022f, 0.32f), true);
-			BHSetAccessoryPiece(RoleGearDetailMesh, AccessoryCube, AccessoryGold, FVector(14.0f, 0.0f, 16.0f), FRotator::ZeroRotator, FVector(0.020f, 0.090f, 0.10f), true);
-		}
-		else if (GearIndex == 2)
-		{
-			BHSetAccessoryPiece(RoleGearMesh, AccessoryCylinder, AccessoryMetal, FVector(30.0f, 16.0f, 16.0f), FRotator(90.0f, 0.0f, 0.0f), FVector(0.055f, 0.055f, 0.24f), true);
-			BHSetAccessoryPiece(RoleGearAccentMesh, AccessoryCylinder, AccessoryLight, FVector(42.0f, 16.0f, 16.0f), FRotator(90.0f, 0.0f, 0.0f), FVector(0.060f, 0.060f, 0.035f), true);
-			BHSetAccessoryPiece(RoleGearLeftStrapMesh, AccessoryCube, AccessoryBlack, FVector(24.0f, 16.0f, 5.0f), FRotator::ZeroRotator, FVector(0.030f, 0.050f, 0.090f), true);
-		}
-		else if (GearIndex == 3)
-		{
-			BHSetAccessoryPiece(RoleGearMesh, AccessoryCylinder, AccessoryGold, FVector(28.0f, -16.0f, 25.0f), FRotator(90.0f, 0.0f, 0.0f), FVector(0.075f, 0.075f, 0.020f), true);
-			BHSetAccessoryPiece(RoleGearAccentMesh, AccessoryCube, AccessoryWhite, FVector(30.0f, -16.0f, 25.0f), FRotator::ZeroRotator, FVector(0.018f, 0.045f, 0.055f), true);
-			BHSetAccessoryPiece(RoleGearDetailMesh, AccessoryCube, AccessoryBlack, FVector(23.0f, -16.0f, 25.0f), FRotator::ZeroRotator, FVector(0.018f, 0.085f, 0.095f), true);
-		}
-		else if (GearIndex == 4)
-		{
-			BHSetAccessoryPiece(RoleGearMesh, AccessoryCube, AccessoryBlack, FVector(-20.0f, 20.0f, 26.0f), FRotator::ZeroRotator, FVector(0.060f, 0.14f, 0.20f), true);
-			BHSetAccessoryPiece(RoleGearAccentMesh, AccessoryCube, AccessoryMetal, FVector(-12.0f, 20.0f, 33.0f), FRotator::ZeroRotator, FVector(0.020f, 0.12f, 0.025f), true);
-			BHSetAccessoryPiece(RoleGearLeftStrapMesh, AccessoryCube, AccessoryMetal, FVector(-8.0f, 20.0f, 45.0f), FRotator(0.0f, 0.0f, -12.0f), FVector(0.012f, 0.018f, 0.18f), true);
-			BHSetAccessoryPiece(RoleGearDetailMesh, AccessoryCube, AccessoryLight, FVector(-9.0f, 20.0f, 24.0f), FRotator::ZeroRotator, FVector(0.012f, 0.10f, 0.040f), true);
-		}
-	}
+	ApplyTeacherWeaponVisuals(BHPS);
 
 	BodyMaterialInstance = Cast<UMaterialInstanceDynamic>(BodyMesh->GetMaterial(0));
 
@@ -2791,41 +4613,404 @@ bool ABHCharacter::BotSubmitAnswer(ABHObjectiveStation* Station, int32 AnswerInd
 	return SubmitAnswerAuthority(Station, AnswerIndex, false, false);
 }
 
-void ABHCharacter::EmitFootstepStimulus(float Strength, const FString& Reason)
+EBHFootstepSurface ABHCharacter::ResolveFootstepSurface(const FHitResult* KnownGroundHit) const
+{
+	if (!GetWorld())
+	{
+		return EBHFootstepSurface::Default;
+	}
+
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(BHFootstepSurfaceResolve), false, this);
+	QueryParams.bReturnPhysicalMaterial = true;
+
+	const FVector FeetLocation = GetActorLocation() - FVector(0.0f, 0.0f, GetCapsuleComponent() ? GetCapsuleComponent()->GetScaledCapsuleHalfHeight() - 12.0f : 84.0f);
+	TArray<FOverlapResult> SurfaceOverlaps;
+	FCollisionObjectQueryParams ObjectParams;
+	ObjectParams.AddObjectTypesToQuery(ECC_WorldStatic);
+	ObjectParams.AddObjectTypesToQuery(ECC_WorldDynamic);
+	if (GetWorld()->OverlapMultiByObjectType(SurfaceOverlaps, FeetLocation, FQuat::Identity, ObjectParams, FCollisionShape::MakeSphere(44.0f), QueryParams))
+	{
+		for (const FOverlapResult& Overlap : SurfaceOverlaps)
+		{
+			const AActor* SurfaceActor = Overlap.GetActor();
+			if (const UBHFootstepSurfaceComponent* SurfaceComponent = SurfaceActor ? SurfaceActor->FindComponentByClass<UBHFootstepSurfaceComponent>() : nullptr)
+			{
+				const EBHFootstepSurface Surface = SurfaceComponent->GetFootstepSurface();
+				if (Surface != EBHFootstepSurface::Default)
+				{
+					return Surface;
+				}
+			}
+		}
+	}
+
+	FHitResult GroundHit;
+	const FHitResult* HitToUse = KnownGroundHit && KnownGroundHit->bBlockingHit ? KnownGroundHit : nullptr;
+	if (!HitToUse)
+	{
+		const FVector TraceStart = GetActorLocation() + FVector(0.0f, 0.0f, 18.0f);
+		const FVector TraceEnd = GetActorLocation() - FVector(0.0f, 0.0f, 170.0f);
+		if (GetWorld()->LineTraceSingleByChannel(GroundHit, TraceStart, TraceEnd, ECC_Visibility, QueryParams))
+		{
+			HitToUse = &GroundHit;
+		}
+	}
+
+	if (!HitToUse)
+	{
+		return EBHFootstepSurface::Default;
+	}
+
+	if (const UPhysicalMaterial* PhysMaterial = HitToUse->PhysMaterial.Get())
+	{
+		const EBHFootstepSurface PhysSurface = BHSurfaceFromName(PhysMaterial->GetName());
+		if (PhysSurface != EBHFootstepSurface::Default)
+		{
+			return PhysSurface;
+		}
+	}
+
+	if (const UActorComponent* HitComponent = HitToUse->GetComponent())
+	{
+		if (const UBHFootstepSurfaceComponent* SurfaceComponent = HitComponent->GetOwner() ? HitComponent->GetOwner()->FindComponentByClass<UBHFootstepSurfaceComponent>() : nullptr)
+		{
+			const EBHFootstepSurface Surface = SurfaceComponent->GetFootstepSurface();
+			if (Surface != EBHFootstepSurface::Default)
+			{
+				return Surface;
+			}
+		}
+	}
+
+	if (const ABHBlockActor* Block = Cast<ABHBlockActor>(HitToUse->GetActor()))
+	{
+		const EBHFootstepSurface BlockSurface = UBHFootstepSurfaceComponent::SurfaceForBlockMaterial(Block->GetBlockMaterial());
+		if (BlockSurface != EBHFootstepSurface::Default)
+		{
+			return BlockSurface;
+		}
+	}
+
+	const EBHFootstepSurface TagSurface = BHSurfaceFromActorTags(HitToUse->GetActor());
+	return TagSurface == EBHFootstepSurface::Default ? EBHFootstepSurface::Default : TagSurface;
+}
+
+FBHFootstepSurfaceProfile ABHCharacter::GetFootstepSurfaceProfile(EBHFootstepSurface Surface) const
+{
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	if (Settings)
+	{
+		for (const FBHFootstepSurfaceProfile& Profile : Settings->FootstepSurfaceProfiles)
+		{
+			if (Profile.Surface == Surface)
+			{
+				return Profile;
+			}
+		}
+	}
+	return BHDefaultFootstepProfile(Surface);
+}
+
+void ABHCharacter::BroadcastFlashlightAudioCue(bool bNewOn, bool bBatteryDied)
 {
 	if (!HasAuthority() || !GetWorld())
 	{
 		return;
 	}
 
-	const float ClampedStrength = FMath::Clamp(Strength, 0.0f, 1.5f);
+	const float Now = GetWorld()->GetTimeSeconds();
+	if (Now - LastFlashlightAudioCueTime < 0.16f)
+	{
+		return;
+	}
+
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	if (!Settings)
+	{
+		return;
+	}
+
+	FBHGameplayAudioCue Cue;
+	Cue.AudioAsset = bNewOn ? Settings->FlashlightOnSound : Settings->FlashlightOffSound;
+	Cue.Location = GetActorLocation() + FVector(0.0f, 0.0f, 62.0f);
+	Cue.Caption = bBatteryDied ? TEXT("Flashlight battery dies.") : (bNewOn ? TEXT("Flashlight clicks on.") : TEXT("Flashlight clicks off."));
+	Cue.Volume = bNewOn ? 0.46f : 0.36f;
+	Cue.Pitch = bBatteryDied ? 0.84f : (bNewOn ? 1.04f : 0.93f);
+	Cue.MaxAudibleDistance = 1800.0f;
+	Cue.CaptionSeconds = 1.15f;
+	Cue.bSpatial = true;
+
+	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+	{
+		LastFlashlightAudioCueTime = Now;
+		BHGM->BroadcastGameplayAudioCue(Cue);
+	}
+}
+
+void ABHCharacter::SendTeacherProximityAudioCue(float DistanceAlpha, bool bHunterHasSight)
+{
+	if (!HasAuthority() || !GetWorld())
+	{
+		return;
+	}
+
+	const float ClampedAlpha = FMath::Clamp(DistanceAlpha, 0.0f, 1.0f);
+	const float CooldownSeconds = FMath::Lerp(14.0f, 7.5f, ClampedAlpha);
+	const float Now = GetWorld()->GetTimeSeconds();
+	if (Now - LastTeacherProximityAudioTime < CooldownSeconds)
+	{
+		return;
+	}
+
+	if (ABHPlayerController* PC = Cast<ABHPlayerController>(GetController()))
+	{
+		const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+		FBHGameplayAudioCue Cue;
+		Cue.AudioAsset = Settings ? Settings->TeacherProximitySound : TSoftObjectPtr<USoundBase>();
+		Cue.Location = GetActorLocation();
+		Cue.Caption = bHunterHasSight ? TEXT("Heartbeat spike: the Teacher sees you.") : TEXT("Heartbeat spike: the Teacher is close.");
+		Cue.Volume = FMath::Lerp(0.28f, 0.72f, ClampedAlpha);
+		Cue.Pitch = FMath::Lerp(0.92f, 1.18f, ClampedAlpha);
+		Cue.CaptionSeconds = bHunterHasSight ? 1.8f : 1.45f;
+		Cue.bSpatial = false;
+		Cue.bApplyHorrorComfort = true;
+		LastTeacherProximityAudioTime = Now;
+		PC->ClientPlayGameplayAudioCue(Cue);
+	}
+}
+
+void ABHCharacter::ResetAntiCampTrackingAuthority()
+{
+	AntiCampMoveBurstSeconds = 0.0f;
+	AntiCampMoveBurstDistance = 0.0f;
+	AntiCampLastSatisfiedTime = -999.0f;
+	AntiCampLastMeaningfulMoveTime = -999.0f;
+	AntiCampLastSampleLocation = GetActorLocation();
+	LastAntiCampWarningTime = -999.0f;
+	LastAntiCampNoiseTime = -999.0f;
+}
+
+void ABHCharacter::UpdateAntiCampPressureAuthority(float DeltaSeconds, float Speed2D, const ABHGameState* BHGS, const ABHPlayerState* BHPS)
+{
+	if (!HasAuthority() || !GetWorld() || !BHGS || !BHPS || !BHPS->IsAliveSurvivor() || BHGS->RoundPhase != EBHRoundPhase::Hunt)
+	{
+		return;
+	}
+
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	const float GraceSeconds = Settings ? FMath::Max(0.0f, Settings->AntiCampGraceSeconds) : 60.0f;
+	if (GraceSeconds <= 0.0f)
+	{
+		ResetAntiCampTrackingAuthority();
+		return;
+	}
+
+	const float WarningSeconds = Settings ? FMath::Clamp(Settings->AntiCampWarningSeconds, 0.0f, GraceSeconds) : 50.0f;
+	const float RequiredMoveSeconds = Settings ? FMath::Max(0.1f, Settings->AntiCampRequiredMoveSeconds) : 5.0f;
+	const float RequiredMoveDistance = Settings ? FMath::Max(100.0f, Settings->AntiCampRequiredMoveDistance) : 650.0f;
+	const float MovementSpeedThreshold = Settings ? FMath::Max(20.0f, Settings->AntiCampMovementSpeedThreshold) : 150.0f;
+	const float PressureDreadPerSecond = Settings ? FMath::Max(0.0f, Settings->AntiCampPressureDreadPerSecond) : 2.6f;
+	const float PressureFearPerSecond = Settings ? FMath::Max(0.0f, Settings->AntiCampPressureFearPerSecond) : 0.55f;
+	const float AlertDelaySeconds = Settings ? FMath::Max(1.0f, Settings->AntiCampAlertDelaySeconds) : 18.0f;
+	const float AlertCooldownSeconds = Settings ? FMath::Max(2.0f, Settings->AntiCampAlertCooldownSeconds) : 18.0f;
+	const float Now = GetWorld()->GetTimeSeconds();
+	const FVector CurrentLocation = GetActorLocation();
+
+	if (AntiCampLastSatisfiedTime <= -900.0f)
+	{
+		AntiCampLastSatisfiedTime = Now;
+		AntiCampLastSampleLocation = CurrentLocation;
+		return;
+	}
+
+	const float SampleDistance = FVector::Dist2D(CurrentLocation, AntiCampLastSampleLocation);
+	AntiCampLastSampleLocation = CurrentLocation;
+
+	// Require real displacement as well as velocity so wall-pushing or tiny shuffles do not refresh anti-camp safety.
+	const float EffectiveMovementSpeedThreshold = IsProne() ? MovementSpeedThreshold * 0.65f : MovementSpeedThreshold;
+	const float EffectiveRequiredMoveDistance = IsProne() ? RequiredMoveDistance * 0.60f : RequiredMoveDistance;
+	const float MinSampleDistance = FMath::Max(1.5f, EffectiveMovementSpeedThreshold * DeltaSeconds * 0.15f);
+	const bool bCanCountMovement = !bHiddenInLocker && !bOutOfPlay && GetCharacterMovement() && GetCharacterMovement()->MovementMode != MOVE_None;
+	const bool bMeaningfulMovement = bCanCountMovement && Speed2D >= EffectiveMovementSpeedThreshold && SampleDistance >= MinSampleDistance;
+	if (bMeaningfulMovement)
+	{
+		AntiCampMoveBurstSeconds += DeltaSeconds;
+		AntiCampMoveBurstDistance += SampleDistance;
+		AntiCampLastMeaningfulMoveTime = Now;
+	}
+	else if (AntiCampMoveBurstSeconds > 0.0f && Now - AntiCampLastMeaningfulMoveTime > 0.35f)
+	{
+		AntiCampMoveBurstSeconds = 0.0f;
+		AntiCampMoveBurstDistance = 0.0f;
+	}
+
+	if (AntiCampMoveBurstSeconds >= RequiredMoveSeconds && AntiCampMoveBurstDistance >= EffectiveRequiredMoveDistance)
+	{
+		const bool bWasPressured = Now - AntiCampLastSatisfiedTime > GraceSeconds;
+		AntiCampLastSatisfiedTime = Now;
+		AntiCampMoveBurstSeconds = 0.0f;
+		AntiCampMoveBurstDistance = 0.0f;
+		if (bWasPressured)
+		{
+			Dread = FMath::Max(0.0f, Dread - 4.0f);
+			SendStatusMessage(TEXT("Moving steadied your nerves."));
+		}
+	}
+
+	const float IdleSeconds = FMath::Max(0.0f, Now - AntiCampLastSatisfiedTime);
+	if (WarningSeconds > 0.0f && IdleSeconds >= WarningSeconds && IdleSeconds < GraceSeconds && Now - LastAntiCampWarningTime > 12.0f)
+	{
+		LastAntiCampWarningTime = Now;
+		SendStatusMessage(TEXT("Keep moving. Staying put is feeding your dread."));
+	}
+
+	if (IdleSeconds <= GraceSeconds)
+	{
+		return;
+	}
+
+	const float OverdueSeconds = IdleSeconds - GraceSeconds;
+	const float AlertAlpha = FMath::Clamp(OverdueSeconds / AlertDelaySeconds, 0.0f, 1.0f);
+	const float HiddenPressureMultiplier = bHiddenInLocker ? 0.65f : 1.0f;
+	Dread = FMath::Clamp(Dread + PressureDreadPerSecond * FMath::Lerp(0.65f, 1.0f, AlertAlpha) * HiddenPressureMultiplier * DeltaSeconds, 0.0f, 100.0f);
+	Fear = FMath::Clamp(Fear + PressureFearPerSecond * AlertAlpha * HiddenPressureMultiplier * DeltaSeconds, 0.0f, 100.0f);
+
+	if (Now - LastAntiCampWarningTime > 12.0f)
+	{
+		LastAntiCampWarningTime = Now;
+		SendStatusMessage(bHiddenInLocker ? TEXT("You have hidden too long. Move soon.") : TEXT("You have stayed in one place too long. Move soon."));
+	}
+
+	if (OverdueSeconds >= AlertDelaySeconds && Now - LastAntiCampNoiseTime >= AlertCooldownSeconds)
+	{
+		LastAntiCampNoiseTime = Now;
+		SendStatusMessage(TEXT("Your restless breathing gave you away."));
+		if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+		{
+			BHGM->NotifyLoudNoise(CurrentLocation, TEXT("restless breathing"));
+			BHGM->RecordPlaytestTelemetryMarker(TEXT("anti_camp_alert"), CurrentLocation, FString::Printf(TEXT("idle=%.0fs"), IdleSeconds), BHPS);
+		}
+	}
+}
+
+void ABHCharacter::EmitFootstepStimulus(float Strength, const FString& Reason, EBHFootstepSurface Surface)
+{
+	if (!HasAuthority() || !GetWorld())
+	{
+		return;
+	}
+
+	const EBHFootstepSurface ResolvedSurface = Surface == EBHFootstepSurface::Default ? ResolveFootstepSurface() : Surface;
+	const FBHFootstepSurfaceProfile SurfaceProfile = GetFootstepSurfaceProfile(ResolvedSurface);
+	const float ClampedStrength = FMath::Clamp(Strength * SurfaceProfile.NoiseMultiplier, 0.0f, 2.35f);
+	const FString SurfaceReason = ResolvedSurface == EBHFootstepSurface::Default
+		? Reason
+		: FString::Printf(TEXT("%s on %s"), *Reason, BHFootstepSurfaceToken(ResolvedSurface));
 	UAISense_Hearing::ReportNoiseEvent(
 		GetWorld(),
 		GetActorLocation(),
 		ClampedStrength,
 		this,
-		1800.0f + ClampedStrength * 1800.0f,
-		FName(*Reason));
+		SurfaceProfile.HearingRadiusBase + ClampedStrength * SurfaceProfile.HearingRadiusScale,
+		FName(*SurfaceReason));
 	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
 	{
-		BHGM->ReportBotStimulus(EBHBotStimulusType::Noise, GetActorLocation(), this, this, Reason, ClampedStrength);
-		BHGM->ReportAtmosphereStimulus(EBHAtmosphereStimulusType::Footstep, GetActorLocation(), this, this, ClampedStrength, Reason);
+		BHGM->ReportBotStimulus(EBHBotStimulusType::Noise, GetActorLocation(), this, this, SurfaceReason, ClampedStrength);
+		BHGM->ReportAtmosphereStimulus(EBHAtmosphereStimulusType::Footstep, GetActorLocation(), this, this, ClampedStrength * SurfaceProfile.AtmosphereMultiplier, SurfaceReason);
 	}
+
+	const bool bFootstepSoundConfigured = SurfaceProfile.LocalVolume > 0.0f && !SurfaceProfile.FootstepSound.IsNull();
+	const bool bFootstepEffectConfigured = !SurfaceProfile.FootstepEffect.IsNull() && SurfaceProfile.EffectScale > 0.0f;
+	const bool bHasLocalSound = bFootstepSoundConfigured && BHCharacterSoftObjectPathExists(SurfaceProfile.FootstepSound.ToSoftObjectPath());
+	const bool bHasLocalEffect = bFootstepEffectConfigured && BHCharacterSoftObjectPathExists(SurfaceProfile.FootstepEffect.ToSoftObjectPath());
+	if (bFootstepSoundConfigured && !bHasLocalSound)
+	{
+		BHLogMissingOptionalCharacterAssetOnce(SurfaceProfile.FootstepSound.ToSoftObjectPath(), TEXT("footstep audio"));
+	}
+	if (bFootstepEffectConfigured && !bHasLocalEffect)
+	{
+		BHLogMissingOptionalCharacterAssetOnce(SurfaceProfile.FootstepEffect.ToSoftObjectPath(), TEXT("footstep effect"));
+	}
+	if (bHasLocalSound || bHasLocalEffect)
+	{
+		const float CueVolume = FMath::Clamp(FMath::Max(SurfaceProfile.LocalVolume, ClampedStrength * 0.28f), 0.0f, 1.5f);
+		MulticastFootstepCue(ResolvedSurface, BHFootstepCueLocation(this), CueVolume);
+	}
+}
+
+void ABHCharacter::MulticastFootstepCue_Implementation(EBHFootstepSurface Surface, FVector Location, float Volume)
+{
+	const FBHFootstepSurfaceProfile SurfaceProfile = GetFootstepSurfaceProfile(Surface);
+	const float CueVolume = FMath::Clamp(Volume, 0.0f, 1.5f);
+	if (SurfaceProfile.LocalVolume > 0.0f && !SurfaceProfile.FootstepSound.IsNull() && GetWorld())
+	{
+		FBHGameplayAudioCue Cue;
+		Cue.AudioAsset = SurfaceProfile.FootstepSound;
+		Cue.Location = Location;
+		Cue.Volume = CueVolume;
+		Cue.Pitch = FMath::RandRange(0.94f, 1.06f);
+		Cue.MaxAudibleDistance = FMath::Clamp(SurfaceProfile.HearingRadiusBase + CueVolume * SurfaceProfile.HearingRadiusScale, 900.0f, 4200.0f);
+		Cue.CaptionSeconds = 0.0f;
+		Cue.bSpatial = true;
+		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+		{
+			if (ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get()))
+			{
+				PC->PlayGameplayAudioCueLocal(Cue);
+			}
+		}
+	}
+
+	if (SurfaceProfile.EffectScale > 0.0f && !SurfaceProfile.FootstepEffect.IsNull())
+	{
+		if (!BHCharacterSoftObjectPathExists(SurfaceProfile.FootstepEffect.ToSoftObjectPath()))
+		{
+			BHLogMissingOptionalCharacterAssetOnce(SurfaceProfile.FootstepEffect.ToSoftObjectPath(), TEXT("footstep effect"));
+			return;
+		}
+
+		if (UNiagaraSystem* FootstepEffect = SurfaceProfile.FootstepEffect.LoadSynchronous())
+		{
+			const float CueScale = SurfaceProfile.EffectScale
+				* FMath::GetMappedRangeValueClamped(FVector2D(0.0f, 1.5f), FVector2D(0.55f, 1.35f), CueVolume);
+			UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+				this,
+				FootstepEffect,
+				Location,
+				FRotator::ZeroRotator,
+				FVector(FMath::Max(0.01f, CueScale)),
+				true,
+				true,
+				ENCPoolMethod::AutoRelease,
+				true);
+		}
+	}
+}
+
+void ABHCharacter::MulticastTeacherMeleeSwing_Implementation(bool bConfirmedHit)
+{
+	PlayTeacherMeleeSwingLocal(bConfirmedHit);
 }
 
 void ABHCharacter::ServerSetFlashlight_Implementation(bool bNewOn)
 {
 	if (CanAct())
 	{
+		const bool bWasFlashlightOn = bFlashlightOn;
 		const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
 		const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
 		const bool bInfiniteFlashlight = (BHPS && BHPS->PlayerRole == EBHPlayerRole::Tester) || (BHGS && BHGS->bTestMode);
 		if (bInfiniteFlashlight)
 		{
 			FlashlightBattery = 100.0f;
+			bFlashlightEmptyTelemetryReported = false;
 		}
 		bFlashlightOn = bNewOn && (bInfiniteFlashlight || FlashlightBattery > 0.0f);
 		ApplyFlashlightState();
+		if (bWasFlashlightOn != bFlashlightOn)
+		{
+			BroadcastFlashlightAudioCue(bFlashlightOn);
+		}
 	}
 }
 
@@ -2840,6 +5025,15 @@ bool ABHCharacter::BeginInteractAuthority(AActor* Target, bool bUseViewFallback,
 	{
 		ExitLocker();
 		return true;
+	}
+
+	if (IsSpecialMoveActive())
+	{
+		if (bShowFailureMessages)
+		{
+			SendStatusMessage(TEXT("Finish the move before interacting."));
+		}
+		return false;
 	}
 
 	if (!CanAct())
@@ -2925,13 +5119,22 @@ void ABHCharacter::ExitCurrentLockerAuthority()
 
 void ABHCharacter::ServerSetSprinting_Implementation(bool bNewSprinting)
 {
+	bSprintInputHeld = bNewSprinting;
 	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
 	const float HunterPenaltyMultiplier = BHFinalEscapeHunterPenaltyActive(GetWorld(), this) ? 0.72f : 1.0f;
-	const float CurrentWalkSpeed = BHRoleWalkSpeed(BHPS, WalkSpeed) * HunterPenaltyMultiplier * BHHorrorWalkSpeedMultiplier(this, BHPS);
+	const float TeacherCaptureMoveMultiplier = (BHPS && BHPS->IsAliveHunter() && IsTeacherCaptureAttackActive()) ? BHTeacherCaptureMoveMultiplier : 1.0f;
+	const float CurrentWalkSpeed = BHRoleWalkSpeed(BHPS, WalkSpeed) * HunterPenaltyMultiplier * TeacherCaptureMoveMultiplier * BHHorrorWalkSpeedMultiplier(this, BHPS);
 	const float CurrentSprintSpeed = BHRoleSprintSpeed(BHPS, SprintSpeed)
 		* (PowerupComponent ? PowerupComponent->GetSprintSpeedMultiplier() : 1.0f)
 		* HunterPenaltyMultiplier
+		* TeacherCaptureMoveMultiplier
 		* BHHorrorSprintSpeedMultiplier(this, BHPS);
+	if (IsProne() || IsSpecialMoveActive())
+	{
+		GetCharacterMovement()->MaxWalkSpeed = IsProne() ? BHRoleProneSpeed(BHPS) * BHHorrorWalkSpeedMultiplier(this, BHPS) : CurrentWalkSpeed;
+		return;
+	}
+
 	if (bNewSprinting && Stamina <= MaxStamina * 0.05f)
 	{
 		GetCharacterMovement()->MaxWalkSpeed = CurrentWalkSpeed;
@@ -2952,9 +5155,337 @@ void ABHCharacter::ServerSetSprinting_Implementation(bool bNewSprinting)
 	}
 }
 
+void ABHCharacter::ServerStartSpecialMove_Implementation(EBHMovementSpecialState RequestedState, bool bEndProne, bool bEndProneRequiresInput)
+{
+	TryStartSpecialMoveAuthority(RequestedState, bEndProne, bEndProneRequiresInput);
+}
+
+void ABHCharacter::ServerSetProne_Implementation(bool bNewProne)
+{
+	SetProneAuthority(bNewProne, true);
+}
+
 void ABHCharacter::ServerTryCapture_Implementation()
 {
 	TryCaptureAuthority(true);
+}
+
+void ABHCharacter::UpdateTeacherCaptureAttackAuthority(float DeltaSeconds)
+{
+	(void)DeltaSeconds;
+	if (!HasAuthority() || !bTeacherCaptureAttackActive || !GetWorld())
+	{
+		return;
+	}
+
+	const float Now = GetWorld()->GetTimeSeconds();
+	const ABHPlayerState* HunterPS = GetPlayerState<ABHPlayerState>();
+	if (!HunterPS || !HunterPS->IsAliveHunter() || !CanAct())
+	{
+		bTeacherCaptureAttackActive = false;
+		bTeacherCaptureAttackResolved = true;
+		TeacherCaptureAttackEndServerTime = Now;
+		RefreshMovementSpeedFromState();
+		ForceNetUpdate();
+		return;
+	}
+
+	if (!bTeacherCaptureAttackResolved && Now >= TeacherCaptureAttackResolveServerTime)
+	{
+		ResolveTeacherCaptureAttackAuthority();
+	}
+
+	if (Now >= TeacherCaptureAttackEndServerTime)
+	{
+		bTeacherCaptureAttackActive = false;
+		RefreshMovementSpeedFromState();
+		ForceNetUpdate();
+	}
+}
+
+void ABHCharacter::StartTeacherCaptureRecoveryAuthority(float Now, float RecoverySeconds)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	const float ClampedRecovery = FMath::Max(0.0f, RecoverySeconds);
+	TeacherCaptureNextAllowedServerTime = FMath::Max(TeacherCaptureNextAllowedServerTime, Now + ClampedRecovery);
+	StaminaRecoveryLockedUntil = FMath::Max(StaminaRecoveryLockedUntil, Now + FMath::Min(0.85f, ClampedRecovery));
+	RefreshMovementSpeedFromState();
+	ForceNetUpdate();
+}
+
+bool ABHCharacter::InterruptTeacherCaptureAttack(const FString& Reason, float RecoverySeconds)
+{
+	if (!HasAuthority() || !bTeacherCaptureAttackActive || bTeacherCaptureAttackResolved || !GetWorld())
+	{
+		return false;
+	}
+
+	const float Now = GetWorld()->GetTimeSeconds();
+	bTeacherCaptureAttackResolved = true;
+	bTeacherCaptureAttackActive = false;
+	TeacherCaptureAttackEndServerTime = Now;
+	StartTeacherCaptureRecoveryAuthority(Now, RecoverySeconds > 0.0f ? RecoverySeconds : BHTeacherCaptureDoorSlamRecoverySeconds);
+	SendStatusMessage(Reason.IsEmpty() ? TEXT("Swing interrupted. Recovering.") : Reason);
+	return true;
+}
+
+bool ABHCharacter::HasDirectVisibilityToCharacter(const ABHCharacter* Target) const
+{
+	if (!GetWorld() || !Target)
+	{
+		return false;
+	}
+
+	FVector ViewLocation = GetActorLocation() + FVector(0.0f, 0.0f, 64.0f);
+	FRotator ViewRotation = GetActorRotation();
+	if (Controller)
+	{
+		Controller->GetPlayerViewPoint(ViewLocation, ViewRotation);
+	}
+
+	const FVector TargetLocation = Target->GetActorLocation() + FVector(0.0f, 0.0f, 62.0f);
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BHTeacherCaptureLOS), false);
+	Params.AddIgnoredActor(this);
+	Params.AddIgnoredActor(Target);
+	FHitResult Hit;
+	return !GetWorld()->LineTraceSingleByChannel(Hit, ViewLocation, TargetLocation, ECC_Visibility, Params);
+}
+
+float ABHCharacter::GetTeacherCaptureClockSeconds() const
+{
+	if (!GetWorld())
+	{
+		return 0.0f;
+	}
+
+	const ABHGameState* GameState = GetWorld()->GetGameState<ABHGameState>();
+	return GameState ? GameState->GetServerWorldTimeSeconds() : GetWorld()->GetTimeSeconds();
+}
+
+bool ABHCharacter::IsTeacherCaptureCandidateAuthority(const ABHCharacter* Target, float& OutScore) const
+{
+	OutScore = TNumericLimits<float>::Max();
+	if (!Target || Target == this)
+	{
+		return false;
+	}
+
+	const ABHPlayerState* TargetPS = Target->GetPlayerState<ABHPlayerState>();
+	if (!TargetPS || !TargetPS->IsAliveSurvivor() || Target->IsHiddenInLocker())
+	{
+		return false;
+	}
+
+	const FVector Delta = Target->GetActorLocation() - GetActorLocation();
+	if (FMath::Abs(Delta.Z) > BHTeacherCaptureVerticalTolerance)
+	{
+		return false;
+	}
+
+	const FVector Delta2D(Delta.X, Delta.Y, 0.0f);
+	const float DistanceSq = Delta2D.SizeSquared();
+	const float EffectiveRange = CaptureDistance + BHTeacherCaptureRangeForgiveness;
+	if (DistanceSq > FMath::Square(EffectiveRange))
+	{
+		return false;
+	}
+
+	FVector CaptureForward = GetActorForwardVector();
+	if (Controller)
+	{
+		FVector ViewLocation = FVector::ZeroVector;
+		FRotator ViewRotation = FRotator::ZeroRotator;
+		Controller->GetPlayerViewPoint(ViewLocation, ViewRotation);
+		CaptureForward = ViewRotation.Vector();
+	}
+	CaptureForward.Z = 0.0f;
+	const FVector Forward2D = CaptureForward.GetSafeNormal();
+	const FVector TargetDirection2D = Delta2D.GetSafeNormal();
+	const float AimDot = TargetDirection2D.IsNearlyZero() ? 1.0f : FVector::DotProduct(Forward2D, TargetDirection2D);
+	if (AimDot < BHTeacherCaptureArcMinDot)
+	{
+		return false;
+	}
+
+	const bool bVisible = (Controller && Controller->LineOfSightTo(const_cast<ABHCharacter*>(Target))) || HasDirectVisibilityToCharacter(Target);
+	if (!bVisible)
+	{
+		return false;
+	}
+
+	OutScore = DistanceSq - AimDot * 25000.0f;
+	return true;
+}
+
+bool ABHCharacter::IsTimedCaptureEvasionActive(float Now) const
+{
+	if (BHIsTransientSpecialMove(MovementSpecialState))
+	{
+		return true;
+	}
+
+	const bool bRecentlyCommittedEvasion = LastCaptureEvasionTime > -900.0f && Now - LastCaptureEvasionTime <= BHTeacherCaptureEvasionGraceSeconds;
+	return bRecentlyCommittedEvasion && MovementSpecialState == EBHMovementSpecialState::Prone;
+}
+
+bool ABHCharacter::CanStaggerTeacherWithFlashlight(const ABHCharacter* Survivor) const
+{
+	if (!Survivor || !Survivor->bFlashlightOn || Survivor->FlashlightBattery < BHTeacherFlashlightStaggerBatteryCost * 0.35f || Survivor->IsHiddenInLocker())
+	{
+		return false;
+	}
+
+	const FVector ToTeacher = GetActorLocation() + FVector(0.0f, 0.0f, 56.0f) - (Survivor->GetActorLocation() + FVector(0.0f, 0.0f, 58.0f));
+	if (ToTeacher.SizeSquared() > FMath::Square(BHTeacherFlashlightStaggerRange))
+	{
+		return false;
+	}
+
+	FVector FlashlightForward = Survivor->Flashlight ? Survivor->Flashlight->GetForwardVector() : Survivor->GetActorForwardVector();
+	if (Survivor->Controller)
+	{
+		FVector ViewLocation = FVector::ZeroVector;
+		FRotator ViewRotation = FRotator::ZeroRotator;
+		Survivor->Controller->GetPlayerViewPoint(ViewLocation, ViewRotation);
+		FlashlightForward = ViewRotation.Vector();
+	}
+
+	const float AimDot = FVector::DotProduct(FlashlightForward.GetSafeNormal(), ToTeacher.GetSafeNormal());
+	return AimDot >= BHTeacherFlashlightStaggerDot && Survivor->HasDirectVisibilityToCharacter(this);
+}
+
+void ABHCharacter::SpendFlashlightForTeacherStagger(float Now)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	const float PreviousBattery = FlashlightBattery;
+	FlashlightBattery = FMath::Max(0.0f, FlashlightBattery - BHTeacherFlashlightStaggerBatteryCost);
+	StaminaRecoveryLockedUntil = FMath::Max(StaminaRecoveryLockedUntil, Now + 0.35f);
+	if (FlashlightBattery <= 0.0f)
+	{
+		if (PreviousBattery > 0.0f && !bFlashlightEmptyTelemetryReported)
+		{
+			if (ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
+			{
+				BHGM->RecordPlaytestTelemetryMarker(TEXT("battery_starved"), GetActorLocation(), TEXT("flashlight_stagger_empty"), GetBHPlayerState());
+			}
+			bFlashlightEmptyTelemetryReported = true;
+		}
+		bFlashlightOn = false;
+	}
+	ApplyFlashlightState();
+	ForceNetUpdate();
+}
+
+void ABHCharacter::NotifyNearbySurvivorsOfTeacherCaptureWindup(float Now)
+{
+	if (!HasAuthority() || !GetWorld())
+	{
+		return;
+	}
+
+	const float WarningRange = CaptureDistance + 360.0f;
+	for (TActorIterator<ABHCharacter> It(GetWorld()); It; ++It)
+	{
+		ABHCharacter* Target = *It;
+		ABHPlayerState* TargetPS = Target ? Target->GetPlayerState<ABHPlayerState>() : nullptr;
+		if (!Target || Target == this || !TargetPS || !TargetPS->IsAliveSurvivor() || Target->IsHiddenInLocker())
+		{
+			continue;
+		}
+
+		if (FVector::DistSquared2D(Target->GetActorLocation(), GetActorLocation()) > FMath::Square(WarningRange))
+		{
+			continue;
+		}
+
+		if (Now - Target->LastTeacherCounterplayHintTime < 5.5f || !HasDirectVisibilityToCharacter(Target))
+		{
+			continue;
+		}
+
+		Target->LastTeacherCounterplayHintTime = Now;
+		Target->SendStatusMessage(TEXT("Teacher swing: slide, roll, slam a door, or aim flashlight."));
+	}
+}
+
+void ABHCharacter::ResolveTeacherCaptureAttackAuthority()
+{
+	if (!HasAuthority() || !bTeacherCaptureAttackActive || bTeacherCaptureAttackResolved || !GetWorld())
+	{
+		return;
+	}
+
+	bTeacherCaptureAttackResolved = true;
+	const float Now = GetWorld()->GetTimeSeconds();
+	ABHCharacter* BestTarget = nullptr;
+	float BestScore = TNumericLimits<float>::Max();
+	for (TActorIterator<ABHCharacter> It(GetWorld()); It; ++It)
+	{
+		float CandidateScore = TNumericLimits<float>::Max();
+		ABHCharacter* Target = *It;
+		if (IsTeacherCaptureCandidateAuthority(Target, CandidateScore) && CandidateScore < BestScore)
+		{
+			BestTarget = Target;
+			BestScore = CandidateScore;
+		}
+	}
+
+	if (!BestTarget)
+	{
+		StartTeacherCaptureRecoveryAuthority(Now, BHTeacherCaptureMissRecoverySeconds);
+		SendStatusMessage(TEXT("Axe missed. Recovering."));
+		return;
+	}
+
+	if (CanStaggerTeacherWithFlashlight(BestTarget))
+	{
+		BestTarget->SpendFlashlightForTeacherStagger(Now);
+		BestTarget->SendStatusMessage(TEXT("Flashlight staggered the Teacher. Battery spent."));
+		StartTeacherCaptureRecoveryAuthority(Now, BHTeacherCaptureFlashlightStaggerRecoverySeconds);
+		SendStatusMessage(TEXT("Flashlight staggered you. Recovering."));
+		return;
+	}
+
+	if (BestTarget->IsTimedCaptureEvasionActive(Now))
+	{
+		BestTarget->EmitFootstepStimulus(0.86f, TEXT("panic dodge"), BestTarget->ResolveFootstepSurface());
+		BestTarget->SendStatusMessage(TEXT("Timed escape beat the swing. Keep moving."));
+		StartTeacherCaptureRecoveryAuthority(Now, BHTeacherCaptureMissRecoverySeconds);
+		SendStatusMessage(TEXT("Axe missed. Recovering."));
+		return;
+	}
+
+	StartTeacherCaptureRecoveryAuthority(Now, BHTeacherCaptureSuccessRecoverySeconds);
+	MulticastTeacherMeleeSwing(true);
+	if (BHIsRoleWarmupPhase(GetWorld()->GetGameState<ABHGameState>()))
+	{
+		if (ABHPlayerState* CaptureTargetPS = BestTarget->GetPlayerState<ABHPlayerState>())
+		{
+			SendStatusMessage(FString::Printf(TEXT("Warmup tag: %s would be captured. Hunt start resets everyone."), *CaptureTargetPS->GetPlayerName()));
+		}
+		if (ABHPlayerController* TargetPC = Cast<ABHPlayerController>(BestTarget->GetController()))
+		{
+			TargetPC->ClientShowStatusMessage(TEXT("Warmup capture tag. You stay in play and reset for the Hunt."), 3.0f);
+		}
+		return;
+	}
+	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+	{
+		BHGM->NotifySurvivorCaptured(BestTarget, this);
+	}
+	else
+	{
+		BestTarget->MarkCaptured();
+	}
+	SendStatusMessage(TEXT("Axe capture connected."));
 }
 
 bool ABHCharacter::TryCaptureAuthority(bool bShowFailureMessages)
@@ -2965,7 +5496,7 @@ bool ABHCharacter::TryCaptureAuthority(bool bShowFailureMessages)
 	{
 		if (bShowFailureMessages && HunterPS && HunterPS->PlayerRole == EBHPlayerRole::FakeHunter)
 		{
-			SendStatusMessage(TEXT("Hall monitors cannot capture. Use G to place traps and Q/R to hint."));
+			SendStatusMessage(TEXT("Hall monitors cannot capture. Use Q for a real hint, R to mark a false corridor, and G for traps."));
 			return false;
 		}
 		if (bShowFailureMessages)
@@ -2975,7 +5506,8 @@ bool ABHCharacter::TryCaptureAuthority(bool bShowFailureMessages)
 		return false;
 	}
 
-	if (!BHGS || (BHGS->RoundPhase != EBHRoundPhase::Hunt && BHGS->RoundPhase != EBHRoundPhase::FinalEscape))
+	const bool bRoleWarmup = BHIsRoleWarmupPhase(BHGS);
+	if (!BHGS || (BHGS->RoundPhase != EBHRoundPhase::Hunt && BHGS->RoundPhase != EBHRoundPhase::FinalEscape && !bRoleWarmup))
 	{
 		if (bShowFailureMessages)
 		{
@@ -2984,7 +5516,44 @@ bool ABHCharacter::TryCaptureAuthority(bool bShowFailureMessages)
 		return false;
 	}
 
-	if (BHGS->bCaptureDisabled || BHGS->bHunterInputFrozen || BHFinalEscapeHunterPenaltyActive(GetWorld(), this))
+	if (!CanAct() || IsSpecialMoveActive() || IsProne())
+	{
+		if (bShowFailureMessages)
+		{
+			SendStatusMessage(TEXT("Finish movement before swinging."));
+		}
+		return false;
+	}
+
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	if (bTeacherCaptureAttackActive)
+	{
+		if (bShowFailureMessages)
+		{
+			SendStatusMessage(IsTeacherCaptureAttackInWindup() ? TEXT("Axe swing is winding up.") : TEXT("Axe swing is recovering."));
+		}
+		return false;
+	}
+
+	if (Now < TeacherCaptureNextAllowedServerTime)
+	{
+		if (bShowFailureMessages)
+		{
+			SendStatusMessage(FString::Printf(TEXT("Axe recovering: %ds."), FMath::CeilToInt(TeacherCaptureNextAllowedServerTime - Now)));
+		}
+		return false;
+	}
+
+	if (Stamina < BHTeacherCaptureMinStamina)
+	{
+		if (bShowFailureMessages)
+		{
+			SendStatusMessage(TEXT("Too exhausted to swing."));
+		}
+		return false;
+	}
+
+	if (!bRoleWarmup && (BHGS->bCaptureDisabled || BHGS->bHunterInputFrozen || BHFinalEscapeHunterPenaltyActive(GetWorld(), this)))
 	{
 		if (bShowFailureMessages)
 		{
@@ -2993,32 +5562,24 @@ bool ABHCharacter::TryCaptureAuthority(bool bShowFailureMessages)
 		return false;
 	}
 
-	for (TActorIterator<ABHCharacter> It(GetWorld()); It; ++It)
-	{
-		ABHCharacter* Target = *It;
-		ABHPlayerState* TargetPS = Target ? Target->GetPlayerState<ABHPlayerState>() : nullptr;
-		if (!Target || Target == this || !TargetPS || !TargetPS->IsAliveSurvivor() || Target->IsHiddenInLocker())
-		{
-			continue;
-		}
-
-		const bool bInRange = FVector::DistSquared(Target->GetActorLocation(), GetActorLocation()) <= FMath::Square(CaptureDistance);
-		const bool bVisible = Controller ? Controller->LineOfSightTo(Target) : true;
-		if (bInRange && bVisible)
-		{
-			if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
-			{
-				BHGM->NotifySurvivorCaptured(Target);
-			}
-			return true;
-		}
-	}
-
+	Stamina = FMath::Max(0.0f, Stamina - BHTeacherCaptureStaminaCost);
+	StaminaRecoveryLockedUntil = Now + BHTeacherCaptureAttackSeconds;
+	bTeacherCaptureAttackActive = true;
+	bTeacherCaptureAttackResolved = false;
+	TeacherCaptureAttackStartServerTime = Now;
+	TeacherCaptureAttackResolveServerTime = Now + BHTeacherCaptureWindupSeconds;
+	TeacherCaptureAttackEndServerTime = Now + BHTeacherCaptureAttackSeconds;
+	TeacherCaptureNextAllowedServerTime = TeacherCaptureAttackEndServerTime;
+	MulticastTeacherMeleeSwing(false);
+	NotifyNearbySurvivorsOfTeacherCaptureWindup(Now);
+	EmitFootstepStimulus(0.72f, TEXT("teacher axe windup"), ResolveFootstepSurface());
 	if (bShowFailureMessages)
 	{
-		SendStatusMessage(TEXT("No visible survivor close enough to capture."));
+		SendStatusMessage(bRoleWarmup ? TEXT("Warmup axe windup. Capture tags do not count.") : TEXT("Axe windup. Survivors can dodge or blind it."));
 	}
-	return false;
+	RefreshMovementSpeedFromState();
+	ForceNetUpdate();
+	return true;
 }
 
 void ABHCharacter::ServerUseScan_Implementation()
@@ -3030,9 +5591,10 @@ bool ABHCharacter::UseScanAuthority(bool bShowFailureMessages)
 {
 	const ABHPlayerState* HunterPS = GetPlayerState<ABHPlayerState>();
 	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	const bool bRoleWarmup = BHIsRoleWarmupPhase(BHGS);
 	if (HunterPS && HunterPS->PlayerRole == EBHPlayerRole::FakeHunter && HunterPS->LifeState == EBHPlayerLifeState::Alive)
 	{
-		if (!BHGS || BHGS->RoundPhase != EBHRoundPhase::Hunt)
+		if (!BHGS || (BHGS->RoundPhase != EBHRoundPhase::Hunt && !bRoleWarmup))
 		{
 			if (bShowFailureMessages)
 			{
@@ -3042,20 +5604,23 @@ bool ABHCharacter::UseScanAuthority(bool bShowFailureMessages)
 		}
 
 		FString MonitorBlockReason;
-		if (const ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
+		if (!bRoleWarmup)
 		{
-			if (!BHGM->CanUseHallMonitorTools(HunterPS, MonitorBlockReason))
+			if (const ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
 			{
-				if (bShowFailureMessages)
+				if (!BHGM->CanUseHallMonitorTools(HunterPS, MonitorBlockReason))
 				{
-					SendStatusMessage(MonitorBlockReason);
+					if (bShowFailureMessages)
+					{
+						SendStatusMessage(MonitorBlockReason);
+					}
+					return false;
 				}
-				return false;
 			}
 		}
 
 		const float Now = GetWorld()->GetTimeSeconds();
-		const float HintCooldown = FMath::Max(12.0f, ScanCooldownSeconds * 0.75f);
+		const float HintCooldown = bRoleWarmup ? 2.0f : FMath::Max(12.0f, ScanCooldownSeconds * 0.75f);
 		if (Now - LastScanTime < HintCooldown)
 		{
 			if (bShowFailureMessages)
@@ -3067,6 +5632,10 @@ bool ABHCharacter::UseScanAuthority(bool bShowFailureMessages)
 
 		LastScanTime = Now;
 		SendFakeHunterHint(true);
+		if (bRoleWarmup && bShowFailureMessages)
+		{
+			SendStatusMessage(TEXT("Warmup real hint sent. Contribution gates reset for the Hunt."));
+		}
 		return true;
 	}
 
@@ -3079,7 +5648,7 @@ bool ABHCharacter::UseScanAuthority(bool bShowFailureMessages)
 		return false;
 	}
 
-	if (!BHGS || BHGS->RoundPhase != EBHRoundPhase::Hunt)
+	if (!BHGS || (BHGS->RoundPhase != EBHRoundPhase::Hunt && !bRoleWarmup))
 	{
 		if (bShowFailureMessages)
 		{
@@ -3088,19 +5657,23 @@ bool ABHCharacter::UseScanAuthority(bool bShowFailureMessages)
 		return false;
 	}
 
+	const int32 ScanFocusCharges = FMath::Clamp(HunterPS->GetPowerupCharges(EBHPowerupType::TeacherScanFocus), 0, 2);
+	const float EffectiveScanCooldownSeconds = bRoleWarmup ? 2.0f : FMath::Max(8.0f, ScanCooldownSeconds * (1.0f - 0.18f * static_cast<float>(ScanFocusCharges)));
+	const float ScanFearRadius = 3000.0f + 450.0f * static_cast<float>(ScanFocusCharges);
 	const float Now = GetWorld()->GetTimeSeconds();
-	if (Now - LastScanTime < ScanCooldownSeconds)
+	if (Now - LastScanTime < EffectiveScanCooldownSeconds)
 	{
 		if (bShowFailureMessages)
 		{
-			const int32 RemainingCooldown = FMath::CeilToInt(ScanCooldownSeconds - (Now - LastScanTime));
+			const int32 RemainingCooldown = FMath::CeilToInt(EffectiveScanCooldownSeconds - (Now - LastScanTime));
 			SendStatusMessage(FString::Printf(TEXT("Heartbeat scan cooling down: %ds."), RemainingCooldown));
 		}
 		return false;
 	}
 
 	LastScanTime = Now;
-	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+	ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>();
+	if (BHGM && !bRoleWarmup)
 	{
 		BHGM->NotifyLoudNoise(GetActorLocation(), TEXT("heartbeat scan"));
 	}
@@ -3117,14 +5690,17 @@ bool ABHCharacter::UseScanAuthority(bool bShowFailureMessages)
 		}
 
 		const float DistSq = FVector::DistSquared(Target->GetActorLocation(), GetActorLocation());
-		if (DistSq <= FMath::Square(3000.0f))
+		if (DistSq <= FMath::Square(ScanFearRadius))
 		{
-			Target->AddFear(Target->IsDetentionMarked() ? 24.0f : 16.0f);
-			if (ABHPlayerController* SurvivorPC = Cast<ABHPlayerController>(Target->GetController()))
+			if (!bRoleWarmup)
 			{
-				SurvivorPC->ClientShowStatusMessage(Target->IsDetentionMarked()
-					? TEXT("The detention mark burns. The Teacher scan found you.")
-					: TEXT("Your heartbeat spikes. The Teacher scanned nearby."), 2.5f);
+				Target->AddFear(Target->IsDetentionMarked() ? 24.0f : 16.0f);
+				if (ABHPlayerController* SurvivorPC = Cast<ABHPlayerController>(Target->GetController()))
+				{
+					SurvivorPC->ClientShowStatusMessage(Target->IsDetentionMarked()
+						? TEXT("The detention mark burns. The Teacher scan found you.")
+						: TEXT("Your heartbeat spikes. The Teacher scanned nearby."), 2.5f);
+				}
 			}
 		}
 		const float ScanScore = Target->IsDetentionMarked() ? DistSq * 0.35f : DistSq;
@@ -3138,6 +5714,20 @@ bool ABHCharacter::UseScanAuthority(bool bShowFailureMessages)
 	if (bShowFailureMessages)
 	{
 		ClientReceiveScanResult(Nearest ? Nearest->GetActorLocation() : FVector::ZeroVector, Nearest ? Nearest->IsHiddenInLocker() : false, Nearest != nullptr);
+		if (bRoleWarmup)
+		{
+			SendStatusMessage(TEXT("Warmup scan only. Cooldowns and positions reset when Hunt starts."));
+		}
+		const int32 PatrolIntelCharges = FMath::Clamp(HunterPS->GetPowerupCharges(EBHPowerupType::TeacherPatrolIntel), 0, 2);
+		FVector LatestNoiseLocation = FVector::ZeroVector;
+		if (PatrolIntelCharges > 0 && BHGM && BHGM->GetLatestBotNoiseLocation(14.0f + 8.0f * static_cast<float>(PatrolIntelCharges), LatestNoiseLocation))
+		{
+			SendStatusMessage(FString::Printf(TEXT("Patrol intel: recent noise roughly %s."), *BHCompassFromDelta(LatestNoiseLocation - GetActorLocation())));
+		}
+	}
+	if (BHGM && !bRoleWarmup)
+	{
+		BHGM->RecordPlaytestTelemetryMarker(TEXT("teacher_scan"), GetActorLocation(), Nearest ? TEXT("found") : TEXT("empty"), HunterPS, Nearest ? Nearest->GetPlayerState<ABHPlayerState>() : nullptr);
 	}
 	return Nearest != nullptr;
 }
@@ -3151,12 +5741,13 @@ bool ABHCharacter::UseHunterPowerAuthority(bool bShowFailureMessages)
 {
 	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
 	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	const bool bRoleWarmup = BHIsRoleWarmupPhase(BHGS);
 	if (!BHPS || BHPS->LifeState != EBHPlayerLifeState::Alive)
 	{
 		return false;
 	}
 
-	if (!BHGS || BHGS->RoundPhase != EBHRoundPhase::Hunt)
+	if (!BHGS || (BHGS->RoundPhase != EBHRoundPhase::Hunt && !bRoleWarmup))
 	{
 		if (bShowFailureMessages)
 		{
@@ -3168,7 +5759,8 @@ bool ABHCharacter::UseHunterPowerAuthority(bool bShowFailureMessages)
 	const float Now = GetWorld()->GetTimeSeconds();
 	if (BHPS->PlayerRole == EBHPlayerRole::Hunter || BHPS->PlayerRole == EBHPlayerRole::Tester)
 	{
-		const float BlackoutCooldown = 34.0f;
+		const int32 BlackoutSurgeCharges = FMath::Clamp(BHPS->GetPowerupCharges(EBHPowerupType::TeacherBlackoutSurge), 0, 2);
+		const float BlackoutCooldown = bRoleWarmup ? 4.0f : FMath::Max(20.0f, 34.0f - 5.0f * static_cast<float>(BlackoutSurgeCharges));
 		if (Now - LastHunterPowerTime < BlackoutCooldown)
 		{
 			if (bShowFailureMessages)
@@ -3181,8 +5773,15 @@ bool ABHCharacter::UseHunterPowerAuthority(bool bShowFailureMessages)
 		LastHunterPowerTime = Now;
 		if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
 		{
-			BHGM->TriggerHunterBlackout(GetActorLocation());
-			BHGM->NotifyLoudNoise(GetActorLocation(), TEXT("blackout surge"));
+			BHGM->TriggerHunterBlackout(GetActorLocation(), BlackoutSurgeCharges);
+			if (!bRoleWarmup)
+			{
+				BHGM->NotifyLoudNoise(GetActorLocation(), TEXT("blackout surge"));
+			}
+		}
+		if (bRoleWarmup && bShowFailureMessages)
+		{
+			SendStatusMessage(TEXT("Warmup blackout fired. Lights and cooldown reset for the Hunt."));
 		}
 		return true;
 	}
@@ -3190,30 +5789,37 @@ bool ABHCharacter::UseHunterPowerAuthority(bool bShowFailureMessages)
 	if (BHPS->PlayerRole == EBHPlayerRole::FakeHunter)
 	{
 		FString MonitorBlockReason;
-		if (const ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
+		if (!bRoleWarmup)
 		{
-			if (!BHGM->CanUseHallMonitorTools(BHPS, MonitorBlockReason))
+			if (const ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
 			{
-				if (bShowFailureMessages)
+				if (!BHGM->CanUseHallMonitorTools(BHPS, MonitorBlockReason))
 				{
-					SendStatusMessage(MonitorBlockReason);
+					if (bShowFailureMessages)
+					{
+						SendStatusMessage(MonitorBlockReason);
+					}
+					return false;
 				}
-				return false;
 			}
 		}
 
-		const float FakeHintCooldown = 18.0f;
+		const float FakeHintCooldown = bRoleWarmup ? 2.0f : 18.0f;
 		if (Now - LastHunterPowerTime < FakeHintCooldown)
 		{
 			if (bShowFailureMessages)
 			{
-				SendStatusMessage(FString::Printf(TEXT("False hint cooling down: %ds."), FMath::CeilToInt(FakeHintCooldown - (Now - LastHunterPowerTime))));
+				SendStatusMessage(FString::Printf(TEXT("False marker cooling down: %ds."), FMath::CeilToInt(FakeHintCooldown - (Now - LastHunterPowerTime))));
 			}
 			return false;
 		}
 
 		LastHunterPowerTime = Now;
 		SendFakeHunterHint(false);
+		if (bRoleWarmup && bShowFailureMessages)
+		{
+			SendStatusMessage(TEXT("Warmup false hint sent. Hall Monitor cooldowns reset for the Hunt."));
+		}
 		return true;
 	}
 
@@ -3232,6 +5838,8 @@ void ABHCharacter::ServerDropDecoy_Implementation()
 bool ABHCharacter::DropDecoyAuthority(bool bShowFailureMessages)
 {
 	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	const bool bRoleWarmup = BHIsRoleWarmupPhase(BHGS);
 	if (!BHPS || BHPS->LifeState != EBHPlayerLifeState::Alive)
 	{
 		return false;
@@ -3240,21 +5848,25 @@ bool ABHCharacter::DropDecoyAuthority(bool bShowFailureMessages)
 	if (BHPS->PlayerRole == EBHPlayerRole::FakeHunter)
 	{
 		FString MonitorBlockReason;
-		if (const ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
+		if (!bRoleWarmup)
 		{
-			if (!BHGM->CanUseHallMonitorTools(BHPS, MonitorBlockReason))
+			if (const ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
 			{
-				if (bShowFailureMessages)
+				if (!BHGM->CanUseHallMonitorTools(BHPS, MonitorBlockReason))
 				{
-					SendStatusMessage(MonitorBlockReason);
+					if (bShowFailureMessages)
+					{
+						SendStatusMessage(MonitorBlockReason);
+					}
+					return false;
 				}
-				return false;
 			}
 		}
 	}
 
 	const float Now = GetWorld()->GetTimeSeconds();
-	if (Now - LastDecoyTime < DecoyCooldownSeconds)
+	const float EffectiveDecoyCooldownSeconds = bRoleWarmup ? 2.0f : DecoyCooldownSeconds;
+	if (Now - LastDecoyTime < EffectiveDecoyCooldownSeconds)
 	{
 		return false;
 	}
@@ -3281,7 +5893,14 @@ bool ABHCharacter::DropDecoyAuthority(bool bShowFailureMessages)
 		GetWorld()->SpawnActor<ABHNoiseDecoy>(SpawnLocation, GetActorRotation());
 		if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
 		{
-			BHGM->NotifyLoudNoise(SpawnLocation, TEXT("decoy"));
+			if (!bRoleWarmup)
+			{
+				BHGM->NotifyLoudNoise(SpawnLocation, TEXT("decoy"));
+			}
+		}
+		if (bRoleWarmup && bShowFailureMessages)
+		{
+			SendStatusMessage(TEXT("Warmup decoy placed. It will be cleared before the Hunt."));
 		}
 		return true;
 	}
@@ -3291,7 +5910,7 @@ bool ABHCharacter::DropDecoyAuthority(bool bShowFailureMessages)
 		GetWorld()->SpawnActor<ABHAlarmTrap>(SpawnLocation, GetActorRotation());
 		if (bShowFailureMessages)
 		{
-			SendStatusMessage(TEXT("Hall monitor trap placed."));
+			SendStatusMessage(bRoleWarmup ? TEXT("Warmup trap placed. It will be cleared before the Hunt.") : TEXT("Hall monitor trap arming. Survivors can dodge it until it wakes."));
 		}
 		return true;
 	}
@@ -3309,6 +5928,13 @@ void ABHCharacter::ServerUsePowerup_Implementation(EBHPowerupType Type)
 	if (!CanAct())
 	{
 		SendStatusMessage(TEXT("You cannot use a powerup right now."));
+		return;
+	}
+
+	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	if (BHIsRoleWarmupPhase(BHGS))
+	{
+		SendStatusMessage(TEXT("Powerups are saved for the real Hunt. Warmup resources reset at start."));
 		return;
 	}
 
@@ -3407,4 +6033,18 @@ void ABHCharacter::OnRep_OutOfPlay()
 {
 	ApplyHiddenState();
 	ApplyFlashlightState();
+}
+
+void ABHCharacter::OnRep_MovementSpecialState()
+{
+	ApplyMovementSpecialState();
+}
+
+void ABHCharacter::OnRep_TeacherCaptureAttackActive()
+{
+	RefreshMovementSpeedFromState();
+	if (bTeacherCaptureAttackActive)
+	{
+		PlayTeacherMeleeSwingLocal(false);
+	}
 }

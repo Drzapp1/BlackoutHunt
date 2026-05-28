@@ -6,6 +6,7 @@
 #include "BHGameSettings.generated.h"
 
 class UStateTree;
+class UBHMovementTuningAsset;
 
 UCLASS(Config = Game, DefaultConfig)
 class BLACKOUTHUNT_API UBHGameSettings : public UObject
@@ -69,8 +70,68 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Horror")
 	float BatteryRefillAmount;
 
+	UPROPERTY(Config, EditAnywhere, Category = "Horror|AntiCamp", meta = (ClampMin = "0.0"))
+	float AntiCampGraceSeconds;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Horror|AntiCamp", meta = (ClampMin = "0.0"))
+	float AntiCampWarningSeconds;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Horror|AntiCamp", meta = (ClampMin = "0.0"))
+	float AntiCampRequiredMoveSeconds;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Horror|AntiCamp", meta = (ClampMin = "0.0"))
+	float AntiCampRequiredMoveDistance;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Horror|AntiCamp", meta = (ClampMin = "0.0"))
+	float AntiCampMovementSpeedThreshold;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Horror|AntiCamp", meta = (ClampMin = "0.0"))
+	float AntiCampPressureDreadPerSecond;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Horror|AntiCamp", meta = (ClampMin = "0.0"))
+	float AntiCampPressureFearPerSecond;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Horror|AntiCamp", meta = (ClampMin = "0.0"))
+	float AntiCampAlertDelaySeconds;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Horror|AntiCamp", meta = (ClampMin = "0.0"))
+	float AntiCampAlertCooldownSeconds;
+
 	UPROPERTY(Config, EditAnywhere, Category = "Horror")
 	TArray<FBHJumpscareVariant> JumpscareVariants;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Horror|Footsteps")
+	TArray<FBHFootstepSurfaceProfile> FootstepSurfaceProfiles;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Movement|Imported Assets")
+	bool bUseImportedMovementAnimations;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Movement|Imported Assets")
+	FBHMovementAnimationSet MovementAnimations;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Movement|Production")
+	TSoftObjectPtr<UBHMovementTuningAsset> DefaultMovementTuningAsset;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Movement|Production")
+	TArray<FBHMovementRoleTuning> MovementRoleTunings;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Movement|Production")
+	FBHMovementAnimationProfile MovementAnimationProfile;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Horror|Variation")
+	FBHHorrorVariationSettings HorrorVariation;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Horror|Glass", meta = (ClampMin = "0.0"))
+	float GlassCrackDamageThreshold;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Horror|Glass", meta = (ClampMin = "0.0"))
+	float GlassBreakDamageThreshold;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Horror|Glass", meta = (ClampMin = "0.0"))
+	float GlassBreakNoiseStrength;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Horror|Navigation", meta = (ClampMin = "0.0"))
+	float ObjectiveBeatLifetimeSeconds;
 
 	UPROPERTY(Config, EditAnywhere, Category = "Audio", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float DefaultMasterVolume;
@@ -80,6 +141,45 @@ public:
 
 	UPROPERTY(Config, EditAnywhere, Category = "Audio", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float DefaultUiVolume;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Audio|Identity")
+	TSoftObjectPtr<USoundBase> FlashlightOnSound;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Audio|Identity")
+	TSoftObjectPtr<USoundBase> FlashlightOffSound;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Audio|Identity")
+	TSoftObjectPtr<USoundBase> CCTVStaticSound;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Audio|Identity")
+	TSoftObjectPtr<USoundBase> BreakerHumSound;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Audio|Identity")
+	TSoftObjectPtr<USoundBase> BreakerCompleteSound;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Audio|Identity")
+	TSoftObjectPtr<USoundBase> TeacherProximitySound;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Audio|Identity")
+	TSoftObjectPtr<USoundBase> LockerKnockSound;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Audio|Identity")
+	TSoftObjectPtr<USoundBase> PowerLossStingerSound;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Comfort")
+	bool bDefaultReducedJumpscares;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Comfort")
+	bool bDefaultReducedFlash;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Comfort")
+	bool bDefaultReducedCameraShake;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Comfort")
+	bool bDefaultCaptions;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Comfort")
+	bool bDefaultHighContrastHud;
 
 	UPROPERTY(Config, EditAnywhere, Category = "Bots")
 	int32 DefaultBotCount;

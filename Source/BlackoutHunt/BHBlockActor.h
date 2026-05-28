@@ -33,6 +33,10 @@ public:
 	void SetVisualTint(const FLinearColor& NewTint);
 	void SetBlockMaterial(EBHBlockMaterial NewMaterial);
 	void SetBlockCollisionEnabled(bool bEnabled);
+	void SetBlockHiddenInGame(bool bNewHidden);
+
+	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Block")
+	EBHBlockMaterial GetBlockMaterial() const { return BlockMaterial; }
 
 protected:
 	UFUNCTION()
@@ -41,7 +45,11 @@ protected:
 	UFUNCTION()
 	void OnRep_BlockMaterial();
 
+	UFUNCTION()
+	void OnRep_BlockState();
+
 	void ApplyVisualStyle();
+	void ApplyBlockState();
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UStaticMeshComponent> Mesh;
@@ -51,4 +59,10 @@ protected:
 
 	UPROPERTY(ReplicatedUsing = OnRep_BlockMaterial)
 	EBHBlockMaterial BlockMaterial;
+
+	UPROPERTY(ReplicatedUsing = OnRep_BlockState)
+	bool bBlockCollisionEnabled;
+
+	UPROPERTY(ReplicatedUsing = OnRep_BlockState)
+	bool bBlockHiddenInGame;
 };

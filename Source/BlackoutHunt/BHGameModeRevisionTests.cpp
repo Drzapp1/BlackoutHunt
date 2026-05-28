@@ -30,6 +30,14 @@ bool FBHGameModeRevisionTuningTest::RunTest(const FString& Parameters)
 		ABHGameMode::IsRevisionParticipantRole(EBHPlayerRole::Survivor));
 	TestFalse(TEXT("Teachers do not count toward student revision mastery gates."),
 		ABHGameMode::IsRevisionParticipantRole(EBHPlayerRole::Hunter));
+	TestFalse(TEXT("Late spectators do not count toward student revision mastery gates."),
+		ABHGameMode::IsRevisionParticipantRole(EBHPlayerRole::Spectator));
+	TestEqual(TEXT("Spectator Teacher preference is allowed but remains only a preference."),
+		ABHGameMode::SanitizeSpectatorRolePreference(EBHPlayerRole::Hunter),
+		EBHPlayerRole::Hunter);
+	TestEqual(TEXT("Spectator cannot request tester/admin as a next-round role."),
+		ABHGameMode::SanitizeSpectatorRolePreference(EBHPlayerRole::Tester),
+		EBHPlayerRole::Unassigned);
 	TestEqual(TEXT("Foggrounds doorframe origin is floor-aligned even when the door sits at gameplay height."),
 		ABHGameMode::ResolveFoggroundsDoorFrameOrigin(FVector(200.0f, -300.0f, 120.0f)).Z,
 		0.0);

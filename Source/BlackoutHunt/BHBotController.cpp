@@ -37,6 +37,58 @@ FString BHBotPersonalityName(EBHBotPersonality InPersonality)
 	return Enum ? Enum->GetNameStringByValue(static_cast<int64>(InPersonality)) : TEXT("UnknownPersonality");
 }
 
+FString BHBotArchetypeName(EBHPlayerRole Role, EBHBotPersonality InPersonality)
+{
+	if (Role == EBHPlayerRole::Hunter)
+	{
+		switch (InPersonality)
+		{
+		case EBHBotPersonality::Aggressive:
+			return TEXT("AggressiveTeacher");
+		case EBHBotPersonality::Suspicious:
+			return TEXT("LockerInspectorTeacher");
+		case EBHBotPersonality::Ambusher:
+			return TEXT("ObjectiveAmbusherTeacher");
+		default:
+			return TEXT("TeacherBot");
+		}
+	}
+
+	if (Role == EBHPlayerRole::FakeHunter)
+	{
+		switch (InPersonality)
+		{
+		case EBHBotPersonality::Trickster:
+			return TEXT("MisdirectionHallMonitor");
+		case EBHBotPersonality::Suspicious:
+			return TEXT("RoamingHallMonitor");
+		case EBHBotPersonality::Ambusher:
+			return TEXT("TrapHallMonitor");
+		default:
+			return TEXT("HallMonitorBot");
+		}
+	}
+
+	switch (InPersonality)
+	{
+	case EBHBotPersonality::Objective:
+		return TEXT("ObjectiveRunner");
+	case EBHBotPersonality::Cautious:
+	case EBHBotPersonality::Panicked:
+		return TEXT("CautiousHider");
+	case EBHBotPersonality::Trickster:
+	case EBHBotPersonality::Bold:
+		return TEXT("DecoyBaiter");
+	default:
+		return TEXT("SurvivorBot");
+	}
+}
+
+FString BHBotDecisionLabel(EBHPlayerRole Role, EBHBotPersonality InPersonality, const TCHAR* Action)
+{
+	return FString::Printf(TEXT("%s: %s"), *BHBotArchetypeName(Role, InPersonality), Action);
+}
+
 float BHBotRoleMoveSpeed(const ABHPlayerState* BotPS)
 {
 	if (BotPS && BotPS->PlayerRole == EBHPlayerRole::Hunter)
@@ -135,8 +187,11 @@ ABHBotController::ABHBotController()
 	LastProgressLocation = FVector::ZeroVector;
 	LastKnownSurvivorLocation = FVector::ZeroVector;
 	LastKnownSurvivorTime = -999.0f;
+	LastDecisionScore = 0.0f;
+	LastDecisionCandidateCount = 0;
 	Personality = EBHBotPersonality::Objective;
 	bPersonalityChosen = false;
+	bLastDecisionUsedPolicyModel = false;
 	CurrentIntent = EBHBotIntent::None;
 	LastStateTreeIntent = EBHBotIntent::None;
 	LastStateTreeIntentLocation = FVector::ZeroVector;
@@ -155,6 +210,23 @@ void ABHBotController::BeginPlay()
 	{
 		BotPerceptionComponent->OnTargetPerceptionUpdated.AddDynamic(this, &ABHBotController::OnTargetPerceptionUpdated);
 	}
+}
+
+void ABHBotController::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (BotPerceptionComponent)
+	{
+		BotPerceptionComponent->OnTargetPerceptionUpdated.RemoveDynamic(this, &ABHBotController::OnTargetPerceptionUpdated);
+	}
+
+	if (ABHGameMode* BHGM = GetBHGameMode())
+	{
+		BHGM->ReleaseBotObjective(this);
+	}
+	ClearInteraction();
+	CurrentClaimTarget.Reset();
+	CurrentInteractTarget.Reset();
+	Super::EndPlay(EndPlayReason);
 }
 
 void ABHBotController::Tick(float DeltaSeconds)
@@ -200,12 +272,16 @@ FString ABHBotController::GetBotDebugLine() const
 		}
 #endif
 	}
-	return FString::Printf(TEXT("%s role=%s personality=%s brain=%s intent=%s target=%s claim=%s lastSeen=%.1fs decisions=%d switches=%d last=%s pos=(%.0f,%.0f,%.0f)"),
+	return FString::Printf(TEXT("%s role=%s personality=%s archetype=%s brain=%s intent=%s score=%.2f candidates=%d policy=%s target=%s claim=%s lastSeen=%.1fs decisions=%d switches=%d last=%s pos=(%.0f,%.0f,%.0f)"),
 		*GetNameSafe(BotPS),
 		BotPS ? *StaticEnum<EBHPlayerRole>()->GetNameStringByValue(static_cast<int64>(BotPS->PlayerRole)) : TEXT("None"),
 		*BHBotPersonalityName(Personality),
+		*GetBotArchetypeLabel(),
 		*Brain,
 		*BHBotIntentName(CurrentIntent),
+		LastDecisionScore,
+		LastDecisionCandidateCount,
+		bLastDecisionUsedPolicyModel ? TEXT("local") : TEXT("cpp"),
 		*GetNameSafe(CurrentInteractTarget.Get()),
 		*GetNameSafe(CurrentClaimTarget.Get()),
 		LastSeenAge,
@@ -215,6 +291,12 @@ FString ABHBotController::GetBotDebugLine() const
 		ControlledPawn ? ControlledPawn->GetActorLocation().X : 0.0f,
 		ControlledPawn ? ControlledPawn->GetActorLocation().Y : 0.0f,
 		ControlledPawn ? ControlledPawn->GetActorLocation().Z : 0.0f);
+}
+
+FString ABHBotController::GetBotArchetypeLabel() const
+{
+	const ABHPlayerState* BotPS = GetBHPlayerState();
+	return BHBotArchetypeName(BotPS ? BotPS->PlayerRole : EBHPlayerRole::Unassigned, Personality);
 }
 
 void ABHBotController::OnPossess(APawn* InPawn)
@@ -320,7 +402,8 @@ bool ABHBotController::RunStateTreeIntent(EBHBotIntent Intent, AActor* Target, c
 	Decision.BaseScore = 1.0f;
 	Decision.Risk = 0.0f;
 	Decision.Urgency = 1.0f;
-	Decision.DebugLabel = FString::Printf(TEXT("state tree %s"), *BHBotIntentName(Intent));
+	const FString StateTreeAction = FString::Printf(TEXT("state tree %s"), *BHBotIntentName(Intent));
+	Decision.DebugLabel = BHBotDecisionLabel(BotPS->PlayerRole, Personality, *StateTreeAction);
 
 	const float Now = GetWorld()->GetTimeSeconds();
 	const bool bSameTarget = LastStateTreeIntentTarget.Get() == ResolvedTarget;
@@ -338,6 +421,8 @@ bool ABHBotController::RunStateTreeIntent(EBHBotIntent Intent, AActor* Target, c
 	LastStateTreeIntentTarget = ResolvedTarget;
 	LastStateTreeIntentLocation = ResolvedLocation;
 	LastStateTreeIntentTime = Now;
+	LastDecisionCandidateCount = 1;
+	bLastDecisionUsedPolicyModel = false;
 	CommitDecision(BotCharacter, BotPS, BHGS, Decision);
 	return true;
 }
@@ -564,6 +649,8 @@ void ABHBotController::ThinkSurvivor(ABHCharacter* BotCharacter, ABHPlayerState*
 		PatrolDecision.Intent = EBHBotIntent::Patrol;
 		PatrolDecision.Location = GetStablePatrolPoint(BotCharacter);
 		PatrolDecision.DebugLabel = TEXT("no free survivor objective");
+		LastDecisionCandidateCount = 1;
+		bLastDecisionUsedPolicyModel = false;
 		CommitDecision(BotCharacter, BotPS, BHGS, PatrolDecision);
 		return;
 	}
@@ -571,6 +658,8 @@ void ABHBotController::ThinkSurvivor(ABHCharacter* BotCharacter, ABHPlayerState*
 	FBHBotPolicyResult Result = ScoreDecisionCandidate(BuildPolicyFeatures(BotCharacter, BotPS, BHGS, Candidates), Candidates);
 	if (Candidates.IsValidIndex(Result.ChosenIndex))
 	{
+		LastDecisionCandidateCount = Candidates.Num();
+		bLastDecisionUsedPolicyModel = Result.bUsedModel;
 		CommitDecision(BotCharacter, BotPS, BHGS, Candidates[Result.ChosenIndex]);
 	}
 }
@@ -585,6 +674,8 @@ void ABHBotController::ThinkTeacher(ABHCharacter* BotCharacter, ABHPlayerState* 
 		PatrolDecision.Intent = EBHBotIntent::Patrol;
 		PatrolDecision.Location = GetStablePatrolPoint(BotCharacter);
 		PatrolDecision.DebugLabel = TEXT("no teacher lead");
+		LastDecisionCandidateCount = 1;
+		bLastDecisionUsedPolicyModel = false;
 		CommitDecision(BotCharacter, BotPS, BHGS, PatrolDecision);
 		return;
 	}
@@ -592,6 +683,8 @@ void ABHBotController::ThinkTeacher(ABHCharacter* BotCharacter, ABHPlayerState* 
 	FBHBotPolicyResult Result = ScoreDecisionCandidate(BuildPolicyFeatures(BotCharacter, BotPS, BHGS, Candidates), Candidates);
 	if (Candidates.IsValidIndex(Result.ChosenIndex))
 	{
+		LastDecisionCandidateCount = Candidates.Num();
+		bLastDecisionUsedPolicyModel = Result.bUsedModel;
 		CommitDecision(BotCharacter, BotPS, BHGS, Candidates[Result.ChosenIndex]);
 	}
 }
@@ -606,6 +699,8 @@ void ABHBotController::ThinkFakeHunter(ABHCharacter* BotCharacter, ABHPlayerStat
 		PatrolDecision.Intent = EBHBotIntent::Patrol;
 		PatrolDecision.Location = GetStablePatrolPoint(BotCharacter);
 		PatrolDecision.DebugLabel = TEXT("monitor patrol");
+		LastDecisionCandidateCount = 1;
+		bLastDecisionUsedPolicyModel = false;
 		CommitDecision(BotCharacter, BotPS, BHGS, PatrolDecision);
 		return;
 	}
@@ -613,6 +708,8 @@ void ABHBotController::ThinkFakeHunter(ABHCharacter* BotCharacter, ABHPlayerStat
 	FBHBotPolicyResult Result = ScoreDecisionCandidate(BuildPolicyFeatures(BotCharacter, BotPS, BHGS, Candidates), Candidates);
 	if (Candidates.IsValidIndex(Result.ChosenIndex))
 	{
+		LastDecisionCandidateCount = Candidates.Num();
+		bLastDecisionUsedPolicyModel = Result.bUsedModel;
 		CommitDecision(BotCharacter, BotPS, BHGS, Candidates[Result.ChosenIndex]);
 	}
 }
@@ -644,6 +741,9 @@ void ABHBotController::BuildSurvivorDecisionCandidates(ABHCharacter* BotCharacte
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	const FVector BotLocation = BotCharacter->GetActorLocation();
 	const float ObjectivePressure = GetObjectivePressure(BHGS);
+	const bool bObjectiveRunner = Personality == EBHBotPersonality::Objective;
+	const bool bCautiousHider = Personality == EBHBotPersonality::Cautious || Personality == EBHBotPersonality::Panicked;
+	const bool bDecoyBaiter = Personality == EBHBotPersonality::Trickster || Personality == EBHBotPersonality::Bold;
 	ABHCharacter* Threat = FindVisibleTeacherThreat(SightRange);
 	if (Threat)
 	{
@@ -661,25 +761,50 @@ void ABHBotController::BuildSurvivorDecisionCandidates(ABHCharacter* BotCharacte
 	{
 		if (ShouldStayHidden(BotCharacter, Threat, BHGS))
 		{
-			AddCandidate(OutCandidates, EBHBotIntent::Hide, nullptr, BotLocation, 2.0f, 0.05f, 0.7f, TEXT("stay hidden"));
+			AddCandidate(OutCandidates, EBHBotIntent::Hide, nullptr, BotLocation, bCautiousHider ? 2.55f : 2.0f, 0.05f, 0.7f, BHBotDecisionLabel(EBHPlayerRole::Survivor, Personality, TEXT("stay hidden")));
 			return;
 		}
 	}
 
 	if (Threat && !BotCharacter->IsHiddenInLocker())
 	{
-		if (ABHLocker* Locker = FindNearestLocker(true, false, Personality == EBHBotPersonality::Cautious || Personality == EBHBotPersonality::Panicked ? 1250.0f : 950.0f))
+		const float LockerSearchRange = bCautiousHider ? 1450.0f : (bObjectiveRunner ? 850.0f : 950.0f);
+		if (ABHLocker* Locker = FindNearestLocker(true, false, LockerSearchRange))
 		{
-			AddCandidate(OutCandidates, EBHBotIntent::Hide, Locker, Locker->GetActorLocation(), 2.7f, 0.18f, 1.0f, TEXT("hide from teacher"));
+			AddCandidate(OutCandidates, EBHBotIntent::Hide, Locker, Locker->GetActorLocation(), bCautiousHider ? 3.08f : 2.42f, bCautiousHider ? 0.10f : 0.18f, 1.0f, BHBotDecisionLabel(EBHPlayerRole::Survivor, Personality, TEXT("hide from teacher")));
 		}
 
 		const FVector Away = (BotLocation - Threat->GetActorLocation()).GetSafeNormal();
 		const FVector Side = FVector::CrossProduct(Away, FVector::UpVector).GetSafeNormal();
 		const FVector FleeLocation = BotLocation + (Away * FMath::FRandRange(850.0f, 1250.0f)) + (Side * FMath::FRandRange(-420.0f, 420.0f));
-		AddCandidate(OutCandidates, EBHBotIntent::Flee, Threat, FleeLocation, 2.25f, 0.24f, 0.92f, TEXT("break line of sight"));
-		if ((Personality == EBHBotPersonality::Trickster || Personality == EBHBotPersonality::Bold) && Now - LastBaitAttemptTime > 10.0f)
+		AddCandidate(OutCandidates, EBHBotIntent::Flee, Threat, FleeLocation, bCautiousHider ? 2.45f : (bObjectiveRunner ? 2.12f : 2.25f), 0.24f, 0.92f, BHBotDecisionLabel(EBHPlayerRole::Survivor, Personality, TEXT("break line of sight")));
+		if (bDecoyBaiter && Now - LastBaitAttemptTime > (Personality == EBHBotPersonality::Trickster ? 7.0f : 9.0f))
 		{
-			AddCandidate(OutCandidates, EBHBotIntent::Bait, Threat, FleeLocation, 1.85f, 0.42f, 0.84f, TEXT("bait teacher"));
+			AddCandidate(OutCandidates, EBHBotIntent::Bait, Threat, FleeLocation, Personality == EBHBotPersonality::Trickster ? 2.36f : 2.08f, 0.42f, 0.88f, BHBotDecisionLabel(EBHPlayerRole::Survivor, Personality, TEXT("drop decoy bait")));
+		}
+	}
+	else if (!Threat && LocalMemory.LastSeenHunterTime > -1000.0f)
+	{
+		const float HunterMemoryAge = Now - LocalMemory.LastSeenHunterTime;
+		const bool bFreshHunterMemory = HunterMemoryAge <= (bCautiousHider ? 7.5f : 5.0f);
+		if (bFreshHunterMemory && bCautiousHider && ObjectivePressure < (Personality == EBHBotPersonality::Panicked ? 0.92f : 0.74f))
+		{
+			const float LockerSearchRange = Personality == EBHBotPersonality::Panicked ? 1550.0f : 1250.0f;
+			if (ABHLocker* Locker = FindNearestLocker(true, false, LockerSearchRange))
+			{
+				AddCandidate(OutCandidates, EBHBotIntent::Hide, Locker, Locker->GetActorLocation(), Personality == EBHBotPersonality::Panicked ? 2.36f : 2.08f, 0.08f, 0.72f, BHBotDecisionLabel(EBHPlayerRole::Survivor, Personality, TEXT("hide after losing teacher")));
+			}
+		}
+		if (bFreshHunterMemory && bDecoyBaiter && Now - LastBaitAttemptTime > (Personality == EBHBotPersonality::Trickster ? 8.0f : 11.0f))
+		{
+			FVector Away = (BotLocation - LocalMemory.LastSeenHunterLocation).GetSafeNormal2D();
+			if (Away.IsNearlyZero())
+			{
+				Away = FVector(FMath::FRandRange(-1.0f, 1.0f), FMath::FRandRange(-1.0f, 1.0f), 0.0f).GetSafeNormal();
+			}
+			const FVector Side = FVector::CrossProduct(Away, FVector::UpVector).GetSafeNormal();
+			const FVector BaitLocation = BotLocation + Away * FMath::FRandRange(650.0f, 980.0f) + Side * FMath::FRandRange(-360.0f, 360.0f);
+			AddCandidate(OutCandidates, EBHBotIntent::Bait, LocalMemory.LastSeenHunter.Get(), BaitLocation, Personality == EBHBotPersonality::Trickster ? 1.78f : 1.52f, 0.34f, 0.58f, BHBotDecisionLabel(EBHPlayerRole::Survivor, Personality, TEXT("draw teacher off route")));
 		}
 	}
 
@@ -690,7 +815,7 @@ void ABHBotController::BuildSurvivorDecisionCandidates(ABHCharacter* BotCharacte
 			ABHExitGate* Exit = *It;
 			if (Exit && Exit->IsDirectorActive())
 			{
-				AddCandidate(OutCandidates, EBHBotIntent::Escape, Exit, Exit->GetActorLocation(), 2.8f + ObjectivePressure, GetThreatPressureForLocation(Exit->GetActorLocation()), 1.0f, TEXT("escape"));
+				AddCandidate(OutCandidates, EBHBotIntent::Escape, Exit, Exit->GetActorLocation(), 2.8f + ObjectivePressure + (bObjectiveRunner ? 0.35f : 0.0f), GetThreatPressureForLocation(Exit->GetActorLocation()), 1.0f, BHBotDecisionLabel(EBHPlayerRole::Survivor, Personality, TEXT("escape")));
 			}
 		}
 	}
@@ -704,8 +829,21 @@ void ABHBotController::BuildSurvivorDecisionCandidates(ABHCharacter* BotCharacte
 		}
 
 		const EBHBotIntent Intent = Station->IsQuestionSolved() ? EBHBotIntent::WorkStation : EBHBotIntent::AnswerStation;
-		const float Base = Station->IsQuestionSolved() ? 1.35f : 1.65f;
-		AddCandidate(OutCandidates, Intent, Station, Station->GetActorLocation(), Base + ObjectivePressure * 0.55f, GetThreatPressureForLocation(Station->GetActorLocation()), 0.75f + ObjectivePressure * 0.2f, Station->IsQuestionSolved() ? TEXT("work station") : TEXT("answer station"));
+		float Base = Station->IsQuestionSolved() ? 1.35f : 1.65f;
+		float Risk = GetThreatPressureForLocation(Station->GetActorLocation());
+		float Urgency = 0.75f + ObjectivePressure * 0.2f;
+		if (bObjectiveRunner)
+		{
+			Base += 0.42f;
+			Risk *= 0.72f;
+			Urgency += 0.12f;
+		}
+		else if (bCautiousHider)
+		{
+			Base -= ObjectivePressure >= 0.78f ? 0.06f : 0.24f;
+			Risk += 0.14f;
+		}
+		AddCandidate(OutCandidates, Intent, Station, Station->GetActorLocation(), Base + ObjectivePressure * 0.55f, Risk, Urgency, BHBotDecisionLabel(EBHPlayerRole::Survivor, Personality, Station->IsQuestionSolved() ? TEXT("work station") : TEXT("answer station")));
 	}
 
 	for (TActorIterator<ABHBreaker> It(GetWorld()); It; ++It)
@@ -719,19 +857,26 @@ void ABHBotController::BuildSurvivorDecisionCandidates(ABHCharacter* BotCharacte
 		const float SideWorkDone = BHGS && BHGS->SideObjectivesRequired > 0
 			? static_cast<float>(BHGS->SideObjectivesCompleted) / static_cast<float>(BHGS->SideObjectivesRequired)
 			: 1.0f;
-		AddCandidate(OutCandidates, EBHBotIntent::RepairBreaker, Breaker, Breaker->GetActorLocation(), 1.15f + SideWorkDone * 0.35f + ObjectivePressure * 0.35f, GetThreatPressureForLocation(Breaker->GetActorLocation()), 0.62f + ObjectivePressure * 0.25f, TEXT("repair breaker"));
+		AddCandidate(OutCandidates, EBHBotIntent::RepairBreaker, Breaker, Breaker->GetActorLocation(), 1.15f + SideWorkDone * 0.35f + ObjectivePressure * 0.35f + (bObjectiveRunner ? 0.30f : 0.0f), GetThreatPressureForLocation(Breaker->GetActorLocation()) + (bCautiousHider ? 0.10f : 0.0f), 0.62f + ObjectivePressure * 0.25f, BHBotDecisionLabel(EBHPlayerRole::Survivor, Personality, TEXT("repair breaker")));
 	}
 
 	if (OutCandidates.IsEmpty() || FMath::FRand() < 0.12f)
 	{
-		AddCandidate(OutCandidates, EBHBotIntent::Patrol, nullptr, GetStablePatrolPoint(BotCharacter), 0.28f, 0.1f, 0.1f, TEXT("survivor route variation"));
+		AddCandidate(OutCandidates, EBHBotIntent::Patrol, nullptr, GetStablePatrolPoint(BotCharacter), bDecoyBaiter ? 0.46f : 0.28f, 0.1f, 0.1f, BHBotDecisionLabel(EBHPlayerRole::Survivor, Personality, TEXT("route variation")));
 	}
 }
 
 void ABHBotController::BuildTeacherDecisionCandidates(ABHCharacter* BotCharacter, bool bCanCapture, TArray<FBHBotDecisionCandidate>& OutCandidates)
 {
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
-	const FVector BotLocation = BotCharacter->GetActorLocation();
+	const EBHPlayerRole BotRole = bCanCapture ? EBHPlayerRole::Hunter : EBHPlayerRole::FakeHunter;
+	const bool bAggressiveTeacher = bCanCapture && Personality == EBHBotPersonality::Aggressive;
+	const bool bSuspiciousHunter = Personality == EBHBotPersonality::Suspicious;
+	const bool bAmbusher = Personality == EBHBotPersonality::Ambusher;
+	const bool bHallMonitor = !bCanCapture;
+	const bool bMisdirectionMonitor = bHallMonitor && Personality == EBHBotPersonality::Trickster;
+	const bool bRoamingMonitor = bHallMonitor && Personality == EBHBotPersonality::Suspicious;
+	const bool bTrapMonitor = bHallMonitor && Personality == EBHBotPersonality::Ambusher;
 	if (ABHCharacter* Target = FindVisibleSurvivor(SightRange, false))
 	{
 		LastKnownSurvivorLocation = Target->GetActorLocation();
@@ -744,32 +889,45 @@ void ABHBotController::BuildTeacherDecisionCandidates(ABHCharacter* BotCharacter
 			LastSeenSurvivorStimulusTime = Now;
 			RecordStimulus(EBHBotStimulusType::Sight, Target, LastKnownSurvivorLocation, bCanCapture ? TEXT("teacher saw survivor") : TEXT("monitor saw survivor"), 1.5f);
 		}
-		AddCandidate(OutCandidates, bCanCapture ? EBHBotIntent::Chase : EBHBotIntent::DropTrap, Target, Target->GetActorLocation(), bCanCapture ? 3.1f : 1.9f, 0.05f, 1.0f, bCanCapture ? TEXT("chase visible survivor") : TEXT("pressure visible survivor"));
-		if (Now - LastPowerAttemptTime > 5.0f)
+		const float ContactBase = bCanCapture
+			? (bAggressiveTeacher ? 3.52f : (bAmbusher ? 2.94f : 3.1f))
+			: (bMisdirectionMonitor ? 2.34f : (bTrapMonitor ? 2.18f : 2.02f));
+		AddCandidate(OutCandidates, bCanCapture ? EBHBotIntent::Chase : EBHBotIntent::DropTrap, Target, Target->GetActorLocation(), ContactBase, 0.05f, 1.0f, BHBotDecisionLabel(BotRole, Personality, bCanCapture ? TEXT("chase visible survivor") : TEXT("pressure visible survivor")));
+		if (Now - LastPowerAttemptTime > (bAggressiveTeacher ? 3.6f : 5.0f))
 		{
-			AddCandidate(OutCandidates, EBHBotIntent::UsePower, Target, Target->GetActorLocation(), bCanCapture ? 1.65f : 1.25f, 0.0f, 0.65f, TEXT("power on contact"));
+			AddCandidate(OutCandidates, EBHBotIntent::UsePower, Target, Target->GetActorLocation(), bCanCapture ? (bAggressiveTeacher ? 1.95f : 1.65f) : 1.32f, 0.0f, bAggressiveTeacher ? 0.78f : 0.65f, BHBotDecisionLabel(BotRole, Personality, bCanCapture ? TEXT("blackout on contact") : TEXT("false pressure on contact")));
 		}
 	}
 
 	const EBHBotDifficulty Difficulty = GetBHGameMode() ? GetBHGameMode()->GetBotDifficulty() : EBHBotDifficulty::Normal;
-	const bool bAllowEmptySuspicion = Difficulty == EBHBotDifficulty::Hard || Personality == EBHBotPersonality::Suspicious;
+	const bool bAllowEmptySuspicion = Difficulty == EBHBotDifficulty::Hard || bSuspiciousHunter;
 	const float LastSeenAge = Now - LastKnownSurvivorTime;
 	if (LastSeenAge <= HearingMemorySeconds + 8.0f)
 	{
-		AddCandidate(OutCandidates, EBHBotIntent::InvestigateLastSeen, nullptr, LastKnownSurvivorLocation, 1.55f - LastSeenAge * 0.035f, 0.04f, 0.68f, TEXT("last seen route"));
-		if (ABHLocker* Locker = FindSuspiciousLocker(LastKnownSurvivorLocation, Difficulty == EBHBotDifficulty::Hard ? 1250.0f : 900.0f, bAllowEmptySuspicion))
+		AddCandidate(OutCandidates, EBHBotIntent::InvestigateLastSeen, nullptr, LastKnownSurvivorLocation, 1.55f - LastSeenAge * 0.035f + (bSuspiciousHunter ? 0.22f : 0.0f) + (bAggressiveTeacher ? 0.12f : 0.0f), 0.04f, 0.68f, BHBotDecisionLabel(BotRole, Personality, TEXT("last seen route")));
+		if (bMisdirectionMonitor && Now - LastPowerAttemptTime > 13.0f)
 		{
-			AddCandidate(OutCandidates, EBHBotIntent::SearchLocker, Locker, Locker->GetActorLocation(), 1.38f + (bAllowEmptySuspicion ? 0.28f : 0.0f), 0.08f, 0.7f, TEXT("suspicious locker"));
+			const FVector FalseMarkerLocation = BuildAmbushLocation(LastKnownSurvivorLocation, BotCharacter->GetActorLocation());
+			AddCandidate(OutCandidates, EBHBotIntent::UsePower, nullptr, FalseMarkerLocation, 1.22f - LastSeenAge * 0.025f, 0.0f, 0.62f, BHBotDecisionLabel(BotRole, Personality, TEXT("false marker off last seen")));
+		}
+		const float LockerSearchRange = Difficulty == EBHBotDifficulty::Hard ? 1250.0f : (bSuspiciousHunter ? 1180.0f : 900.0f);
+		if (ABHLocker* Locker = FindSuspiciousLocker(LastKnownSurvivorLocation, LockerSearchRange, bAllowEmptySuspicion))
+		{
+			AddCandidate(OutCandidates, EBHBotIntent::SearchLocker, Locker, Locker->GetActorLocation(), 1.38f + (bAllowEmptySuspicion ? 0.28f : 0.0f) + (bSuspiciousHunter ? 0.24f : 0.0f), 0.08f, 0.7f, BHBotDecisionLabel(BotRole, Personality, TEXT("check suspicious locker")));
 		}
 	}
 
 	FVector NoiseLocation = FVector::ZeroVector;
 	if (GetBHGameMode() && GetBHGameMode()->GetLatestBotNoiseLocation(HearingMemorySeconds, NoiseLocation))
 	{
-		AddCandidate(OutCandidates, EBHBotIntent::InvestigateNoise, nullptr, NoiseLocation, 1.22f, 0.08f, 0.58f, TEXT("noise memory"));
-		if (Now - LastPowerAttemptTime > 7.0f)
+		AddCandidate(OutCandidates, EBHBotIntent::InvestigateNoise, nullptr, NoiseLocation, 1.22f + (bSuspiciousHunter ? 0.24f : 0.0f) + (bRoamingMonitor ? 0.18f : 0.0f), 0.08f, 0.58f, BHBotDecisionLabel(BotRole, Personality, TEXT("investigate noise")));
+		if (Now - LastPowerAttemptTime > (bAggressiveTeacher ? 5.5f : 7.0f))
 		{
-			AddCandidate(OutCandidates, EBHBotIntent::UseScan, nullptr, NoiseLocation, 0.9f, 0.0f, 0.44f, TEXT("scan stale noise"));
+			AddCandidate(OutCandidates, EBHBotIntent::UseScan, nullptr, NoiseLocation, 0.9f + (bSuspiciousHunter ? 0.18f : 0.0f) + (bRoamingMonitor ? 0.18f : 0.0f), 0.0f, 0.44f, BHBotDecisionLabel(BotRole, Personality, TEXT("scan stale noise")));
+			if (bMisdirectionMonitor)
+			{
+				AddCandidate(OutCandidates, EBHBotIntent::UsePower, nullptr, NoiseLocation, 1.08f, 0.0f, 0.48f, BHBotDecisionLabel(BotRole, Personality, TEXT("false marker near noise")));
+			}
 		}
 	}
 
@@ -783,7 +941,7 @@ void ABHBotController::BuildTeacherDecisionCandidates(ABHCharacter* BotCharacter
 				? FMath::Clamp(1.0f - FVector::Dist2D(Station->GetActorLocation(), LastKnownSurvivorLocation) / 5200.0f, 0.0f, 0.55f)
 				: 0.0f;
 			const FVector AmbushLocation = LastSeenAge <= HearingMemorySeconds + 8.0f ? BuildAmbushLocation(LastKnownSurvivorLocation, Station->GetActorLocation()) : Station->GetActorLocation();
-			AddCandidate(OutCandidates, EBHBotIntent::AmbushObjective, Station, AmbushLocation, 1.0f + FMath::Max(0.0f, -Risk) + RoutePrediction, 0.0f, 0.46f + RoutePrediction, TEXT("ambush station"));
+			AddCandidate(OutCandidates, EBHBotIntent::AmbushObjective, Station, AmbushLocation, 1.0f + FMath::Max(0.0f, -Risk) + RoutePrediction + (bAmbusher ? 0.34f : 0.0f) + (bRoamingMonitor ? 0.16f : 0.0f) + (bTrapMonitor ? 0.20f : 0.0f), 0.0f, 0.46f + RoutePrediction, BHBotDecisionLabel(BotRole, Personality, bCanCapture ? TEXT("ambush station") : TEXT("monitor station route")));
 		}
 	}
 	for (TActorIterator<ABHBreaker> It(GetWorld()); It; ++It)
@@ -795,26 +953,30 @@ void ABHBotController::BuildTeacherDecisionCandidates(ABHCharacter* BotCharacter
 				? FMath::Clamp(1.0f - FVector::Dist2D(Breaker->GetActorLocation(), LastKnownSurvivorLocation) / 5200.0f, 0.0f, 0.45f)
 				: 0.0f;
 			const FVector AmbushLocation = LastSeenAge <= HearingMemorySeconds + 8.0f ? BuildAmbushLocation(LastKnownSurvivorLocation, Breaker->GetActorLocation()) : Breaker->GetActorLocation();
-			AddCandidate(OutCandidates, EBHBotIntent::AmbushObjective, Breaker, AmbushLocation, 0.86f + RoutePrediction, 0.0f, 0.36f + RoutePrediction, TEXT("ambush breaker"));
+			AddCandidate(OutCandidates, EBHBotIntent::AmbushObjective, Breaker, AmbushLocation, 0.86f + RoutePrediction + (bAmbusher ? 0.28f : 0.0f) + (bRoamingMonitor ? 0.16f : 0.0f) + (bTrapMonitor ? 0.18f : 0.0f), 0.0f, 0.36f + RoutePrediction, BHBotDecisionLabel(BotRole, Personality, bCanCapture ? TEXT("ambush breaker") : TEXT("monitor breaker route")));
 		}
 	}
 	if (ABHExitGate* Exit = FindActiveExit())
 	{
 		const FVector AmbushLocation = LastSeenAge <= HearingMemorySeconds + 8.0f ? BuildAmbushLocation(LastKnownSurvivorLocation, Exit->GetActorLocation()) : Exit->GetActorLocation();
-		AddCandidate(OutCandidates, EBHBotIntent::AmbushObjective, Exit, AmbushLocation, 1.7f, 0.0f, 0.86f, TEXT("guard exit"));
+		AddCandidate(OutCandidates, EBHBotIntent::AmbushObjective, Exit, AmbushLocation, 1.7f + (bAmbusher ? 0.26f : 0.0f), 0.0f, 0.86f, BHBotDecisionLabel(BotRole, Personality, bCanCapture ? TEXT("guard exit") : TEXT("monitor exit route")));
 	}
 
 	if (!bCanCapture && Now - LastTrapAttemptTime > 8.0f)
 	{
 		if (AActor* TrapTarget = FindHunterPatrolObjective())
 		{
-			AddCandidate(OutCandidates, EBHBotIntent::DropTrap, TrapTarget, TrapTarget->GetActorLocation(), 1.15f, 0.0f, 0.52f, TEXT("trap route"));
+			AddCandidate(OutCandidates, EBHBotIntent::DropTrap, TrapTarget, TrapTarget->GetActorLocation(), 1.15f + (bMisdirectionMonitor ? 0.30f : 0.16f) + (bTrapMonitor ? 0.24f : 0.0f), 0.0f, 0.52f, BHBotDecisionLabel(BotRole, Personality, TEXT("trap route")));
 		}
 	}
 
-	if (OutCandidates.IsEmpty())
+	if (!bCanCapture && (OutCandidates.IsEmpty() || Personality == EBHBotPersonality::Suspicious || FMath::FRand() < 0.18f))
 	{
-		AddCandidate(OutCandidates, EBHBotIntent::Patrol, nullptr, GetStablePatrolPoint(BotCharacter), 0.35f, 0.0f, 0.18f, TEXT("hunter patrol"));
+		AddCandidate(OutCandidates, EBHBotIntent::Patrol, nullptr, GetStablePatrolPoint(BotCharacter, 4.0f, 1000.0f), 0.82f, 0.0f, 0.22f, BHBotDecisionLabel(BotRole, Personality, TEXT("roam corridor")));
+	}
+	else if (OutCandidates.IsEmpty())
+	{
+		AddCandidate(OutCandidates, EBHBotIntent::Patrol, nullptr, GetStablePatrolPoint(BotCharacter), bAggressiveTeacher ? 0.48f : 0.35f, 0.0f, 0.18f, BHBotDecisionLabel(BotRole, Personality, TEXT("hunter patrol")));
 	}
 }
 
@@ -832,7 +994,6 @@ FBHBotPolicyFeatures ABHBotController::BuildPolicyFeatures(ABHCharacter* BotChar
 	{
 		const FBHBotDecisionCandidate& First = Candidates[0];
 		Features.DistanceToTarget = First.Distance;
-		Features.TargetClaimCount = First.Target.IsValid() && GetBHGameMode() ? GetBHGameMode()->CountBotClaimsForTarget(First.Target.Get()) : 0;
 	}
 	return Features;
 }
@@ -849,7 +1010,10 @@ FBHBotPolicyResult ABHBotController::ScoreDecisionCandidate(const FBHBotPolicyFe
 	float BestScore = -TNumericLimits<float>::Max();
 	for (int32 Index = 0; Index < Candidates.Num(); ++Index)
 	{
-		Candidates[Index].BaseScore = ApplyDifficultyNoise(Candidates[Index].BaseScore + Candidates[Index].Urgency * 0.35f - Candidates[Index].Risk * 0.45f);
+		Candidates[Index].BaseScore = ApplyDifficultyNoise(Candidates[Index].BaseScore
+			+ Candidates[Index].Urgency * 0.35f
+			- Candidates[Index].Risk * 0.45f
+			- static_cast<float>(Candidates[Index].TargetClaimCount) * 0.45f);
 		if (Candidates[Index].BaseScore > BestScore)
 		{
 			BestScore = Candidates[Index].BaseScore;
@@ -914,6 +1078,7 @@ void ABHBotController::CommitDecision(ABHCharacter* BotCharacter, ABHPlayerState
 	{
 		++IntentSwitches;
 	}
+	LastDecisionScore = Decision.BaseScore;
 	LastDecisionDebugLabel = Decision.DebugLabel;
 
 	switch (Decision.Intent)
@@ -937,7 +1102,8 @@ void ABHBotController::CommitDecision(ABHCharacter* BotCharacter, ABHPlayerState
 		}
 		else
 		{
-			if (Now - LastTrapAttemptTime > 9.0f)
+			const float HideDecoyCooldown = Personality == EBHBotPersonality::Trickster ? 6.0f : (Personality == EBHBotPersonality::Cautious ? 12.0f : 9.0f);
+			if (Now - LastTrapAttemptTime > HideDecoyCooldown)
 			{
 				LastTrapAttemptTime = Now;
 				BotCharacter->BotDropDecoyOrTrap();
@@ -947,18 +1113,23 @@ void ABHBotController::CommitDecision(ABHCharacter* BotCharacter, ABHPlayerState
 		break;
 	case EBHBotIntent::Flee:
 	case EBHBotIntent::Bait:
+	{
 		ClearInteraction();
 		if (Decision.Intent == EBHBotIntent::Bait)
 		{
 			LastBaitAttemptTime = Now;
 		}
-		if (Now - LastTrapAttemptTime > (Decision.Intent == EBHBotIntent::Bait ? 4.0f : 8.0f))
+		const float DecoyCooldown = Decision.Intent == EBHBotIntent::Bait
+			? (Personality == EBHBotPersonality::Trickster ? 3.0f : 4.0f)
+			: (Personality == EBHBotPersonality::Panicked ? 6.0f : 8.0f);
+		if (Now - LastTrapAttemptTime > DecoyCooldown)
 		{
 			LastTrapAttemptTime = Now;
 			BotCharacter->BotDropDecoyOrTrap();
 		}
 		MoveTowardLocation(Decision.Location, 170.0f);
 		break;
+	}
 	case EBHBotIntent::Chase:
 		ClearInteraction();
 		if (Target && IsCloseTo(Target, 245.0f) && BotPS->PlayerRole == EBHPlayerRole::Hunter)
@@ -969,7 +1140,7 @@ void ABHBotController::CommitDecision(ABHCharacter* BotCharacter, ABHPlayerState
 		{
 			MoveTowardActor(Target, 145.0f);
 		}
-		if (Now - LastPowerAttemptTime > 4.0f)
+		if (Now - LastPowerAttemptTime > (Personality == EBHBotPersonality::Aggressive ? 3.1f : 4.0f))
 		{
 			LastPowerAttemptTime = Now;
 			BotCharacter->BotUseHunterPower();
@@ -1006,7 +1177,7 @@ void ABHBotController::CommitDecision(ABHCharacter* BotCharacter, ABHPlayerState
 		{
 			MoveTowardLocation(Decision.Location, 260.0f);
 		}
-		if (BotPS->PlayerRole == EBHPlayerRole::FakeHunter && Now - LastTrapAttemptTime > 9.0f)
+		if (BotPS->PlayerRole == EBHPlayerRole::FakeHunter && Now - LastTrapAttemptTime > (Personality == EBHBotPersonality::Ambusher ? 5.5f : (Personality == EBHBotPersonality::Trickster ? 6.0f : 9.0f)))
 		{
 			LastTrapAttemptTime = Now;
 			BotCharacter->BotDropDecoyOrTrap();
@@ -1020,22 +1191,51 @@ void ABHBotController::CommitDecision(ABHCharacter* BotCharacter, ABHPlayerState
 		break;
 	case EBHBotIntent::UseScan:
 		ClearInteraction();
-		LastPowerAttemptTime = Now;
-		BotCharacter->BotUseScan();
+		if (Now - LastPowerAttemptTime > (BotPS->PlayerRole == EBHPlayerRole::FakeHunter ? 5.5f : 4.0f))
+		{
+			LastPowerAttemptTime = Now;
+			BotCharacter->BotUseScan();
+		}
 		MoveTowardLocation(Decision.Location, 220.0f);
 		break;
 	case EBHBotIntent::UsePower:
+	{
 		ClearInteraction();
-		LastPowerAttemptTime = Now;
-		BotCharacter->BotUseHunterPower();
+		const float PowerCooldown = BotPS->PlayerRole == EBHPlayerRole::Hunter
+			? (Personality == EBHBotPersonality::Aggressive ? 3.0f : 4.0f)
+			: (Personality == EBHBotPersonality::Trickster ? 5.0f : 6.5f);
+		const bool bPowerReady = Now - LastPowerAttemptTime > PowerCooldown;
 		if (Target)
 		{
+			if (bPowerReady)
+			{
+				LastPowerAttemptTime = Now;
+				BotCharacter->BotUseHunterPower();
+			}
 			MoveTowardActor(Target, BotPS->PlayerRole == EBHPlayerRole::Hunter ? 145.0f : 240.0f);
 		}
+		else if (!Decision.Location.IsNearlyZero())
+		{
+			if (bPowerReady && FVector::DistSquared2D(BotCharacter->GetActorLocation(), Decision.Location) <= FMath::Square(560.0f))
+			{
+				LastPowerAttemptTime = Now;
+				BotCharacter->BotUseHunterPower();
+			}
+			MoveTowardLocation(Decision.Location, 240.0f);
+		}
+		else
+		{
+			if (bPowerReady)
+			{
+				LastPowerAttemptTime = Now;
+				BotCharacter->BotUseHunterPower();
+			}
+		}
 		break;
+	}
 	case EBHBotIntent::DropTrap:
 		ClearInteraction();
-		if (Now - LastTrapAttemptTime > 3.0f)
+		if (Now - LastTrapAttemptTime > (BotPS->PlayerRole == EBHPlayerRole::FakeHunter ? (Personality == EBHBotPersonality::Ambusher ? 5.5f : 7.5f) : 4.0f))
 		{
 			LastTrapAttemptTime = Now;
 			BotCharacter->BotDropDecoyOrTrap();
@@ -1081,7 +1281,7 @@ void ABHBotController::AddCandidate(TArray<FBHBotDecisionCandidate>& Candidates,
 		{
 			ClaimCount = FMath::Max(0, ClaimCount - 1);
 		}
-		Candidate.BaseScore -= static_cast<float>(ClaimCount) * 0.45f;
+		Candidate.TargetClaimCount = ClaimCount;
 	}
 	if (Target)
 	{
@@ -1094,6 +1294,34 @@ void ABHBotController::AddCandidate(TArray<FBHBotDecisionCandidate>& Candidates,
 	if (Intent == EBHBotIntent::Hide && Personality == EBHBotPersonality::Panicked)
 	{
 		Candidate.BaseScore += 0.25f;
+	}
+	switch (Personality)
+	{
+	case EBHBotPersonality::Cautious:
+		Candidate.BaseScore += (Intent == EBHBotIntent::Hide || Intent == EBHBotIntent::Flee) ? 0.22f : 0.0f;
+		Candidate.BaseScore -= Candidate.Risk * 0.14f;
+		break;
+	case EBHBotPersonality::Objective:
+		Candidate.BaseScore += (Intent == EBHBotIntent::AnswerStation || Intent == EBHBotIntent::WorkStation || Intent == EBHBotIntent::RepairBreaker || Intent == EBHBotIntent::Escape) ? 0.28f : 0.0f;
+		break;
+	case EBHBotPersonality::Bold:
+		Candidate.BaseScore += (Intent == EBHBotIntent::Bait || Intent == EBHBotIntent::RepairBreaker || Intent == EBHBotIntent::Flee) ? 0.18f : 0.0f;
+		break;
+	case EBHBotPersonality::Trickster:
+		Candidate.BaseScore += (Intent == EBHBotIntent::Bait || Intent == EBHBotIntent::DropTrap || Intent == EBHBotIntent::Patrol) ? 0.24f : 0.0f;
+		break;
+	case EBHBotPersonality::Aggressive:
+		Candidate.BaseScore += (Intent == EBHBotIntent::Chase || Intent == EBHBotIntent::UsePower || Intent == EBHBotIntent::InvestigateLastSeen) ? 0.24f : 0.0f;
+		break;
+	case EBHBotPersonality::Suspicious:
+		Candidate.BaseScore += (Intent == EBHBotIntent::InvestigateNoise || Intent == EBHBotIntent::SearchLocker || Intent == EBHBotIntent::Patrol) ? 0.20f : 0.0f;
+		break;
+	case EBHBotPersonality::Ambusher:
+		Candidate.BaseScore += (Intent == EBHBotIntent::AmbushObjective || Intent == EBHBotIntent::DropTrap) ? 0.24f : 0.0f;
+		break;
+	case EBHBotPersonality::Panicked:
+	default:
+		break;
 	}
 	Candidate.BaseScore = ApplyDifficultyNoise(Candidate.BaseScore);
 	Candidate.DebugLabel = DebugLabel;
@@ -1487,13 +1715,15 @@ bool ABHBotController::CanSeeCharacter(const ABHCharacter* Other, float Range, b
 	}
 
 	const FVector ToTarget = Other->GetActorLocation() - ControlledPawn->GetActorLocation();
-	if (ToTarget.SizeSquared() > FMath::Square(Range))
+	const float SightProfileMultiplier = FMath::Clamp(Other->GetMovementSightProfileMultiplier(), 0.25f, 1.0f);
+	if (ToTarget.SizeSquared() > FMath::Square(Range * SightProfileMultiplier))
 	{
 		return false;
 	}
 
 	const float Dot = FVector::DotProduct(ControlledPawn->GetActorForwardVector(), ToTarget.GetSafeNormal());
-	if (Dot < 0.18f)
+	const float RequiredFacingDot = FMath::Lerp(0.34f, 0.18f, SightProfileMultiplier);
+	if (Dot < RequiredFacingDot)
 	{
 		return false;
 	}
@@ -1789,6 +2019,10 @@ bool ABHBotController::ShouldStayHidden(const ABHCharacter* BotCharacter, const 
 	{
 		return true;
 	}
+	if (Personality == EBHBotPersonality::Objective && ObjectivePressure > 0.58f && Now - LocalMemory.LastSeenHunterTime > 3.0f)
+	{
+		return false;
+	}
 	return false;
 }
 
@@ -1899,9 +2133,13 @@ void ABHBotController::HandleStationAnswer(ABHCharacter* BotCharacter, ABHObject
 	{
 		AnswerDelay += 0.45f;
 	}
+	else if (Personality == EBHBotPersonality::Cautious)
+	{
+		AnswerDelay += 0.18f;
+	}
 	else if (Personality == EBHBotPersonality::Objective)
 	{
-		AnswerDelay -= 0.18f;
+		AnswerDelay -= 0.30f;
 	}
 
 	if (Now - LastAnswerAttemptTime < AnswerDelay)
@@ -1920,12 +2158,12 @@ float ABHBotController::GetCorrectAnswerChance() const
 	switch (Difficulty)
 	{
 	case EBHBotDifficulty::Easy:
-		return Personality == EBHBotPersonality::Panicked ? 0.56f : 0.65f;
+		return Personality == EBHBotPersonality::Panicked ? 0.56f : (Personality == EBHBotPersonality::Objective ? 0.72f : 0.65f);
 	case EBHBotDifficulty::Hard:
-		return Personality == EBHBotPersonality::Objective ? 0.985f : 0.97f;
+		return Personality == EBHBotPersonality::Objective ? 0.99f : (Personality == EBHBotPersonality::Panicked ? 0.92f : 0.97f);
 	case EBHBotDifficulty::Normal:
 	default:
-		return Personality == EBHBotPersonality::Panicked ? 0.78f : (Personality == EBHBotPersonality::Objective ? 0.90f : 0.85f);
+		return Personality == EBHBotPersonality::Panicked ? 0.78f : (Personality == EBHBotPersonality::Objective ? 0.93f : (Personality == EBHBotPersonality::Cautious ? 0.82f : 0.85f));
 	}
 }
 

@@ -1,4 +1,5 @@
 #include "BHHUD.h"
+#include "BHBreakableGlassPane.h"
 #include "BHCharacter.h"
 #include "BHBreaker.h"
 #include "BHExitGate.h"
@@ -9,6 +10,8 @@
 #include "BHPlayerController.h"
 #include "BHPlayerState.h"
 #include "BHRevisionQuestionBank.h"
+#include "BHSecurityMonitor.h"
+#include "BHTrainBonusQuestionTerminal.h"
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
@@ -21,6 +24,16 @@ namespace
 	{
 		const int32 ClampedSeconds = FMath::Max(0, TotalSeconds);
 		return FString::Printf(TEXT("%02d:%02d"), ClampedSeconds / 60, ClampedSeconds % 60);
+	}
+
+	FString ClampHudLine(const FString& Text, int32 MaxCharacters)
+	{
+		const int32 SafeMax = FMath::Max(8, MaxCharacters);
+		if (Text.Len() <= SafeMax)
+		{
+			return Text;
+		}
+		return Text.Left(SafeMax - 3) + TEXT("...");
 	}
 
 	FString TrainPhaseLabel(EBHTrainPhase Phase)
@@ -42,6 +55,85 @@ namespace
 		case EBHTrainPhase::Inactive:
 		default:
 			return TEXT("TRAIN");
+		}
+	}
+
+	FString TrainPhaseObjective(EBHTrainPhase Phase)
+	{
+		switch (Phase)
+		{
+		case EBHTrainPhase::Arrival:
+			return TEXT("NEXT: Board the train before recap starts.");
+	case EBHTrainPhase::Recap:
+		return TEXT("NEXT: Read recap boards; snacks, drinks, and minigames are optional.");
+	case EBHTrainPhase::BonusQuestion:
+		return TEXT("NEXT: Use the bonus terminal with 1-4, or play optional minigames.");
+	case EBHTrainPhase::Shop:
+		return TEXT("NEXT: Buy role-eligible upgrades; train activities stay open.");
+		case EBHTrainPhase::StationStop:
+			return TEXT("NEXT: Doors are open. Board now.");
+		case EBHTrainPhase::Departing:
+			return TEXT("NEXT: Doors closed. Hold position for travel.");
+		case EBHTrainPhase::Inactive:
+		default:
+			return TEXT("NEXT: Await train route data.");
+		}
+	}
+
+	FString TrainPhaseNextBeat(EBHTrainPhase Phase)
+	{
+		switch (Phase)
+		{
+		case EBHTrainPhase::Arrival:
+			return TEXT("Next: recap boards.");
+		case EBHTrainPhase::Recap:
+			return TEXT("Next: bonus terminal.");
+		case EBHTrainPhase::BonusQuestion:
+			return TEXT("Next: shop carriage.");
+		case EBHTrainPhase::Shop:
+			return TEXT("Next: station stop.");
+		case EBHTrainPhase::StationStop:
+			return TEXT("Next: departure.");
+		case EBHTrainPhase::Departing:
+			return TEXT("Next: route loads.");
+		case EBHTrainPhase::Inactive:
+		default:
+			return TEXT("Next: waiting for route data.");
+		}
+	}
+
+	FString TrainDoorHudStatus(EBHTrainPhase Phase)
+	{
+		switch (Phase)
+		{
+		case EBHTrainPhase::Arrival:
+		case EBHTrainPhase::StationStop:
+			return TEXT("Doors open");
+		case EBHTrainPhase::Departing:
+			return TEXT("Doors closed for departure");
+		case EBHTrainPhase::Recap:
+		case EBHTrainPhase::BonusQuestion:
+		case EBHTrainPhase::Shop:
+			return TEXT("Doors closed while moving");
+		case EBHTrainPhase::Inactive:
+		default:
+			return TEXT("Doors pending");
+		}
+	}
+
+	FString SpectatorRolePreferenceLabel(EBHPlayerRole Role)
+	{
+		switch (Role)
+		{
+		case EBHPlayerRole::Hunter:
+			return TEXT("TEACHER");
+		case EBHPlayerRole::Survivor:
+			return TEXT("SURVIVOR");
+		case EBHPlayerRole::FakeHunter:
+			return TEXT("MONITOR");
+		case EBHPlayerRole::Unassigned:
+		default:
+			return TEXT("NONE");
 		}
 	}
 
@@ -68,6 +160,371 @@ namespace
 			&& (PlayerState->PlayerRole == EBHPlayerRole::Hunter
 				|| PlayerState->PlayerRole == EBHPlayerRole::FakeHunter
 				|| PlayerState->PlayerRole == EBHPlayerRole::Tester);
+	}
+
+	uint8 ObjectiveBeatRoleBit(EBHPlayerRole Role)
+	{
+		const int32 RoleIndex = static_cast<int32>(Role);
+		return RoleIndex >= 0 && RoleIndex < 8 ? static_cast<uint8>(1u << RoleIndex) : 0;
+	}
+
+	bool IsObjectiveBeatVisibleTo(const FBHObjectiveBeat& Beat, const ABHPlayerState* ViewerState)
+	{
+		if (Beat.AudienceRoleMask == 0)
+		{
+			return true;
+		}
+		if (!ViewerState)
+		{
+			return false;
+		}
+		if (ViewerState->PlayerRole == EBHPlayerRole::Tester)
+		{
+			return true;
+		}
+		return (Beat.AudienceRoleMask & ObjectiveBeatRoleBit(ViewerState->PlayerRole)) != 0;
+	}
+
+	bool IsAliveTeacherThreat(const ABHPlayerState* PlayerState)
+	{
+		return PlayerState
+			&& PlayerState->LifeState == EBHPlayerLifeState::Alive
+			&& (PlayerState->PlayerRole == EBHPlayerRole::Hunter
+				|| PlayerState->PlayerRole == EBHPlayerRole::Tester);
+	}
+
+	bool IsRevisionParticipant(const ABHPlayerState* PlayerState)
+	{
+		return PlayerState
+			&& PlayerState->LifeState == EBHPlayerLifeState::Alive
+			&& (PlayerState->PlayerRole == EBHPlayerRole::Survivor
+				|| PlayerState->PlayerRole == EBHPlayerRole::FakeHunter
+				|| PlayerState->PlayerRole == EBHPlayerRole::Tester);
+	}
+
+	bool AllowsClassroomWarmupObjectives(const ABHGameState* GameState)
+	{
+		return GameState
+			&& GameState->RoundPhase == EBHRoundPhase::Prep
+			&& !GameState->bPracticeMode
+			&& !GameState->bTestMode;
+	}
+
+	int32 CountRevisionParticipants(const ABHGameState* GameState)
+	{
+		if (!GameState)
+		{
+			return 0;
+		}
+
+		int32 Count = 0;
+		for (APlayerState* PlayerState : GameState->PlayerArray)
+		{
+			if (IsRevisionParticipant(Cast<ABHPlayerState>(PlayerState)))
+			{
+				++Count;
+			}
+		}
+		return Count;
+	}
+
+	int32 EstimateRevisionContributionTarget(const ABHGameState* GameState)
+	{
+		if (GameState && GameState->RevisionContributionTarget > 0)
+		{
+			return FMath::Clamp(GameState->RevisionContributionTarget, 1, 4);
+		}
+
+		const int32 ParticipantCount = CountRevisionParticipants(GameState);
+		const int32 StageIndex = GameState ? FMath::Clamp(GameState->TrainStageIndex, 0, 2) : 0;
+		const int32 QuestionsPerNode = ParticipantCount >= 10
+			? (StageIndex <= 0 ? 2 : 3)
+			: (ParticipantCount >= 6 ? 3 : 2);
+		return FMath::Clamp(QuestionsPerNode - 1 + StageIndex, 1, 4);
+	}
+
+	FString BuildTrainActionLine(const ABHGameState* GameState, const ABHPlayerState* PlayerState)
+	{
+		if (!GameState)
+		{
+			return TEXT("Wait for train status.");
+		}
+
+		switch (GameState->TrainPhase)
+		{
+		case EBHTrainPhase::Arrival:
+			return TEXT("Train arrived. Board now; snacks, drinks, and minigames are optional once aboard.");
+		case EBHTrainPhase::Recap:
+			return TEXT("Read recap boards, grab food/drink, or play optional social-car minigames.");
+		case EBHTrainPhase::BonusQuestion:
+			return PlayerState && PlayerState->IsAliveSurvivor()
+				? FString(TEXT("Answer the bonus terminal with 1-4, or play minigames for small points."))
+				: FString(TEXT("Bonus phase live. Snacks, drinks, and minigames are optional."));
+		case EBHTrainPhase::Shop:
+			return PlayerState && PlayerState->IsAliveHunter()
+				? FString(TEXT("Buy Teacher upgrades with capture points, or play social-car minigames."))
+				: FString(TEXT("Buy role-eligible powerups; food, drinks, and games stay open."));
+		case EBHTrainPhase::StationStop:
+			return TEXT("Doors open. Board before departure; outside players are pulled aboard.");
+		case EBHTrainPhase::Departing:
+			return TEXT("Boarding closed. Hold position while the next route loads.");
+		case EBHTrainPhase::Inactive:
+		default:
+			return TEXT("Wait for the next train instruction.");
+		}
+	}
+
+	FString BuildFinalEscapeActionLine(const ABHGameState* GameState, const ABHPlayerState* PlayerState)
+	{
+		if (!GameState)
+		{
+			return TEXT("Reach the evacuation train.");
+		}
+
+		if (GameState->FinalEscapeState == EBHFinalEscapeState::Cutscene)
+		{
+			return TEXT("Evacuation train unlocking. Control returns soon; Teacher release is delayed.");
+		}
+		if (GameState->FinalEscapeState == EBHFinalEscapeState::Departed)
+		{
+			return TEXT("Evacuation train departed. Round is resolving.");
+		}
+		if (GameState->FinalEscapeState == EBHFinalEscapeState::Failed)
+		{
+			return TEXT("Evacuation failed. Wait for the result screen.");
+		}
+		if (PlayerState && PlayerState->IsAliveHunter())
+		{
+			return TEXT("Final escape active. Stop students, but door camping disrupts capture pressure.");
+		}
+		if (PlayerState && PlayerState->PlayerRole == EBHPlayerRole::FakeHunter)
+		{
+			return TEXT("Final escape active. Pressure routes; Hall Monitors cannot board.");
+		}
+		return TEXT("Final escape active. Board any open evacuation train door.");
+	}
+
+	FString BuildHudActionLine(const ABHGameState* GameState, const ABHPlayerState* PlayerState)
+	{
+		if (!GameState)
+		{
+			return TEXT("Host or join a classroom session.");
+		}
+
+		if (PlayerState)
+		{
+			if (PlayerState->LifeState == EBHPlayerLifeState::Escaped)
+			{
+				return TEXT("You escaped. Watch the remaining route until the next phase.");
+			}
+			if (PlayerState->PlayerRole == EBHPlayerRole::Spectator)
+			{
+				return TEXT("Spectating until the next lobby. Watch the objective routes.");
+			}
+			if (PlayerState->LifeState == EBHPlayerLifeState::Captured && PlayerState->PlayerRole != EBHPlayerRole::FakeHunter)
+			{
+				return TEXT("Caught. Wait for Hall Monitor return or the next lobby.");
+			}
+		}
+
+		switch (GameState->RoundPhase)
+		{
+		case EBHRoundPhase::Lobby:
+			return PlayerState && PlayerState->bReady
+				? FString(TEXT("Ready set. Wait for every player and the host start."))
+				: FString(TEXT("Press Enter to ready up for the classroom round."));
+		case EBHRoundPhase::Prep:
+			return PlayerState && PlayerState->IsAliveHunter()
+				? FString(TEXT("Prep phase. Learn routes; capture starts when the hunt begins."))
+				: FString(TEXT("Prep phase. Scout objectives, lockers, and escape routes."));
+		case EBHRoundPhase::Intermission:
+			return BuildTrainActionLine(GameState, PlayerState);
+		case EBHRoundPhase::FinalEscape:
+			return BuildFinalEscapeActionLine(GameState, PlayerState);
+		case EBHRoundPhase::SurvivorsWin:
+			return TEXT("Survivors escaped. Returning to lobby shortly.");
+		case EBHRoundPhase::HunterWin:
+			return TEXT("Teacher wins. Returning to lobby shortly.");
+		case EBHRoundPhase::Hunt:
+		default:
+			break;
+		}
+
+		if (!PlayerState || PlayerState->PlayerRole == EBHPlayerRole::Unassigned)
+		{
+			return TEXT("Wait for role assignment.");
+		}
+
+		if (PlayerState->PlayerRole == EBHPlayerRole::Tester && PlayerState->LifeState == EBHPlayerLifeState::Alive)
+		{
+			return TEXT("Tester tools active. E handles objectives; Left Mouse captures; shortcuts stay in the role panel.");
+		}
+
+		if (PlayerState->IsAliveHunter())
+		{
+			return GameState->bExitUnlocked
+				? FString(TEXT("Exit open. Patrol active gates and capture visible students."))
+				: FString(TEXT("Find students. Left mouse captures; Q scans; R triggers blackout pressure."));
+		}
+
+		if (PlayerState->PlayerRole == EBHPlayerRole::FakeHunter)
+		{
+			if (GameState->bRevisionMode)
+			{
+				const int32 ContributionTarget = EstimateRevisionContributionTarget(GameState);
+				if (PlayerState->RevisionStats.ContributionCount < ContributionTarget)
+				{
+					return FString::Printf(TEXT("Hall Monitor tools locked. Answer at stations to contribute (%d/%d)."),
+						PlayerState->RevisionStats.ContributionCount,
+						ContributionTarget);
+				}
+				return TEXT("Hall Monitor tools ready. G places traps; Q real hint; R false marker.");
+			}
+			return TEXT("Hall Monitor: misdirect with traps and hints. You cannot capture.");
+		}
+
+		const int32 RemainingBreakers = FMath::Max(0, GameState->BreakersRequired - GameState->BreakersCompleted);
+		const int32 RemainingStations = FMath::Max(0, GameState->SideObjectivesRequired - GameState->SideObjectivesCompleted);
+		if (GameState->bExitUnlocked)
+		{
+			return GameState->RoundPhase == EBHRoundPhase::FinalEscape
+				? FString(TEXT("Board the evacuation train now."))
+				: FString(TEXT("Exit open. Reach the active gate."));
+		}
+		if (GameState->bRevisionMode)
+		{
+			if (RemainingStations > 0)
+			{
+				return FString::Printf(TEXT("Answer station questions. %d class node%s left."),
+					RemainingStations,
+				RemainingStations == 1 ? TEXT("") : TEXT("s"));
+			}
+			return TEXT("Classroom gates remain locked. Correct weak topics and help contributors catch up.");
+		}
+		if (RemainingBreakers > 0 && RemainingStations > 0)
+		{
+			return FString::Printf(TEXT("Repair %d breaker%s and finish %d station task%s to unlock the exit."),
+				RemainingBreakers,
+				RemainingBreakers == 1 ? TEXT("") : TEXT("s"),
+				RemainingStations,
+				RemainingStations == 1 ? TEXT("") : TEXT("s"));
+		}
+		if (RemainingBreakers > 0)
+		{
+			return FString::Printf(TEXT("Repair %d breaker%s to restore exit power."),
+				RemainingBreakers,
+				RemainingBreakers == 1 ? TEXT("") : TEXT("s"));
+		}
+		if (RemainingStations > 0)
+		{
+			return FString::Printf(TEXT("Complete %d station task%s to unlock the exit."),
+				RemainingStations,
+				RemainingStations == 1 ? TEXT("") : TEXT("s"));
+		}
+		return TEXT("All objectives are done. Find the active exit gate.");
+	}
+
+	FString BuildHudDetailLine(const ABHGameState* GameState, const ABHPlayerState* PlayerState)
+	{
+		if (!GameState)
+		{
+			return TEXT("");
+		}
+
+		if (GameState->RoundPhase == EBHRoundPhase::Intermission)
+		{
+			const float ServerNow = GameState->GetServerWorldTimeSeconds();
+			const int32 Countdown = FMath::Max(0, FMath::CeilToInt(GameState->TrainPhaseEndServerTime - ServerNow));
+			const FString PointsText = PlayerState
+				? (PlayerState->IsAliveHunter()
+					? FString::Printf(TEXT("CAPTURE %d"), PlayerState->HunterPoints)
+					: FString::Printf(TEXT("POINTS %d"), PlayerState->QuestionPoints))
+				: FString(TEXT("POINTS --"));
+			return FString::Printf(TEXT("%s / %s / %s / %s / %s"),
+				*TrainPhaseLabel(GameState->TrainPhase),
+				*FormatClock(Countdown),
+				GameState->TrainDestinationName.IsEmpty() ? TEXT("NEXT STOP") : *GameState->TrainDestinationName.ToUpper(),
+				*PointsText,
+				*TrainDoorHudStatus(GameState->TrainPhase).ToUpper());
+		}
+
+		if (GameState->RoundPhase == EBHRoundPhase::FinalEscape)
+		{
+			const float ServerNow = GameState->GetServerWorldTimeSeconds();
+			const int32 EscapeCountdown = FMath::Max(0, FMath::CeilToInt(GameState->FinalEscapeEndServerTime - ServerNow));
+			if (GameState->FinalEscapeState == EBHFinalEscapeState::Cutscene)
+			{
+				const int32 CutsceneCountdown = FMath::Max(0, FMath::CeilToInt(GameState->FinalEscapeCutsceneEndServerTime - ServerNow));
+				const int32 HunterReleaseCountdown = FMath::Max(0, FMath::CeilToInt(GameState->HunterReleaseServerTime - ServerNow));
+				return FString::Printf(TEXT("CONTROL %s / TEACHER RELEASE %s / TRAIN %s"),
+					*FormatClock(CutsceneCountdown),
+					*FormatClock(HunterReleaseCountdown),
+					*FormatClock(EscapeCountdown));
+			}
+			const int32 HunterReleaseCountdown = FMath::Max(0, FMath::CeilToInt(GameState->HunterReleaseServerTime - ServerNow));
+			return HunterReleaseCountdown > 0
+				? FString::Printf(TEXT("TRAIN DEPARTS %s / TEACHER RELEASE %s"), *FormatClock(EscapeCountdown), *FormatClock(HunterReleaseCountdown))
+				: FString::Printf(TEXT("TRAIN DEPARTS %s / TEACHER RELEASED"), *FormatClock(EscapeCountdown));
+		}
+
+		if (GameState->bRevisionMode)
+		{
+			const int32 ContributionTarget = EstimateRevisionContributionTarget(GameState);
+			const FString PersonalText = PlayerState && IsRevisionParticipant(PlayerState)
+				? FString::Printf(TEXT("YOU %.0f/%.0f CONTRIB %d/%d"),
+					PlayerState->RevisionStats.MasteryPercent,
+					GameState->RevisionIndividualThreshold,
+					PlayerState->RevisionStats.ContributionCount,
+					ContributionTarget)
+				: FString(TEXT("OBSERVE"));
+			return FString::Printf(TEXT("CLASS %.0f/%.0f  %s"),
+				GameState->RevisionClassMasteryAverage,
+				GameState->RevisionClassThreshold,
+				*PersonalText);
+		}
+
+		const FString BreakerReadout = GameState->BreakersRequired > 0
+			? FString::Printf(TEXT("%d/%d"), GameState->BreakersCompleted, GameState->BreakersRequired)
+			: FString(TEXT("CLEAR"));
+		const FString StationReadout = GameState->SideObjectivesRequired > 0
+			? FString::Printf(TEXT("%d/%d"), GameState->SideObjectivesCompleted, GameState->SideObjectivesRequired)
+			: FString(TEXT("CLEAR"));
+		const FString ModifierText = GameState->RoundModifier == EBHRoundModifier::None ? FString(TEXT("NO MODIFIER")) : GameState->GetRoundModifierText().ToUpper();
+		return FString::Printf(TEXT("POWER %s  TASKS %s  PRESENCE %.0f  %s"),
+			*BreakerReadout,
+			*StationReadout,
+			FMath::Clamp(GameState->PresenceLevel, 0.0f, 100.0f),
+			*ModifierText);
+	}
+
+	FString BuildHudAuxLine(const ABHGameState* GameState)
+	{
+		if (!GameState)
+		{
+			return TEXT("");
+		}
+
+		if (GameState->bRevisionMode)
+		{
+			return GameState->RevisionReviewTimeRemaining > 0
+				? FString::Printf(TEXT("REVIEW %ds / %s"), GameState->RevisionReviewTimeRemaining, *GameState->RevisionReviewText)
+				: FString::Printf(TEXT("WEAK TOPIC %s / %s"), *FBHRevisionQuestionBank::TopicToString(GameState->RevisionWeakTopic), *GameState->PresenceText);
+		}
+
+		if (GameState->RoundPhase == EBHRoundPhase::Intermission && !GameState->TrainAnnouncement.IsEmpty())
+		{
+			return ClampHudLine(FString::Printf(TEXT("%s / %s"), *GameState->TrainAnnouncement, *TrainPhaseNextBeat(GameState->TrainPhase)), 116);
+		}
+
+		if (GameState->RoundPhase == EBHRoundPhase::FinalEscape)
+		{
+			const FString Line = GameState->FinalEscapeState == EBHFinalEscapeState::Cutscene
+				? FString(TEXT("Evacuation doors unlocking. Get ready to sprint to any green doorway."))
+				: FString(TEXT("Use any green train door. Teacher camping near a door weakens capture pressure."));
+			return ClampHudLine(Line, 116);
+		}
+
+		return TEXT("");
 	}
 
 	bool HasNearbyPathThreat(UWorld* World, const ABHCharacter* Character, float& OutThreatAlpha)
@@ -208,7 +665,7 @@ namespace
 		{
 			const ABHCharacter* OtherCharacter = *It;
 			const ABHPlayerState* OtherPS = OtherCharacter ? OtherCharacter->GetBHPlayerState() : nullptr;
-			if (!OtherCharacter || OtherCharacter == Character || !IsAlivePathThreat(OtherPS))
+			if (!OtherCharacter || OtherCharacter == Character || !IsAliveTeacherThreat(OtherPS))
 			{
 				continue;
 			}
@@ -263,6 +720,7 @@ void ABHHUD::DrawHUD()
 	const ABHPlayerState* BHPS = PC ? PC->GetPlayerState<ABHPlayerState>() : nullptr;
 	ABHCharacter* Character = PC ? Cast<ABHCharacter>(PC->GetPawn()) : nullptr;
 	const bool bShowSurvivorWarnings = BHPS && BHPS->IsAliveSurvivor();
+	const bool bHighContrastHud = BHPC && BHPC->IsHighContrastHudEnabled();
 
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	if (BHGS)
@@ -296,38 +754,17 @@ void ABHHUD::DrawHUD()
 	if (BHGS)
 	{
 		const FString TimerText = BHGS->bTestMode ? FString(TEXT("TEST LOOP")) : (BHGS->bPracticeMode ? FString(TEXT("PRACTICE")) : FString::Printf(TEXT("T-%s"), *FormatClock(BHGS->RemainingTime)));
-		const FString ExitText = BHGS->bExitUnlocked ? FString(TEXT("EXIT OPEN")) : FString(TEXT("EXIT SHUT"));
-		const FString ObjectiveText = BHGS->ObjectiveText.IsEmpty() ? FString(TEXT("Restore power and reach the exit.")) : BHGS->ObjectiveText;
-		const FString ObjectiveLine = ObjectiveText.ToUpper();
-		const FString BreakerReadout = BHGS->BreakersRequired > 0 ? FString::Printf(TEXT("%d/%d"), BHGS->BreakersCompleted, BHGS->BreakersRequired) : FString(TEXT("CLEAR"));
-		const FString StationReadout = BHGS->SideObjectivesRequired > 0 ? FString::Printf(TEXT("%d/%d"), BHGS->SideObjectivesCompleted, BHGS->SideObjectivesRequired) : FString(TEXT("CLEAR"));
+		const FString ExitText = BHGS->bExitUnlocked ? FString(TEXT("EXIT OPEN")) : FString(TEXT("EXIT LOCKED"));
+		const FString ActionLine = BuildHudActionLine(BHGS, BHPS).ToUpper();
+		const FString DetailLine = BuildHudDetailLine(BHGS, BHPS).ToUpper();
+		const FString AuxLine = BuildHudAuxLine(BHGS).ToUpper();
 		const FLinearColor ExitColor = BHGS->bExitUnlocked ? FLinearColor(0.73f, 0.96f, 0.64f, 0.95f) : FLinearColor(0.96f, 0.24f, 0.16f, 0.95f);
 		DrawHudText(FString::Printf(TEXT("%s / %s"), *TimerText, *ExitText), SafePad, SafePad, ExitColor, GEngine->GetSmallFont(), 0.88f);
-		DrawWrappedHudText(ObjectiveLine, SafePad, SafePad + 22.0f, ReadoutW, FLinearColor(0.84f, 0.80f, 0.70f, 0.88f), GEngine->GetSmallFont(), 0.70f, 13.0f, 2);
-		DrawHudText(FString::Printf(TEXT("PWR %s  TASK %s  PRES %.0f"), *BreakerReadout, *StationReadout, FMath::Clamp(BHGS->PresenceLevel, 0.0f, 100.0f)), SafePad, SafePad + 55.0f, FLinearColor(0.62f, 0.58f, 0.51f, 0.82f), GEngine->GetSmallFont(), 0.62f);
-		if (BHGS->bRevisionMode)
+		DrawWrappedHudText(ActionLine, SafePad, SafePad + 22.0f, ReadoutW, bHighContrastHud ? FLinearColor(0.92f, 0.98f, 0.90f, 1.0f) : FLinearColor(0.84f, 0.80f, 0.70f, 0.90f), GEngine->GetSmallFont(), 0.70f, 13.0f, 2);
+		DrawWrappedHudText(DetailLine, SafePad, SafePad + 55.0f, ReadoutW, bHighContrastHud ? FLinearColor(0.78f, 0.92f, 0.88f, 0.96f) : FLinearColor(0.62f, 0.58f, 0.51f, 0.84f), GEngine->GetSmallFont(), 0.60f, 12.0f, 1);
+		if (!AuxLine.IsEmpty())
 		{
-			const FString RevisionLine = BHGS->RevisionReviewTimeRemaining > 0
-				? FString::Printf(TEXT("REVIEW %ds / %s"), BHGS->RevisionReviewTimeRemaining, *BHGS->RevisionReviewText)
-				: FString::Printf(TEXT("WEAK %s / %s"), *FBHRevisionQuestionBank::TopicToString(BHGS->RevisionWeakTopic), *BHGS->PresenceText);
-			DrawWrappedHudText(RevisionLine.ToUpper(), SafePad, SafePad + 73.0f, ReadoutW, FLinearColor(0.74f, 0.63f, 0.55f, 0.78f), GEngine->GetSmallFont(), 0.58f, 12.0f, 1);
-		}
-		if (BHGS->RoundPhase == EBHRoundPhase::Intermission)
-		{
-			const float ServerNow = BHGS->GetServerWorldTimeSeconds();
-			const int32 Countdown = FMath::Max(0, FMath::CeilToInt(BHGS->TrainPhaseEndServerTime - ServerNow));
-			const FString PointsText = BHPS ? FString::Printf(TEXT(" / POINTS %d"), BHPS->QuestionPoints) : TEXT("");
-			const FString TrainLine = FString::Printf(TEXT("%s / %s / %s%s"), *TrainPhaseLabel(BHGS->TrainPhase), *FormatClock(Countdown), *BHGS->TrainDestinationName.ToUpper(), *PointsText);
-			DrawWrappedHudText(TrainLine, SafePad, SafePad + 91.0f, ReadoutW, FLinearColor(0.48f, 0.90f, 0.82f, 0.88f), GEngine->GetSmallFont(), 0.64f, 13.0f, 2);
-		}
-		else if (BHGS->RoundPhase == EBHRoundPhase::FinalEscape)
-		{
-			const float ServerNow = BHGS->GetServerWorldTimeSeconds();
-			const int32 Countdown = FMath::Max(0, FMath::CeilToInt(BHGS->FinalEscapeEndServerTime - ServerNow));
-			const FString FinalLine = BHGS->FinalEscapeState == EBHFinalEscapeState::Cutscene
-				? FString::Printf(TEXT("EVACUATION TRAIN UNLOCKING / CONTROL RETURNS IN %s"), *FormatClock(FMath::Max(0, FMath::CeilToInt(BHGS->FinalEscapeCutsceneEndServerTime - ServerNow))))
-				: FString::Printf(TEXT("REACH THE EVACUATION TRAIN / DEPARTS IN %s"), *FormatClock(Countdown));
-			DrawWrappedHudText(FinalLine, SafePad, SafePad + 91.0f, ReadoutW, FLinearColor(0.90f, 0.34f, 0.24f, 0.92f), GEngine->GetSmallFont(), 0.66f, 13.0f, 2);
+			DrawWrappedHudText(AuxLine, SafePad, SafePad + 73.0f, ReadoutW, bHighContrastHud ? FLinearColor(0.84f, 0.86f, 0.68f, 0.92f) : FLinearColor(0.74f, 0.63f, 0.55f, 0.78f), GEngine->GetSmallFont(), 0.56f, 12.0f, 1);
 		}
 	}
 	else
@@ -360,7 +797,7 @@ void ABHHUD::DrawHUD()
 		if ((BHGS && BHGS->bTestMode) || BHPS->PlayerRole == EBHPlayerRole::Tester)
 		{
 			const float ShortcutW = FMath::Clamp(Canvas->ClipX * 0.34f, 310.0f, 540.0f);
-			DrawWrappedHudText(TEXT("TEST KEYS  INS RES  HOME TRAIN  PGUP PHASE  END FINAL  PGDN ESCAPE  DEL RECAP"),
+			DrawWrappedHudText(TEXT("TEST KEYS  INS RESET  HOME TRAIN  PGUP PHASE  END STATION  PGDN ESCAPE  DEL RECAP"),
 				Canvas->ClipX - SafePad - ShortcutW,
 				SafePad + 42.0f,
 				ShortcutW,
@@ -370,6 +807,54 @@ void ABHHUD::DrawHUD()
 				11.0f,
 				2);
 		}
+		else if (Character && BHPS->IsAliveHunter())
+		{
+			FString CaptureReadout = TEXT("AXE READY");
+			FLinearColor CaptureColor(0.68f, 0.92f, 0.62f, 0.88f);
+			if (Character->IsTeacherCaptureAttackActive())
+			{
+				CaptureReadout = Character->IsTeacherCaptureAttackInWindup() ? TEXT("AXE WINDUP") : TEXT("AXE RECOVERY");
+				CaptureColor = Character->IsTeacherCaptureAttackInWindup()
+					? FLinearColor(1.0f, 0.62f, 0.24f, 0.94f)
+					: FLinearColor(0.96f, 0.42f, 0.30f, 0.88f);
+			}
+			else if (Character->GetTeacherCaptureCooldownRemaining() > 0.0f)
+			{
+				CaptureReadout = FString::Printf(TEXT("AXE %ds"), FMath::CeilToInt(Character->GetTeacherCaptureCooldownRemaining()));
+				CaptureColor = FLinearColor(0.82f, 0.62f, 0.42f, 0.82f);
+			}
+
+			DrawRightAlignedText(CaptureReadout, Canvas->ClipX - SafePad, SafePad + 42.0f, CaptureColor, GEngine->GetSmallFont(), 0.66f);
+		}
+		else if (BHPS->PlayerRole == EBHPlayerRole::FakeHunter)
+		{
+			const float MonitorW = FMath::Clamp(Canvas->ClipX * 0.30f, 260.0f, 440.0f);
+			FString MonitorLine;
+			if (BHGS && BHGS->bRevisionMode)
+			{
+				const int32 ContributionTarget = EstimateRevisionContributionTarget(BHGS);
+				MonitorLine = BHPS->RevisionStats.ContributionCount < ContributionTarget
+					? FString::Printf(TEXT("TOOLS LOCKED / JOIN ANSWER TEAM %d/%d"), BHPS->RevisionStats.ContributionCount, ContributionTarget)
+					: FString::Printf(TEXT("Q REAL  R FALSE MARK  G TRAP / CONTRIBUTIONS %d/%d"), BHPS->RevisionStats.ContributionCount, ContributionTarget);
+			}
+			else
+			{
+				MonitorLine = TEXT("Q REAL  R AIMED MARK  G TRAP / NO CAPTURE");
+			}
+			DrawWrappedHudText(MonitorLine,
+				Canvas->ClipX - SafePad - MonitorW,
+				SafePad + 42.0f,
+				MonitorW,
+				FLinearColor(0.95f, 0.70f, 0.32f, 0.82f),
+				GEngine->GetSmallFont(),
+				0.50f,
+				11.0f,
+				2);
+		}
+		else if (BHPS->PlayerRole == EBHPlayerRole::Spectator && BHGS && BHGS->RoundPhase != EBHRoundPhase::Lobby)
+		{
+			DrawSpectatorSupportPanel(BHGS, BHPS);
+		}
 	}
 
 	if (Character)
@@ -378,7 +863,7 @@ void ABHHUD::DrawHUD()
 		const float VitalsY = Canvas->ClipY - SafePad - 132.0f;
 		const FString VitalsTitle = Character->IsDetentionMarked()
 			? FString::Printf(TEXT("MARKED %.0fs"), Character->GetDetentionMarkRemaining())
-			: (Character->IsHiddenInLocker() ? FString(TEXT("CONCEALED")) : FString(TEXT("BODY")));
+			: (Character->IsHiddenInLocker() ? FString(TEXT("CONCEALED")) : FString(TEXT("STATUS")));
 		DrawHudText(VitalsTitle.ToUpper(), SafePad, VitalsY - 19.0f, Character->IsDetentionMarked() ? FLinearColor(1.0f, 0.20f, 0.12f, 0.96f) : FLinearColor(0.76f, 0.72f, 0.64f, 0.84f), GEngine->GetSmallFont(), 0.66f);
 		DrawProgressBar(TEXT("BATTERY"), Character->GetFlashlightBattery(), SafePad, VitalsY, MeterW, FLinearColor(0.80f, 0.82f, 0.70f, 0.88f));
 
@@ -387,9 +872,26 @@ void ABHHUD::DrawHUD()
 			? FString::Printf(TEXT("%s %.0fm"), TeacherProximity.bLineOfSight ? TEXT("VISIBLE") : TEXT("NEAR"), TeacherProximity.DistanceCm / 100.0f)
 			: FString(TEXT("CLEAR"));
 		DrawProgressBar(TEXT("TEACHER"), TeacherProximity.ProximityPercent, SafePad, VitalsY + 32.0f, MeterW, FLinearColor(0.90f, 0.36f, 0.22f, 0.90f), TeacherText);
-		DrawRawMeter(TEXT("STAM"), Character->GetStaminaPercent(), SafePad, VitalsY + 68.0f, MeterW, FLinearColor(0.75f, 0.83f, 0.54f, 0.88f), false);
+		DrawRawMeter(TEXT("STAMINA"), Character->GetStaminaPercent(), SafePad, VitalsY + 68.0f, MeterW, FLinearColor(0.75f, 0.83f, 0.54f, 0.88f), false);
 		DrawRawMeter(TEXT("FEAR"), Character->GetFear(), SafePad, VitalsY + 86.0f, MeterW, FLinearColor(0.92f, 0.28f, 0.20f, 0.88f), true);
 		DrawRawMeter(TEXT("DREAD"), Character->GetDread(), SafePad, VitalsY + 104.0f, MeterW, FLinearColor(0.84f, 0.18f, 0.14f, 0.90f), true);
+		FString StressHint;
+		if (bShowSurvivorWarnings && (Character->GetFear() >= 74.0f || Character->GetDread() >= 82.0f))
+		{
+			StressHint = TEXT("PANIC NOISE: SLOW DOWN OR BREAK LINE OF SIGHT");
+		}
+		else if (bShowSurvivorWarnings && Character->GetDread() >= 62.0f)
+		{
+			StressHint = TEXT("DREAD: TASKS SLOW AND HIDING GETS RISKY");
+		}
+		else if (bShowSurvivorWarnings && Character->GetFear() >= 55.0f)
+		{
+			StressHint = TEXT("FEAR: SPRINTING GETS LOUDER");
+		}
+		if (!StressHint.IsEmpty())
+		{
+			DrawWrappedHudText(StressHint, SafePad, VitalsY + 122.0f, MeterW, FLinearColor(0.96f, 0.42f, 0.30f, 0.88f), GEngine->GetSmallFont(), 0.48f, 10.0f, 1);
+		}
 
 		if (!bShowSurvivorWarnings)
 		{
@@ -431,6 +933,9 @@ void ABHHUD::DrawHUD()
 		DrawHeatSensor(Character, BHGS, MapX, MapY);
 	}
 
+	DrawCCTVRevealMarker(Character, BHPC);
+	DrawObjectiveBeats(Character, BHGS);
+
 	const float WarningLevel = bShowSurvivorWarnings ? FMath::Max(Character ? Character->GetDread() : 0.0f, BHGS ? BHGS->PresenceLevel : 0.0f) : 0.0f;
 	const float DangerAlpha = FMath::Clamp(WarningLevel / 100.0f, 0.0f, 1.0f);
 	DrawCrosshair(DangerAlpha);
@@ -466,8 +971,11 @@ void ABHHUD::DrawHUD()
 			const bool bLongStatus = TextW > ToastW - 48.0f;
 			const float ToastH = bLongStatus ? 66.0f : 48.0f;
 			const float ToastY = Canvas->ClipY * 0.72f + (1.0f - StatusAlpha) * 10.0f;
-			DrawPanel(ToastX, ToastY, ToastW, ToastH, WithAlpha(FLinearColor(0.020f, 0.020f, 0.018f, 0.84f), StatusAlpha), WithAlpha(FLinearColor(0.96f, 0.74f, 0.36f, 0.94f), StatusAlpha));
-			DrawWrappedHudText(Status, ToastX + 24.0f, ToastY + 15.0f, ToastW - 48.0f, WithAlpha(FLinearColor(0.96f, 0.87f, 0.62f, 1.0f), StatusAlpha), GEngine->GetSmallFont(), 0.92f, 17.0f, 2);
+			const FLinearColor ToastFill = bHighContrastHud ? FLinearColor(0.0f, 0.0f, 0.0f, 0.92f) : FLinearColor(0.020f, 0.020f, 0.018f, 0.84f);
+			const FLinearColor ToastAccent = bHighContrastHud ? FLinearColor(1.0f, 0.96f, 0.42f, 1.0f) : FLinearColor(0.96f, 0.74f, 0.36f, 0.94f);
+			const FLinearColor ToastText = bHighContrastHud ? FLinearColor(1.0f, 0.98f, 0.82f, 1.0f) : FLinearColor(0.96f, 0.87f, 0.62f, 1.0f);
+			DrawPanel(ToastX, ToastY, ToastW, ToastH, WithAlpha(ToastFill, StatusAlpha), WithAlpha(ToastAccent, StatusAlpha));
+			DrawWrappedHudText(Status, ToastX + 24.0f, ToastY + 15.0f, ToastW - 48.0f, WithAlpha(ToastText, StatusAlpha), GEngine->GetSmallFont(), 0.92f, 17.0f, 2);
 		}
 	}
 
@@ -715,13 +1223,16 @@ void ABHHUD::DrawProgressBar(const FString& Label, float Value, float X, float Y
 	const bool bWarnLow = (Label.Contains(TEXT("BATTERY")) || Label.Contains(TEXT("STAMINA"))) && ClampedValue <= 24.0f;
 	const bool bWarnHigh = (Label.Contains(TEXT("FEAR")) || Label.Contains(TEXT("DREAD")) || Label.Contains(TEXT("PRESENCE")) || bTeacherSignal) && (bTeacherVisible || ClampedValue >= (bTeacherSignal ? 58.0f : 72.0f));
 	const bool bWarning = bWarnLow || bWarnHigh;
+	const ABHPlayerController* BHPC = PlayerOwner ? Cast<ABHPlayerController>(PlayerOwner) : nullptr;
+	const bool bHighContrast = BHPC && BHPC->IsHighContrastHudEnabled();
 	const FString RightText = ValueText.IsEmpty() ? FString::Printf(TEXT("%.0f%%"), ClampedValue) : ValueText;
-	const FLinearColor ReadoutColor = bWarning ? FLinearColor(1.0f, 0.42f, 0.30f, 0.98f) : MutedText();
-	DrawHudText(Label, X, Y - 4.0f, MutedText(), GEngine->GetSmallFont(), 0.66f);
+	const FLinearColor LabelColor = bHighContrast ? FLinearColor(0.90f, 0.98f, 0.94f, 1.0f) : MutedText();
+	const FLinearColor ReadoutColor = bWarning ? FLinearColor(1.0f, 0.42f, 0.30f, 0.98f) : LabelColor;
+	DrawHudText(Label, X, Y - 4.0f, LabelColor, GEngine->GetSmallFont(), 0.66f);
 	DrawRightAlignedText(RightText, X + W, Y - 4.0f, ReadoutColor, GEngine->GetSmallFont(), 0.66f);
-	DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, 0.42f), X, BarY + 1.0f, W, BarH);
-	DrawRect(FLinearColor(0.020f, 0.026f, 0.028f, 0.94f), X, BarY, W, BarH);
-	DrawRect(FLinearColor(0.82f, 0.95f, 0.90f, 0.10f), X, BarY, W, 1.0f);
+	DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, bHighContrast ? 0.64f : 0.42f), X, BarY + 1.0f, W, BarH);
+	DrawRect(FLinearColor(0.020f, 0.026f, 0.028f, bHighContrast ? 1.0f : 0.94f), X, BarY, W, BarH);
+	DrawRect(FLinearColor(0.82f, 0.95f, 0.90f, bHighContrast ? 0.22f : 0.10f), X, BarY, W, 1.0f);
 	if (FillW > 0.5f)
 	{
 		const FLinearColor EffectiveFill = bWarning ? FLinearColor(1.0f, 0.28f, 0.18f, 0.96f) : FillColor;
@@ -828,6 +1339,127 @@ void ABHHUD::DrawVisibleHunterArrow(const ABHCharacter* Character, const FVector
 	DrawHudText(Label, TextX, TextY, FLinearColor(1.0f, 0.34f, 0.22f, CueAlpha), GEngine->GetSmallFont(), TextScale);
 }
 
+void ABHHUD::DrawCCTVRevealMarker(const ABHCharacter* Character, const ABHPlayerController* PlayerController)
+{
+	if (!Canvas || !GEngine || !PlayerOwner || !PlayerController || !PlayerController->HasActiveCCTVReveal())
+	{
+		return;
+	}
+
+	const float Alpha = PlayerController->GetCCTVRevealAlpha();
+	if (Alpha <= 0.01f)
+	{
+		return;
+	}
+
+	const FVector RevealLocation = PlayerController->GetCCTVRevealLocation();
+	FVector2D ScreenPosition(Canvas->ClipX * 0.5f, Canvas->ClipY * 0.5f);
+	const bool bProjected = PlayerOwner->ProjectWorldLocationToScreen(RevealLocation, ScreenPosition, true);
+	const bool bOnScreen = bProjected
+		&& ScreenPosition.X >= 0.0f
+		&& ScreenPosition.X <= Canvas->ClipX
+		&& ScreenPosition.Y >= 0.0f
+		&& ScreenPosition.Y <= Canvas->ClipY;
+
+	if (!bOnScreen)
+	{
+		FVector ViewLocation = FVector::ZeroVector;
+		FRotator ViewRotation = FRotator::ZeroRotator;
+		PlayerOwner->GetPlayerViewPoint(ViewLocation, ViewRotation);
+		const FVector ToReveal = (RevealLocation - ViewLocation).GetSafeNormal();
+		const FRotationMatrix ViewMatrix(ViewRotation);
+		float Side = FVector::DotProduct(ToReveal, ViewMatrix.GetScaledAxis(EAxis::Y));
+		float Vertical = FVector::DotProduct(ToReveal, ViewMatrix.GetScaledAxis(EAxis::Z));
+		const float Forward = FVector::DotProduct(ToReveal, ViewMatrix.GetScaledAxis(EAxis::X));
+		if (Forward < 0.0f)
+		{
+			Side = -Side;
+			Vertical = -Vertical;
+		}
+		ScreenPosition.X = Canvas->ClipX * (0.5f + FMath::Clamp(Side, -1.0f, 1.0f) * 0.42f);
+		ScreenPosition.Y = Canvas->ClipY * (0.5f - FMath::Clamp(Vertical, -0.85f, 0.85f) * 0.36f);
+	}
+
+	const float EdgePad = 24.0f;
+	ScreenPosition.X = FMath::Clamp(ScreenPosition.X, EdgePad, Canvas->ClipX - EdgePad);
+	ScreenPosition.Y = FMath::Clamp(ScreenPosition.Y, EdgePad + 18.0f, Canvas->ClipY - EdgePad);
+
+	const float DistanceCm = Character ? FVector::Dist(Character->GetActorLocation(), RevealLocation) : 0.0f;
+	const float DistanceAlpha = Character ? 1.0f - FMath::Clamp(DistanceCm / 8000.0f, 0.0f, 1.0f) : 0.35f;
+	const float Pulse = GetWorld() ? 0.5f + 0.5f * FMath::Sin(GetWorld()->GetTimeSeconds() * 7.5f) : 0.5f;
+	float BracketW = FMath::Lerp(28.0f, 42.0f, DistanceAlpha);
+	float BracketH = FMath::Lerp(28.0f, 46.0f, DistanceAlpha);
+	if (bOnScreen)
+	{
+		const ABHCharacter* RevealTarget = PlayerController->GetCCTVRevealTarget();
+		if (IsValid(RevealTarget))
+		{
+			const FBox TargetBounds = RevealTarget->GetComponentsBoundingBox(true);
+			if (TargetBounds.IsValid)
+			{
+				const FVector BoundsCenter = TargetBounds.GetCenter();
+				const FVector TopLocation(BoundsCenter.X, BoundsCenter.Y, TargetBounds.Max.Z);
+				const FVector BottomLocation(BoundsCenter.X, BoundsCenter.Y, TargetBounds.Min.Z);
+				FVector2D TopScreen = ScreenPosition;
+				FVector2D BottomScreen = ScreenPosition;
+				if (PlayerOwner->ProjectWorldLocationToScreen(TopLocation, TopScreen, true)
+					&& PlayerOwner->ProjectWorldLocationToScreen(BottomLocation, BottomScreen, true))
+				{
+					const float BodyScreenH = FMath::Abs(BottomScreen.Y - TopScreen.Y);
+					const float BodyWorldH = FMath::Max(1.0f, TargetBounds.GetSize().Z);
+					const float BodyWorldW = FMath::Max(TargetBounds.GetSize().X, TargetBounds.GetSize().Y);
+					if (BodyScreenH > 12.0f)
+					{
+						BracketH = FMath::Clamp(BodyScreenH + 18.0f, 38.0f, Canvas->ClipY * 0.54f);
+						BracketW = FMath::Clamp(BodyScreenH * FMath::Clamp(BodyWorldW / BodyWorldH, 0.28f, 0.76f) + 18.0f, 30.0f, 112.0f);
+						ScreenPosition.X = FMath::Clamp((TopScreen.X + BottomScreen.X) * 0.5f, EdgePad, Canvas->ClipX - EdgePad);
+						ScreenPosition.Y = FMath::Clamp((TopScreen.Y + BottomScreen.Y) * 0.5f, EdgePad + 18.0f, Canvas->ClipY - EdgePad);
+					}
+				}
+			}
+		}
+	}
+	const float MarkerX = FMath::Clamp(ScreenPosition.X - BracketW * 0.5f, 8.0f, Canvas->ClipX - BracketW - 8.0f);
+	const float MarkerY = FMath::Clamp(ScreenPosition.Y - BracketH * 0.5f, 44.0f, Canvas->ClipY - BracketH - 18.0f);
+	const FString RawTargetName = PlayerController->GetCCTVRevealTargetName();
+	const bool bUnverifiedMotion = RawTargetName.Equals(TEXT("MOTION"), ESearchCase::IgnoreCase)
+		|| RawTargetName.Contains(TEXT("ECHO"), ESearchCase::IgnoreCase)
+		|| RawTargetName.Contains(TEXT("FALSE"), ESearchCase::IgnoreCase);
+	const FLinearColor ShadowColor(0.0f, 0.0f, 0.0f, 0.68f * Alpha);
+	const FLinearColor BaseMarkerColor = bUnverifiedMotion
+		? FLinearColor(1.0f, 0.68f, 0.24f, 1.0f)
+		: FLinearColor(0.42f, 0.92f, 0.86f, 1.0f);
+	const FLinearColor MarkerColor(BaseMarkerColor.R, BaseMarkerColor.G, BaseMarkerColor.B, (0.72f + Pulse * 0.20f) * Alpha);
+	const FLinearColor SoftColor(BaseMarkerColor.R, BaseMarkerColor.G, BaseMarkerColor.B, (0.16f + Pulse * 0.10f) * Alpha);
+
+	DrawCornerBrackets(MarkerX + 1.0f, MarkerY + 1.0f, BracketW, BracketH, ShadowColor, 9.0f, 2.4f);
+	DrawCornerBrackets(MarkerX, MarkerY, BracketW, BracketH, MarkerColor, 9.0f, 1.8f);
+	DrawCircle(ScreenPosition.X, ScreenPosition.Y, 7.0f + Pulse * 2.0f, SoftColor, 1.2f, 24);
+
+	const FString TargetName = RawTargetName.IsEmpty() ? FString(TEXT("SURVIVOR")) : RawTargetName.ToUpper();
+	FString Label;
+	if (Character)
+	{
+		Label = bUnverifiedMotion
+			? FString::Printf(TEXT("CCTV MOTION %.0fm"), DistanceCm / 100.0f)
+			: FString::Printf(TEXT("CCTV LOCK %s %.0fm"), *TargetName.Left(18), DistanceCm / 100.0f);
+	}
+	else
+	{
+		Label = bUnverifiedMotion
+			? FString(TEXT("CCTV MOTION"))
+			: FString::Printf(TEXT("CCTV LOCK %s"), *TargetName.Left(18));
+	}
+	float TextW = 0.0f;
+	float TextH = 0.0f;
+	const float TextScale = 0.58f;
+	Canvas->TextSize(GEngine->GetSmallFont(), Label, TextW, TextH, TextScale, TextScale);
+	const float TextX = FMath::Clamp(ScreenPosition.X - TextW * 0.5f, 10.0f, FMath::Max(10.0f, Canvas->ClipX - TextW - 10.0f));
+	const float TextY = FMath::Clamp(MarkerY + BracketH + 7.0f, 46.0f, Canvas->ClipY - TextH - 12.0f);
+	DrawHudText(Label, TextX + 1.0f, TextY + 1.0f, ShadowColor, GEngine->GetSmallFont(), TextScale);
+	DrawHudText(Label, TextX, TextY, MarkerColor, GEngine->GetSmallFont(), TextScale);
+}
+
 void ABHHUD::DrawRawMeter(const FString& Label, float Value, float X, float Y, float W, const FLinearColor& FillColor, bool bHighIsBad)
 {
 	if (!Canvas || !GEngine)
@@ -836,19 +1468,21 @@ void ABHHUD::DrawRawMeter(const FString& Label, float Value, float X, float Y, f
 	}
 
 	const float ClampedValue = FMath::Clamp(Value, 0.0f, 100.0f);
-	const float LabelW = 36.0f;
+	const float LabelW = 58.0f;
 	const float BarX = X + LabelW + 8.0f;
 	const float BarW = FMath::Max(1.0f, W - LabelW - 8.0f);
 	const float BarH = 9.0f;
 	const float FillW = BarW * (ClampedValue / 100.0f);
 	const bool bWarning = bHighIsBad ? ClampedValue >= 72.0f : ClampedValue <= 24.0f;
-	const FLinearColor TextColor = bWarning ? FLinearColor(1.0f, 0.42f, 0.30f, 0.98f) : FLinearColor(0.62f, 0.70f, 0.68f, 0.88f);
+	const ABHPlayerController* BHPC = PlayerOwner ? Cast<ABHPlayerController>(PlayerOwner) : nullptr;
+	const bool bHighContrast = BHPC && BHPC->IsHighContrastHudEnabled();
+	const FLinearColor TextColor = bWarning ? FLinearColor(1.0f, 0.42f, 0.30f, 0.98f) : (bHighContrast ? FLinearColor(0.90f, 0.98f, 0.94f, 1.0f) : FLinearColor(0.62f, 0.70f, 0.68f, 0.88f));
 	const FLinearColor EffectiveFill = bWarning ? FLinearColor(1.0f, 0.28f, 0.18f, 0.96f) : FillColor;
 
 	DrawHudText(Label, X, Y - 2.0f, TextColor, GEngine->GetSmallFont(), 0.56f);
-	DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, 0.44f), BarX, Y + 1.0f, BarW, BarH);
-	DrawRect(FLinearColor(0.016f, 0.020f, 0.022f, 0.90f), BarX, Y, BarW, BarH);
-	DrawRect(FLinearColor(0.82f, 0.95f, 0.90f, 0.10f), BarX, Y, BarW, 1.0f);
+	DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, bHighContrast ? 0.64f : 0.44f), BarX, Y + 1.0f, BarW, BarH);
+	DrawRect(FLinearColor(0.016f, 0.020f, 0.022f, bHighContrast ? 1.0f : 0.90f), BarX, Y, BarW, BarH);
+	DrawRect(FLinearColor(0.82f, 0.95f, 0.90f, bHighContrast ? 0.22f : 0.10f), BarX, Y, BarW, 1.0f);
 	if (FillW > 0.5f)
 	{
 		DrawRect(FLinearColor(EffectiveFill.R, EffectiveFill.G, EffectiveFill.B, EffectiveFill.A * 0.18f), BarX, Y - 1.0f, FillW, BarH + 2.0f);
@@ -1132,6 +1766,64 @@ void ABHHUD::DrawHeatSensor(const ABHCharacter* Character, const ABHGameState* G
 	DrawRect(FLinearColor(0.92f, 0.08f, 0.04f, 0.86f), X + 72.0f, Y + PanelH - 13.0f, 4.0f, 4.0f);
 }
 
+void ABHHUD::DrawObjectiveBeats(const ABHCharacter* Character, const ABHGameState* GameState)
+{
+	if (!Canvas || !GEngine || !PlayerOwner || !Character || !GameState || GameState->ObjectiveBeats.IsEmpty())
+	{
+		return;
+	}
+
+	const float ServerNow = GameState->GetServerWorldTimeSeconds();
+	const ABHPlayerState* ViewerState = PlayerOwner->GetPlayerState<ABHPlayerState>();
+	for (const FBHObjectiveBeat& Beat : GameState->ObjectiveBeats)
+	{
+		if (!IsObjectiveBeatVisibleTo(Beat, ViewerState))
+		{
+			continue;
+		}
+		if (Beat.Label.IsEmpty())
+		{
+			continue;
+		}
+		if (Beat.ExpireServerTime > 0.0f && ServerNow > Beat.ExpireServerTime)
+		{
+			continue;
+		}
+
+		const float DistanceCm = FVector::Dist2D(Beat.Location, Character->GetActorLocation());
+		const float MaxDisplayDistance = Beat.bPrimary ? 9000.0f : FMath::Max(900.0f, Beat.Radius);
+		if (DistanceCm > MaxDisplayDistance)
+		{
+			continue;
+		}
+
+		FVector2D ScreenLocation;
+		if (!PlayerOwner->ProjectWorldLocationToScreen(Beat.Location + FVector(0.0f, 0.0f, 115.0f), ScreenLocation, true))
+		{
+			continue;
+		}
+
+		const float X = FMath::Clamp(ScreenLocation.X, 34.0f, Canvas->ClipX - 34.0f);
+		const float Y = FMath::Clamp(ScreenLocation.Y, 80.0f, Canvas->ClipY - 96.0f);
+		const float Alpha = Beat.ExpireServerTime > 0.0f
+			? FMath::Clamp((Beat.ExpireServerTime - ServerNow) / 4.0f, 0.20f, 1.0f)
+			: 0.78f;
+		const FLinearColor Color = Beat.bDanger
+			? FLinearColor(1.0f, 0.16f, 0.08f, Alpha)
+			: (Beat.bPrimary ? FLinearColor(0.72f, 0.92f, 0.74f, Alpha) : FLinearColor(0.82f, 0.78f, 0.66f, Alpha));
+		const FString Text = FString::Printf(TEXT("%s %.0fm"), *Beat.Label.ToUpper(), DistanceCm / 100.0f);
+		float TextW = 0.0f;
+		float TextH = 0.0f;
+		const float Scale = Beat.bPrimary ? 0.56f : 0.48f;
+		Canvas->TextSize(GEngine->GetSmallFont(), Text, TextW, TextH, Scale, Scale);
+		const float TextX = FMath::Clamp(X - TextW * 0.5f, 14.0f, Canvas->ClipX - TextW - 14.0f);
+		DrawLine(X - 7.0f, Y, X + 7.0f, Y, Color, 1.0f);
+		DrawLine(X, Y - 7.0f, X, Y + 7.0f, Color, 1.0f);
+		DrawHudText(Text, TextX + 1.0f, Y + 11.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.62f), GEngine->GetSmallFont(), Scale);
+		DrawHudText(Text, TextX, Y + 10.0f, Color, GEngine->GetSmallFont(), Scale);
+	}
+}
+
 void ABHHUD::DrawInteractionPrompt(ABHCharacter* Character)
 {
 	if (!Canvas || !GEngine || !PlayerOwner || !Character || !GetWorld())
@@ -1174,12 +1866,127 @@ void ABHHUD::DrawInteractionPrompt(ABHCharacter* Character)
 		return;
 	}
 
-	const FText Label = IBHInteractableInterface::Execute_GetInteractionLabel(Target, Character);
-	const bool bCanInteract = IBHInteractableInterface::Execute_CanInteract(Target, Character);
-	const FString Prompt = Label.ToString().ToUpper();
+	FBHInteractionPromptInfo PromptInfo = IBHInteractableInterface::Execute_GetInteractionPromptInfo(Target, Character);
+	if (!PromptInfo.bUsePromptInfo)
+	{
+		PromptInfo.Label = IBHInteractableInterface::Execute_GetInteractionLabel(Target, Character);
+		PromptInfo.bCanInteract = IBHInteractableInterface::Execute_CanInteract(Target, Character);
+	}
+
+	const ABHPlayerState* BHPS = Character ? Character->GetBHPlayerState() : nullptr;
+	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	const ABHPlayerController* BHPC = Cast<ABHPlayerController>(PlayerOwner);
+	const bool bHighContrastHud = BHPC && BHPC->IsHighContrastHudEnabled();
+	const ABHObjectiveStation* PromptStation = Cast<ABHObjectiveStation>(Target);
+	const bool bCanViewStationQuestion = BHPS
+		&& BHPS->LifeState == EBHPlayerLifeState::Alive
+		&& (BHPS->IsAliveSurvivor() || (BHGS && BHGS->bRevisionMode && BHPS->PlayerRole == EBHPlayerRole::FakeHunter));
+	const bool bStationQuestionPrompt = PromptStation
+		&& PromptStation->IsDirectorActive()
+		&& !PromptStation->IsCompleted()
+		&& !PromptStation->IsQuestionSolved()
+		&& PromptStation->GetQuestionChoiceCount() > 0
+		&& bCanViewStationQuestion
+		&& BHGS
+		&& (BHGS->RoundPhase == EBHRoundPhase::Hunt || AllowsClassroomWarmupObjectives(BHGS));
+	const bool bBonusAnswerPrompt = Cast<ABHTrainBonusQuestionTerminal>(Target) && PromptInfo.bCanInteract;
+
+	if (PromptInfo.RiskText.IsEmpty())
+	{
+		if (Cast<ABHBreaker>(Target))
+		{
+			PromptInfo.RiskText = FText::FromString(TEXT("NOISY"));
+			PromptInfo.bNoisy = true;
+			PromptInfo.HoldSeconds = FMath::Max(PromptInfo.HoldSeconds, 1.0f);
+		}
+		else if (Cast<ABHSecurityMonitor>(Target))
+		{
+			PromptInfo.RiskText = FText::FromString(TEXT("EXPOSED"));
+			PromptInfo.bDangerous = true;
+		}
+		else if (PromptStation)
+		{
+			PromptInfo.RiskText = FText::FromString(bStationQuestionPrompt ? TEXT("ANSWER WITH 1-4") : TEXT("LISTENING"));
+			PromptInfo.bDangerous = true;
+		}
+		else if (Cast<ABHBreakableGlassPane>(Target))
+		{
+			PromptInfo.RiskText = FText::FromString(TEXT("LOUD"));
+			PromptInfo.bNoisy = true;
+		}
+	}
+
+	if (!PromptInfo.bCanInteract && PromptInfo.DisabledReason.IsEmpty())
+	{
+		if (PromptStation)
+		{
+			if (!PromptStation->IsDirectorActive())
+			{
+				PromptInfo.DisabledReason = FText::FromString(TEXT("INACTIVE THIS ROUND"));
+			}
+			else if (PromptStation->IsCompleted())
+			{
+				PromptInfo.DisabledReason = FText::FromString(TEXT("DONE"));
+			}
+			else if (!BHPS || BHPS->PlayerRole == EBHPlayerRole::Unassigned)
+			{
+				PromptInfo.DisabledReason = FText::FromString(TEXT("READY UP FIRST"));
+			}
+			else if (!BHGS || BHGS->RoundPhase != EBHRoundPhase::Hunt)
+			{
+				PromptInfo.DisabledReason = FText::FromString(TEXT("HUNT PHASE ONLY"));
+			}
+			else if (!bCanViewStationQuestion && !BHPS->IsAliveSurvivor())
+			{
+				PromptInfo.DisabledReason = FText::FromString(BHPS->PlayerRole == EBHPlayerRole::FakeHunter ? TEXT("CONTRIBUTE IN PHYSICS CLASSROOM") : TEXT("SURVIVOR OBJECTIVE"));
+			}
+			else if (!PromptStation->IsQuestionSolved() && PromptStation->GetQuestionChoiceCount() > 0)
+			{
+				PromptInfo.DisabledReason = FText::FromString(TEXT("ANSWER WITH 1-4 FIRST"));
+			}
+			else
+			{
+				PromptInfo.DisabledReason = FText::FromString(TEXT("LOCKED"));
+			}
+		}
+		else if (Cast<ABHExitGate>(Target))
+		{
+			const int32 RemainingBreakers = BHGS ? FMath::Max(0, BHGS->BreakersRequired - BHGS->BreakersCompleted) : 0;
+			const int32 RemainingStations = BHGS ? FMath::Max(0, BHGS->SideObjectivesRequired - BHGS->SideObjectivesCompleted) : 0;
+			if (BHPS && BHPS->PlayerRole == EBHPlayerRole::FakeHunter)
+			{
+				PromptInfo.DisabledReason = FText::FromString(TEXT("HALL MONITORS CANNOT ESCAPE"));
+			}
+			else if (BHPS && BHPS->IsAliveHunter())
+			{
+				PromptInfo.DisabledReason = FText::FromString(TEXT("TEACHER CANNOT ESCAPE"));
+			}
+			else if (BHGS && BHGS->bRevisionMode)
+			{
+				PromptInfo.DisabledReason = FText::FromString(TEXT("MASTERY OR CONTRIBUTION GATE"));
+			}
+			else if (RemainingBreakers > 0 || RemainingStations > 0)
+			{
+				PromptInfo.DisabledReason = FText::FromString(FString::Printf(TEXT("FINISH POWER %d / TASKS %d"), RemainingBreakers, RemainingStations));
+			}
+			else
+			{
+				PromptInfo.DisabledReason = FText::FromString(TEXT("EXIT LOCKED"));
+			}
+		}
+	}
+
+	const bool bCanInteract = PromptInfo.bCanInteract || bStationQuestionPrompt || bBonusAnswerPrompt;
+	FString Prompt = PromptInfo.Label.IsEmpty() ? FString(TEXT("INTERACT")) : PromptInfo.Label.ToString().ToUpper();
+	if (bStationQuestionPrompt)
+	{
+		Prompt.ReplaceInline(TEXT(": PRESS 1-4"), TEXT(""));
+		Prompt.ReplaceInline(TEXT(" PRESS 1-4"), TEXT(""));
+	}
 	const FString DistanceText = TargetDistanceCm > 1.0f ? FString::Printf(TEXT(" / %.1fm"), TargetDistanceCm / 100.0f) : FString();
+	const FString KeyText = (bStationQuestionPrompt || bBonusAnswerPrompt) ? TEXT("1-4") : (PromptInfo.HoldSeconds > 0.05f ? TEXT("HOLD E") : TEXT("E"));
 	const FString PromptLine = bCanInteract
-		? FString::Printf(TEXT("E / %s%s"), *Prompt, *DistanceText)
+		? FString::Printf(TEXT("%s / %s%s"), *KeyText, *Prompt, *DistanceText)
 		: FString::Printf(TEXT("NO / %s%s"), *Prompt, *DistanceText);
 
 	float TextW = 0.0f;
@@ -1189,21 +1996,42 @@ void ABHHUD::DrawInteractionPrompt(ABHCharacter* Character)
 
 	const float PromptX = (Canvas->ClipX - TextW) * 0.5f;
 	const float PromptY = Canvas->ClipY * 0.5f + 29.0f;
-	const FLinearColor PromptColor = bCanInteract ? FLinearColor(0.82f, 0.78f, 0.66f, 0.88f) : FLinearColor(0.54f, 0.50f, 0.45f, 0.72f);
+	const FLinearColor PromptColor = bHighContrastHud
+		? (bCanInteract ? FLinearColor(0.94f, 1.0f, 0.86f, 1.0f) : FLinearColor(0.82f, 0.84f, 0.82f, 0.92f))
+		: (bCanInteract ? FLinearColor(0.82f, 0.78f, 0.66f, 0.88f) : FLinearColor(0.54f, 0.50f, 0.45f, 0.72f));
 	DrawHudText(PromptLine, PromptX + 1.0f, PromptY + 1.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.42f), GEngine->GetSmallFont(), Scale);
 	DrawHudText(PromptLine, PromptX, PromptY, PromptColor, GEngine->GetSmallFont(), Scale);
 	if (bCanInteract)
 	{
 		const float ScratchY = PromptY + TextH + 3.0f;
-		DrawLine(PromptX + TextW * 0.18f, ScratchY, PromptX + TextW * 0.82f, ScratchY + 1.0f, FLinearColor(0.82f, 0.18f, 0.12f, 0.44f), 1.0f);
+		const FLinearColor ScratchColor = PromptInfo.bDangerous || PromptInfo.bNoisy ? FLinearColor(0.92f, 0.14f, 0.08f, 0.62f) : FLinearColor(0.82f, 0.18f, 0.12f, 0.44f);
+		DrawLine(PromptX + TextW * 0.18f, ScratchY, PromptX + TextW * 0.82f, ScratchY + 1.0f, ScratchColor, 1.0f);
+		if (PromptInfo.Progress > 0.01f)
+		{
+			DrawLine(PromptX + TextW * 0.18f, ScratchY + 4.0f, PromptX + TextW * FMath::Lerp(0.18f, 0.82f, PromptInfo.Progress), ScratchY + 4.0f, FLinearColor(0.78f, 0.88f, 0.62f, 0.76f), 2.0f);
+		}
 	}
 
-	const ABHPlayerState* BHPS = Character ? Character->GetBHPlayerState() : nullptr;
-	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
-	const bool bCanViewRevisionQuestion = BHPS
-		&& BHPS->LifeState == EBHPlayerLifeState::Alive
-		&& (BHPS->IsAliveSurvivor() || (BHGS && BHGS->bRevisionMode && BHPS->PlayerRole == EBHPlayerRole::FakeHunter));
-	if (const ABHObjectiveStation* Station = Cast<ABHObjectiveStation>(Target); Station && bCanViewRevisionQuestion)
+	const FText DetailText = bCanInteract ? PromptInfo.RiskText : PromptInfo.DisabledReason;
+	if (!DetailText.IsEmpty())
+	{
+		const FString DetailLine = DetailText.ToString().ToUpper();
+		float DetailW = 0.0f;
+		float DetailH = 0.0f;
+		const float DetailScale = 0.50f;
+		Canvas->TextSize(GEngine->GetSmallFont(), DetailLine, DetailW, DetailH, DetailScale, DetailScale);
+		const float DetailX = (Canvas->ClipX - DetailW) * 0.5f;
+		const float DetailY = PromptY + TextH + 8.0f;
+		const FLinearColor DetailColor = bCanInteract
+			? (PromptInfo.bNoisy || PromptInfo.bDangerous
+				? (bHighContrastHud ? FLinearColor(1.0f, 0.42f, 0.24f, 1.0f) : FLinearColor(0.96f, 0.28f, 0.14f, 0.84f))
+				: (bHighContrastHud ? FLinearColor(0.82f, 0.94f, 0.86f, 0.96f) : FLinearColor(0.56f, 0.62f, 0.58f, 0.74f)))
+			: (bHighContrastHud ? FLinearColor(0.92f, 0.74f, 0.52f, 0.96f) : FLinearColor(0.58f, 0.52f, 0.46f, 0.70f));
+		DrawHudText(DetailLine, DetailX + 1.0f, DetailY + 1.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.46f), GEngine->GetSmallFont(), DetailScale);
+		DrawHudText(DetailLine, DetailX, DetailY, DetailColor, GEngine->GetSmallFont(), DetailScale);
+	}
+
+	if (const ABHObjectiveStation* Station = Cast<ABHObjectiveStation>(Target); Station && bCanViewStationQuestion)
 	{
 		DrawQuestionPanel(Station);
 	}
@@ -1264,18 +2092,26 @@ void ABHHUD::DrawNearbyNameTags(const ABHCharacter* Character)
 		}
 
 		FString Label = OtherPS->GetPlayerName().IsEmpty() ? FString(TEXT("PLAYER")) : OtherPS->GetPlayerName().ToUpper();
-		const bool bThreatRole = OtherPS->PlayerRole == EBHPlayerRole::Hunter || OtherPS->PlayerRole == EBHPlayerRole::FakeHunter;
-		if (bThreatRole)
+		const bool bTeacherRole = OtherPS->PlayerRole == EBHPlayerRole::Hunter || OtherPS->PlayerRole == EBHPlayerRole::Tester;
+		const bool bHallMonitorRole = OtherPS->PlayerRole == EBHPlayerRole::FakeHunter;
+		const bool bThreatRole = bTeacherRole || bHallMonitorRole;
+		if (bTeacherRole)
 		{
-			Label = TEXT("HUNTER");
+			Label = TEXT("TEACHER");
+		}
+		else if (bHallMonitorRole)
+		{
+			Label = TEXT("HALL MONITOR");
 		}
 
 		const float DistanceAlpha = 1.0f - FMath::Clamp(FMath::Sqrt(DistanceSq) / MaxNameTagDistance, 0.0f, 1.0f);
 		const float Alpha = FMath::Lerp(0.48f, 0.96f, DistanceAlpha);
 		const float Scale = bThreatRole ? 0.98f : 0.90f;
-		const FLinearColor TextColor = bThreatRole
+		const FLinearColor TextColor = bTeacherRole
 			? FLinearColor(0.96f, 0.18f, 0.12f, Alpha)
-			: FLinearColor(0.82f, 0.78f, 0.66f, Alpha);
+			: (bHallMonitorRole
+				? FLinearColor(1.0f, 0.56f, 0.18f, Alpha)
+				: FLinearColor(0.82f, 0.78f, 0.66f, Alpha));
 
 		float TextW = 0.0f;
 		float TextH = 0.0f;
@@ -1317,6 +2153,49 @@ void ABHHUD::DrawEquipmentStrip(const ABHGameState* GameState)
 	DrawStatusPill(ExitText, PanelX + 15.0f + (PillW + Gap) * 3.0f, PillY, PillW, GameState && GameState->bExitUnlocked ? FLinearColor(0.36f, 1.0f, 0.68f, 1.0f) : FLinearColor(0.96f, 0.42f, 0.34f, 1.0f), GameState != nullptr);
 }
 
+void ABHHUD::DrawSpectatorSupportPanel(const ABHGameState* GameState, const ABHPlayerState* PlayerState)
+{
+	if (!Canvas || !GEngine || !GameState || !PlayerState || PlayerState->PlayerRole != EBHPlayerRole::Spectator)
+	{
+		return;
+	}
+
+	const float SafePad = FMath::Max(18.0f, Canvas->ClipX * 0.014f);
+	const float PanelW = FMath::Clamp(Canvas->ClipX * 0.42f, 430.0f, 640.0f);
+	const float PanelH = 82.0f;
+	const float PanelX = (Canvas->ClipX - PanelW) * 0.5f;
+	const float PanelY = Canvas->ClipY - SafePad - PanelH;
+	const FLinearColor Accent(0.54f, 0.66f, 0.96f, 0.90f);
+	DrawPanel(PanelX, PanelY, PanelW, PanelH, FLinearColor(0.010f, 0.013f, 0.018f, 0.82f), Accent);
+
+	DrawHudText(TEXT("SPECTATOR SUPPORT"), PanelX + 20.0f, PanelY + 14.0f, FLinearColor(0.78f, 0.84f, 1.0f, 0.96f), GEngine->GetSmallFont(), 0.78f);
+	DrawRightAlignedText(FString::Printf(TEXT("SENT %d"), FMath::Max(0, PlayerState->SpectatorEncouragementCount)), PanelX + PanelW - 20.0f, PanelY + 14.0f, FLinearColor(0.58f, 0.66f, 0.76f, 0.86f), GEngine->GetSmallFont(), 0.58f);
+
+	const float KeyY = PanelY + 39.0f;
+	const float KeyW = 30.0f;
+	const float SlotW = (PanelW - 44.0f) / 4.0f;
+	struct FSupportKey
+	{
+		const TCHAR* Key;
+		const TCHAR* Label;
+	};
+	static const FSupportKey SupportKeys[] = {
+		{TEXT("H"), TEXT("SUPPORT")},
+		{TEXT("T"), TEXT("TEACHER")},
+		{TEXT("Y"), TEXT("SURVIVOR")},
+		{TEXT("U"), TEXT("MONITOR")}
+	};
+	for (int32 Index = 0; Index < UE_ARRAY_COUNT(SupportKeys); ++Index)
+	{
+		const float SlotX = PanelX + 22.0f + SlotW * Index;
+		DrawKeyBox(SupportKeys[Index].Key, SlotX, KeyY, KeyW, 22.0f, Accent, true);
+		DrawWrappedHudText(SupportKeys[Index].Label, SlotX + 36.0f, KeyY + 5.0f, SlotW - 40.0f, MainText(), GEngine->GetSmallFont(), 0.56f, 10.0f, 1);
+	}
+
+	const FString PrefLine = FString::Printf(TEXT("PREF %s / HOST APPROVES NEXT LOBBY"), *SpectatorRolePreferenceLabel(PlayerState->SpectatorRolePreference));
+	DrawWrappedHudText(PrefLine, PanelX + 22.0f, PanelY + 65.0f, PanelW - 44.0f, FLinearColor(0.62f, 0.72f, 0.78f, 0.88f), GEngine->GetSmallFont(), 0.50f, 10.0f, 1);
+}
+
 void ABHHUD::DrawQuestionPanel(const ABHObjectiveStation* Station)
 {
 	if (!Canvas || !GEngine || !Station || !Station->IsDirectorActive() || Station->IsCompleted() || Station->IsQuestionSolved() || Station->GetQuestionChoiceCount() <= 0)
@@ -1329,7 +2208,7 @@ void ABHHUD::DrawQuestionPanel(const ABHObjectiveStation* Station)
 	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
 	const bool bRevisionQuestion = BHGS && BHGS->bRevisionMode;
 	const float DiagramH = bRevisionQuestion ? 118.0f : 0.0f;
-	const float PanelH = 174.0f + DiagramH + ChoiceCount * 32.0f + (Station->GetQuestionFeedback().IsEmpty() ? 0.0f : 42.0f);
+	const float PanelH = 194.0f + DiagramH + ChoiceCount * 32.0f + (Station->GetQuestionFeedback().IsEmpty() ? 0.0f : 42.0f);
 	const float PanelX = (Canvas->ClipX - PanelW) * 0.5f;
 	const float MaxPanelY = FMath::Max(120.0f, Canvas->ClipY - PanelH - 92.0f);
 	const float PanelY = FMath::Min(FMath::Max(Canvas->ClipY * 0.58f, 120.0f), MaxPanelY);
@@ -1362,13 +2241,14 @@ void ABHHUD::DrawQuestionPanel(const ABHObjectiveStation* Station)
 			*CounterText);
 		DrawRightAlignedText(Meta, PanelX + PanelW - 22.0f, PanelY + 16.0f, FLinearColor(0.78f, 0.86f, 0.94f, 1.0f), GEngine->GetSmallFont(), 0.76f);
 	}
-	DrawWrappedHudText(Station->GetQuestionPrompt(), PanelX + 22.0f, PanelY + 44.0f, PanelW - 44.0f, MainText(), GEngine->GetSmallFont(), 0.92f, 17.0f, 2);
+	DrawWrappedHudText(Station->GetPhysicalTaskInstruction(), PanelX + 22.0f, PanelY + 42.0f, PanelW - 44.0f, FLinearColor(0.74f, 0.88f, 0.88f, 1.0f), GEngine->GetSmallFont(), 0.72f, 13.0f, 1);
+	DrawWrappedHudText(Station->GetQuestionPrompt(), PanelX + 22.0f, PanelY + 62.0f, PanelW - 44.0f, MainText(), GEngine->GetSmallFont(), 0.92f, 17.0f, 2);
 
-	float ChoiceStartY = PanelY + 92.0f;
+	float ChoiceStartY = PanelY + 112.0f;
 	if (bRevisionQuestion)
 	{
-		DrawRevisionDiagram(Station, PanelX + 24.0f, PanelY + 88.0f, PanelW - 48.0f, DiagramH - 10.0f);
-		ChoiceStartY = PanelY + 92.0f + DiagramH;
+		DrawRevisionDiagram(Station, PanelX + 24.0f, PanelY + 108.0f, PanelW - 48.0f, DiagramH - 10.0f);
+		ChoiceStartY = PanelY + 112.0f + DiagramH;
 		if (!Station->GetRevisionTeamSummary().IsEmpty())
 		{
 			DrawWrappedHudText(FString::Printf(TEXT("Answer team: %s"), *Station->GetRevisionTeamSummary()), PanelX + 28.0f, ChoiceStartY - 17.0f, PanelW - 56.0f, FLinearColor(0.76f, 0.92f, 0.98f, 1.0f), GEngine->GetSmallFont(), 0.72f, 12.0f, 1);
@@ -1564,8 +2444,8 @@ void ABHHUD::DrawPhaseBanner(const ABHGameState* GameState, const ABHCharacter* 
 	switch (GameState->RoundPhase)
 	{
 	case EBHRoundPhase::Prep:
-		Title = TEXT("PREP PHASE");
-		Subtitle = TEXT("Route the objectives before the hunt begins.");
+		Title = TEXT("ROLE WARMUP");
+		Subtitle = TEXT("Try flashlight, lockers, questions, decoys, scans, captures, and Hall Monitor tools. Hunt start resets everyone.");
 		Accent = FLinearColor(0.95f, 0.76f, 0.36f, 1.0f);
 		break;
 	case EBHRoundPhase::Hunt:
@@ -1574,13 +2454,15 @@ void ABHHUD::DrawPhaseBanner(const ABHGameState* GameState, const ABHCharacter* 
 		Accent = FLinearColor(0.92f, 0.18f, 0.12f, 1.0f);
 		break;
 	case EBHRoundPhase::Intermission:
-		Title = TEXT("SUBWAY INTERMISSION");
-		Subtitle = GameState->TrainAnnouncement.IsEmpty() ? TEXT("Review the recap, answer bonus questions, buy upgrades, and board before departure.") : GameState->TrainAnnouncement;
+		Title = FString::Printf(TEXT("SUBWAY %s"), *TrainPhaseLabel(GameState->TrainPhase));
+		Subtitle = GameState->TrainAnnouncement.IsEmpty() ? TrainPhaseObjective(GameState->TrainPhase) : GameState->TrainAnnouncement;
 		Accent = FLinearColor(0.30f, 0.92f, 0.82f, 1.0f);
 		break;
 	case EBHRoundPhase::FinalEscape:
 		Title = TEXT("FINAL TRAIN");
-		Subtitle = GameState->FinalEscapeState == EBHFinalEscapeState::Cutscene ? TEXT("Evacuation doors unlocking.") : TEXT("Reach any open subway door before departure.");
+		Subtitle = GameState->FinalEscapeState == EBHFinalEscapeState::Cutscene
+			? TEXT("Evacuation doors unlocking. Teacher release is delayed.")
+			: TEXT("Reach any green subway door before departure. Door camping disrupts capture.");
 		Accent = FLinearColor(1.0f, 0.42f, 0.20f, 1.0f);
 		break;
 	case EBHRoundPhase::SurvivorsWin:
@@ -1603,6 +2485,10 @@ void ABHHUD::DrawPhaseBanner(const ABHGameState* GameState, const ABHCharacter* 
 	if (Character && Character->IsDetentionMarked() && GameState->RoundPhase == EBHRoundPhase::Hunt)
 	{
 		Subtitle = TEXT("Detention marked. Move carefully.");
+	}
+	else if (GameState->RoundPhase == EBHRoundPhase::Hunt && GameState->RoundModifier != EBHRoundModifier::None)
+	{
+		Subtitle = FString::Printf(TEXT("Modifier: %s. %s"), *GameState->GetRoundModifierText(), *GameState->GetRoundModifierHint());
 	}
 
 	const float PanelW = FMath::Clamp(Canvas->ClipX * 0.48f, 420.0f, 720.0f);

@@ -1,5 +1,16 @@
 #include "BHDoor.h"
+#include "BHCharacter.h"
+#include "BHGameMode.h"
+#include "BHPlayerController.h"
+#include "BHPlayerState.h"
+#include "EngineUtils.h"
 #include "Net/UnrealNetwork.h"
+
+namespace
+{
+constexpr float BHDoorSlamTeacherInterruptRange = 380.0f;
+constexpr float BHDoorSlamTeacherRecoverySeconds = 1.20f;
+}
 
 ABHDoor::ABHDoor()
 {
@@ -28,7 +39,56 @@ void ABHDoor::BeginInteract_Implementation(ABHCharacter* Character)
 		return;
 	}
 
+	const bool bWasOpen = bOpen;
 	SetOpen(!bOpen);
+	if (bWasOpen && !bOpen && Character)
+	{
+		if (ABHPlayerState* DoorUserPS = Character->GetPlayerState<ABHPlayerState>())
+		{
+			if (DoorUserPS->IsAliveSurvivor())
+			{
+				UWorld* World = GetWorld();
+				if (!World)
+				{
+					return;
+				}
+
+				if (ABHGameMode* BHGM = World->GetAuthGameMode<ABHGameMode>())
+				{
+					BHGM->NotifyLoudNoise(GetActorLocation(), TEXT("door slam"));
+				}
+
+				bool bInterruptedTeacher = false;
+				for (TActorIterator<ABHCharacter> It(World); It; ++It)
+				{
+					ABHCharacter* OtherCharacter = *It;
+					const ABHPlayerState* OtherPS = OtherCharacter ? OtherCharacter->GetPlayerState<ABHPlayerState>() : nullptr;
+					if (!OtherCharacter || OtherCharacter == Character || !OtherPS || !OtherPS->IsAliveHunter())
+					{
+						continue;
+					}
+
+					if (FVector::DistSquared2D(OtherCharacter->GetActorLocation(), GetActorLocation()) > FMath::Square(BHDoorSlamTeacherInterruptRange))
+					{
+						continue;
+					}
+
+					if (OtherCharacter->InterruptTeacherCaptureAttack(TEXT("Door slam broke your swing. Recovering."), BHDoorSlamTeacherRecoverySeconds))
+					{
+						bInterruptedTeacher = true;
+					}
+				}
+
+				if (bInterruptedTeacher)
+				{
+					if (ABHPlayerController* DoorUserPC = Cast<ABHPlayerController>(Character->GetController()))
+					{
+						DoorUserPC->ClientShowStatusMessage(TEXT("Door slam interrupted the Teacher. It made noise."), 3.0f);
+					}
+				}
+			}
+		}
+	}
 }
 
 FText ABHDoor::GetInteractionLabel_Implementation(ABHCharacter* Character) const

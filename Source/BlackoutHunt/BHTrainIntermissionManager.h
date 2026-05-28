@@ -6,6 +6,7 @@
 #include "BHTrainIntermissionManager.generated.h"
 
 class ABHTrainBonusQuestionTerminal;
+class ABHBlockActor;
 class ABHTrainDisplayActor;
 class ABHTrainDoor;
 class ABHTrainTunnelMotionActor;
@@ -22,6 +23,7 @@ public:
 	void RegisterDoor(ABHTrainDoor* Door);
 	void RegisterDisplay(ABHTrainDisplayActor* Display);
 	void RegisterTunnelMotion(ABHTrainTunnelMotionActor* TunnelMotion);
+	void RegisterMovingBarrier(ABHBlockActor* VisibleShutter, ABHBlockActor* HiddenBlocker);
 	void RegisterBonusTerminal(ABHTrainBonusQuestionTerminal* Terminal);
 
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Train")
@@ -32,6 +34,7 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	void StartIntermission();
 	void SetPhase(EBHTrainPhase NewPhase, float DurationSeconds, const FString& Announcement);
@@ -39,6 +42,7 @@ protected:
 	void UpdateDisplaysForPhase();
 	void SetTrainDoorsOpen(bool bOpen);
 	void SetTunnelMoving(bool bMoving);
+	void SetMovingBarriersClosed(bool bClosed);
 	void AutoBoardPlayers();
 	void FinishIntermission();
 	EBHPhysicsTopic SelectBonusTopic() const;
@@ -69,6 +73,12 @@ protected:
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<ABHTrainTunnelMotionActor>> TunnelMotionActors;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<ABHBlockActor>> MovingShutters;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<ABHBlockActor>> MovingHiddenBlockers;
 
 	UPROPERTY(Transient)
 	TObjectPtr<ABHTrainBonusQuestionTerminal> BonusTerminal;

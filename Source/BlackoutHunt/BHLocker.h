@@ -16,6 +16,7 @@ public:
 	virtual bool CanInteract_Implementation(ABHCharacter* Character) const override;
 	virtual void BeginInteract_Implementation(ABHCharacter* Character) override;
 	virtual FText GetInteractionLabel_Implementation(ABHCharacter* Character) const override;
+	virtual FBHInteractionPromptInfo GetInteractionPromptInfo_Implementation(ABHCharacter* Character) const override;
 
 	void ClearOccupant(ABHCharacter* Character);
 	ABHCharacter* GetOccupant() const;

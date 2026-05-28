@@ -18,6 +18,21 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt")
 	FString GetPhaseText() const;
 
+	UFUNCTION(BlueprintPure, Category = "Blackout Hunt")
+	FString GetRoundModifierText() const;
+
+	UFUNCTION(BlueprintPure, Category = "Blackout Hunt")
+	FString GetRoundModifierHint() const;
+
+	UFUNCTION(BlueprintPure, Category = "Blackout Hunt")
+	FString GetPublicObjectiveActionText() const;
+
+	UFUNCTION(BlueprintPure, Category = "Blackout Hunt")
+	FString GetObjectiveProgressText() const;
+
+	static FString GetRoundModifierTextFor(EBHRoundModifier Modifier);
+	static FString GetRoundModifierHintFor(EBHRoundModifier Modifier);
+
 	void SetRoundPhase(EBHRoundPhase NewPhase);
 	void SetRemainingTime(int32 NewTime);
 	void SetBreakerCounts(int32 Completed, int32 Required);
@@ -29,10 +44,12 @@ public:
 	void SetActiveFogPreset(EBHFogPreset NewActiveFogPreset);
 	void SetActiveLevelName(const FString& NewActiveLevelName);
 	void SetPresenceState(float NewPresenceLevel, const FString& NewPresenceText, int32 NewPresencePulse);
+	void SetObjectiveBeats(const TArray<FBHObjectiveBeat>& NewObjectiveBeats);
 	void SetPracticeMode(bool bNewPracticeMode);
 	void SetTestMode(bool bNewTestMode);
 	void SetBotOptions(bool bNewBotMode, int32 NewTargetBotCount, EBHBotDifficulty NewBotDifficulty);
 	void SetRevisionOptions(EBHRevisionMode NewRevisionMode, int32 NewTopicMask, EBHRevisionDifficultyMix NewDifficultyMix, float NewClassThreshold, float NewIndividualThreshold, int32 NewRoundDuration, int32 NewScareIntensity);
+	void SetRevisionContributionTarget(int32 NewContributionTarget);
 	void SetRevisionSummary(float NewClassMasteryAverage, EBHPhysicsTopic NewWeakTopic, int32 NewReviewTimeRemaining, const FString& NewReviewText);
 	void SetTrainState(EBHTrainPhase NewTrainPhase, int32 NewStageIndex, float NewPhaseEndServerTime, const FString& NewDestinationName, const FString& NewAnnouncement);
 	void SetTrainRecap(const FString& NewOverview, const FString& NewTopics, const FString& NewMissedQuestions, const FString& NewTips);
@@ -105,6 +122,9 @@ public:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Horror")
 	int32 PresencePulse;
 
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Navigation")
+	TArray<FBHObjectiveBeat> ObjectiveBeats;
+
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Practice")
 	bool bPracticeMode;
 
@@ -143,6 +163,9 @@ public:
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Revision")
 	int32 RevisionScareIntensity;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	int32 RevisionContributionTarget;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Revision")
 	float RevisionClassMasteryAverage;

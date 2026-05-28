@@ -19,10 +19,13 @@ class ABHFlickerLight;
 class ABHObjectiveStation;
 class ABHPlayerController;
 class ABHPlayerState;
+class ABHRuntimeMeshPropActor;
 class ABHSecurityCamera;
+class ABHStaticBlockField;
 class ABHTrainIntermissionManager;
 class ANavMeshBoundsVolume;
 class UBHAtmosphereDirector;
+struct FBHLessonPreset;
 
 UCLASS()
 class BLACKOUTHUNT_API ABHGameMode : public AGameModeBase
@@ -36,27 +39,33 @@ public:
 	virtual void PostLogin(APlayerController* NewPlayer) override;
 	virtual void Logout(AController* Exiting) override;
 	virtual void RestartPlayer(AController* NewPlayer) override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	void SetPlayerReady(ABHPlayerController* Controller, bool bReady);
 	void NotifyBreakerRepaired(const FVector& BreakerLocation = FVector::ZeroVector);
 	void NotifyObjectiveStationCompleted(ABHObjectiveStation* Station);
-	void NotifySurvivorCaptured(ABHCharacter* Survivor);
+	void NotifySurvivorCaptured(ABHCharacter* Survivor, ABHCharacter* CapturingHunter = nullptr);
 	void NotifySurvivorEscaped(ABHCharacter* Survivor);
 	void ToggleLightCircuit(int32 CircuitId);
 	void OpenSecurityCircuit(int32 CircuitId);
 	bool ToggleSecurityCircuit(int32 CircuitId);
 	void NotifyLoudNoise(const FVector& Location, const FString& Reason);
+	void BroadcastGameplayAudioCue(const FBHGameplayAudioCue& Cue);
 	void NotifyCCTVDetection(ABHSecurityCamera* Camera, AActor* ZoneActor, ABHCharacter* Survivor, const FString& AlertLabel);
+	int32 NotifyHallMonitorMisdirection(const FVector& Location, const FString& SenderName);
 	void ReportAtmosphereStimulus(EBHAtmosphereStimulusType Type, const FVector& Location, AActor* SourceActor, AActor* TargetActor, float Strength, const FString& Reason);
 	bool TriggerAtmosphereCue(const FBHScareEventSpec& Spec);
 	bool TriggerBlackoutPulse(const FVector& Location, float Radius, float DurationSeconds);
 	bool TriggerManualScare(ABHCharacter* Target, EBHScareEventType ScareType);
 	bool TriggerStudentScareSwitch(ABHCharacter* Activator, const FVector& SourceLocation, const FString& ScareTitle, int32 Severity);
 	FBHJumpscareVariant ChooseJumpscareVariant(EBHScareEventType EventType) const;
+	float GetScareSensoryScale() const;
 	void TestJumpscareVariant(ABHPlayerController* RequestingController, const FString& VariantToken);
 	FString GetJumpscareVariantTestReport() const;
 	void ForceStartRound(ABHPlayerController* RequestingController);
 	void SetDesiredRole(ABHPlayerController* RequestingController, APlayerState* TargetPlayerState, EBHPlayerRole DesiredRole);
+	void QueueSpectatorRolePreference(ABHPlayerController* RequestingController, EBHPlayerRole DesiredRole);
+	void RequestSpectatorEncouragement(ABHPlayerController* RequestingController);
 	void KickPlayer(ABHPlayerController* RequestingController, APlayerState* TargetPlayerState);
 	void SetNextLevel(ABHPlayerController* RequestingController, const FString& LevelName);
 	void SetMapVote(ABHPlayerController* RequestingController, const FString& LevelName);
@@ -73,7 +82,7 @@ public:
 	void RefreshPracticeRound(ABHPlayerController* RequestingController);
 	void TriggerPracticeJumpscare(ABHPlayerController* RequestingController);
 	void TriggerTargetedJumpscare(ABHPlayerController* RequestingController, APlayerState* TargetPlayerState);
-	void TriggerHunterBlackout(const FVector& SourceLocation);
+	void TriggerHunterBlackout(const FVector& SourceLocation, int32 SurgeCharges = 0);
 	void CompleteTrainIntermission(const FString& NextMapName, bool bFinalRecap);
 	void NotifyFinalEscapeExpired();
 	void SetBotCount(ABHPlayerController* RequestingController, int32 NewBotCount);
@@ -86,6 +95,8 @@ public:
 	int32 GetRevisionMinimumContributionTarget() const;
 	bool CanUseHallMonitorTools(const ABHPlayerState* PlayerState, FString& OutBlockReason) const;
 	static bool IsRevisionParticipantRole(EBHPlayerRole Role);
+	static bool IsValidSpectatorRolePreference(EBHPlayerRole Role);
+	static EBHPlayerRole SanitizeSpectatorRolePreference(EBHPlayerRole Role);
 	static int32 ResolveRevisionQuestionTargetFor(int32 StudentCount, int32 StageIndex);
 	static int32 ResolveRevisionNodeTargetFor(int32 StudentCount, int32 StageIndex, int32 StationCount);
 	static FVector ResolveFoggroundsDoorFrameOrigin(const FVector& DoorLocation);
@@ -97,7 +108,9 @@ public:
 	void SetPhysicsTopics(ABHPlayerController* RequestingController, const FString& TopicList);
 	void SetRevisionDifficultyMix(ABHPlayerController* RequestingController, const FString& DifficultyMix);
 	void SetRevisionThresholds(ABHPlayerController* RequestingController, float NewClassThreshold, float NewIndividualThreshold);
+	void SetRevisionRoundDuration(ABHPlayerController* RequestingController, int32 NewRoundSeconds);
 	void SetScareIntensity(ABHPlayerController* RequestingController, int32 NewScareIntensity);
+	bool ApplyLessonPreset(ABHPlayerController* RequestingController, const FBHLessonPreset& Preset, FString& OutMessage);
 	void ForceReview(ABHPlayerController* RequestingController);
 	void TesterGrantTrainResources(ABHPlayerController* RequestingController);
 	void TesterOpenTrainIntermission(ABHPlayerController* RequestingController);
@@ -107,6 +120,8 @@ public:
 	void TesterForceFinalRecap(ABHPlayerController* RequestingController);
 	FString GetRevisionStatusReport() const;
 	bool ExportRevisionReport(ABHPlayerController* RequestingController, FString& OutMessage);
+	void RecordPlaytestTelemetryMarker(const FString& EventType, const FVector& Location, const FString& Detail = FString(), const ABHPlayerState* PlayerState = nullptr, const ABHPlayerState* TargetState = nullptr, const FString& QuestionId = FString(), const FString& Topic = FString(), const FString& Difficulty = FString(), int32 Count = 1);
+	bool ExportPlaytestTelemetry(ABHPlayerController* RequestingController, FString& OutMessage);
 	bool IsBotMode() const;
 	EBHBotDifficulty GetBotDifficulty() const;
 	bool IsRuntimeNavigationReady() const;
@@ -141,20 +156,42 @@ protected:
 	void BuildRuntimeNavigation();
 	void CompleteRuntimeNavigationBuild();
 	void SetSecurityCircuitCCTVActive(int32 CircuitId, bool bCircuitOpen);
-	void ApplyRoundCCTVVisibility();
+	void ApplyRoundCCTVVisibility(EBHRoundModifier ActiveModifier);
 	int32 SelectHiddenCCTVIndex(int32 CandidateCount, int32 Salt) const;
 	ABHCCTVZone* SpawnCCTVZoneForCamera(ABHSecurityCamera* Camera, int32 CircuitId, const FString& AlertLabel, bool bVisible);
+	ABHRuntimeMeshPropActor* SpawnRuntimeMeshProp(
+		const FVector& Location,
+		const FRotator& Rotation,
+		const FString& MeshAssetPath,
+		const FString& MaterialAssetPath,
+		const FVector& MeshScale,
+		bool bCollides,
+		const FVector& FallbackScale,
+		const FLinearColor& FallbackTint,
+		EBHBlockMaterial FallbackMaterial = EBHBlockMaterial::PaintedMetal);
+	void AddFacilityVerticalSlicePass();
 	void AddFacilityDetailPass();
 	void AddClassroomHorrorPass();
+	void AddHorrorVariationPass(FRandomStream& Stream);
 	void AddSurfaceDetailGrid(float HalfX, float HalfY, const FLinearColor& LineTint);
 	void AddIndustrialClutter(const TArray<FVector>& Centers, const FLinearColor& Tint);
 	void AddMoodPass(const FLinearColor& FogColor, float FogDensity, float VignetteIntensity, float FilmGrainIntensity);
 	void AddFoggroundsLightingPass();
 	void AddFoggroundsMoodPass();
 	void AddFoggroundsModeledFog();
-	void SpawnBlock(const FVector& Location, const FVector& Scale, const FLinearColor& Tint = FLinearColor(0.38f, 0.42f, 0.45f, 1.0f), const FRotator& Rotation = FRotator::ZeroRotator, bool bCollides = true, EBHBlockMaterial Material = EBHBlockMaterial::Tinted);
+	void AddStaticBlock(const FVector& Location, const FVector& Scale, const FLinearColor& Tint = FLinearColor(0.38f, 0.42f, 0.45f, 1.0f), const FRotator& Rotation = FRotator::ZeroRotator, bool bCollides = true, EBHBlockMaterial Material = EBHBlockMaterial::Tinted, bool bStartHidden = false);
+	ABHBlockActor* SpawnDynamicBlock(const FVector& Location, const FVector& Scale, const FLinearColor& Tint = FLinearColor(0.38f, 0.42f, 0.45f, 1.0f), const FRotator& Rotation = FRotator::ZeroRotator, bool bCollides = true, EBHBlockMaterial Material = EBHBlockMaterial::Tinted);
+	ABHBlockActor* SpawnBlock(const FVector& Location, const FVector& Scale, const FLinearColor& Tint = FLinearColor(0.38f, 0.42f, 0.45f, 1.0f), const FRotator& Rotation = FRotator::ZeroRotator, bool bCollides = true, EBHBlockMaterial Material = EBHBlockMaterial::Tinted);
+	class ABHBreakableGlassPane* SpawnBreakableGlassPane(const FVector& Location, const FVector& Scale, const FRotator& Rotation, const FText& Label = FText());
+	class ABHFootstepSurfaceVolume* SpawnSurfacePatch(const FVector& Location, const FVector& Extent, EBHFootstepSurface Surface);
 	void SpawnHiddenBlocker(const FVector& Location, const FVector& Scale);
+	void RegisterStationSignalBlock(ABHBlockActor* Block);
+	void RegisterStationSignalLight(ABHFlickerLight* Light);
+	void UpdateStationSignalState(bool bExitOpen);
 	void AddMapContainment(float HalfX, float HalfY);
+	ABHStaticBlockField* EnsureStaticBlockField();
+	void ResetStaticBlockField();
+	void FinalizeStaticBlockField();
 	void RecoverPlayersFromVoid();
 	FVector GetVoidRecoveryLocationFor(const ABHCharacter* Character) const;
 	void SpawnAmbient(const FVector& Location, float Frequency, float Volume, float Noise, float Pulse, float LifeSpan = 0.0f);
@@ -162,8 +199,10 @@ protected:
 	void StartDirectorTimer();
 	void TickDirector();
 	void TriggerScareEvent();
-	void TriggerRevisionThemedAmbientScare(ABHCharacter* Target);
+	bool TriggerRevisionThemedAmbientScare(ABHCharacter* Target);
 	void TriggerMonsterChargeJumpscare(ABHCharacter* Target);
+	void TriggerMonsterChargeJumpscareWithVariant(ABHCharacter* Target, const FBHJumpscareVariant& Variant, const FString& Message, float FearAmount, float DreadAmount);
+	bool ChooseWhisperJumpscareVariant(FBHJumpscareVariant& OutVariant) const;
 	void TriggerTeacherFlatScare(ABHCharacter* Target, const FVector& FocusLocation, const FString& Message, float LockSeconds = 1.65f);
 	void FreezeTargetForJumpscare(ABHCharacter* Target, float DurationSeconds);
 	void CutLightsForJumpscare(const FVector& TargetLocation, const FVector& MonsterLocation, float Radius, float RestoreDelaySeconds = 9.5f);
@@ -172,9 +211,27 @@ protected:
 	void TriggerTesterJumpscareVariant(ABHPlayerController* RequestingController, const FBHJumpscareVariant& Variant, const FString& TestLabel);
 	void TriggerTesterSuperJumpscare(ABHPlayerController* RequestingController, const FBHJumpscareVariant* ForcedVariant = nullptr);
 	bool ResolveSuperJumpscareRoute(ABHCharacter* Target, ABHPlayerController* TargetPC, FVector& OutPeekStart, FVector& OutPeekEnd, FVector& OutCrossStart, FVector& OutCrossEnd, FVector& OutChargeBendStart, FVector& OutChargeStart) const;
+	struct FBHResolvedJumpscareSpawn
+	{
+		FVector SpawnLocation = FVector::ZeroVector;
+		FVector FocusLocation = FVector::ZeroVector;
+		FRotator SpawnRotation = FRotator::ZeroRotator;
+		float Score = -1.0f;
+	};
+	bool ResolveVisibleJumpscareSpawn(ABHCharacter* Target, ABHPlayerController* TargetPC, const TArray<FVector>& Candidates, float FocusHeight, float MinDistance, float MaxDistance, float PathRadius, FBHResolvedJumpscareSpawn& OutSpawn) const;
+	void SendJumpscareChargeCue(ABHCharacter* Target, const FBHJumpscareVariant& Variant, const FVector& FocusLocation, const FString& Message, float HoldDuration, float AudioVolume = 1.0f, bool bCloseRangeFocus = false) const;
+	void TriggerCloseOverlayJumpscare(ABHCharacter* Target, const FBHJumpscareVariant& Variant, const FString& Message, float HoldDuration, float FearAmount, float DreadAmount);
+#if WITH_DEV_AUTOMATION_TESTS
+public:
+	bool DebugValidateJumpscareSpawnCandidate(const FVector& ViewLocation, const FVector& ViewForward, const FVector& TargetLocation, const FVector& CandidateLocation, float FocusHeight, float PathRadius, float* OutScore = nullptr) const;
+	bool DebugReserveDirectorCue(ABHCharacter* Target, EBHScareEventType ScareType, float Intensity, FString& OutReason);
+protected:
+#endif
 	void TriggerColdCallEvent();
 	void UpdatePresenceDirector();
 	void ApplyPresenceSpike(const FVector& SourceLocation, float SpikeLevel, const FString& PresenceText);
+	void PublishObjectiveBeats();
+	void PublishDangerObjectiveBeat(const FVector& Location, const FString& Label);
 	void BroadcastStatus(const FString& Message, float DurationSeconds = 3.0f) const;
 	void UpdateDirectorGameState(const FString& ObjectiveText);
 	void UpdateExitUnlockState();
@@ -183,6 +240,7 @@ protected:
 	void RefreshPracticeDirector(const FString& Reason);
 	void StartTestMode(ABHPlayerController* RequestingController);
 	void RefreshTestDirector(const FString& Reason);
+	void ResetRoleWarmupForLiveRoundStart();
 	EBHRoundModifier ChooseRoundModifier(FRandomStream& Stream) const;
 	FString GetRoundModifierText(EBHRoundModifier Modifier) const;
 	void StartPrepPhase();
@@ -222,7 +280,15 @@ protected:
 	FString GetRevisionObjectiveText() const;
 	EBHPhysicsTopic GetWeakestRevisionTopic() const;
 	bool ExportRevisionReportToDisk(EBHRoundPhase ResultPhase, bool bAutomatic, FString& OutMessage);
+	void RecordPlaytestTelemetryMapSnapshot();
 	ABHCharacter* FindCharacterForPlayerState(APlayerState* TargetPlayerState) const;
+
+#if WITH_DEV_AUTOMATION_TESTS
+public:
+	void DebugRestorePlayersAfterTravelForTest(AController* Controller) { RestorePlayersAfterTravel(Controller); }
+	void DebugSetTrainIntermissionLevelForTest(bool bEnabled) { bTrainIntermissionLevel = bEnabled; }
+protected:
+#endif
 
 	UPROPERTY(EditDefaultsOnly, Category = "Rules")
 	int32 MinPlayers;
@@ -248,9 +314,13 @@ protected:
 	TArray<TObjectPtr<ABHDoor>> DoorActors;
 	TArray<TObjectPtr<ABHExitGate>> ExitGates;
 	TArray<TObjectPtr<ABHFlickerLight>> FlickerLights;
+	TArray<TObjectPtr<ABHBlockActor>> StationSignalBlocks;
+	TArray<TObjectPtr<ABHFlickerLight>> StationSignalLights;
 	TArray<TObjectPtr<ABHObjectiveStation>> ObjectiveStations;
 	TArray<TObjectPtr<ABHEscapeStationManager>> EscapeStationManagers;
 	TObjectPtr<ABHTrainIntermissionManager> TrainIntermissionManager;
+	UPROPERTY(Transient)
+	TObjectPtr<ABHStaticBlockField> StaticBlockField;
 	UPROPERTY(Transient)
 	TObjectPtr<UBHAtmosphereDirector> AtmosphereDirector;
 	FVector HunterSpawn;
@@ -291,8 +361,11 @@ protected:
 	float LastMonsterChargeTime;
 	float LastColdCallTime;
 	float LastPresenceWhisperTime;
+	float LastWhisperJumpscareTime;
 	float LastPresenceSpikeTime;
 	float LastTeacherCounterScareTime;
+	float LastObjectiveDangerBeatTime;
+	float LastSpectatorEncouragementTime;
 	FVector LastBotNoiseLocation;
 	float LastBotNoiseTime;
 	bool bRuntimeNavigationReady;
@@ -305,5 +378,10 @@ protected:
 	TArray<FBHBotObjectiveClaim> BotObjectiveClaims;
 	TArray<FBHBotTargetCooldown> BotTargetCooldowns;
 	TMap<TObjectKey<AActor>, FVector> BotApproachPointCache;
+	TMap<TObjectKey<APlayerState>, float> SpectatorEncouragementTimes;
 	TSet<FString> LoggedBotTacticalWarnings;
+	TSet<FString> TelemetryUsedLockerKeys;
+	TSet<FString> TelemetryStartedObjectiveKeys;
+	TSet<FString> TelemetryCompletedObjectiveKeys;
+	TSet<FString> TelemetrySnapshotKeys;
 };

@@ -30,12 +30,15 @@ protected:
 	void DrawProgressBar(const FString& Label, float Value, float X, float Y, float W, const FLinearColor& FillColor, const FString& ValueText = FString());
 	void DrawRawMeter(const FString& Label, float Value, float X, float Y, float W, const FLinearColor& FillColor, bool bHighIsBad = false);
 	void DrawVisibleHunterArrow(const ABHCharacter* Character, const FVector& HunterLocation, float DistanceCm, float CueStrength);
+	void DrawCCTVRevealMarker(const ABHCharacter* Character, const class ABHPlayerController* PlayerController);
 	void DrawCrosshair(float DangerAlpha = 0.0f);
 	void DrawHorrorOverlay(const ABHCharacter* Character, const class ABHGameState* GameState);
 	void DrawHeatSensor(const ABHCharacter* Character, const class ABHGameState* GameState, float X, float Y);
+	void DrawObjectiveBeats(const ABHCharacter* Character, const class ABHGameState* GameState);
 	void DrawInteractionPrompt(ABHCharacter* Character);
 	void DrawNearbyNameTags(const ABHCharacter* Character);
 	void DrawEquipmentStrip(const class ABHGameState* GameState);
+	void DrawSpectatorSupportPanel(const class ABHGameState* GameState, const class ABHPlayerState* PlayerState);
 	void DrawQuestionPanel(const class ABHObjectiveStation* Station);
 	void DrawRevisionDiagram(const class ABHObjectiveStation* Station, float X, float Y, float W, float H);
 	void DrawPhaseBanner(const class ABHGameState* GameState, const ABHCharacter* Character);

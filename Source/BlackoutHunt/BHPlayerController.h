@@ -7,10 +7,20 @@
 #include "BHPlayerController.generated.h"
 
 class APlayerState;
+class ABHCharacter;
 class UAudioComponent;
 class USoundBase;
 class SWindow;
 class SWidget;
+struct FBHLessonPreset;
+
+struct FBHClassroomPreflightSummary
+{
+	bool bHostOnlyAvailable = false;
+	bool bReadyForClassroom = false;
+	FString ReadyStatus;
+	FString DetailText;
+};
 
 UCLASS()
 class BLACKOUTHUNT_API ABHPlayerController : public APlayerController
@@ -23,6 +33,7 @@ public:
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void PreClientTravel(const FString& PendingURL, ETravelType TravelType, bool bIsSeamlessTravel) override;
 	virtual void SetupInputComponent() override;
 
 	UFUNCTION(Exec)
@@ -245,6 +256,24 @@ public:
 	void ExportRevisionReport();
 
 	UFUNCTION(Exec)
+	void ExportPlaytestTelemetry();
+
+	UFUNCTION(Exec)
+	void SpectatorEncourage();
+
+	UFUNCTION(Exec)
+	void SpectatorQueueTeacher();
+
+	UFUNCTION(Exec)
+	void SpectatorQueueSurvivor();
+
+	UFUNCTION(Exec)
+	void SpectatorQueueMonitor();
+
+	UFUNCTION(Exec)
+	void SpectatorClearRolePreference();
+
+	UFUNCTION(Exec)
 	void ToggleInfectionMode();
 
 	UFUNCTION(Exec)
@@ -289,6 +318,15 @@ public:
 	bool ForgetLocalCredentialForMenu(FString& OutMessage);
 	bool ResetLocalClassroomDataForMenu(FString& OutMessage);
 	bool OpenClassroomBoardForMenu(FString& OutMessage);
+	bool OpenClassroomSupportFolderForMenu(FString& OutMessage);
+	bool OpenClassroomLogFolderForMenu(FString& OutMessage);
+	bool OpenClassroomPackageFolderForMenu(FString& OutMessage);
+	bool OpenClassroomDeploymentGuideForMenu(FString& OutMessage);
+	bool CreateClassroomSupportBundleForMenu(FString& OutMessage);
+	bool RefreshClassroomPreflightForMenu(FString& OutMessage);
+	bool CopyClassroomJoinCodeForMenu(FString& OutMessage);
+	FBHClassroomPreflightSummary GetClassroomPreflightSummaryForMenu() const;
+	bool CanUseClassroomHostControlsForMenu() const;
 	bool CreateGameHotspotForMenu(FString& OutMessage);
 	bool StopGameHotspotForMenu(FString& OutMessage);
 	bool StartInternetTunnelForMenu(FString& OutMessage, int32 LocalPort = 7777);
@@ -320,10 +358,21 @@ public:
 	bool SetPhysicsTopicsForMenu(const FString& TopicList, FString& OutMessage);
 	bool SetRevisionDifficultyMixForMenu(EBHRevisionDifficultyMix DifficultyMix, FString& OutMessage);
 	bool SetRevisionThresholdsForMenu(float ClassPercent, float IndividualPercent, FString& OutMessage);
+	bool SetRevisionRoundDurationForMenu(int32 RoundSeconds, FString& OutMessage);
 	bool SetScareIntensityForMenu(int32 Intensity, FString& OutMessage);
 	bool ForceReviewForMenu(FString& OutMessage);
 	bool RevisionStatusForMenu(FString& OutMessage);
 	bool ExportRevisionReportForMenu(FString& OutMessage);
+	bool ExportPlaytestTelemetryForMenu(FString& OutMessage);
+	bool SendSpectatorEncouragementForMenu(FString& OutMessage);
+	bool QueueSpectatorRolePreferenceForMenu(EBHPlayerRole DesiredRole, FString& OutMessage);
+	bool GetLessonPresetsForMenu(TArray<FBHLessonPreset>& OutPresets, FString& OutMessage) const;
+	bool GetSelectedLessonPresetForMenu(FBHLessonPreset& OutPreset, FString& OutMessage) const;
+	FString GetSelectedLessonPresetIdForMenu() const;
+	FString GetLessonPresetStoragePathForMenu() const;
+	bool ApplyLessonPresetForMenu(const FString& PresetId, FString& OutMessage);
+	bool SaveCurrentLessonPresetForMenu(const FString& DisplayName, const FString& SelectedMapName, FString& OutMessage);
+	bool GenerateManualQuestionSetForMenu(int32 QuestionCount, FString& OutPath, FString& OutMessage);
 	bool ApplyGraphicsPresetForMenu(int32 Quality, FString& OutMessage);
 	bool ApplyAutoGraphicsForMenu(FString& OutMessage);
 	bool SetAdaptiveGraphicsForMenu(bool bEnabled, FString& OutMessage);
@@ -334,6 +383,8 @@ public:
 	bool ApplyEffectsQualityForMenu(int32 Quality, FString& OutMessage);
 	bool ApplyResolutionForMenu(int32 Width, int32 Height, bool bFullscreen, FString& OutMessage);
 	bool ApplyFrameRateLimitForMenu(int32 FrameRateLimit, FString& OutMessage);
+	bool SetComfortOptionForMenu(FName OptionName, bool bEnabled, FString& OutMessage);
+	bool IsComfortOptionEnabledForMenu(FName OptionName) const;
 	FString GetGraphicsSummaryForMenu() const;
 	bool IsAutoGraphicsEnabledForMenu() const;
 	bool IsAdaptiveGraphicsEnabledForMenu() const;
@@ -352,12 +403,20 @@ public:
 	FString GetLocalDisplayNameForMenu() const;
 	bool HasUsefulLocalDisplayNameForMenu() const;
 	void PushLocalDisplayNameToServer();
+	void PushLocalCosmeticsToServer(bool bAnnounce = false);
+	void PushLocalProfileToServer();
 	void SetDesiredRole(APlayerState* TargetPlayerState, EBHPlayerRole DesiredRole);
 	bool KickPlayerForMenu(APlayerState* TargetPlayerState, FString& OutMessage);
 	void ShowLocalStatusMessage(const FString& Message, float DurationSeconds = 3.0f);
+	void PlayGameplayAudioCueLocal(const FBHGameplayAudioCue& Cue);
 	const FString& GetStatusMessage() const;
 	bool HasActiveStatusMessage() const;
 	float GetStatusMessageAlpha() const;
+	bool HasActiveCCTVReveal() const;
+	float GetCCTVRevealAlpha() const;
+	const FVector& GetCCTVRevealLocation() const;
+	const FString& GetCCTVRevealTargetName() const;
+	const ABHCharacter* GetCCTVRevealTarget() const;
 	void PlayMenuSelectionSound();
 	float GetMasterVolumeForMenu() const;
 	float GetMusicVolumeForMenu() const;
@@ -367,6 +426,8 @@ public:
 	void SetUiVolumeForMenu(float Volume);
 	bool IsHudMapVisible() const;
 	int32 GetCrosshairStyle() const;
+	bool AreCaptionsEnabled() const;
+	bool IsHighContrastHudEnabled() const;
 	float GetHorrorCueFlashAlpha() const;
 	FLinearColor GetHorrorCueFlashColor() const;
 
@@ -399,6 +460,9 @@ public:
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetAvatarGear(int32 GearIndex);
+
+	UFUNCTION(Server, Reliable)
+	void ServerApplyAvatarCosmetics(int32 AvatarIndex, const FLinearColor& AvatarColor, int32 ColorIndex, int32 HeadwearIndex, int32 GearIndex, bool bAnnounce);
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetMapVote(const FString& LevelName);
@@ -449,6 +513,9 @@ public:
 	void ServerSetRevisionThresholds(float ClassPercent, float IndividualPercent);
 
 	UFUNCTION(Server, Reliable)
+	void ServerSetRevisionRoundDuration(int32 RoundSeconds);
+
+	UFUNCTION(Server, Reliable)
 	void ServerSetScareIntensity(int32 Intensity);
 
 	UFUNCTION(Server, Reliable)
@@ -477,6 +544,15 @@ public:
 
 	UFUNCTION(Server, Reliable)
 	void ServerExportRevisionReport();
+
+	UFUNCTION(Server, Reliable)
+	void ServerExportPlaytestTelemetry();
+
+	UFUNCTION(Server, Reliable)
+	void ServerRequestSpectatorEncouragement();
+
+	UFUNCTION(Server, Reliable)
+	void ServerSetSpectatorRolePreference(EBHPlayerRole DesiredRole);
 
 	UFUNCTION(Server, Reliable)
 	void ServerToggleInfectionMode();
@@ -508,6 +584,9 @@ public:
 	UFUNCTION(Client, Reliable)
 	void ClientShowStatusMessage(const FString& Message, float DurationSeconds);
 
+	UFUNCTION(Client, Unreliable)
+	void ClientShowCCTVReveal(ABHCharacter* RevealTarget, const FVector& RevealLocation, const FString& TargetName, float DurationSeconds);
+
 	UFUNCTION(Client, Reliable)
 	void ClientSetJumpscareInputLocked(bool bLocked);
 
@@ -517,13 +596,19 @@ public:
 	UFUNCTION(Client, Reliable)
 	void ClientPlayHorrorCue(const FBHClientHorrorCue& Cue);
 
+	UFUNCTION(Client, Unreliable)
+	void ClientPlayGameplayAudioCue(const FBHGameplayAudioCue& Cue);
+
 	UFUNCTION(Client, Reliable)
 	void ClientRecordRoundResult(EBHPlayerRole AccountRole, EBHPlayerLifeState LifeState, EBHRoundPhase ResultPhase);
 
 private:
+	void RemoveMainMenuWidget();
 	void ApplyGameplayInputMode();
 	void EnsureAudioPreferencesLoaded();
 	void SaveAudioPreference(const TCHAR* Key, float Value) const;
+	void EnsureComfortPreferencesLoaded();
+	void SaveComfortPreference(const TCHAR* Key, bool bValue) const;
 	void EnsureGraphicsPreferencesLoaded();
 	void SaveGraphicsPreference(const TCHAR* Key, int32 Value) const;
 	void SaveGraphicsPreference(const TCHAR* Key, bool bValue) const;
@@ -542,6 +627,7 @@ private:
 	float GetEffectiveUiVolume() const;
 	USoundBase* GetAmbientMusicSound();
 	USoundBase* GetMenuSelectionSound();
+	FBHLessonPreset BuildCurrentLessonPresetSnapshot(const FString& DisplayName, const FString& SelectedMapName) const;
 	bool IsLocalHostAdminContext() const;
 	bool RequireLocalHostAdmin(FString& OutMessage, const TCHAR* ActionDescription);
 	bool TryOpenClassroomBoardWindow(FString& OutMessage);
@@ -572,6 +658,12 @@ private:
 	float StatusMessageStartTime = 0.0f;
 	float StatusMessageEndTime = 0.0f;
 	float StatusMessageDuration = 0.0f;
+	FVector CCTVRevealLocation = FVector::ZeroVector;
+	FString CCTVRevealTargetName;
+	TWeakObjectPtr<ABHCharacter> CCTVRevealTarget;
+	float CCTVRevealStartTime = 0.0f;
+	float CCTVRevealEndTime = 0.0f;
+	float CCTVRevealDuration = 0.0f;
 	float MasterVolume = 1.0f;
 	float MusicVolume = 0.85f;
 	float UiVolume = 0.9f;
@@ -603,7 +695,13 @@ private:
 	int32 CrosshairStyle = 0;
 	bool bAmbientMusicStarted = false;
 	bool bAudioPreferencesLoaded = false;
+	bool bComfortPreferencesLoaded = false;
 	bool bGraphicsPreferencesLoaded = false;
+	bool bReducedJumpscares = false;
+	bool bReducedFlash = false;
+	bool bReducedCameraShake = false;
+	bool bCaptionsEnabled = true;
+	bool bHighContrastHud = false;
 	bool bAutoHardwareGraphicsEnabled = true;
 	bool bAdaptiveGraphicsEnabled = true;
 	bool bGraphicsAppliedAtStartup = false;
@@ -623,6 +721,8 @@ private:
 	bool bRoundPhaseObserved = false;
 	bool bGameWindowCloseOverrideBound = false;
 	bool bCleanQuitRequested = false;
+	mutable FBHClassroomPreflightSummary CachedClassroomPreflightSummary;
+	mutable double LastClassroomPreflightSummaryTime = -1000.0;
 	EBHRoundPhase LastObservedRoundPhase = EBHRoundPhase::Lobby;
 	float AutomationJoinAttemptTime = -1.0f;
 	float HorrorCueJitterEndTime = -1.0f;

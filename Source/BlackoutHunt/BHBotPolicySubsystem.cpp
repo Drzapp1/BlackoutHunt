@@ -6,7 +6,7 @@ namespace
 {
 FString BHBotPolicyDirectory()
 {
-	return TEXT("D:/MainGame/Models/BlackoutHuntBotPolicy");
+	return FPaths::Combine(FPaths::ProjectDir(), TEXT("Models"), TEXT("BlackoutHuntBotPolicy"));
 }
 
 FString BHBotPolicyWeightsPath()
@@ -34,6 +34,24 @@ bool ParseIntentName(const FString& Name, EBHBotIntent& OutIntent)
 	if (Name.Equals(TEXT("DropTrap"), ESearchCase::IgnoreCase)) { OutIntent = EBHBotIntent::DropTrap; return true; }
 	return false;
 }
+
+bool ParsePersonalityName(const FString& Name, EBHBotPersonality& OutPersonality)
+{
+	if (Name.Equals(TEXT("Cautious"), ESearchCase::IgnoreCase)) { OutPersonality = EBHBotPersonality::Cautious; return true; }
+	if (Name.Equals(TEXT("Objective"), ESearchCase::IgnoreCase)) { OutPersonality = EBHBotPersonality::Objective; return true; }
+	if (Name.Equals(TEXT("Bold"), ESearchCase::IgnoreCase)) { OutPersonality = EBHBotPersonality::Bold; return true; }
+	if (Name.Equals(TEXT("Trickster"), ESearchCase::IgnoreCase)) { OutPersonality = EBHBotPersonality::Trickster; return true; }
+	if (Name.Equals(TEXT("Panicked"), ESearchCase::IgnoreCase)) { OutPersonality = EBHBotPersonality::Panicked; return true; }
+	if (Name.Equals(TEXT("Aggressive"), ESearchCase::IgnoreCase)) { OutPersonality = EBHBotPersonality::Aggressive; return true; }
+	if (Name.Equals(TEXT("Suspicious"), ESearchCase::IgnoreCase)) { OutPersonality = EBHBotPersonality::Suspicious; return true; }
+	if (Name.Equals(TEXT("Ambusher"), ESearchCase::IgnoreCase)) { OutPersonality = EBHBotPersonality::Ambusher; return true; }
+	return false;
+}
+
+FName MakePersonalityIntentKey(EBHBotPersonality Personality, EBHBotIntent Intent)
+{
+	return FName(*FString::Printf(TEXT("%d.%d"), static_cast<int32>(Personality), static_cast<int32>(Intent)));
+}
 }
 
 void UBHBotPolicySubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -45,6 +63,7 @@ void UBHBotPolicySubsystem::Initialize(FSubsystemCollectionBase& Collection)
 void UBHBotPolicySubsystem::LoadPolicyFile()
 {
 	IntentWeights.Reset();
+	PersonalityIntentWeights.Reset();
 	bPolicyFileLoaded = false;
 
 	const FString PolicyPath = BHBotPolicyWeightsPath();
@@ -78,6 +97,22 @@ void UBHBotPolicySubsystem::LoadPolicyFile()
 
 		Key.TrimStartAndEndInline();
 		Value.TrimStartAndEndInline();
+
+		FString PersonalityName;
+		FString IntentName;
+		if (Key.Split(TEXT("."), &PersonalityName, &IntentName))
+		{
+			PersonalityName.TrimStartAndEndInline();
+			IntentName.TrimStartAndEndInline();
+			EBHBotPersonality Personality = EBHBotPersonality::Objective;
+			EBHBotIntent Intent = EBHBotIntent::None;
+			if (ParsePersonalityName(PersonalityName, Personality) && ParseIntentName(IntentName, Intent))
+			{
+				PersonalityIntentWeights.Add(MakePersonalityIntentKey(Personality, Intent), FCString::Atof(*Value));
+			}
+			continue;
+		}
+
 		EBHBotIntent Intent = EBHBotIntent::None;
 		if (ParseIntentName(Key, Intent))
 		{
@@ -85,10 +120,11 @@ void UBHBotPolicySubsystem::LoadPolicyFile()
 		}
 	}
 
-	bPolicyFileLoaded = IntentWeights.Num() > 0;
-	UE_LOG(LogTemp, Log, TEXT("BlackoutHunt bot policy: %s %d local intent weights from %s."),
+	bPolicyFileLoaded = IntentWeights.Num() > 0 || PersonalityIntentWeights.Num() > 0;
+	UE_LOG(LogTemp, Log, TEXT("BlackoutHunt bot policy: %s %d local intent weights and %d personality weights from %s."),
 		bPolicyFileLoaded ? TEXT("loaded") : TEXT("ignored"),
 		IntentWeights.Num(),
+		PersonalityIntentWeights.Num(),
 		*PolicyPath);
 }
 
@@ -122,6 +158,7 @@ FBHBotPolicyResult UBHBotPolicySubsystem::ScoreCandidates(const FBHBotPolicyFeat
 		bDisabledForBudget = true;
 		bPolicyFileLoaded = false;
 		IntentWeights.Reset();
+		PersonalityIntentWeights.Reset();
 		UE_LOG(LogTemp, Warning, TEXT("BlackoutHunt bot policy: disabled local policy after %.2fms average scoring budget."), AverageMs);
 	}
 
@@ -138,17 +175,18 @@ float UBHBotPolicySubsystem::ScoreSingleCandidate(const FBHBotPolicyFeatures& Fe
 		+ Candidate.Urgency * 0.35f
 		- Candidate.Risk * 0.45f
 		- FMath::Clamp(Candidate.Distance / 12000.0f, 0.0f, 1.0f) * 0.28f
-		- static_cast<float>(Features.TargetClaimCount) * 0.38f
-		+ GetIntentWeight(Candidate.Intent);
+		- static_cast<float>(Candidate.TargetClaimCount) * 0.38f
+		+ GetIntentWeight(Candidate.Intent)
+		+ GetPersonalityIntentWeight(Features.Personality, Candidate.Intent);
 
 	switch (Features.Personality)
 	{
 	case EBHBotPersonality::Cautious:
 		Score += (Candidate.Intent == EBHBotIntent::Hide || Candidate.Intent == EBHBotIntent::Flee) ? 0.34f : 0.0f;
-		Score -= Candidate.Risk * 0.20f;
+		Score -= Candidate.Risk * 0.20f + Features.ThreatPressure * 0.08f;
 		break;
 	case EBHBotPersonality::Objective:
-		Score += (Candidate.Intent == EBHBotIntent::AnswerStation || Candidate.Intent == EBHBotIntent::WorkStation || Candidate.Intent == EBHBotIntent::RepairBreaker || Candidate.Intent == EBHBotIntent::Escape) ? 0.30f : 0.0f;
+		Score += (Candidate.Intent == EBHBotIntent::AnswerStation || Candidate.Intent == EBHBotIntent::WorkStation || Candidate.Intent == EBHBotIntent::RepairBreaker || Candidate.Intent == EBHBotIntent::Escape) ? 0.30f + Features.ObjectivePressure * 0.18f : 0.0f;
 		break;
 	case EBHBotPersonality::Bold:
 		Score += (Candidate.Intent == EBHBotIntent::Bait || Candidate.Intent == EBHBotIntent::RepairBreaker || Candidate.Intent == EBHBotIntent::Chase) ? 0.24f : 0.0f;
@@ -172,6 +210,24 @@ float UBHBotPolicySubsystem::ScoreSingleCandidate(const FBHBotPolicyFeatures& Fe
 		break;
 	default:
 		break;
+	}
+
+	if (Features.Role == EBHPlayerRole::FakeHunter)
+	{
+		switch (Features.Personality)
+		{
+		case EBHBotPersonality::Trickster:
+			Score += (Candidate.Intent == EBHBotIntent::UsePower || Candidate.Intent == EBHBotIntent::DropTrap) ? 0.24f : 0.0f;
+			break;
+		case EBHBotPersonality::Suspicious:
+			Score += (Candidate.Intent == EBHBotIntent::Patrol || Candidate.Intent == EBHBotIntent::InvestigateNoise || Candidate.Intent == EBHBotIntent::UseScan) ? 0.18f : 0.0f;
+			break;
+		case EBHBotPersonality::Ambusher:
+			Score += (Candidate.Intent == EBHBotIntent::AmbushObjective || Candidate.Intent == EBHBotIntent::DropTrap) ? 0.22f : 0.0f;
+			break;
+		default:
+			break;
+		}
 	}
 
 	switch (Features.Difficulty)
@@ -200,12 +256,22 @@ float UBHBotPolicySubsystem::GetIntentWeight(EBHBotIntent Intent) const
 	return 0.0f;
 }
 
+float UBHBotPolicySubsystem::GetPersonalityIntentWeight(EBHBotPersonality Personality, EBHBotIntent Intent) const
+{
+	if (const float* Weight = PersonalityIntentWeights.Find(MakePersonalityIntentKey(Personality, Intent)))
+	{
+		return *Weight;
+	}
+	return 0.0f;
+}
+
 FString UBHBotPolicySubsystem::GetPolicyStatus() const
 {
 	const double AverageMs = ScoreCalls > 0 ? (TotalScoreSeconds / static_cast<double>(ScoreCalls)) * 1000.0 : 0.0;
-	return FString::Printf(TEXT("policy=%s weights=%d avg=%.3fms%s path=%s"),
+	return FString::Printf(TEXT("policy=%s weights=%d personalityWeights=%d avg=%.3fms%s path=%s"),
 		bPolicyFileLoaded ? TEXT("local-file") : TEXT("cpp-fallback"),
 		IntentWeights.Num(),
+		PersonalityIntentWeights.Num(),
 		AverageMs,
 		bDisabledForBudget ? TEXT(" disabled-budget") : TEXT(""),
 		*BHBotPolicyWeightsPath());

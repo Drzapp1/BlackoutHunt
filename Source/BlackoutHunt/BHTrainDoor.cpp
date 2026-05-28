@@ -6,9 +6,35 @@
 #include "Components/BoxComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/World.h"
+#include "GameFramework/GameStateBase.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Net/UnrealNetwork.h"
 #include "UObject/ConstructorHelpers.h"
+
+namespace
+{
+FString BHTrainDoorClock(float EndServerTime, const UWorld* World)
+{
+	const AGameStateBase* BaseGameState = World ? World->GetGameState() : nullptr;
+	const float Now = BaseGameState ? BaseGameState->GetServerWorldTimeSeconds() : (World ? World->GetTimeSeconds() : 0.0f);
+	const int32 RemainingSeconds = FMath::Max(0, FMath::CeilToInt(EndServerTime - Now));
+	return FString::Printf(TEXT("%02d:%02d"), RemainingSeconds / 60, RemainingSeconds % 60);
+}
+
+FString BHTrainDoorMotionLabel(bool bOpen, float DoorOpenAlpha)
+{
+	if (bOpen && DoorOpenAlpha < 0.92f)
+	{
+		return TEXT("Opening");
+	}
+	if (!bOpen && DoorOpenAlpha > 0.08f)
+	{
+		return TEXT("Closing");
+	}
+	return bOpen ? TEXT("Open") : TEXT("Closed");
+}
+}
 
 ABHTrainDoor::ABHTrainDoor()
 {
@@ -75,6 +101,17 @@ ABHTrainDoor::ABHTrainDoor()
 	bEscapeDoor = false;
 	DoorName = TEXT("Train Door");
 	DoorOpenAlpha = 0.0f;
+	HeaderLightMaterial = nullptr;
+}
+
+void ABHTrainDoor::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (EscapeVolume)
+	{
+		EscapeVolume->OnComponentBeginOverlap.RemoveDynamic(this, &ABHTrainDoor::OnEscapeVolumeBeginOverlap);
+	}
+
+	Super::EndPlay(EndPlayReason);
 }
 
 void ABHTrainDoor::Tick(float DeltaSeconds)
@@ -106,11 +143,113 @@ void ABHTrainDoor::BeginInteract_Implementation(ABHCharacter* Character)
 
 FText ABHTrainDoor::GetInteractionLabel_Implementation(ABHCharacter* Character) const
 {
+	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
 	if (bEscapeDoor)
 	{
-		return CanEscapeThroughDoor(Character) ? FText::FromString(TEXT("Board Evacuation Train")) : FText::FromString(TEXT("Escape Door Locked"));
+		if (CanEscapeThroughDoor(Character))
+		{
+			return FText::FromString(TEXT("Board Evacuation Train"));
+		}
+
+		if (BHGS && BHGS->FinalEscapeState == EBHFinalEscapeState::Cutscene)
+		{
+			return FText::FromString(TEXT("Evacuation Door Unlocking"));
+		}
+		if (BHGS && BHGS->FinalEscapeState == EBHFinalEscapeState::EscapeActive && bOpen)
+		{
+			return FText::FromString(TEXT("Survivor Evacuation Door"));
+		}
+		if (BHGS && BHGS->FinalEscapeState == EBHFinalEscapeState::Departed)
+		{
+			return FText::FromString(TEXT("Evacuation Train Departed"));
+		}
+		if (BHGS && BHGS->FinalEscapeState == EBHFinalEscapeState::Failed)
+		{
+			return FText::FromString(TEXT("Evacuation Door Sealed"));
+		}
+		return FText::FromString(TEXT("Evacuation Door Locked"));
 	}
-	return bOpen ? FText::FromString(TEXT("Doors Open")) : FText::FromString(TEXT("Doors Closed"));
+
+	if (BHGS && BHGS->TrainPhase == EBHTrainPhase::Departing)
+	{
+		return FText::FromString(FString::Printf(TEXT("%s Departing"), *DoorName));
+	}
+	return FText::FromString(FString::Printf(TEXT("%s %s"), *DoorName, *BHTrainDoorMotionLabel(bOpen, DoorOpenAlpha)));
+}
+
+FBHInteractionPromptInfo ABHTrainDoor::GetInteractionPromptInfo_Implementation(ABHCharacter* Character) const
+{
+	FBHInteractionPromptInfo Info;
+	Info.bUsePromptInfo = true;
+	Info.Label = GetInteractionLabel_Implementation(Character);
+	Info.bCanInteract = CanInteract_Implementation(Character);
+	if (Info.bCanInteract)
+	{
+		Info.RiskText = FText::FromString(bEscapeDoor ? TEXT("BOARD FINAL TRAIN") : TEXT("BOARD NOW"));
+		return Info;
+	}
+
+	const ABHPlayerState* BHPS = Character ? Character->GetBHPlayerState() : nullptr;
+	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	if (!bEscapeDoor)
+	{
+		if (bOpen)
+		{
+			Info.DisabledReason = FText::FromString(TEXT("WALK THROUGH - NO E NEEDED"));
+		}
+		else if (BHGS && BHGS->TrainPhase == EBHTrainPhase::Departing)
+		{
+			Info.DisabledReason = FText::FromString(TEXT("DEPARTING / DOORS CLOSED"));
+		}
+		else if (BHGS && (BHGS->TrainPhase == EBHTrainPhase::Recap || BHGS->TrainPhase == EBHTrainPhase::BonusQuestion || BHGS->TrainPhase == EBHTrainPhase::Shop))
+		{
+			Info.DisabledReason = FText::FromString(TEXT("TRAIN MOVING / DOORS CLOSED"));
+		}
+		else
+		{
+			Info.DisabledReason = FText::FromString(TEXT("DOORS CLOSED"));
+		}
+	}
+	else if (!bOpen)
+	{
+		if (BHGS && BHGS->FinalEscapeState == EBHFinalEscapeState::Cutscene)
+		{
+			Info.DisabledReason = FText::FromString(FString::Printf(TEXT("UNLOCKING %s / TEACHER HELD"), *BHTrainDoorClock(BHGS->FinalEscapeCutsceneEndServerTime, GetWorld())));
+		}
+		else if (BHGS && BHGS->FinalEscapeState == EBHFinalEscapeState::Departed)
+		{
+			Info.DisabledReason = FText::FromString(TEXT("TRAIN DEPARTED"));
+		}
+		else if (BHGS && BHGS->FinalEscapeState == EBHFinalEscapeState::Failed)
+		{
+			Info.DisabledReason = FText::FromString(TEXT("EVACUATION FAILED"));
+		}
+		else
+		{
+			Info.DisabledReason = FText::FromString(TEXT("DOOR CLOSED"));
+		}
+	}
+	else if (!BHGS || BHGS->FinalEscapeState != EBHFinalEscapeState::EscapeActive)
+	{
+		Info.DisabledReason = FText::FromString(TEXT("FINAL ESCAPE NOT ACTIVE"));
+	}
+	else if (!BHPS || BHPS->PlayerRole == EBHPlayerRole::Unassigned)
+	{
+		Info.DisabledReason = FText::FromString(TEXT("READY UP FIRST"));
+	}
+	else if (BHPS->PlayerRole == EBHPlayerRole::FakeHunter)
+	{
+		Info.DisabledReason = FText::FromString(TEXT("HALL MONITORS CANNOT BOARD"));
+	}
+	else if (BHPS->IsAliveHunter())
+	{
+		Info.DisabledReason = FText::FromString(TEXT("TEACHER CANNOT BOARD"));
+	}
+	else
+	{
+		Info.DisabledReason = FText::FromString(TEXT("SURVIVOR EXIT ONLY"));
+	}
+	return Info;
 }
 
 void ABHTrainDoor::ConfigureDoor(bool bNewEscapeDoor, const FString& NewDoorName)
@@ -177,19 +316,24 @@ void ABHTrainDoor::ApplyDoorVisuals(float DeltaSeconds)
 	}
 	if (HeaderLight)
 	{
-		UMaterialInstanceDynamic* DynamicMaterial = HeaderLight->CreateAndSetMaterialInstanceDynamic(0);
-		if (DynamicMaterial)
+		if (!HeaderLightMaterial)
+		{
+			HeaderLightMaterial = HeaderLight->CreateAndSetMaterialInstanceDynamic(0);
+		}
+		if (HeaderLightMaterial)
 		{
 			const FLinearColor Color = bOpen ? FLinearColor(0.12f, 1.0f, 0.48f, 1.0f) : FLinearColor(1.0f, 0.10f, 0.06f, 1.0f);
-			DynamicMaterial->SetVectorParameterValue(TEXT("Color"), Color);
-			DynamicMaterial->SetVectorParameterValue(TEXT("BaseColor"), Color);
-			DynamicMaterial->SetVectorParameterValue(TEXT("EmissiveColor"), Color * 3.0f);
+			const float Pulse = bOpen && GetWorld() ? 1.0f + 0.18f * FMath::Sin(GetWorld()->GetTimeSeconds() * 5.5f) : 1.0f;
+			HeaderLightMaterial->SetVectorParameterValue(TEXT("Color"), Color);
+			HeaderLightMaterial->SetVectorParameterValue(TEXT("BaseColor"), Color);
+			HeaderLightMaterial->SetVectorParameterValue(TEXT("EmissiveColor"), Color * (bOpen ? 3.5f * Pulse : 2.2f));
 		}
 	}
 	if (StatusLight)
 	{
+		const float Pulse = bOpen && GetWorld() ? 0.5f + 0.5f * FMath::Sin(GetWorld()->GetTimeSeconds() * 5.5f) : 0.0f;
 		StatusLight->SetLightColor((bOpen ? FLinearColor(0.12f, 1.0f, 0.48f, 1.0f) : FLinearColor(1.0f, 0.10f, 0.06f, 1.0f)).ToFColor(true));
-		StatusLight->SetIntensity(bOpen ? 1050.0f : 520.0f);
+		StatusLight->SetIntensity(bOpen ? 900.0f + Pulse * 260.0f : (bEscapeDoor ? 660.0f : 520.0f));
 	}
 }
 

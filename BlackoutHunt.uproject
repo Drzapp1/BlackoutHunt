@@ -32,6 +32,10 @@
 			"Enabled": true
 		},
 		{
+			"Name": "OnlineSubsystemSteam",
+			"Enabled": true
+		},
+		{
 			"Name": "DatasmithImporter",
 			"Enabled": true,
 			"TargetAllowList": [
@@ -108,6 +112,38 @@
 			"TargetAllowList": [
 				"Editor"
 			]
+		},
+		{
+			"Name": "Niagara",
+			"Enabled": true
+		},
+		{
+			"Name": "AutoFootstep",
+			"Enabled": false
+		},
+		{
+			"Name": "CoreInteractionSystem",
+			"Enabled": false
+		},
+		{
+			"Name": "ActorInteractionPlugin",
+			"Enabled": false
+		},
+		{
+			"Name": "NarrativeNavigator",
+			"Enabled": false
+		},
+		{
+			"Name": "ProceduralRooms",
+			"Enabled": false
+		},
+		{
+			"Name": "SurfaceFootstepSystem",
+			"Enabled": false
+		},
+		{
+			"Name": "TemperedGlass",
+			"Enabled": false
 		}
 	]
 }

@@ -27,6 +27,9 @@ const TArray<FBHPowerupDefinition>& FBHPowerupLibrary::GetDefaultPowerups()
 	AddPowerup(EBHPowerupType::QuestionHint, TEXT("Question Hint"), TEXT("Shows a hint for the active node or train question."), 18, 3, 20.0f, 8.0f);
 	AddPowerup(EBHPowerupType::DecoySound, TEXT("Decoy Sound"), TEXT("Drops a fake sound ping to pull the Teacher off-route."), 32, 2, 0.0f, 14.0f);
 	AddPowerup(EBHPowerupType::DoorRush, TEXT("Door Rush"), TEXT("Final escape speed assist near open subway doors."), 38, 1, 22.0f, 30.0f);
+	AddPowerup(EBHPowerupType::TeacherScanFocus, TEXT("Teacher Scan Focus"), TEXT("Passive upgrade. Heartbeat scan cools down faster and reaches farther."), 40, 2, 0.0f, 0.0f);
+	AddPowerup(EBHPowerupType::TeacherBlackoutSurge, TEXT("Teacher Blackout Surge"), TEXT("Passive upgrade. Blackout hits more lights and cools down faster."), 50, 2, 0.0f, 0.0f);
+	AddPowerup(EBHPowerupType::TeacherPatrolIntel, TEXT("Teacher Patrol Intel"), TEXT("Passive upgrade. Scans include rough recent-noise direction."), 35, 2, 0.0f, 0.0f);
 	return Powerups;
 }
 
@@ -41,6 +44,13 @@ bool FBHPowerupLibrary::GetDefinition(EBHPowerupType Type, FBHPowerupDefinition&
 		}
 	}
 	return false;
+}
+
+bool FBHPowerupLibrary::IsTeacherPowerup(EBHPowerupType Type)
+{
+	return Type == EBHPowerupType::TeacherScanFocus
+		|| Type == EBHPowerupType::TeacherBlackoutSurge
+		|| Type == EBHPowerupType::TeacherPatrolIntel;
 }
 
 FString FBHPowerupLibrary::PowerupTypeToString(EBHPowerupType Type)

@@ -1,4 +1,5 @@
 #include "BHTrainIntermissionManager.h"
+#include "BHBlockActor.h"
 #include "BHCharacter.h"
 #include "BHGameInstance.h"
 #include "BHGameMode.h"
@@ -15,6 +16,62 @@
 #include "EngineUtils.h"
 #include "GameFramework/GameStateBase.h"
 #include "TimerManager.h"
+
+namespace
+{
+FLinearColor BHTrainPhaseAccent(EBHTrainPhase Phase)
+{
+	switch (Phase)
+	{
+	case EBHTrainPhase::Arrival:
+	case EBHTrainPhase::StationStop:
+		return FLinearColor(0.18f, 1.0f, 0.50f, 1.0f);
+	case EBHTrainPhase::Recap:
+		return FLinearColor(0.46f, 0.90f, 0.62f, 1.0f);
+	case EBHTrainPhase::BonusQuestion:
+		return FLinearColor(1.0f, 0.72f, 0.20f, 1.0f);
+	case EBHTrainPhase::Shop:
+		return FLinearColor(0.82f, 0.58f, 1.0f, 1.0f);
+	case EBHTrainPhase::Departing:
+		return FLinearColor(1.0f, 0.26f, 0.14f, 1.0f);
+	case EBHTrainPhase::Inactive:
+	default:
+		return FLinearColor(0.14f, 0.82f, 0.74f, 1.0f);
+	}
+}
+
+FString BHTrainNonEmpty(const FString& Value, const TCHAR* Fallback)
+{
+	return Value.IsEmpty() ? FString(Fallback) : Value;
+}
+
+FString BHBuildBonusDisplayBody(const ABHGameState* BHGS)
+{
+	const FString WeakTopic = BHGS
+		? FBHRevisionQuestionBank::TopicToString(BHGS->RevisionWeakTopic)
+		: FString(TEXT("weak topic"));
+	return FString::Printf(
+		TEXT("Bonus terminal targets %s.\nSurvivors answer with 1-4 for shop points.\nCorrect answers recover stamina and lower fear.\nWrong answers add pressure but keep the class moving.\nShop opens after this timer."),
+		*WeakTopic);
+}
+
+FString BHBuildShopDisplayBody()
+{
+	return TEXT("Use terminals that match your role.\nSurvivors spend question points on chase tools.\nTeachers spend capture points on passive upgrades.\nEach terminal shows cost, charges, effect, cooldown, and balance.\nStation stop opens after the shop timer.");
+}
+
+FString BHBuildActivitiesDisplayBody()
+{
+	return TEXT("Social car is optional.\nReflex arcade: time E on GREEN for small role points.\nMemory cards: press E when the pair matches.\nSnack cart restores stamina and lowers fear.\nDrink cooler tops flashlight, stamina, and nerves.");
+}
+
+FString BHBuildBoardingDisplayBody(const FString& DestinationText)
+{
+	return FString::Printf(
+		TEXT("%s\nDoors are open. Board now before departure.\nPlayers still outside are safely pulled aboard when the doors close.\nDeparture starts the next route load."),
+		DestinationText.IsEmpty() ? TEXT("Next Stop") : *DestinationText);
+}
+}
 
 ABHTrainIntermissionManager::ABHTrainIntermissionManager()
 {
@@ -74,6 +131,22 @@ void ABHTrainIntermissionManager::RegisterTunnelMotion(ABHTrainTunnelMotionActor
 	}
 }
 
+void ABHTrainIntermissionManager::RegisterMovingBarrier(ABHBlockActor* VisibleShutter, ABHBlockActor* HiddenBlocker)
+{
+	if (VisibleShutter)
+	{
+		MovingShutters.AddUnique(VisibleShutter);
+		VisibleShutter->SetBlockHiddenInGame(true);
+		VisibleShutter->SetBlockCollisionEnabled(false);
+	}
+	if (HiddenBlocker)
+	{
+		MovingHiddenBlockers.AddUnique(HiddenBlocker);
+		HiddenBlocker->SetBlockHiddenInGame(true);
+		HiddenBlocker->SetBlockCollisionEnabled(false);
+	}
+}
+
 void ABHTrainIntermissionManager::RegisterBonusTerminal(ABHTrainBonusQuestionTerminal* Terminal)
 {
 	BonusTerminal = Terminal;
@@ -116,6 +189,17 @@ void ABHTrainIntermissionManager::BeginPlay()
 	}
 }
 
+void ABHTrainIntermissionManager::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (GetWorld())
+	{
+		GetWorldTimerManager().ClearTimer(PhaseTimerHandle);
+		GetWorldTimerManager().ClearAllTimersForObject(this);
+	}
+
+	Super::EndPlay(EndPlayReason);
+}
+
 void ABHTrainIntermissionManager::StartIntermission()
 {
 	if (BonusTerminal)
@@ -142,7 +226,7 @@ void ABHTrainIntermissionManager::StartIntermission()
 
 	SetTrainDoorsOpen(true);
 	SetTunnelMoving(false);
-	SetPhase(EBHTrainPhase::Arrival, ArrivalSeconds, TEXT("Doors open. Board the remediation train."));
+	SetPhase(EBHTrainPhase::Arrival, ArrivalSeconds, TEXT("Doors open. Board now; snacks, drinks, and minigames are optional once aboard."));
 }
 
 void ABHTrainIntermissionManager::SetPhase(EBHTrainPhase NewPhase, float DurationSeconds, const FString& Announcement)
@@ -153,6 +237,21 @@ void ABHTrainIntermissionManager::SetPhase(EBHTrainPhase NewPhase, float Duratio
 	if (ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr)
 	{
 		BHGS->SetTrainState(NewPhase, CompletedStageIndex, Now + FMath::Max(0.0f, DurationSeconds), DestinationText, Announcement);
+	}
+
+	if (BonusTerminal)
+	{
+		BonusTerminal->RefreshDisplay();
+	}
+	if (!Announcement.IsEmpty() && GetWorld())
+	{
+		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+		{
+			if (ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get()))
+			{
+				PC->ClientShowStatusMessage(Announcement, 3.25f);
+			}
+		}
 	}
 
 	UpdateDisplaysForPhase();
@@ -168,33 +267,33 @@ void ABHTrainIntermissionManager::AdvancePhase()
 		AutoBoardPlayers();
 		SetTrainDoorsOpen(false);
 		SetTunnelMoving(true);
-		SetPhase(EBHTrainPhase::Recap, RecapSeconds, TEXT("Class performance review in progress."));
+		SetPhase(EBHTrainPhase::Recap, RecapSeconds, TEXT("Recap boards live. Review summary, weak topics, or try the social-car activities."));
 		break;
 	case EBHTrainPhase::Recap:
 		if (bFinalRecap)
 		{
 			SetTunnelMoving(false);
 			SetTrainDoorsOpen(true);
-			SetPhase(EBHTrainPhase::StationStop, StationStopSeconds, TEXT("Final leaderboard posted. Train service ends here."));
+			SetPhase(EBHTrainPhase::StationStop, StationStopSeconds, TEXT("Final leaderboard posted. Review results before returning to the lobby."));
 		}
 		else
 		{
-			SetPhase(EBHTrainPhase::BonusQuestion, BonusQuestionSeconds, TEXT("Weak areas detected. Bonus questions are now live."));
+			SetPhase(EBHTrainPhase::BonusQuestion, BonusQuestionSeconds, TEXT("Bonus terminal live. Answer weak-topic questions or play optional minigames for small points."));
 		}
 		break;
 	case EBHTrainPhase::BonusQuestion:
-		SetPhase(EBHTrainPhase::Shop, ShopSeconds, TEXT("Shop carriage unlocked. Spend earned question points."));
+		SetPhase(EBHTrainPhase::Shop, ShopSeconds, TEXT("Shop carriage open. Buy upgrades; snacks, drinks, and minigames stay open while waiting."));
 		break;
 	case EBHTrainPhase::Shop:
 		SetTunnelMoving(false);
 		SetTrainDoorsOpen(true);
-		SetPhase(EBHTrainPhase::StationStop, StationStopSeconds, DestinationText);
+		SetPhase(EBHTrainPhase::StationStop, StationStopSeconds, FString::Printf(TEXT("Station stop. Doors open for %s. Board before departure."), *DestinationText));
 		break;
 	case EBHTrainPhase::StationStop:
 		AutoBoardPlayers();
 		SetTrainDoorsOpen(false);
 		SetTunnelMoving(true);
-		SetPhase(EBHTrainPhase::Departing, DepartureSeconds, TEXT("Boarding closed. Departing."));
+		SetPhase(EBHTrainPhase::Departing, DepartureSeconds, FString::Printf(TEXT("Boarding closed. Departing for %s; next route loading."), *DestinationText));
 		break;
 	case EBHTrainPhase::Departing:
 		FinishIntermission();
@@ -217,36 +316,78 @@ void ABHTrainIntermissionManager::UpdateDisplaysForPhase()
 
 		FString Header = TEXT("BLACKOUT TRANSIT");
 		FString Body = DestinationText;
-		FLinearColor Accent(0.14f, 0.82f, 0.74f, 1.0f);
+		FLinearColor Accent = BHTrainPhaseAccent(CurrentPhase);
+		if (Index % 5 == 0)
+		{
+			Display->ConfigureTrainPhaseDisplay(DestinationText, Accent);
+			continue;
+		}
+
 		if (BHGS)
 		{
 			switch (Index % 5)
 			{
-			case 0:
+			case 1:
 				Header = TEXT("CLASS OVERVIEW");
-				Body = BHGS->TrainRecapOverview;
+				Body = BHTrainNonEmpty(BHGS->TrainRecapOverview, TEXT("Class recap syncing. Check this board again in a moment."));
 				Accent = FLinearColor(0.46f, 0.90f, 0.62f, 1.0f);
 				break;
-			case 1:
-				Header = TEXT("TOPICS");
-				Body = BHGS->TrainRecapTopics;
-				Accent = FLinearColor(0.46f, 0.72f, 1.0f, 1.0f);
-				break;
 			case 2:
-				Header = TEXT("MISSED QUESTIONS");
-				Body = BHGS->TrainRecapMissedQuestions;
-				Accent = FLinearColor(1.0f, 0.48f, 0.30f, 1.0f);
+				if (CurrentPhase == EBHTrainPhase::BonusQuestion)
+				{
+					Header = TEXT("BONUS TERMINAL");
+					Body = BHBuildBonusDisplayBody(BHGS);
+					Accent = FLinearColor(1.0f, 0.72f, 0.20f, 1.0f);
+				}
+				else
+				{
+					Header = TEXT("TOPICS");
+					Body = BHTrainNonEmpty(BHGS->TrainRecapTopics, TEXT("Topic rollup syncing. Bonus questions will use the current weak topic."));
+					Accent = FLinearColor(0.46f, 0.72f, 1.0f, 1.0f);
+				}
 				break;
 			case 3:
-				Header = bFinalRecap ? TEXT("LEADERBOARD") : TEXT("SHOP / POWERUPS");
-				Body = bFinalRecap ? BHGS->TrainRecapOverview : TEXT("Stamina Boost, Sprint Burst, Light Boost, Question Hint, Decoy Sound, and Door Rush are available in the next carriage.");
-				Accent = FLinearColor(1.0f, 0.76f, 0.24f, 1.0f);
+				if (bFinalRecap)
+				{
+					Header = TEXT("FINAL LEADERBOARD");
+					Body = BHTrainNonEmpty(BHGS->TrainRecapOverview, TEXT("Final recap syncing. Train service ends at this station."));
+					Accent = FLinearColor(1.0f, 0.76f, 0.24f, 1.0f);
+				}
+				else if (CurrentPhase == EBHTrainPhase::StationStop || CurrentPhase == EBHTrainPhase::Departing)
+				{
+					Header = TEXT("BOARDING CALL");
+					Body = CurrentPhase == EBHTrainPhase::StationStop
+						? BHBuildBoardingDisplayBody(DestinationText)
+						: FString::Printf(TEXT("%s\nDoors are closed. Hold position while the next route loads."), DestinationText.IsEmpty() ? TEXT("Next Stop") : *DestinationText);
+					Accent = CurrentPhase == EBHTrainPhase::StationStop ? FLinearColor(0.18f, 1.0f, 0.50f, 1.0f) : FLinearColor(1.0f, 0.26f, 0.14f, 1.0f);
+				}
+				else
+				{
+					Header = TEXT("SHOP / POWERUPS");
+					Body = BHBuildShopDisplayBody();
+					Accent = FLinearColor(0.82f, 0.58f, 1.0f, 1.0f);
+				}
 				break;
 			case 4:
 			default:
 				Header = TEXT("NEXT ROUTE");
-				Body = BHGS->TrainRecapTips;
-				Accent = FLinearColor(0.78f, 0.58f, 1.0f, 1.0f);
+				if (CurrentPhase == EBHTrainPhase::Recap)
+				{
+					Body = BHTrainNonEmpty(BHGS->TrainRecapMissedQuestions, TEXT("No missed question data yet. Keep answering revision nodes to fill this board."));
+					Header = TEXT("MISSED QUESTIONS");
+					Accent = FLinearColor(1.0f, 0.48f, 0.30f, 1.0f);
+				}
+				else if (!bFinalRecap && (CurrentPhase == EBHTrainPhase::BonusQuestion || CurrentPhase == EBHTrainPhase::Shop))
+				{
+					Header = TEXT("SOCIAL CAR");
+					Body = BHBuildActivitiesDisplayBody();
+					Accent = FLinearColor(0.36f, 1.0f, 0.56f, 1.0f);
+				}
+				else
+				{
+					Body = BHTrainNonEmpty(BHGS->TrainRecapTips, TEXT("Review, answer bonus questions, buy upgrades, and board before departure."));
+					Accent = FLinearColor(0.78f, 0.58f, 1.0f, 1.0f);
+				}
 				break;
 			}
 		}
@@ -273,6 +414,27 @@ void ABHTrainIntermissionManager::SetTunnelMoving(bool bMoving)
 		if (TunnelMotion)
 		{
 			TunnelMotion->SetMoving(bMoving);
+		}
+	}
+	SetMovingBarriersClosed(bMoving);
+}
+
+void ABHTrainIntermissionManager::SetMovingBarriersClosed(bool bClosed)
+{
+	for (ABHBlockActor* Shutter : MovingShutters)
+	{
+		if (Shutter)
+		{
+			Shutter->SetBlockHiddenInGame(!bClosed);
+			Shutter->SetBlockCollisionEnabled(bClosed);
+		}
+	}
+	for (ABHBlockActor* Blocker : MovingHiddenBlockers)
+	{
+		if (Blocker)
+		{
+			Blocker->SetBlockHiddenInGame(true);
+			Blocker->SetBlockCollisionEnabled(bClosed);
 		}
 	}
 }

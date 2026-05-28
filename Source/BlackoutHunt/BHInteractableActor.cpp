@@ -46,3 +46,16 @@ FText ABHInteractableActor::GetInteractionLabel_Implementation(ABHCharacter* Cha
 {
 	return InteractionLabel;
 }
+
+FBHInteractionPromptInfo ABHInteractableActor::GetInteractionPromptInfo_Implementation(ABHCharacter* Character) const
+{
+	FBHInteractionPromptInfo Info;
+	Info.bUsePromptInfo = true;
+	Info.Label = GetInteractionLabel_Implementation(Character);
+	Info.bCanInteract = CanInteract_Implementation(Character);
+	if (!Info.bCanInteract)
+	{
+		Info.DisabledReason = FText::FromString(TEXT("LOCKED"));
+	}
+	return Info;
+}

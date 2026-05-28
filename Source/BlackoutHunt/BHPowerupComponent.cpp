@@ -43,6 +43,10 @@ bool UBHPowerupComponent::ServerUsePowerup(EBHPowerupType Type)
 	{
 		return false;
 	}
+	if (FBHPowerupLibrary::IsTeacherPowerup(Type))
+	{
+		return false;
+	}
 
 	const float Now = GetServerTime();
 	if (BHPS->GetPowerupCooldownEnd(Type) > Now)
@@ -99,6 +103,10 @@ bool UBHPowerupComponent::ServerUsePowerup(EBHPowerupType Type)
 		Character->AddFear(-28.0f);
 		Character->AddDread(-32.0f);
 		break;
+	case EBHPowerupType::TeacherScanFocus:
+	case EBHPowerupType::TeacherBlackoutSurge:
+	case EBHPowerupType::TeacherPatrolIntel:
+		return false;
 	}
 
 	if (ABHPlayerController* PC = Cast<ABHPlayerController>(Character->GetController()))

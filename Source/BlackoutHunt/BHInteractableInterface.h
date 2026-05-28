@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "BHTypes.h"
 #include "UObject/Interface.h"
 #include "BHInteractableInterface.generated.h"
 
@@ -28,4 +29,7 @@ public:
 
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Blackout Hunt")
 	FText GetInteractionLabel(ABHCharacter* Character) const;
+
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Blackout Hunt")
+	FBHInteractionPromptInfo GetInteractionPromptInfo(ABHCharacter* Character) const;
 };

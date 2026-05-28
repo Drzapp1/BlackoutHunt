@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "BHCosmeticUnlocks.h"
 #include "BHTypes.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Styling/SlateBrush.h"
@@ -93,6 +94,8 @@ private:
 	FReply OnJoinSavedEndpointClicked(FString Endpoint);
 	FReply OnJoinLocalClicked();
 	FReply OnReadyClicked();
+	FReply OnSpectatorEncourageClicked();
+	FReply OnSpectatorRolePreferenceClicked(EBHPlayerRole DesiredRole);
 	FReply OnResumeClicked();
 	FReply OnForceStartClicked();
 	FReply OnNextFacilityClicked();
@@ -126,9 +129,15 @@ private:
 	FReply OnAvatarPresetClicked(int32 AvatarIndex);
 	FReply OnAvatarColorClicked(int32 ColorIndex);
 	FReply OnAvatarHeadwearClicked(int32 HeadwearIndex);
-	FReply OnAvatarGearClicked(int32 GearIndex);
 	FReply OnMenuTabClicked(EBHMainMenuTab NewTab);
 	FReply OnOpenClassroomBoardClicked();
+	FReply OnOpenClassroomSupportFolderClicked();
+	FReply OnOpenClassroomLogFolderClicked();
+	FReply OnOpenClassroomPackageFolderClicked();
+	FReply OnOpenClassroomDeploymentGuideClicked();
+	FReply OnCreateClassroomSupportBundleClicked();
+	FReply OnRefreshClassroomPreflightClicked();
+	FReply OnCopyClassroomJoinCodeClicked();
 	FReply OnGraphicsPresetClicked(int32 Quality);
 	FReply OnAutoGraphicsClicked();
 	FReply OnAdaptiveGraphicsClicked(bool bEnabled);
@@ -139,13 +148,18 @@ private:
 	FReply OnEffectsQualityClicked(int32 Quality);
 	FReply OnResolutionClicked(int32 Width, int32 Height, bool bFullscreen);
 	FReply OnFrameRateClicked(int32 FrameRateLimit);
+	FReply OnComfortOptionClicked(FName OptionName, bool bEnabled);
 	FReply OnRevisionTopicsClicked(int32 TopicMask);
 	FReply OnRevisionDifficultyClicked(EBHRevisionDifficultyMix DifficultyMix);
 	FReply OnRevisionThresholdClicked(int32 ClassPercent, int32 IndividualPercent);
 	FReply OnRevisionScareIntensityClicked(int32 Intensity);
+	FReply OnLessonPresetClicked(FString PresetId);
+	FReply OnSaveLessonPresetClicked();
+	FReply OnGenerateManualQuestionSetClicked();
 	FReply OnForceReviewClicked();
 	FReply OnRevisionStatusClicked();
 	FReply OnExportRevisionReportClicked();
+	FReply OnExportPlaytestTelemetryClicked();
 	void OnMasterVolumeChanged(float Volume);
 	void OnMusicVolumeChanged(float Volume);
 	void OnUiVolumeChanged(float Volume);
@@ -166,6 +180,8 @@ private:
 	FText GetOnlineSessionBrowserText() const;
 	FText GetAvatarSummaryText() const;
 	FText GetAvatarModelNameText() const;
+	FText GetCosmeticProgressText() const;
+	FText GetCosmeticButtonText(EBHCosmeticCategory Category, int32 Index) const;
 	FSlateColor GetAvatarShirtColor() const;
 	FSlateColor GetAvatarChestColor() const;
 	FSlateColor GetAvatarPantsColor() const;
@@ -173,6 +189,7 @@ private:
 	FSlateColor GetAvatarHairColor() const;
 	FSlateColor GetAvatarBadgeColor() const;
 	FSlateColor GetAvatarPreviewAccentColor() const;
+	FSlateColor GetCosmeticButtonColor(EBHCosmeticCategory Category, int32 Index) const;
 	FSlateColor GetMenuTabColor(EBHMainMenuTab Tab) const;
 	FSlateColor GetMenuTabTextColor(EBHMainMenuTab Tab) const;
 	static int32 MenuTabToWidgetIndex(EBHMainMenuTab Tab);
@@ -183,6 +200,7 @@ private:
 	FText GetMusicVolumeText() const;
 	FText GetUiVolumeText() const;
 	FText GetGraphicsSummaryText() const;
+	FSlateColor GetComfortBoolOptionButtonColor(FName OptionName, bool bValue) const;
 	EVisibility GetStartCredentialsVisibility() const;
 	const FSlateBrush* GetStartBackgroundBrush() const;
 	const FSlateBrush* GetGuideHudBrush() const;
@@ -192,9 +210,12 @@ private:
 	bool IsPracticeMode() const;
 	bool IsTestMode() const;
 	bool CanEditRoles() const;
+	bool CanUseClassroomHostControls() const;
 	bool CanEditRevisionControls() const;
+	bool CanManageLessonPresets() const;
 	bool CanOpenClassroomBoard() const;
 	bool CanReadyFromMenu() const;
+	bool IsCosmeticUnlockedForMenu(EBHCosmeticCategory Category, int32 Index) const;
 	FString GetEnteredAddress() const;
 	FString GetEnteredHost() const;
 	int32 GetEnteredPort() const;
@@ -203,6 +224,10 @@ private:
 	FString ResolvePreferredAddress() const;
 	FText GetLiveClassroomMapText() const;
 	FSlateColor GetLiveClassroomMapButtonColor(FString LevelName) const;
+	EVisibility GetClassroomHostOnlyVisibility() const;
+	FText GetClassroomPreflightStatusText() const;
+	FText GetClassroomPreflightText() const;
+	FSlateColor GetClassroomPreflightStatusColor() const;
 	EVisibility GetRevisionControlsVisibility() const;
 	FText GetRevisionControlsSummaryText() const;
 	FSlateColor GetRevisionControlsSummaryColor() const;
@@ -210,6 +235,10 @@ private:
 	FSlateColor GetRevisionDifficultyButtonColor(EBHRevisionDifficultyMix DifficultyMix) const;
 	FSlateColor GetRevisionThresholdButtonColor(int32 ClassPercent, int32 IndividualPercent) const;
 	FSlateColor GetRevisionScareButtonColor(int32 Intensity) const;
+	EVisibility GetLessonPresetPanelVisibility() const;
+	FText GetLessonPresetSummaryText() const;
+	FSlateColor GetLessonPresetSummaryColor() const;
+	FSlateColor GetLessonPresetButtonColor(FString PresetId) const;
 	FSlateColor GetGraphicsBoolOptionButtonColor(FName OptionName, bool bValue) const;
 	FSlateColor GetGraphicsOptionButtonColor(FName OptionName, int32 Value) const;
 	FSlateColor GetGraphicsResolutionButtonColor(int32 Width, int32 Height, bool bFullscreen) const;
@@ -228,7 +257,9 @@ private:
 	TSharedRef<SWidget> BuildCharacterCustomizationPanel();
 	TSharedRef<SWidget> BuildAvatarPreview();
 	TSharedRef<SWidget> BuildRoundOptionsPanel();
+	TSharedRef<SWidget> BuildLessonPresetPanel();
 	TSharedRef<SWidget> BuildRevisionControlsPanel();
+	TSharedRef<SWidget> BuildClassroomPreflightPanel();
 	TSharedRef<SWidget> BuildClassroomPanel();
 	TSharedRef<SWidget> BuildGuidePanel();
 	TSharedRef<SWidget> BuildControlsPanel();
@@ -238,6 +269,7 @@ private:
 	TSharedRef<SWidget> BuildRoleAssignmentPanel();
 
 	void PlayMenuSelectionSound() const;
+	void RefreshLessonPresetList();
 	static FString ResolveLocalAddress();
 	static FString NormalizeAddress(FString Address);
 
@@ -250,17 +282,14 @@ private:
 	TSharedPtr<SEditableTextBox> StartLocalPasswordTextBox;
 	TSharedPtr<SEditableTextBox> LocalUsernameTextBox;
 	TSharedPtr<SEditableTextBox> LocalPasswordTextBox;
+	TSharedPtr<SEditableTextBox> LessonPresetNameTextBox;
+	TSharedPtr<SVerticalBox> LessonPresetListBox;
 	TSharedPtr<SWidgetSwitcher> MainTabSwitcher;
 	TWeakObjectPtr<AActor> AvatarPreviewActor;
 	TWeakObjectPtr<USkeletalMeshComponent> AvatarPreviewMeshComponent;
 	TWeakObjectPtr<UStaticMeshComponent> AvatarPreviewHeadwearComponent;
 	TWeakObjectPtr<UStaticMeshComponent> AvatarPreviewHeadwearAccentComponent;
 	TWeakObjectPtr<UStaticMeshComponent> AvatarPreviewHeadwearDetailComponent;
-	TWeakObjectPtr<UStaticMeshComponent> AvatarPreviewGearComponent;
-	TWeakObjectPtr<UStaticMeshComponent> AvatarPreviewGearAccentComponent;
-	TWeakObjectPtr<UStaticMeshComponent> AvatarPreviewGearLeftStrapComponent;
-	TWeakObjectPtr<UStaticMeshComponent> AvatarPreviewGearRightStrapComponent;
-	TWeakObjectPtr<UStaticMeshComponent> AvatarPreviewGearDetailComponent;
 	TWeakObjectPtr<USceneCaptureComponent2D> AvatarPreviewCaptureComponent;
 	TStrongObjectPtr<UTextureRenderTarget2D> AvatarPreviewRenderTarget;
 	TStrongObjectPtr<UTexture2D> StartBackgroundTexture;
@@ -276,7 +305,6 @@ private:
 	FString LastAvatarPreviewMeshPath;
 	FLinearColor LastAvatarPreviewColor = FLinearColor::Transparent;
 	int32 LastAvatarPreviewHeadwearIndex = INDEX_NONE;
-	int32 LastAvatarPreviewGearIndex = INDEX_NONE;
 	EBHMainMenuTab ActiveMenuTab = EBHMainMenuTab::Play;
 	bool bShowingStartScreen = false;
 	bool bShowStartCredentials = false;

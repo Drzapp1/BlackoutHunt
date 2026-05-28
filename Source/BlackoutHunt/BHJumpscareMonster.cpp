@@ -2,6 +2,7 @@
 #include "BHAmbientEmitter.h"
 #include "BHCharacter.h"
 #include "BHGameSettings.h"
+#include "BHJumpscareVariantLibrary.h"
 #include "BHPlayerController.h"
 #include "Animation/AnimSequence.h"
 #include "Components/ChildActorComponent.h"
@@ -22,6 +23,60 @@
 
 namespace
 {
+constexpr float BHJumpscareProxyVisualRootScale = 0.62f;
+constexpr float BHJumpscareProxyCloseVisualRootScale = 0.40f;
+constexpr float BHJumpscareWorldTargetVisualHeight = 265.0f;
+constexpr float BHJumpscareCloseTargetVisualHeight = 165.0f;
+constexpr float BHJumpscareMinVisualScaleAxis = 0.05f;
+constexpr float BHJumpscareMaxVisualScaleAxis = 2.0f;
+
+bool BHVariantIdIsScp096(FName VariantId)
+{
+	return VariantId.ToString().Equals(TEXT("SCP096"), ESearchCase::IgnoreCase);
+}
+
+FVector BHSanitizeJumpscareScale(const FVector& RawScale)
+{
+	FVector Scale = RawScale.GetAbs();
+	if (Scale.IsNearlyZero())
+	{
+		return FVector::OneVector;
+	}
+
+	Scale.X = FMath::Clamp(Scale.X, BHJumpscareMinVisualScaleAxis, BHJumpscareMaxVisualScaleAxis);
+	Scale.Y = FMath::Clamp(Scale.Y, BHJumpscareMinVisualScaleAxis, BHJumpscareMaxVisualScaleAxis);
+	Scale.Z = FMath::Clamp(Scale.Z, BHJumpscareMinVisualScaleAxis, BHJumpscareMaxVisualScaleAxis);
+	return Scale;
+}
+
+float BHMeshVisualHeight(const USkeletalMesh* Mesh)
+{
+	return Mesh ? Mesh->GetBounds().BoxExtent.Z * 2.0f : 0.0f;
+}
+
+float BHMeshVisualHeight(const UStaticMesh* Mesh)
+{
+	return Mesh ? Mesh->GetBounds().BoxExtent.Z * 2.0f : 0.0f;
+}
+
+FVector BHJumpscareCloseFaceFocusLocation(const FVector& ViewLocation, const FVector& ViewForward, const FBHJumpscareVariant& Variant)
+{
+	FVector Forward = ViewForward;
+	Forward.Z = 0.0f;
+	Forward = Forward.GetSafeNormal();
+	if (Forward.IsNearlyZero())
+	{
+		Forward = FVector::ForwardVector;
+	}
+
+	const float FocusHeight = FMath::Clamp(Variant.FocusHeight, 80.0f, 320.0f);
+	const FVector CloseOffset = Variant.CloseVisualOffset;
+	const float HeightFactor = CloseOffset.Z < -80.0f ? 0.98f : 0.50f;
+	const float FaceLift = FMath::Clamp(CloseOffset.Z + FocusHeight * HeightFactor, 22.0f, 54.0f);
+	const float FaceDistance = FMath::Max(88.0f, CloseOffset.X + FMath::Clamp(FocusHeight * 0.08f, 8.0f, 18.0f));
+	return ViewLocation + Forward * FaceDistance + FVector::UpVector * FaceLift;
+}
+
 void ConfigurePart(UStaticMeshComponent* Part, UStaticMesh* Mesh, const FVector& Location, const FVector& Scale)
 {
 	if (!Part)
@@ -58,26 +113,7 @@ void TintPart(UStaticMeshComponent* Part, const FLinearColor& Color)
 
 bool FindJumpscareVariantById(FName VariantId, FBHJumpscareVariant& OutVariant)
 {
-	if (VariantId.IsNone())
-	{
-		return false;
-	}
-
-	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
-	if (!Settings)
-	{
-		return false;
-	}
-
-	for (const FBHJumpscareVariant& Variant : Settings->JumpscareVariants)
-	{
-		if (Variant.VariantId == VariantId)
-		{
-			OutVariant = Variant;
-			return true;
-		}
-	}
-	return false;
+	return FindResolvedJumpscareVariantById(VariantId, OutVariant);
 }
 
 bool BHSoftObjectPathExists(const FSoftObjectPath& ObjectPath)
@@ -281,14 +317,16 @@ ABHJumpscareMonster::ABHJumpscareMonster()
 	bScriptedPlayChargeEffects = true;
 	ScriptedPathIndex = 1;
 	bUsingScpVisual = false;
+	bCloseupPresentation = false;
 	CameraFocusHeight = 145.0f;
 	PresentationLightColor = FLinearColor(1.0f, 0.02f, 0.0f, 1.0f);
 	PresentationVisualOffset = FVector(-20.0f, 0.0f, -88.0f);
 	PresentationVisualRotation = FRotator(0.0f, -90.0f, 0.0f);
-	PresentationVisualScale = FVector(1.32f);
+	PresentationVisualScale = FVector::OneVector;
+	BaseVisualRootScale = FVector(BHJumpscareProxyVisualRootScale);
 	JumpscareVariantId = TEXT("SCP096");
 	LaunchSound = nullptr;
-	SetActorScale3D(FVector(1.7f, 1.7f, 1.7f));
+	SetActorScale3D(FVector::OneVector);
 
 	static ConstructorHelpers::FObjectFinder<USkeletalMesh> ScpSkeletalMesh(TEXT("/Game/BlackoutHunt/Art/SCP096/Skeletal/SK_SCP096.SK_SCP096"));
 	static ConstructorHelpers::FObjectFinder<UAnimSequence> ScpRunAnim(TEXT("/Game/BlackoutHunt/Art/SCP096/Skeletal/A_SCP096_Run.A_SCP096_Run"));
@@ -308,9 +346,10 @@ ABHJumpscareMonster::ABHJumpscareMonster()
 		}
 		SkeletalMonsterMesh->SetRelativeLocation(FVector(-20.0f, 0.0f, -88.0f));
 		SkeletalMonsterMesh->SetRelativeRotation(FRotator(0.0f, -90.0f, 0.0f));
-		SkeletalMonsterMesh->SetRelativeScale3D(FVector(1.32f));
+		SkeletalMonsterMesh->SetRelativeScale3D(FitVisualScaleToTargetHeight(FVector::OneVector, BHMeshVisualHeight(ScpSkeletalMesh.Object)));
 		SkeletalMonsterMesh->SetHiddenInGame(false);
 		SkeletalMonsterMesh->SetVisibility(true, true);
+		BaseVisualRootScale = FVector::OneVector;
 		bUsingScpVisual = true;
 	}
 	else
@@ -325,9 +364,10 @@ ABHJumpscareMonster::ABHJumpscareMonster()
 			}
 			MonsterMesh->SetRelativeLocation(FVector(-20.0f, 0.0f, -88.0f));
 			MonsterMesh->SetRelativeRotation(FRotator(0.0f, -90.0f, 0.0f));
-			MonsterMesh->SetRelativeScale3D(FVector(1.32f));
+			MonsterMesh->SetRelativeScale3D(FitVisualScaleToTargetHeight(FVector::OneVector, BHMeshVisualHeight(ScpStaticMesh.Object)));
 			MonsterMesh->SetHiddenInGame(false);
 			MonsterMesh->SetVisibility(true, true);
+			BaseVisualRootScale = FVector::OneVector;
 			bUsingScpVisual = true;
 		}
 	}
@@ -360,6 +400,12 @@ ABHJumpscareMonster::ABHJumpscareMonster()
 			}
 		}
 	}
+	else
+	{
+		UseProxyFallbackVisual();
+	}
+
+	ApplyVisualRootScale();
 }
 
 void ABHJumpscareMonster::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -399,7 +445,7 @@ void ABHJumpscareMonster::Tick(float DeltaSeconds)
 			const float Roll = FMath::Sin(Age * 38.0f) * 4.5f * RunAlpha;
 			VisualRoot->SetRelativeLocation(FVector(0.0f, Bob * 0.35f, FMath::Abs(Bob) * 0.35f));
 			VisualRoot->SetRelativeRotation(FRotator(-11.0f * RunAlpha, 0.0f, Roll));
-			VisualRoot->SetRelativeScale3D(FVector::OneVector);
+			ApplyVisualRootScale();
 		}
 		if (EyeLight)
 		{
@@ -624,7 +670,16 @@ void ABHJumpscareMonster::TriggerContactJumpscare()
 	const FVector CloseLocation = ViewLocation + Forward * 88.0f - FVector::UpVector * 135.0f;
 	SetActorLocation(CloseLocation);
 	SetActorRotation((ViewLocation - CloseLocation).Rotation());
-	SetActorScale3D(FVector(2.05f));
+	bCloseupPresentation = true;
+	if (!ActiveVariant.VariantId.IsNone() || !JumpscareVariantId.IsNone())
+	{
+		ApplyConfiguredVariant();
+	}
+	else
+	{
+		UseProxyFallbackVisual();
+	}
+	SetActorScale3D(FVector::OneVector);
 	SetCloseupUpperBodyOnly();
 	ForceNetUpdate();
 	SetLifeSpan(1.15f);
@@ -632,7 +687,7 @@ void ABHJumpscareMonster::TriggerContactJumpscare()
 	if (TargetPC)
 	{
 		const FLinearColor ImpactColor = ActiveVariant.LightColor.A > 0.0f ? ActiveVariant.LightColor : PresentationLightColor;
-		const FVector FocusLocation = ViewLocation + Forward * 86.0f - FVector::UpVector * 22.0f;
+		const FVector FocusLocation = BHJumpscareCloseFaceFocusLocation(ViewLocation, Forward, ActiveVariant);
 		TargetPC->ClientSnapViewToFlatFocus(FocusLocation);
 
 		FBHClientHorrorCue Cue;
@@ -670,9 +725,11 @@ void ABHJumpscareMonster::Configure(ABHCharacter* NewTarget, float NewSpeed, flo
 	bUseScriptedPath = false;
 	bScriptedFaceLookAtTarget = false;
 	bScriptedPlayChargeEffects = true;
+	bCloseupPresentation = false;
 	ScriptedLookAtTarget.Reset();
 	ScriptedPathPoints.Reset();
 	ScriptedPathIndex = 1;
+	SetActorScale3D(FVector::OneVector);
 	SetLifeSpan(MaxLifetime + 0.35f);
 }
 
@@ -689,6 +746,8 @@ void ABHJumpscareMonster::ConfigureScriptedPath(const TArray<FVector>& NewPathPo
 	bUseScriptedPath = ScriptedPathPoints.Num() >= 2;
 	bScriptedFaceLookAtTarget = bUseScriptedPath && bNewFaceLookAtTarget;
 	bScriptedPlayChargeEffects = bNewPlayChargeEffects;
+	bCloseupPresentation = false;
+	SetActorScale3D(FVector::OneVector);
 	if (bUseScriptedPath)
 	{
 		SetActorLocation(ScriptedPathPoints[0]);
@@ -716,6 +775,7 @@ void ABHJumpscareMonster::ConfigurePresentation(USkeletalMesh* NewSkeletalMesh, 
 	LaunchSound = NewLaunchSound;
 	PresentationLightColor = NewLightColor;
 	CameraFocusHeight = FMath::Clamp(NewFocusHeight, 80.0f, 260.0f);
+	BaseVisualRootScale = FVector::OneVector;
 
 	if (NewSkeletalMesh && SkeletalMonsterMesh)
 	{
@@ -730,6 +790,7 @@ void ABHJumpscareMonster::ConfigurePresentation(USkeletalMesh* NewSkeletalMesh, 
 		{
 			SkeletalMonsterMesh->SetMaterial(0, NewMaterial);
 		}
+		SkeletalMonsterMesh->SetRelativeScale3D(FitVisualScaleToTargetHeight(GetEffectiveVariantVisualScale(), BHMeshVisualHeight(NewSkeletalMesh)));
 		SkeletalMonsterMesh->SetHiddenInGame(false);
 		SkeletalMonsterMesh->SetVisibility(true, true);
 		if (MonsterMesh)
@@ -738,6 +799,7 @@ void ABHJumpscareMonster::ConfigurePresentation(USkeletalMesh* NewSkeletalMesh, 
 			MonsterMesh->SetVisibility(false, true);
 		}
 		bUsingScpVisual = true;
+		SetProxyPartsVisible(false);
 	}
 	else if (NewStaticMesh && MonsterMesh)
 	{
@@ -746,6 +808,7 @@ void ABHJumpscareMonster::ConfigurePresentation(USkeletalMesh* NewSkeletalMesh, 
 		{
 			MonsterMesh->SetMaterial(0, NewMaterial);
 		}
+		MonsterMesh->SetRelativeScale3D(FitVisualScaleToTargetHeight(GetEffectiveVariantVisualScale(), BHMeshVisualHeight(NewStaticMesh)));
 		MonsterMesh->SetHiddenInGame(false);
 		MonsterMesh->SetVisibility(true, true);
 		if (SkeletalMonsterMesh)
@@ -754,6 +817,7 @@ void ABHJumpscareMonster::ConfigurePresentation(USkeletalMesh* NewSkeletalMesh, 
 			SkeletalMonsterMesh->SetVisibility(false, true);
 		}
 		bUsingScpVisual = true;
+		SetProxyPartsVisible(false);
 	}
 
 	ApplyConfiguredPresentation();
@@ -769,12 +833,109 @@ void ABHJumpscareMonster::ConfigureVariant(const FBHJumpscareVariant& NewVariant
 	ApplyConfiguredVariant();
 }
 
+void ABHJumpscareMonster::ConfigureCloseupPresentation(const FBHJumpscareVariant& NewVariant, float NewLifetime, bool bUpperBodyOnly)
+{
+	Target.Reset();
+	ScriptedLookAtTarget.Reset();
+	ScriptedPathPoints.Reset();
+	bUseScriptedPath = false;
+	bScriptedFaceLookAtTarget = false;
+	bScriptedPlayChargeEffects = false;
+	bContactJumpscareTriggered = true;
+	bCloseupPresentation = true;
+	MaxLifetime = FMath::Clamp(NewLifetime, 0.2f, 5.0f);
+	HoldSeconds = 0.0f;
+
+	ConfigureVariant(NewVariant);
+	SetActorEnableCollision(false);
+	TArray<UPrimitiveComponent*> PrimitiveComponents;
+	GetComponents<UPrimitiveComponent>(PrimitiveComponents);
+	for (UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
+	{
+		if (PrimitiveComponent)
+		{
+			PrimitiveComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			PrimitiveComponent->SetGenerateOverlapEvents(false);
+		}
+	}
+
+	SetActorScale3D(FVector::OneVector);
+	ApplyVisualRootScale();
+	if (bUpperBodyOnly)
+	{
+		SetCloseupUpperBodyOnly();
+	}
+	SetLifeSpan(MaxLifetime);
+	ForceNetUpdate();
+}
+
 void ABHJumpscareMonster::OnRep_JumpscareVariantId()
 {
 	if (FindJumpscareVariantById(JumpscareVariantId, ActiveVariant))
 	{
 		ApplyConfiguredVariant();
 	}
+}
+
+FVector ABHJumpscareMonster::GetEffectiveVariantVisualScale() const
+{
+	FVector Scale = BHSanitizeJumpscareScale(PresentationVisualScale);
+	if (bCloseupPresentation)
+	{
+		const FVector CloseScale = ActiveVariant.CloseVisualScale.GetAbs().IsNearlyZero()
+			? FVector(1.0f)
+			: BHSanitizeJumpscareScale(ActiveVariant.CloseVisualScale);
+		Scale *= CloseScale;
+	}
+	return BHSanitizeJumpscareScale(Scale);
+}
+
+FVector ABHJumpscareMonster::FitVisualScaleToTargetHeight(const FVector& RequestedScale, float UnscaledHeight) const
+{
+	FVector Scale = BHSanitizeJumpscareScale(RequestedScale);
+	const float TargetHeight = bCloseupPresentation ? BHJumpscareCloseTargetVisualHeight : BHJumpscareWorldTargetVisualHeight;
+	const float RequestedHeight = UnscaledHeight * FMath::Max(Scale.Z, BHJumpscareMinVisualScaleAxis);
+	if (UnscaledHeight > KINDA_SMALL_NUMBER && RequestedHeight > TargetHeight)
+	{
+		Scale *= TargetHeight / RequestedHeight;
+	}
+	return BHSanitizeJumpscareScale(Scale);
+}
+
+void ABHJumpscareMonster::ApplyVisualRootScale()
+{
+	if (VisualRoot)
+	{
+		VisualRoot->SetRelativeScale3D(BaseVisualRootScale);
+	}
+}
+
+void ABHJumpscareMonster::UseProxyFallbackVisual()
+{
+	const FVector CloseScale = bCloseupPresentation && !ActiveVariant.CloseVisualScale.GetAbs().IsNearlyZero()
+		? BHSanitizeJumpscareScale(ActiveVariant.CloseVisualScale)
+		: FVector::OneVector;
+	const float CloseMultiplier = bCloseupPresentation ? FMath::Clamp(CloseScale.GetMin(), 0.90f, 1.08f) : 1.0f;
+	BaseVisualRootScale = FVector((bCloseupPresentation ? BHJumpscareProxyCloseVisualRootScale : BHJumpscareProxyVisualRootScale) * CloseMultiplier);
+	SetProxyPartsVisible(true);
+
+	if (MonsterMesh)
+	{
+		MonsterMesh->SetHiddenInGame(true);
+		MonsterMesh->SetVisibility(false, true);
+	}
+	if (SkeletalMonsterMesh)
+	{
+		SkeletalMonsterMesh->SetHiddenInGame(true);
+		SkeletalMonsterMesh->SetVisibility(false, true);
+	}
+	if (VariantVisualActor)
+	{
+		VariantVisualActor->DestroyChildActor();
+	}
+
+	bUsingScpVisual = BHVariantIdIsScp096(JumpscareVariantId) || BHVariantIdIsScp096(ActiveVariant.VariantId);
+	ApplyVisualRootScale();
 }
 
 void ABHJumpscareMonster::SetProxyPartsVisible(bool bVisible)
@@ -813,7 +974,7 @@ void ABHJumpscareMonster::ApplyConfiguredVariant()
 	CameraFocusHeight = FMath::Clamp(ActiveVariant.FocusHeight, 80.0f, 320.0f);
 	PresentationVisualOffset = ActiveVariant.VisualOffset;
 	PresentationVisualRotation = ActiveVariant.VisualRotation;
-	PresentationVisualScale = ActiveVariant.VisualScale.GetAbs();
+	PresentationVisualScale = BHSanitizeJumpscareScale(ActiveVariant.VisualScale);
 	if (PresentationVisualScale.IsNearlyZero())
 	{
 		PresentationVisualScale = FVector::OneVector;
@@ -856,9 +1017,10 @@ void ABHJumpscareMonster::ApplyConfiguredVariant()
 				}
 				SkeletalMonsterMesh->SetRelativeLocation(PresentationVisualOffset);
 				SkeletalMonsterMesh->SetRelativeRotation(PresentationVisualRotation);
-				SkeletalMonsterMesh->SetRelativeScale3D(PresentationVisualScale);
+				SkeletalMonsterMesh->SetRelativeScale3D(FitVisualScaleToTargetHeight(GetEffectiveVariantVisualScale(), BHMeshVisualHeight(ResolvedSkeletalMesh)));
 				SkeletalMonsterMesh->SetHiddenInGame(false);
 				SkeletalMonsterMesh->SetVisibility(true, true);
+				BaseVisualRootScale = FVector::OneVector;
 				bAppliedImportedVisual = true;
 				bAppliedSkeletalVisual = true;
 			}
@@ -878,9 +1040,10 @@ void ABHJumpscareMonster::ApplyConfiguredVariant()
 				}
 				MonsterMesh->SetRelativeLocation(PresentationVisualOffset);
 				MonsterMesh->SetRelativeRotation(PresentationVisualRotation);
-				MonsterMesh->SetRelativeScale3D(PresentationVisualScale);
+				MonsterMesh->SetRelativeScale3D(FitVisualScaleToTargetHeight(GetEffectiveVariantVisualScale(), BHMeshVisualHeight(ResolvedStaticMesh)));
 				MonsterMesh->SetHiddenInGame(false);
 				MonsterMesh->SetVisibility(true, true);
+				BaseVisualRootScale = FVector::OneVector;
 				bAppliedImportedVisual = true;
 				bAppliedStaticVisual = true;
 			}
@@ -892,7 +1055,7 @@ void ABHJumpscareMonster::ApplyConfiguredVariant()
 	{
 		VariantVisualActor->SetRelativeLocation(PresentationVisualOffset);
 		VariantVisualActor->SetRelativeRotation(PresentationVisualRotation);
-		VariantVisualActor->SetRelativeScale3D(PresentationVisualScale);
+		VariantVisualActor->SetRelativeScale3D(GetEffectiveVariantVisualScale());
 		VariantVisualActor->DestroyChildActor();
 		if (!ActiveVariant.VisualActorClass.IsNull() && BHSoftObjectPathExists(ActiveVariant.VisualActorClass.ToSoftObjectPath()))
 		{
@@ -911,7 +1074,16 @@ void ABHJumpscareMonster::ApplyConfiguredVariant()
 							PrimitiveComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 						}
 					}
+
+					const FBox Bounds = ChildActor->GetComponentsBoundingBox(true);
+					const float Height = Bounds.IsValid ? Bounds.GetSize().Z : 0.0f;
+					const float TargetHeight = bCloseupPresentation ? BHJumpscareCloseTargetVisualHeight : BHJumpscareWorldTargetVisualHeight;
+					if (Height > TargetHeight && TargetHeight > 0.0f)
+					{
+						VariantVisualActor->SetRelativeScale3D(VariantVisualActor->GetRelativeScale3D() * (TargetHeight / Height));
+					}
 				}
+				BaseVisualRootScale = FVector::OneVector;
 				bAppliedVisualActor = true;
 			}
 		}
@@ -932,6 +1104,10 @@ void ABHJumpscareMonster::ApplyConfiguredVariant()
 			SkeletalMonsterMesh->SetHiddenInGame(!bShowSkeletal);
 			SkeletalMonsterMesh->SetVisibility(bShowSkeletal, true);
 		}
+	}
+	else
+	{
+		UseProxyFallbackVisual();
 	}
 
 	ApplyConfiguredPresentation();

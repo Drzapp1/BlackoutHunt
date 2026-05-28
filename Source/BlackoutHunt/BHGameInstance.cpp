@@ -6,20 +6,30 @@
 #include "BHRevisionQuestionBank.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
+#include "GameFramework/PlayerState.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformMisc.h"
 #include "Kismet/GameplayStatics.h"
+#include "Interfaces/OnlineIdentityInterface.h"
 #include "Misc/CommandLine.h"
+#include "Misc/DateTime.h"
 #include "Misc/FileHelper.h"
+#include "Misc/Guid.h"
 #include "Misc/Paths.h"
 #include "Online/OnlineSessionNames.h"
 #include "OnlineSubsystem.h"
+
+#include <initializer_list>
+
+#ifndef SEARCH_PRESENCE
+#define SEARCH_PRESENCE FName(TEXT("PRESENCESEARCH"))
+#endif
 
 namespace
 {
 	const FName BHOnlineLevelSetting(TEXT("BHLEVEL"));
 	const FName BHOnlineBuildSetting(TEXT("BHBUILD"));
-	const FString BHOnlineBuildId(TEXT("BlackoutHunt-0.2.0-beta.5"));
+	const FString BHOnlineBuildId(TEXT("BlackoutHunt-0.2.0-beta.6"));
 	constexpr int32 BHOnlineMaxSearchResults = 25;
 
 	FString NormalizeRuntimeLevelName(FString LevelName)
@@ -73,6 +83,38 @@ namespace
 		default:
 			return 8;
 		}
+	}
+
+	FString BHTelemetryCsvEscape(const FString& Input)
+	{
+		FString Escaped = Input;
+		Escaped.ReplaceInline(TEXT("\""), TEXT("\"\""));
+		return FString::Printf(TEXT("\"%s\""), *Escaped);
+	}
+
+	FString BHTelemetrySanitizeToken(FString Token)
+	{
+		Token.TrimStartAndEndInline();
+		if (Token.IsEmpty())
+		{
+			return TEXT("Unknown");
+		}
+
+		for (TCHAR& Ch : Token)
+		{
+			if (!FChar::IsAlnum(Ch) && Ch != TEXT('-') && Ch != TEXT('_'))
+			{
+				Ch = TEXT('_');
+			}
+		}
+		return Token.Left(48);
+	}
+
+	bool BHSessionMatchesBuild(const FOnlineSessionSearchResult& Result)
+	{
+		FString BuildId;
+		return Result.Session.SessionSettings.Get(BHOnlineBuildSetting, BuildId)
+			&& BuildId.Equals(BHOnlineBuildId, ESearchCase::IgnoreCase);
 	}
 }
 
@@ -250,6 +292,12 @@ bool UBHGameInstance::TryHostOnlineGame(const FString& LevelName, FString& OutMe
 		return false;
 	}
 
+	if (!IsOnlineIdentityReadyForSessions(OutMessage))
+	{
+		SetLastNetworkMessage(OutMessage);
+		return false;
+	}
+
 	if (Sessions->GetNamedSession(NAME_GameSession))
 	{
 		OutMessage = TEXT("An online session already exists. Leave the current session or run DestroyOnlineSession first.");
@@ -309,6 +357,12 @@ bool UBHGameInstance::TryFindOnlineGames(FString& OutMessage)
 		return false;
 	}
 
+	if (!IsOnlineIdentityReadyForSessions(OutMessage))
+	{
+		SetLastNetworkMessage(OutMessage);
+		return false;
+	}
+
 	FoundOnlineSessions.Reset();
 	OnlineSessionSummaries.Reset();
 	ActiveOnlineSessionSearch = MakeShared<FOnlineSessionSearch>();
@@ -316,6 +370,7 @@ bool UBHGameInstance::TryFindOnlineGames(FString& OutMessage)
 	ActiveOnlineSessionSearch->bIsLanQuery = false;
 	ActiveOnlineSessionSearch->TimeoutInSeconds = 12.0f;
 	ActiveOnlineSessionSearch->QuerySettings.Set(SEARCH_LOBBIES, true, EOnlineComparisonOp::Equals);
+	ActiveOnlineSessionSearch->QuerySettings.Set(SEARCH_PRESENCE, true, EOnlineComparisonOp::Equals);
 
 	FindOnlineSessionsCompleteHandle = Sessions->AddOnFindSessionsCompleteDelegate_Handle(
 		FOnFindSessionsCompleteDelegate::CreateUObject(this, &UBHGameInstance::OnFindOnlineSessionsComplete));
@@ -354,6 +409,12 @@ bool UBHGameInstance::TryJoinOnlineGame(int32 SessionIndex, FString& OutMessage)
 
 	IOnlineSessionPtr Sessions = GetOnlineSessionInterface(OutMessage);
 	if (!Sessions.IsValid())
+	{
+		SetLastNetworkMessage(OutMessage);
+		return false;
+	}
+
+	if (!IsOnlineIdentityReadyForSessions(OutMessage))
 	{
 		SetLastNetworkMessage(OutMessage);
 		return false;
@@ -746,11 +807,14 @@ void UBHGameInstance::PersistTravelPlayerState(const ABHPlayerState* PlayerState
 	Progress.PlayerName = PlayerName;
 	Progress.PlayerRole = PlayerState->PlayerRole;
 	Progress.DesiredRole = PlayerState->DesiredRole;
+	Progress.SpectatorRolePreference = PlayerState->SpectatorRolePreference;
 	Progress.LifeState = PlayerState->LifeState;
 	Progress.bFakeHunterEligible = PlayerState->bFakeHunterEligible;
 	Progress.RevisionStats = PlayerState->RevisionStats;
 	Progress.QuestionPoints = PlayerState->QuestionPoints;
 	Progress.LifetimeQuestionPoints = PlayerState->LifetimeQuestionPoints;
+	Progress.HunterPoints = PlayerState->HunterPoints;
+	Progress.LifetimeHunterPoints = PlayerState->LifetimeHunterPoints;
 	Progress.Powerups = PlayerState->Powerups;
 }
 
@@ -776,13 +840,25 @@ bool UBHGameInstance::RestoreTravelPlayerState(ABHPlayerState* PlayerState) cons
 
 	PlayerState->SetRole(Existing->PlayerRole);
 	PlayerState->SetDesiredRole(Existing->DesiredRole);
+	PlayerState->SetSpectatorRolePreference(Existing->SpectatorRolePreference);
 	PlayerState->SetLifeState(Existing->LifeState == EBHPlayerLifeState::Escaped ? EBHPlayerLifeState::Alive : Existing->LifeState);
 	PlayerState->SetFakeHunterEligible(Existing->bFakeHunterEligible);
 	PlayerState->RevisionStats = Existing->RevisionStats;
 	PlayerState->QuestionPoints = FMath::Max(0, Existing->QuestionPoints);
 	PlayerState->LifetimeQuestionPoints = FMath::Max(PlayerState->QuestionPoints, Existing->LifetimeQuestionPoints);
+	PlayerState->HunterPoints = FMath::Max(0, Existing->HunterPoints);
+	PlayerState->LifetimeHunterPoints = FMath::Max(PlayerState->HunterPoints, Existing->LifetimeHunterPoints);
 	PlayerState->Powerups = Existing->Powerups;
 	return true;
+}
+
+void UBHGameInstance::ResetPersistentHunterPoints()
+{
+	for (FBHTravelPlayerProgress& Progress : TravelPlayerProgress)
+	{
+		Progress.HunterPoints = 0;
+		Progress.LifetimeHunterPoints = 0;
+	}
 }
 
 void UBHGameInstance::RecordQuestionAttempt(const FBHQuestionAttemptRecord& Attempt)
@@ -802,6 +878,197 @@ const TArray<FBHQuestionAttemptRecord>& UBHGameInstance::GetQuestionAttemptHisto
 void UBHGameInstance::ClearQuestionAttemptHistory()
 {
 	QuestionAttemptHistory.Reset();
+}
+
+FString UBHGameInstance::GetAnonymousTelemetryPlayerTag(const APlayerState* PlayerState)
+{
+	if (!PlayerState)
+	{
+		return TEXT("");
+	}
+
+	if (PlaytestTelemetrySessionId.IsEmpty())
+	{
+		PlaytestTelemetrySessionId = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	}
+
+	const int32 PlayerId = PlayerState->GetPlayerId();
+	// Uses only session/runtime identifiers, never names or online account IDs.
+	const FString PlayerKey = PlayerId >= 0
+		? FString::Printf(TEXT("pid:%d"), PlayerId)
+		: FString::Printf(TEXT("obj:%u"), PlayerState->GetUniqueID());
+
+	if (const FString* Existing = PlaytestTelemetryPlayerTagsById.Find(PlayerKey))
+	{
+		return *Existing;
+	}
+
+	const ABHPlayerState* BHPS = Cast<ABHPlayerState>(PlayerState);
+	const TCHAR* Prefix = (BHPS && BHPS->IsABot()) ? TEXT("B") : TEXT("P");
+	const FString NewTag = FString::Printf(TEXT("%s%03d"), Prefix, NextPlaytestTelemetryPlayerOrdinal++);
+	PlaytestTelemetryPlayerTagsById.Add(PlayerKey, NewTag);
+	return NewTag;
+}
+
+void UBHGameInstance::RecordPlaytestTelemetryEvent(const FBHPlaytestTelemetryEvent& Event)
+{
+	if (PlaytestTelemetrySessionId.IsEmpty())
+	{
+		PlaytestTelemetrySessionId = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	}
+
+	FBHPlaytestTelemetryEvent Sanitized = Event;
+	Sanitized.EventType = BHTelemetrySanitizeToken(Sanitized.EventType);
+	Sanitized.RuntimeLevelName = Sanitized.RuntimeLevelName.Left(48);
+	Sanitized.RoundPhase = Sanitized.RoundPhase.Left(48);
+	Sanitized.EventDetail = Sanitized.EventDetail.Left(160);
+	Sanitized.PlayerTag = Sanitized.PlayerTag.Left(16);
+	Sanitized.TargetTag = Sanitized.TargetTag.Left(16);
+	Sanitized.PlayerRole = Sanitized.PlayerRole.Left(48);
+	Sanitized.TargetRole = Sanitized.TargetRole.Left(48);
+	Sanitized.QuestionId = Sanitized.QuestionId.Left(80);
+	Sanitized.Topic = Sanitized.Topic.Left(48);
+	Sanitized.Difficulty = Sanitized.Difficulty.Left(48);
+	Sanitized.Count = FMath::Max(1, Sanitized.Count);
+
+	PlaytestTelemetryEvents.Add(Sanitized);
+	if (PlaytestTelemetryEvents.Num() > 8192)
+	{
+		PlaytestTelemetryEvents.RemoveAt(0, PlaytestTelemetryEvents.Num() - 8192);
+	}
+}
+
+bool UBHGameInstance::ExportPlaytestTelemetry(FString& OutMessage, bool bClearAfterExport)
+{
+	if (PlaytestTelemetryEvents.IsEmpty())
+	{
+		OutMessage = TEXT("No playtest telemetry has been recorded yet.");
+		return false;
+	}
+
+	if (PlaytestTelemetrySessionId.IsEmpty())
+	{
+		PlaytestTelemetrySessionId = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	}
+
+	const FString TelemetryDir = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("PlaytestTelemetry")));
+	IFileManager::Get().MakeDirectory(*TelemetryDir, true);
+
+	const FString Timestamp = FDateTime::UtcNow().ToString(TEXT("%Y%m%d_%H%M%S"));
+	const FString SessionToken = BHTelemetrySanitizeToken(PlaytestTelemetrySessionId.Left(12));
+	const FString Prefix = FString::Printf(TEXT("BlackoutHuntTelemetry_%s_%s"), *SessionToken, *Timestamp);
+	const FString EventsPath = FPaths::Combine(TelemetryDir, Prefix + TEXT("_events.csv"));
+	const FString SummaryPath = FPaths::Combine(TelemetryDir, Prefix + TEXT("_summary.csv"));
+
+	const auto MakeCsvRow = [](std::initializer_list<FString> Cells)
+	{
+		TArray<FString> Escaped;
+		Escaped.Reserve(static_cast<int32>(Cells.size()));
+		for (const FString& Cell : Cells)
+		{
+			Escaped.Add(BHTelemetryCsvEscape(Cell));
+		}
+		return FString::Join(Escaped, TEXT(","));
+	};
+
+	const FString ExportedUtc = FDateTime::UtcNow().ToIso8601();
+	TArray<FString> EventLines;
+	EventLines.Add(MakeCsvRow({
+		TEXT("SessionId"), TEXT("ExportedUtc"), TEXT("ServerTimeSeconds"), TEXT("Map"), TEXT("Stage"), TEXT("Phase"),
+		TEXT("EventType"), TEXT("Detail"), TEXT("X"), TEXT("Y"), TEXT("Z"), TEXT("RoundSeed"), TEXT("RevisionMode"),
+		TEXT("PlayerTag"), TEXT("PlayerRole"), TEXT("TargetTag"), TEXT("TargetRole"), TEXT("QuestionId"),
+		TEXT("Topic"), TEXT("Difficulty"), TEXT("Count")
+	}));
+
+	TMap<FString, int32> CountsByType;
+	TMap<FString, int32> CountsByTypeAndDetail;
+	for (const FBHPlaytestTelemetryEvent& Event : PlaytestTelemetryEvents)
+	{
+		const FString EventType = Event.EventType.IsEmpty() ? TEXT("unknown") : Event.EventType;
+		const FString Detail = Event.EventDetail;
+		const int32 Count = FMath::Max(1, Event.Count);
+		CountsByType.FindOrAdd(EventType) += Count;
+		CountsByTypeAndDetail.FindOrAdd(EventType + TEXT("|") + Detail) += Count;
+
+		EventLines.Add(MakeCsvRow({
+			PlaytestTelemetrySessionId,
+			ExportedUtc,
+			FString::Printf(TEXT("%.2f"), Event.ServerTimeSeconds),
+			Event.RuntimeLevelName,
+			FString::FromInt(Event.StageIndex),
+			Event.RoundPhase,
+			EventType,
+			Detail,
+			FString::Printf(TEXT("%.1f"), Event.Location.X),
+			FString::Printf(TEXT("%.1f"), Event.Location.Y),
+			FString::Printf(TEXT("%.1f"), Event.Location.Z),
+			FString::FromInt(Event.RoundSeed),
+			Event.bRevisionMode ? TEXT("Yes") : TEXT("No"),
+			Event.PlayerTag,
+			Event.PlayerRole,
+			Event.TargetTag,
+			Event.TargetRole,
+			Event.QuestionId,
+			Event.Topic,
+			Event.Difficulty,
+			FString::FromInt(Count)
+		}));
+	}
+
+	TArray<FString> SummaryLines;
+	SummaryLines.Add(MakeCsvRow({TEXT("Metric"), TEXT("Value")}));
+	SummaryLines.Add(MakeCsvRow({TEXT("ExportedUtc"), ExportedUtc}));
+	SummaryLines.Add(MakeCsvRow({TEXT("SessionId"), PlaytestTelemetrySessionId}));
+	SummaryLines.Add(MakeCsvRow({TEXT("EventRows"), FString::FromInt(PlaytestTelemetryEvents.Num())}));
+
+	TArray<FString> EventTypes;
+	CountsByType.GetKeys(EventTypes);
+	EventTypes.Sort();
+	for (const FString& EventType : EventTypes)
+	{
+		SummaryLines.Add(MakeCsvRow({FString::Printf(TEXT("EventType.%s"), *EventType), FString::FromInt(CountsByType[EventType])}));
+	}
+
+	TArray<FString> DetailKeys;
+	CountsByTypeAndDetail.GetKeys(DetailKeys);
+	DetailKeys.Sort();
+	for (const FString& DetailKey : DetailKeys)
+	{
+		FString EventType;
+		FString Detail;
+		DetailKey.Split(TEXT("|"), &EventType, &Detail);
+		SummaryLines.Add(MakeCsvRow({FString::Printf(TEXT("EventDetail.%s.%s"), *EventType, *Detail.Left(48)), FString::FromInt(CountsByTypeAndDetail[DetailKey])}));
+	}
+
+	const bool bSavedEvents = FFileHelper::SaveStringToFile(FString::Join(EventLines, LINE_TERMINATOR), *EventsPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	const bool bSavedSummary = FFileHelper::SaveStringToFile(FString::Join(SummaryLines, LINE_TERMINATOR), *SummaryPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	if (!bSavedEvents || !bSavedSummary)
+	{
+		OutMessage = FString::Printf(TEXT("Playtest telemetry export failed. Check write access to %s."), *TelemetryDir);
+		return false;
+	}
+
+	OutMessage = FString::Printf(TEXT("Playtest telemetry exported to %s"), *TelemetryDir);
+	UE_LOG(LogTemp, Display, TEXT("%s (%s, %s)"), *OutMessage, *EventsPath, *SummaryPath);
+
+	if (bClearAfterExport)
+	{
+		ClearPlaytestTelemetry();
+	}
+	return true;
+}
+
+void UBHGameInstance::ClearPlaytestTelemetry()
+{
+	PlaytestTelemetryEvents.Reset();
+	PlaytestTelemetryPlayerTagsById.Reset();
+	PlaytestTelemetrySessionId = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	NextPlaytestTelemetryPlayerOrdinal = 1;
+}
+
+int32 UBHGameInstance::GetPlaytestTelemetryEventCount() const
+{
+	return PlaytestTelemetryEvents.Num();
 }
 
 void UBHGameInstance::SetPersistentStageIndex(int32 NewStageIndex)
@@ -952,6 +1219,47 @@ IOnlineSessionPtr UBHGameInstance::GetOnlineSessionInterface(FString& OutMessage
 	}
 
 	return Sessions;
+}
+
+bool UBHGameInstance::IsOnlineIdentityReadyForSessions(FString& OutMessage)
+{
+	IOnlineSubsystem* OnlineSubsystem = IOnlineSubsystem::Get();
+	if (!OnlineSubsystem)
+	{
+		OutMessage = TEXT("No OnlineSubsystem is loaded. The project defaults to OnlineSubsystemNull for local tests; configure Steam for relay/lobby internet play.");
+		return false;
+	}
+
+	const FString SubsystemName = OnlineSubsystem->GetSubsystemName().ToString();
+	if (!SubsystemName.Equals(TEXT("Steam"), ESearchCase::IgnoreCase))
+	{
+		return true;
+	}
+
+	IOnlineIdentityPtr Identity = OnlineSubsystem->GetIdentityInterface();
+	if (!Identity.IsValid())
+	{
+		OutMessage = TEXT("Steam is selected, but the Steam identity interface is unavailable. Start the Steam client and verify OnlineSubsystemSteam is packaged.");
+		return false;
+	}
+
+	if (Identity->GetLoginStatus(0) == ELoginStatus::LoggedIn)
+	{
+		return true;
+	}
+
+	if (!bSteamAutoLoginAttempted)
+	{
+		bSteamAutoLoginAttempted = true;
+		const bool bAutoLoginStarted = Identity->AutoLogin(0);
+		OutMessage = bAutoLoginStarted
+			? TEXT("Steam sign-in is starting. Keep Steam running with an account that owns this App ID, then press the online button again.")
+			: TEXT("Steam is not ready. Start Steam, sign into an account that owns this App ID, then press the online button again.");
+		return false;
+	}
+
+	OutMessage = TEXT("Steam is not signed in yet. Start Steam, sign into an account that owns this App ID, then press the online button again.");
+	return false;
 }
 
 bool UBHGameInstance::IsHostNetworkContext(FString& OutMessage, const TCHAR* ActionDescription) const
@@ -1131,7 +1439,7 @@ void UBHGameInstance::OnFindOnlineSessionsComplete(bool bWasSuccessful)
 	{
 		for (const FOnlineSessionSearchResult& Result : ActiveOnlineSessionSearch->SearchResults)
 		{
-			if (Result.IsValid() || Result.IsSessionInfoValid())
+			if ((Result.IsValid() || Result.IsSessionInfoValid()) && BHSessionMatchesBuild(Result))
 			{
 				FoundOnlineSessions.Add(Result);
 			}

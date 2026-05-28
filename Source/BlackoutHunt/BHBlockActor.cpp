@@ -74,6 +74,8 @@ ABHBlockActor::ABHBlockActor()
 	Mesh->SetCanEverAffectNavigation(true);
 	VisualTint = FLinearColor(0.38f, 0.42f, 0.45f, 1.0f);
 	BlockMaterial = EBHBlockMaterial::Tinted;
+	bBlockCollisionEnabled = true;
+	bBlockHiddenInGame = false;
 
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> CubeMesh(TEXT("/Engine/BasicShapes/Cube.Cube"));
 	if (CubeMesh.Succeeded())
@@ -93,6 +95,8 @@ void ABHBlockActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLif
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(ABHBlockActor, VisualTint);
 	DOREPLIFETIME(ABHBlockActor, BlockMaterial);
+	DOREPLIFETIME(ABHBlockActor, bBlockCollisionEnabled);
+	DOREPLIFETIME(ABHBlockActor, bBlockHiddenInGame);
 }
 
 void ABHBlockActor::SetVisualTint(const FLinearColor& NewTint)
@@ -109,11 +113,14 @@ void ABHBlockActor::SetBlockMaterial(EBHBlockMaterial NewMaterial)
 
 void ABHBlockActor::SetBlockCollisionEnabled(bool bEnabled)
 {
-	if (Mesh)
-	{
-		Mesh->SetCollisionEnabled(bEnabled ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
-		Mesh->SetCanEverAffectNavigation(bEnabled);
-	}
+	bBlockCollisionEnabled = bEnabled;
+	ApplyBlockState();
+}
+
+void ABHBlockActor::SetBlockHiddenInGame(bool bNewHidden)
+{
+	bBlockHiddenInGame = bNewHidden;
+	ApplyBlockState();
 }
 
 void ABHBlockActor::OnRep_VisualTint()
@@ -124,6 +131,21 @@ void ABHBlockActor::OnRep_VisualTint()
 void ABHBlockActor::OnRep_BlockMaterial()
 {
 	ApplyVisualStyle();
+}
+
+void ABHBlockActor::OnRep_BlockState()
+{
+	ApplyBlockState();
+}
+
+void ABHBlockActor::ApplyBlockState()
+{
+	SetActorHiddenInGame(bBlockHiddenInGame);
+	if (Mesh)
+	{
+		Mesh->SetCollisionEnabled(bBlockCollisionEnabled ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
+		Mesh->SetCanEverAffectNavigation(bBlockCollisionEnabled);
+	}
 }
 
 void ABHBlockActor::ApplyVisualStyle()

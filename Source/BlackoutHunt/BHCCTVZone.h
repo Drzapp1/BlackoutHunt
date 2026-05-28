@@ -19,18 +19,26 @@ public:
 	ABHCCTVZone();
 
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	void ConfigureZone(ABHSecurityCamera* NewCamera, int32 NewCircuitId, const FString& NewAlertLabel, const FVector& NewBoxExtent, bool bNewVisible);
 	void SetZoneEnabled(bool bNewEnabled);
 	void SetZoneVisible(bool bNewVisible);
+	void SetRoundOffline(bool bNewRoundOffline);
 
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Security")
 	int32 GetCircuitId() const;
 
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Security")
 	bool IsZoneEnabled() const;
+
+	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Security")
+	bool IsRoundOffline() const;
+
+	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Security")
+	ABHSecurityCamera* GetLinkedCamera() const;
 
 protected:
 	UFUNCTION()
@@ -69,6 +77,8 @@ protected:
 
 	UPROPERTY(ReplicatedUsing = OnRep_ZoneState, EditAnywhere, Category = "Security")
 	bool bZoneVisible;
+
+	bool bRoundOffline;
 
 	UPROPERTY(Replicated, EditAnywhere, Category = "Security")
 	int32 CircuitId;

@@ -2,10 +2,14 @@
 #include "BHAccountSubsystem.h"
 #include "BHAutomationSupport.h"
 #include "BHCharacter.h"
+#include "BHCosmeticUnlocks.h"
 #include "BHGameInstance.h"
 #include "BHGameMode.h"
 #include "BHGameSettings.h"
 #include "BHGameState.h"
+#include "BHJumpscareMonster.h"
+#include "BHJumpscareVariantLibrary.h"
+#include "BHLessonPreset.h"
 #include "BHNetworkSupport.h"
 #include "BHPlayerState.h"
 #include "Components/AudioComponent.h"
@@ -15,11 +19,16 @@
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
 #include "GameFramework/InputSettings.h"
+#include "HAL/FileManager.h"
+#include "HAL/PlatformApplicationMisc.h"
+#include "HAL/PlatformProcess.h"
 #include "HAL/PlatformMisc.h"
 #include "HAL/PlatformMemory.h"
+#include "HAL/PlatformTime.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/PackageName.h"
+#include "Misc/Paths.h"
 #include "SBHClassroomBoard.h"
 #include "SBHMainMenu.h"
 #include "Sound/SoundBase.h"
@@ -43,12 +52,21 @@
 namespace
 {
 constexpr TCHAR BHAudioConfigSection[] = TEXT("BlackoutHunt.Audio");
+constexpr TCHAR BHComfortConfigSection[] = TEXT("BlackoutHunt.Comfort");
 constexpr TCHAR BHGraphicsConfigSection[] = TEXT("BlackoutHunt.Graphics");
 constexpr TCHAR BHAmbientMusicAssetPath[] = TEXT("/Game/BlackoutHunt/Audio/SW_EerieLobbyLoop.SW_EerieLobbyLoop");
 constexpr TCHAR BHMenuClickAssetPath[] = TEXT("/Game/BlackoutHunt/Audio/SW_MenuClick.SW_MenuClick");
 constexpr float BHGraphicsGiB = 1024.0f * 1024.0f * 1024.0f;
 constexpr int32 BHAdaptiveMinRenderScale = 50;
 constexpr int32 BHAdaptiveMaxStep = 4;
+constexpr float BHAdaptiveEvaluationIntervalSeconds = 1.5f;
+constexpr float BHAdaptiveUnderTargetRatio = 0.96f;
+constexpr float BHAdaptiveSevereUnderTargetRatio = 0.84f;
+constexpr float BHAdaptiveStableTargetRatio = 0.99f;
+constexpr float BHAdaptiveClearlyOverTargetRatio = 1.04f;
+constexpr int32 BHAdaptiveUnderTargetSamplesBeforeAdjust = 2;
+constexpr int32 BHAdaptiveStableSamplesBeforeRecover = 8;
+constexpr int32 BHAdaptiveOverTargetSamplesBeforeRecover = 2;
 
 const FSlateBrush* BHUiWhiteBrush()
 {
@@ -160,6 +178,16 @@ float BHFpsGoalToFrameTimeBudgetMs(int32 FpsGoal)
 	return 1000.0f / static_cast<float>(BHClampFpsGoal(FpsGoal));
 }
 
+int32 BHResolveGraphicsFrameRateLimit(bool bAdaptiveGraphicsEnabled, int32 AdaptiveFpsGoal, int32 FrameRateLimit)
+{
+	if (bAdaptiveGraphicsEnabled)
+	{
+		return BHClampFpsGoal(AdaptiveFpsGoal);
+	}
+
+	return FrameRateLimit <= 0 ? 0 : FMath::Clamp(FrameRateLimit, 30, 360);
+}
+
 const TCHAR* BHGraphicsPresetLabel(int32 Quality)
 {
 	static const TCHAR* Labels[] = { TEXT("Low 4GB"), TEXT("Medium"), TEXT("High 16GB"), TEXT("Ultra") };
@@ -254,6 +282,7 @@ FBHGraphicsHardwareProfile BHScanGraphicsHardwareProfile()
 	const bool bVeryLowSystemMemory = Profile.SystemMemoryGB > 0.0f && Profile.SystemMemoryGB <= 6.25f;
 	const bool bLowSystemMemory = Profile.SystemMemoryGB > 0.0f && Profile.SystemMemoryGB <= 10.25f;
 	const bool bKnownLowVideoMemory = Profile.DedicatedVideoMemoryGB > 0.0f && Profile.DedicatedVideoMemoryGB <= 4.25f;
+	const bool bModerateVideoMemory = Profile.DedicatedVideoMemoryGB > 0.0f && Profile.DedicatedVideoMemoryGB <= 6.25f;
 	const bool bStrongVideoMemory = Profile.DedicatedVideoMemoryGB >= 7.5f;
 	const bool bVeryStrongVideoMemory = Profile.DedicatedVideoMemoryGB >= 10.5f;
 
@@ -263,7 +292,7 @@ FBHGraphicsHardwareProfile BHScanGraphicsHardwareProfile()
 		Profile.RecommendedFpsGoal = Profile.bLikelySoftwareGpu ? 30 : 45;
 		Profile.RecommendedRenderScale = Profile.bLikelySoftwareGpu ? 60 : 67;
 	}
-	else if (Profile.bLikelyIntegratedGpu || bLowSystemMemory || Profile.PhysicalCores <= 4)
+	else if (Profile.bLikelyIntegratedGpu || bModerateVideoMemory || bLowSystemMemory || Profile.PhysicalCores <= 4)
 	{
 		Profile.RecommendedPreset = 1;
 		Profile.RecommendedFpsGoal = 60;
@@ -298,8 +327,81 @@ bool BHPlayerControllerSoftObjectPathExists(const FSoftObjectPath& ObjectPath)
 		return false;
 	}
 
+	static TMap<FSoftObjectPath, bool> OptionalAssetPathCache;
+	if (const bool* bCachedExists = OptionalAssetPathCache.Find(ObjectPath))
+	{
+		return *bCachedExists;
+	}
+
 	const FString PackageName = ObjectPath.GetLongPackageName();
-	return !PackageName.IsEmpty() && FPackageName::DoesPackageExist(PackageName);
+	const bool bExists = !PackageName.IsEmpty() && FPackageName::DoesPackageExist(PackageName);
+	OptionalAssetPathCache.Add(ObjectPath, bExists);
+	return bExists;
+}
+
+void BHLogOptionalPlayerAssetFallbackOnce(const FSoftObjectPath& ObjectPath, const TCHAR* Context, const TCHAR* Reason)
+{
+	if (ObjectPath.IsNull())
+	{
+		return;
+	}
+
+	static TSet<FSoftObjectPath> FallbackAssetPaths;
+	if (FallbackAssetPaths.Contains(ObjectPath))
+	{
+		return;
+	}
+
+	FallbackAssetPaths.Add(ObjectPath);
+	UE_LOG(LogTemp, Verbose, TEXT("BlackoutHunt %s %s, using fallback: %s"), Context, Reason, *ObjectPath.ToString());
+}
+
+USoundBase* BHLoadGameplaySound(const TSoftObjectPtr<USoundBase>& SoundAsset, const TCHAR* Context)
+{
+	if (SoundAsset.IsNull())
+	{
+		return nullptr;
+	}
+
+	static TMap<FSoftObjectPath, TWeakObjectPtr<USoundBase>> LoadedSounds;
+	static TSet<FSoftObjectPath> MissingSoundPaths;
+
+	const FSoftObjectPath ObjectPath = SoundAsset.ToSoftObjectPath();
+	if (TWeakObjectPtr<USoundBase>* CachedSound = LoadedSounds.Find(ObjectPath))
+	{
+		if (CachedSound->IsValid())
+		{
+			return CachedSound->Get();
+		}
+	}
+
+	if (MissingSoundPaths.Contains(ObjectPath))
+	{
+		return nullptr;
+	}
+
+	if (!BHPlayerControllerSoftObjectPathExists(ObjectPath))
+	{
+		MissingSoundPaths.Add(ObjectPath);
+		BHLogOptionalPlayerAssetFallbackOnce(ObjectPath, Context, TEXT("missing"));
+		return nullptr;
+	}
+
+	USoundBase* Sound = SoundAsset.LoadSynchronous();
+	if (!Sound)
+	{
+		MissingSoundPaths.Add(ObjectPath);
+		BHLogOptionalPlayerAssetFallbackOnce(ObjectPath, Context, TEXT("failed to load"));
+		return nullptr;
+	}
+
+	LoadedSounds.Add(ObjectPath, Sound);
+	return Sound;
+}
+
+bool BHFindJumpscareVariantForCue(FName VariantId, FBHJumpscareVariant& OutVariant)
+{
+	return FindResolvedJumpscareVariantById(VariantId, OutVariant);
 }
 
 int32 BHCountConnectedPlayerControllers(UWorld* World)
@@ -328,6 +430,16 @@ float BHLoadAudioPreference(const TCHAR* Key, float DefaultValue)
 		GConfig->GetFloat(BHAudioConfigSection, Key, Value, GGameUserSettingsIni);
 	}
 	return BHClampVolume(Value);
+}
+
+bool BHLoadComfortPreference(const TCHAR* Key, bool bDefaultValue)
+{
+	bool bValue = bDefaultValue;
+	if (GConfig)
+	{
+		GConfig->GetBool(BHComfortConfigSection, Key, bValue, GGameUserSettingsIni);
+	}
+	return bValue;
 }
 
 FString BHBotDifficultyToString(EBHBotDifficulty Difficulty)
@@ -489,6 +601,78 @@ bool BHIsUrlOptionEnabled(const UWorld* World, const TCHAR* OptionName)
 		|| Value.Equals(TEXT("on"), ESearchCase::IgnoreCase);
 }
 
+FString BHBoolSettingText(const bool bEnabled)
+{
+	return bEnabled ? TEXT("Enabled") : TEXT("Disabled");
+}
+
+FString BHReadConfigValue(const TCHAR* Section, const TCHAR* Key, const FString& IniPath)
+{
+	FString Value;
+	if (GConfig && GConfig->GetString(Section, Key, Value, IniPath))
+	{
+		Value.TrimStartAndEndInline();
+		return Value.IsEmpty() ? FString(TEXT("<blank>")) : Value;
+	}
+
+	return TEXT("<unset>");
+}
+
+FString BHPathStateText(const FString& Path, const bool bDirectory)
+{
+	const FString FullPath = FPaths::ConvertRelativePathToFull(Path);
+	const bool bExists = bDirectory
+		? IFileManager::Get().DirectoryExists(*FullPath)
+		: IFileManager::Get().FileExists(*FullPath);
+	return FString::Printf(TEXT("%s (%s)"), *FullPath, bExists ? TEXT("found") : TEXT("missing"));
+}
+
+FString BHQuoteProcessArg(FString Arg)
+{
+	Arg.ReplaceInline(TEXT("\""), TEXT("\\\""));
+	return FString::Printf(TEXT("\"%s\""), *Arg);
+}
+
+FString BHFindLatestPreflightReport(const FString& SupportDir)
+{
+	TArray<FString> Reports;
+	IFileManager::Get().FindFilesRecursive(Reports, *SupportDir, TEXT("PREFLIGHT.md"), true, false);
+	FString BestReport;
+	FDateTime BestTime = FDateTime::MinValue();
+	for (const FString& Report : Reports)
+	{
+		const FDateTime Timestamp = IFileManager::Get().GetTimeStamp(*Report);
+		if (BestReport.IsEmpty() || Timestamp > BestTime)
+		{
+			BestReport = Report;
+			BestTime = Timestamp;
+		}
+	}
+
+	return BestReport;
+}
+
+void BHAppendPreflightLine(TArray<FString>& Lines, const FString& Label, const FString& Value)
+{
+	Lines.Add(FString::Printf(TEXT("%s: %s"), *Label, *Value));
+}
+
+FString BHJoinWarnings(const TArray<FString>& Warnings)
+{
+	if (Warnings.IsEmpty())
+	{
+		return TEXT("None");
+	}
+
+	TArray<FString> Numbered;
+	Numbered.Reserve(Warnings.Num());
+	for (int32 Index = 0; Index < Warnings.Num(); ++Index)
+	{
+		Numbered.Add(FString::Printf(TEXT("%d. %s"), Index + 1, *Warnings[Index]));
+	}
+	return FString::Join(Numbered, TEXT("\n"));
+}
+
 FLinearColor BHAvatarPaletteColor(int32 Index)
 {
 	static const FLinearColor Palette[] = {
@@ -512,6 +696,26 @@ FLinearColor BHSanitizeAvatarColor(FLinearColor Color)
 	Color.B = FMath::Clamp(Color.B, 0.02f, 1.0f);
 	Color.A = 1.0f;
 	return Color;
+}
+
+int32 BHNearestAvatarColorIndex(const FLinearColor& Color)
+{
+	int32 BestIndex = 0;
+	float BestDistance = TNumericLimits<float>::Max();
+	for (int32 Index = 0; Index <= BHCosmeticMaxIndex(EBHCosmeticCategory::ShirtColor); ++Index)
+	{
+		const FLinearColor Candidate = BHAvatarPaletteColor(Index);
+		const float Distance =
+			FMath::Square(Color.R - Candidate.R)
+			+ FMath::Square(Color.G - Candidate.G)
+			+ FMath::Square(Color.B - Candidate.B);
+		if (Distance < BestDistance)
+		{
+			BestDistance = Distance;
+			BestIndex = Index;
+		}
+	}
+	return BestIndex;
 }
 
 void BHApplyLocalAvatarStyle(ABHPlayerController* Controller)
@@ -625,6 +829,21 @@ void BHApplyUpperBodyCloseVisualMask(AActor* VisualActor)
 		}
 	}
 }
+
+void BHFitCloseVisualActorToCamera(AActor* VisualActor, float MaxHeight = 165.0f)
+{
+	if (!VisualActor || MaxHeight <= 0.0f)
+	{
+		return;
+	}
+
+	const FBox Bounds = VisualActor->GetComponentsBoundingBox(true);
+	const float Height = Bounds.IsValid ? Bounds.GetSize().Z : 0.0f;
+	if (Height > MaxHeight)
+	{
+		VisualActor->SetActorScale3D(VisualActor->GetActorScale3D() * (MaxHeight / Height));
+	}
+}
 }
 
 ABHPlayerController::ABHPlayerController()
@@ -638,11 +857,15 @@ void ABHPlayerController::BeginPlay()
 
 	if (IsLocalController())
 	{
+		RemoveMainMenuWidget();
+		HideTravelLoadingScreen();
 		EnsureAudioPreferencesLoaded();
+		EnsureComfortPreferencesLoaded();
 		EnsureGraphicsPreferencesLoaded();
 		ApplyStartupGraphicsSettings();
 		ApplyVirtualBoxSafeModeIfNeeded();
 		BindGameWindowCloseOverride();
+		PushLocalCosmeticsToServer(false);
 		ShowLocalStatusMessage(TEXT("Escape opens menu. Enter readies up. F flashlight, E interact, 1-4 answer."), 5.0f);
 		UWorld* World = GetWorld();
 		const bool bRemovedByHost = BHIsUrlOptionEnabled(World, TEXT("BHRemovedByHost="));
@@ -668,7 +891,7 @@ void ABHPlayerController::BeginPlay()
 			ApplyGameplayInputMode();
 		}
 		UpdateAmbientMusic();
-		GetWorldTimerManager().SetTimer(DisplayNameSyncTimerHandle, this, &ABHPlayerController::PushLocalDisplayNameToServer, 1.0f, false);
+		GetWorldTimerManager().SetTimer(DisplayNameSyncTimerHandle, this, &ABHPlayerController::PushLocalProfileToServer, 1.0f, false);
 		if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
 		{
 			if (BHGI->IsAutomationEnabled())
@@ -699,9 +922,11 @@ void ABHPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		World->GetTimerManager().ClearTimer(ClassroomPreflightTimerHandle);
 		World->GetTimerManager().ClearTimer(ClassroomFallbackTimerHandle);
 		World->GetTimerManager().ClearTimer(DisplayNameSyncTimerHandle);
+		World->GetTimerManager().ClearAllTimersForObject(this);
 	}
 
 	HideClassroomBoard();
+	RemoveMainMenuWidget();
 	HideTravelLoadingScreen();
 
 	if (AmbientMusicComponent)
@@ -715,6 +940,17 @@ void ABHPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	Super::EndPlay(EndPlayReason);
 }
 
+void ABHPlayerController::PreClientTravel(const FString& PendingURL, ETravelType TravelType, bool bIsSeamlessTravel)
+{
+	if (IsLocalController())
+	{
+		RemoveMainMenuWidget();
+		HideClassroomBoard();
+	}
+
+	Super::PreClientTravel(PendingURL, TravelType, bIsSeamlessTravel);
+}
+
 void ABHPlayerController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
@@ -726,11 +962,14 @@ void ABHPlayerController::SetupInputComponent()
 		InputComponent->BindAction(TEXT("CycleCrosshair"), IE_Pressed, this, &ABHPlayerController::CycleCrosshairStyle);
 		InputComponent->BindAction(TEXT("ForceStartRound"), IE_Pressed, this, &ABHPlayerController::ForceStartRound);
 		InputComponent->BindAction(TEXT("ClassroomBoard"), IE_Pressed, this, &ABHPlayerController::ToggleClassroomBoard);
+		InputComponent->BindAction(TEXT("SpectatorEncourage"), IE_Pressed, this, &ABHPlayerController::SpectatorEncourage);
+		InputComponent->BindAction(TEXT("SpectatorQueueTeacher"), IE_Pressed, this, &ABHPlayerController::SpectatorQueueTeacher);
+		InputComponent->BindAction(TEXT("SpectatorQueueSurvivor"), IE_Pressed, this, &ABHPlayerController::SpectatorQueueSurvivor);
+		InputComponent->BindAction(TEXT("SpectatorQueueMonitor"), IE_Pressed, this, &ABHPlayerController::SpectatorQueueMonitor);
 		InputComponent->BindKey(EKeys::B, IE_Pressed, this, &ABHPlayerController::ToggleClassroomBoard);
 		InputComponent->BindKey(EKeys::F7, IE_Pressed, this, &ABHPlayerController::TesterGrantTrainResources);
 		InputComponent->BindKey(EKeys::F8, IE_Pressed, this, &ABHPlayerController::TesterOpenTrainIntermission);
 		InputComponent->BindKey(EKeys::F9, IE_Pressed, this, &ABHPlayerController::TesterAdvanceTrainPhase);
-		InputComponent->BindKey(EKeys::F10, IE_Pressed, this, &ABHPlayerController::TesterLoadFinalStation);
 		InputComponent->BindKey(EKeys::F12, IE_Pressed, this, &ABHPlayerController::TesterForceFinalRecap);
 		InputComponent->BindKey(EKeys::Insert, IE_Pressed, this, &ABHPlayerController::TesterGrantTrainResources);
 		InputComponent->BindKey(EKeys::Home, IE_Pressed, this, &ABHPlayerController::TesterOpenTrainIntermission);
@@ -1035,47 +1274,26 @@ void ABHPlayerController::SetNextLevel(const FString& LevelName)
 
 void ABHPlayerController::SetAvatar(int32 AvatarIndex)
 {
-	const int32 NormalizedIndex = FMath::Clamp(AvatarIndex - 1, 0, 7);
-	if (ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>())
-	{
-		BHPS->SetAvatarIndex(NormalizedIndex);
-	}
-	BHApplyLocalAvatarStyle(this);
-	ServerSetAvatar(NormalizedIndex);
+	FString Message;
+	SetAvatarForMenu(AvatarIndex - 1, Message);
 }
 
 void ABHPlayerController::SetAvatarColor(int32 ColorIndex)
 {
-	const int32 NormalizedIndex = FMath::Clamp(ColorIndex - 1, 0, 7);
-	const FLinearColor AvatarColor = BHAvatarPaletteColor(NormalizedIndex);
-	if (ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>())
-	{
-		BHPS->SetAvatarColor(AvatarColor);
-	}
-	BHApplyLocalAvatarStyle(this);
-	ServerSetAvatarColor(AvatarColor, NormalizedIndex);
+	FString Message;
+	SetAvatarColorForMenu(ColorIndex - 1, Message);
 }
 
 void ABHPlayerController::SetAvatarHeadwear(int32 HeadwearIndex)
 {
-	constexpr int32 NormalizedIndex = 0;
-	if (ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>())
-	{
-		BHPS->SetAvatarHeadwearIndex(NormalizedIndex);
-	}
-	BHApplyLocalAvatarStyle(this);
-	ServerSetAvatarHeadwear(NormalizedIndex);
+	FString Message;
+	SetAvatarHeadwearForMenu(HeadwearIndex - 1, Message);
 }
 
 void ABHPlayerController::SetAvatarGear(int32 GearIndex)
 {
-	constexpr int32 NormalizedIndex = 0;
-	if (ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>())
-	{
-		BHPS->SetAvatarGearIndex(NormalizedIndex);
-	}
-	BHApplyLocalAvatarStyle(this);
-	ServerSetAvatarGear(NormalizedIndex);
+	FString Message;
+	SetAvatarGearForMenu(GearIndex - 1, Message);
 }
 
 void ABHPlayerController::VoteMap(const FString& LevelName)
@@ -1181,18 +1399,21 @@ void ABHPlayerController::TesterGrantTrainResources()
 
 void ABHPlayerController::TesterOpenTrainIntermission()
 {
+	HideMainMenu();
 	ShowLocalStatusMessage(TEXT("Tester shortcut: requesting train intermission."), 1.5f);
 	ServerTesterOpenTrainIntermission();
 }
 
 void ABHPlayerController::TesterAdvanceTrainPhase()
 {
+	HideMainMenu();
 	ShowLocalStatusMessage(TEXT("Tester shortcut: requesting next train phase."), 1.5f);
 	ServerTesterAdvanceTrainPhase();
 }
 
 void ABHPlayerController::TesterLoadFinalStation()
 {
+	HideMainMenu();
 	ShowLocalStatusMessage(TEXT("Tester shortcut: requesting Foggrounds final station."), 1.5f);
 	ServerTesterLoadFinalStation();
 }
@@ -1205,6 +1426,7 @@ void ABHPlayerController::TesterTriggerFinalEscape()
 
 void ABHPlayerController::TesterForceFinalRecap()
 {
+	HideMainMenu();
 	ShowLocalStatusMessage(TEXT("Tester shortcut: requesting final train recap."), 1.5f);
 	ServerTesterForceFinalRecap();
 }
@@ -1217,6 +1439,36 @@ void ABHPlayerController::RevisionStatus()
 void ABHPlayerController::ExportRevisionReport()
 {
 	ServerExportRevisionReport();
+}
+
+void ABHPlayerController::ExportPlaytestTelemetry()
+{
+	ServerExportPlaytestTelemetry();
+}
+
+void ABHPlayerController::SpectatorEncourage()
+{
+	ServerRequestSpectatorEncouragement();
+}
+
+void ABHPlayerController::SpectatorQueueTeacher()
+{
+	ServerSetSpectatorRolePreference(EBHPlayerRole::Hunter);
+}
+
+void ABHPlayerController::SpectatorQueueSurvivor()
+{
+	ServerSetSpectatorRolePreference(EBHPlayerRole::Survivor);
+}
+
+void ABHPlayerController::SpectatorQueueMonitor()
+{
+	ServerSetSpectatorRolePreference(EBHPlayerRole::FakeHunter);
+}
+
+void ABHPlayerController::SpectatorClearRolePreference()
+{
+	ServerSetSpectatorRolePreference(EBHPlayerRole::Unassigned);
 }
 
 void ABHPlayerController::ToggleInfectionMode()
@@ -1272,14 +1524,23 @@ void ABHPlayerController::ShowMainMenu()
 	UpdateAmbientMusic();
 }
 
-void ABHPlayerController::HideMainMenu()
+void ABHPlayerController::RemoveMainMenuWidget()
 {
 	if (MainMenuWidget.IsValid() && GEngine && GEngine->GameViewport)
 	{
 		GEngine->GameViewport->RemoveViewportWidgetContent(MainMenuWidget.ToSharedRef());
-		MainMenuWidget.Reset();
 	}
 
+	MainMenuWidget.Reset();
+	if (FSlateApplication::IsInitialized())
+	{
+		FSlateApplication::Get().ClearKeyboardFocus(EFocusCause::Cleared);
+	}
+}
+
+void ABHPlayerController::HideMainMenu()
+{
+	RemoveMainMenuWidget();
 	ApplyGameplayInputMode();
 	UpdateAmbientMusic();
 }
@@ -1477,13 +1738,16 @@ bool ABHPlayerController::HostTestRoundForMenu(const FString& LevelName, FString
 bool ABHPlayerController::HostPhysicsClassroomForMenu(FString& OutMessage)
 {
 	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
-	const int32 StageSeconds = Settings ? FMath::Clamp(Settings->StageOneSeconds, 60, 3600) : 300;
-	OutMessage = TEXT("Starting IGCSE Physics Classroom.");
+	FBHLessonPreset Preset;
+	FString PresetMessage;
+	FBHLessonPresetStore::TryFindPreset(FBHLessonPresetStore::GetSelectedPresetId(), Preset, PresetMessage);
+	Preset = FBHLessonPresetStore::ValidatePreset(Preset);
+	OutMessage = FString::Printf(TEXT("Starting IGCSE Physics Classroom with %s."), *Preset.DisplayName);
 	ShowLocalStatusMessage(OutMessage, 2.5f);
 	BHApplyClassroomLoopbackBinding(Settings);
 	HideMainMenu();
 	ShowTravelLoadingScreen(TEXT("PHYSICS CLASSROOM"), TEXT("Preparing revision escape route."));
-	UGameplayStatics::OpenLevel(this, FName(TEXT("/Engine/Maps/Entry")), true, FString::Printf(TEXT("listen?BHLevel=Facility?BHStageIndex=0?BHRevisionMode=1?BHRevisionTopics=All?BHRevisionDifficultyMix=Adaptive?BHHuntSeconds=%d?BHScareIntensity=3"), StageSeconds));
+	UGameplayStatics::OpenLevel(this, FName(TEXT("/Engine/Maps/Entry")), true, BHMakeListenOptions(Preset.MapName, FBHLessonPresetStore::BuildRevisionLaunchOptions(Preset, false)));
 	return true;
 }
 
@@ -1496,7 +1760,10 @@ bool ABHPlayerController::HostLiveClassroomForMenu(const FString& LevelName, FSt
 {
 	const FString NormalizedLevel = BHNormalizeRuntimeLevelName(LevelName);
 	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
-	const int32 StageSeconds = Settings ? FMath::Clamp(Settings->StageOneSeconds, 60, 3600) : 300;
+	FBHLessonPreset Preset;
+	FString PresetMessage;
+	FBHLessonPresetStore::TryFindPreset(FBHLessonPresetStore::GetSelectedPresetId(), Preset, PresetMessage);
+	Preset = FBHLessonPresetStore::ValidatePreset(Preset);
 	FString JoinAddress;
 	if (UBHGameInstance* BHGI = GetWorld() ? GetWorld()->GetGameInstance<UBHGameInstance>() : nullptr)
 	{
@@ -1507,12 +1774,13 @@ bool ABHPlayerController::HostLiveClassroomForMenu(const FString& LevelName, FSt
 		{
 			BHGI->SetPublicJoinAddress(ConfiguredClassroomAddress);
 		}
-		JoinAddress = BHGI->GetPreferredClassroomJoinAddress(7777);
+			JoinAddress = BHGI->GetPreferredClassroomJoinAddress(7777);
 	}
-	const FString Options = BHMakeListenOptions(NormalizedLevel, FString::Printf(TEXT("?BHStageIndex=0?BHRevisionMode=1?BHRevisionTopics=All?BHRevisionDifficultyMix=Adaptive?BHHuntSeconds=%d?BHScareIntensity=3?BHLiveClassroom=1"), StageSeconds));
+	Preset.MapName = NormalizedLevel;
+	const FString Options = BHMakeListenOptions(NormalizedLevel, FBHLessonPresetStore::BuildRevisionLaunchOptions(Preset, true));
 	OutMessage = JoinAddress.IsEmpty()
-		? FString::Printf(TEXT("Starting Live Classroom on %s."), *NormalizedLevel)
-		: FString::Printf(TEXT("Starting Live Classroom on %s. Students join %s."), *NormalizedLevel, *JoinAddress);
+		? FString::Printf(TEXT("Starting Live Classroom on %s with %s."), *NormalizedLevel, *Preset.DisplayName)
+		: FString::Printf(TEXT("Starting Live Classroom on %s with %s. Students join %s."), *NormalizedLevel, *Preset.DisplayName, *JoinAddress);
 	ShowLocalStatusMessage(OutMessage, 4.0f);
 	BHApplyClassroomLoopbackBinding(Settings);
 	HideMainMenu();
@@ -1602,7 +1870,7 @@ bool ABHPlayerController::ContinueAsGuestForMenu(FString& OutMessage)
 	const bool bSuccess = AccountSubsystem->ContinueAsGuest(OutMessage);
 	if (bSuccess)
 	{
-		PushLocalDisplayNameToServer();
+		PushLocalProfileToServer();
 	}
 	ShowLocalStatusMessage(OutMessage, bSuccess ? 5.0f : 6.0f);
 	return bSuccess;
@@ -1681,7 +1949,7 @@ bool ABHPlayerController::CreateOrUpdateLocalCredentialForMenu(const FString& Us
 	const bool bSuccess = AccountSubsystem->CreateOrUpdateLocalCredential(Username, Password, OutMessage);
 	if (bSuccess)
 	{
-		PushLocalDisplayNameToServer();
+		PushLocalProfileToServer();
 	}
 	ShowLocalStatusMessage(OutMessage, bSuccess ? 5.0f : 6.0f);
 	return bSuccess;
@@ -1700,7 +1968,7 @@ bool ABHPlayerController::LoginLocalCredentialForMenu(const FString& Username, c
 	const bool bSuccess = AccountSubsystem->LoginLocalCredential(Username, Password, OutMessage);
 	if (bSuccess)
 	{
-		PushLocalDisplayNameToServer();
+		PushLocalProfileToServer();
 	}
 	ShowLocalStatusMessage(OutMessage, bSuccess ? 5.0f : 6.0f);
 	return bSuccess;
@@ -1732,6 +2000,10 @@ bool ABHPlayerController::ResetLocalClassroomDataForMenu(FString& OutMessage)
 	}
 
 	const bool bSuccess = AccountSubsystem->ResetLocalClassroomData(OutMessage);
+	if (bSuccess)
+	{
+		PushLocalProfileToServer();
+	}
 	ShowLocalStatusMessage(OutMessage, bSuccess ? 5.0f : 6.0f);
 	return bSuccess;
 }
@@ -1741,6 +2013,391 @@ bool ABHPlayerController::OpenClassroomBoardForMenu(FString& OutMessage)
 	const bool bOpened = TryOpenClassroomBoardWindow(OutMessage);
 	ShowLocalStatusMessage(OutMessage, bOpened ? 3.0f : 4.0f);
 	return bOpened;
+}
+
+bool ABHPlayerController::OpenClassroomSupportFolderForMenu(FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("open the classroom support folder")))
+	{
+		return false;
+	}
+
+	const FString SupportDir = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectDir(), TEXT("Builds"), TEXT("Support")));
+	IFileManager::Get().MakeDirectory(*SupportDir, true);
+	FPlatformProcess::ExploreFolder(*SupportDir);
+	OutMessage = TEXT("Support folder opened. Run Tools\\New-ClassroomSupportBundle.ps1 from the project root to create a fresh PREFLIGHT report.");
+	ShowLocalStatusMessage(OutMessage, 6.0f);
+	return true;
+}
+
+bool ABHPlayerController::OpenClassroomLogFolderForMenu(FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("open the classroom log folder")))
+	{
+		return false;
+	}
+
+	const FString LogDir = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Logs")));
+	IFileManager::Get().MakeDirectory(*LogDir, true);
+	FPlatformProcess::ExploreFolder(*LogDir);
+	OutMessage = TEXT("Runtime log folder opened. Review logs before sharing outside the project team.");
+	ShowLocalStatusMessage(OutMessage, 6.0f);
+	return true;
+}
+
+bool ABHPlayerController::OpenClassroomPackageFolderForMenu(FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("open the classroom package folder")))
+	{
+		return false;
+	}
+
+	const FString ProjectPackageDir = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectDir(), TEXT("Builds"), TEXT("Windows")));
+	if (IFileManager::Get().DirectoryExists(*ProjectPackageDir))
+	{
+		FPlatformProcess::ExploreFolder(*ProjectPackageDir);
+		OutMessage = TEXT("Windows classroom package folder opened.");
+		ShowLocalStatusMessage(OutMessage, 5.0f);
+		return true;
+	}
+
+	const FString RuntimeBinaryDir = FPaths::ConvertRelativePathToFull(FPlatformProcess::BaseDir());
+	if (IFileManager::Get().DirectoryExists(*RuntimeBinaryDir))
+	{
+		FPlatformProcess::ExploreFolder(*RuntimeBinaryDir);
+		OutMessage = TEXT("Builds\\Windows was not found; opened the current executable folder instead.");
+		ShowLocalStatusMessage(OutMessage, 6.0f);
+		return true;
+	}
+
+	OutMessage = FString::Printf(TEXT("Classroom package folder was not found at %s."), *ProjectPackageDir);
+	ShowLocalStatusMessage(OutMessage, 6.0f);
+	return false;
+}
+
+bool ABHPlayerController::OpenClassroomDeploymentGuideForMenu(FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("open the classroom deployment guide")))
+	{
+		return false;
+	}
+
+	const FString GuidePath = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectDir(), TEXT("Docs"), TEXT("CLASSROOM_DEPLOYMENT.md")));
+	if (!IFileManager::Get().FileExists(*GuidePath))
+	{
+		OutMessage = FString::Printf(TEXT("Classroom deployment guide was not found at %s."), *GuidePath);
+		ShowLocalStatusMessage(OutMessage, 6.0f);
+		return false;
+	}
+
+	FPlatformProcess::LaunchFileInDefaultExternalApplication(*GuidePath);
+	OutMessage = TEXT("Classroom deployment guide opened.");
+	ShowLocalStatusMessage(OutMessage, 5.0f);
+	return true;
+}
+
+bool ABHPlayerController::CreateClassroomSupportBundleForMenu(FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("create a classroom support bundle")))
+	{
+		return false;
+	}
+
+	const FString ProjectDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+	const FString SupportDir = FPaths::ConvertRelativePathToFull(FPaths::Combine(ProjectDir, TEXT("Builds"), TEXT("Support")));
+	const FString ScriptPath = FPaths::ConvertRelativePathToFull(FPaths::Combine(ProjectDir, TEXT("Tools"), TEXT("New-ClassroomSupportBundle.ps1")));
+	IFileManager::Get().MakeDirectory(*SupportDir, true);
+
+	if (!IFileManager::Get().FileExists(*ScriptPath))
+	{
+		OutMessage = FString::Printf(TEXT("Support bundle tool was not found at %s."), *ScriptPath);
+		ShowLocalStatusMessage(OutMessage, 6.0f);
+		return false;
+	}
+
+	const FString Params = FString::Printf(TEXT("-NoProfile -ExecutionPolicy Bypass -File %s"), *BHQuoteProcessArg(ScriptPath));
+	const TCHAR* PrimaryShell =
+#if PLATFORM_WINDOWS
+		TEXT("powershell.exe");
+#else
+		TEXT("pwsh");
+#endif
+	FProcHandle Process = FPlatformProcess::CreateProc(PrimaryShell, *Params, true, true, true, nullptr, 0, *ProjectDir, nullptr);
+
+#if PLATFORM_WINDOWS
+	if (!Process.IsValid())
+	{
+		Process = FPlatformProcess::CreateProc(TEXT("pwsh.exe"), *Params, true, true, true, nullptr, 0, *ProjectDir, nullptr);
+	}
+#endif
+
+	if (!Process.IsValid())
+	{
+		OutMessage = TEXT("Could not start PowerShell for the classroom support bundle tool.");
+		ShowLocalStatusMessage(OutMessage, 6.0f);
+		return false;
+	}
+
+	FPlatformProcess::CloseProc(Process);
+	FPlatformProcess::ExploreFolder(*SupportDir);
+	OutMessage = TEXT("Classroom support bundle started. Watch Builds\\Support for the new PREFLIGHT.md and zip.");
+	ShowLocalStatusMessage(OutMessage, 8.0f);
+	return true;
+}
+
+bool ABHPlayerController::RefreshClassroomPreflightForMenu(FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("refresh classroom preflight")))
+	{
+		return false;
+	}
+
+	LastClassroomPreflightSummaryTime = -1000.0;
+	const FBHClassroomPreflightSummary Summary = GetClassroomPreflightSummaryForMenu();
+	OutMessage = Summary.ReadyStatus.IsEmpty() ? TEXT("Classroom preflight refreshed.") : Summary.ReadyStatus;
+	ShowLocalStatusMessage(OutMessage, Summary.bReadyForClassroom ? 5.0f : 8.0f);
+	return Summary.bReadyForClassroom;
+}
+
+bool ABHPlayerController::CopyClassroomJoinCodeForMenu(FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("copy the classroom join code")))
+	{
+		return false;
+	}
+
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	const UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>();
+	const FBHInternetTunnelResult TunnelStatus = FBHNetworkSupport::GetInternetTunnelStatus(7777);
+	const FString ConfiguredEndpoint = BHGI ? BHGI->GetConfiguredClassroomJoinAddress(7777) : FString();
+	const FString PublicJoinAddress = BHGI ? BHGI->GetPublicJoinAddress() : FString();
+	FString JoinAddress = PublicJoinAddress.IsEmpty() ? ConfiguredEndpoint : PublicJoinAddress;
+	if (JoinAddress.IsEmpty() && !TunnelStatus.TunnelAddress.IsEmpty())
+	{
+		JoinAddress = TunnelStatus.TunnelAddress;
+	}
+	if (JoinAddress.IsEmpty() && Settings && !Settings->bClassroomLoopbackOnlyHost)
+	{
+		JoinAddress = BHGI ? BHGI->GetPreferredClassroomJoinAddress(7777) : FBHNetworkSupport::ResolveLocalJoinAddress(7777);
+	}
+
+	const FString NormalizedAddress = FBHNetworkSupport::NormalizeJoinAddress(JoinAddress);
+	const FString InviteCode = FBHNetworkSupport::MakeJoinInviteCode(NormalizedAddress);
+	if (NormalizedAddress.IsEmpty() || InviteCode.IsEmpty())
+	{
+		OutMessage = TEXT("No classroom endpoint is ready to copy. Start/refresh the tunnel or configure a classroom endpoint first.");
+		ShowLocalStatusMessage(OutMessage, 7.0f);
+		return false;
+	}
+
+	FPlatformApplicationMisc::ClipboardCopy(*InviteCode);
+	OutMessage = FString::Printf(TEXT("Copied classroom join code for %s."), *NormalizedAddress);
+	ShowLocalStatusMessage(OutMessage, 5.0f);
+	return true;
+}
+
+FBHClassroomPreflightSummary ABHPlayerController::GetClassroomPreflightSummaryForMenu() const
+{
+	const double Now = FPlatformTime::Seconds();
+	if (!CachedClassroomPreflightSummary.DetailText.IsEmpty() && (Now - LastClassroomPreflightSummaryTime) < 1.0)
+	{
+		return CachedClassroomPreflightSummary;
+	}
+
+	FBHClassroomPreflightSummary Summary;
+	Summary.bHostOnlyAvailable = CanUseClassroomHostControlsForMenu();
+	if (!Summary.bHostOnlyAvailable)
+	{
+		Summary.ReadyStatus = TEXT("Host-only preflight");
+		Summary.DetailText = TEXT("Classroom setup details are only shown on the host machine.");
+		CachedClassroomPreflightSummary = Summary;
+		LastClassroomPreflightSummaryTime = Now;
+		return Summary;
+	}
+
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	const UWorld* World = GetWorld();
+	const UBHGameInstance* BHGI = World ? World->GetGameInstance<UBHGameInstance>() : nullptr;
+	const FBHInternetTunnelResult TunnelStatus = FBHNetworkSupport::GetInternetTunnelStatus(7777);
+	const FString ConfiguredEndpoint = BHGI ? BHGI->GetConfiguredClassroomJoinAddress(7777) : FString();
+	const FString PublicJoinAddress = BHGI ? BHGI->GetPublicJoinAddress() : FString();
+	const FString PreferredJoinAddress = BHGI ? BHGI->GetPreferredClassroomJoinAddress(7777) : FBHNetworkSupport::ResolveLocalJoinAddress(7777);
+	const bool bClassroomMode = Settings && Settings->bClassroomMode;
+	const bool bLoopbackOnly = Settings && Settings->bClassroomLoopbackOnlyHost;
+	const bool bTunnelAllowed = Settings && Settings->bAllowTunnelHelper;
+	const bool bHotspotAllowed = Settings && Settings->bAllowHotspotHelper;
+	const bool bHasUsableEndpoint = !ConfiguredEndpoint.IsEmpty() || !TunnelStatus.TunnelAddress.IsEmpty();
+	const bool bNetworkLooksReady = bLoopbackOnly ? (TunnelStatus.bTunnelReady || !ConfiguredEndpoint.IsEmpty()) : !PreferredJoinAddress.IsEmpty();
+	const bool bTunnelConfirmed = !bLoopbackOnly || TunnelStatus.bTunnelReady;
+	const FString ProjectDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+	const FString RuntimeLogDir = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Logs")));
+	const FString SupportDir = FPaths::ConvertRelativePathToFull(FPaths::Combine(ProjectDir, TEXT("Builds"), TEXT("Support")));
+	const FString WindowsPackageRoot = FPaths::ConvertRelativePathToFull(FPaths::Combine(ProjectDir, TEXT("Builds"), TEXT("Windows")));
+	const FString RuntimeBinaryDir = FPaths::ConvertRelativePathToFull(FPlatformProcess::BaseDir());
+	const FString DeploymentGuidePath = FPaths::ConvertRelativePathToFull(FPaths::Combine(ProjectDir, TEXT("Docs"), TEXT("CLASSROOM_DEPLOYMENT.md")));
+	const FString SupportBundleScriptPath = FPaths::ConvertRelativePathToFull(FPaths::Combine(ProjectDir, TEXT("Tools"), TEXT("New-ClassroomSupportBundle.ps1")));
+	const bool bPackageRootFound = IFileManager::Get().DirectoryExists(*WindowsPackageRoot);
+	const bool bRuntimeBinaryDirFound = IFileManager::Get().DirectoryExists(*RuntimeBinaryDir);
+	const bool bDeploymentGuideFound = IFileManager::Get().FileExists(*DeploymentGuidePath);
+	const bool bSupportBundleToolFound = IFileManager::Get().FileExists(*SupportBundleScriptPath);
+
+	TArray<FString> Lines;
+	TArray<FString> Warnings;
+	FString NextAction = TEXT("Host or restart Live Classroom, then copy the join code for students.");
+
+	if (!Settings || !World)
+	{
+		Warnings.Add(TEXT("Runtime settings are not fully available yet."));
+		NextAction = TEXT("Open the menu again after the world finishes loading.");
+	}
+	else if (!bClassroomMode)
+	{
+		Warnings.Add(TEXT("Classroom mode is disabled in game settings."));
+		NextAction = TEXT("Enable the classroom profile before live class hosting.");
+	}
+	else if (bLoopbackOnly && !bHasUsableEndpoint)
+	{
+		Warnings.Add(TEXT("Loopback-only hosting needs a configured Playit endpoint or a detected tunnel allocation."));
+		NextAction = TEXT("Use Start Playit, then open the deployment guide if the classroom endpoint is still missing.");
+	}
+	else if (bLoopbackOnly && !bTunnelConfirmed)
+	{
+		Warnings.Add(TEXT("The local Playit helper is not reporting a live allocation yet. Press Start Playit before students join."));
+		NextAction = TEXT("Press Start Playit and wait for the helper to report a live allocation; no Windows administrator prompt is expected.");
+	}
+	if (bLoopbackOnly && !bTunnelAllowed && !TunnelStatus.bTunnelReady)
+	{
+		Warnings.Add(TEXT("Tunnel helper is disabled, so IT or the teacher must run the classroom tunnel outside the game."));
+	}
+	if (!bPackageRootFound && !bRuntimeBinaryDirFound)
+	{
+		Warnings.Add(TEXT("No package or runtime executable folder could be resolved."));
+	}
+	if (bGraphicsLikelySoftwareGpu)
+	{
+		Warnings.Add(TEXT("Graphics adapter looks like software or VM rendering. Use Low 4GB or 720p Windowed and validate on real classroom hardware."));
+	}
+
+	Summary.bReadyForClassroom = bClassroomMode && bNetworkLooksReady && bTunnelConfirmed;
+	if (!Settings || !World)
+	{
+		Summary.ReadyStatus = TEXT("Unknown");
+	}
+	else if (!bClassroomMode)
+	{
+		Summary.ReadyStatus = TEXT("Needs setup");
+	}
+	else if (bLoopbackOnly && !bHasUsableEndpoint)
+	{
+		Summary.ReadyStatus = TEXT("Missing endpoint");
+	}
+	else if (bLoopbackOnly && !bTunnelConfirmed)
+	{
+		Summary.ReadyStatus = TEXT("Needs tunnel");
+	}
+	else if (!bPackageRootFound && !bRuntimeBinaryDirFound)
+	{
+		Summary.ReadyStatus = TEXT("Package path unknown");
+	}
+	else if (GraphicsPresetQuality <= 0)
+	{
+		Summary.ReadyStatus = TEXT("Ready - low graphics profile");
+	}
+	else
+	{
+		Summary.ReadyStatus = TEXT("Ready");
+	}
+
+	const FString ProjectName = BHReadConfigValue(TEXT("/Script/EngineSettings.GeneralProjectSettings"), TEXT("ProjectName"), GGameIni);
+	const FString ProjectVersion = BHReadConfigValue(TEXT("/Script/EngineSettings.GeneralProjectSettings"), TEXT("ProjectVersion"), GGameIni);
+	const FString DefaultRHI = BHReadConfigValue(TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"), TEXT("DefaultGraphicsRHI"), GEngineIni);
+	const FString OnlineSubsystem = BHGI ? BHGI->GetOnlineSubsystemName() : TEXT("Unavailable");
+	const FString LatestPreflight = BHFindLatestPreflightReport(SupportDir);
+	const FString NetModeText = World
+		? (World->GetNetMode() == NM_ListenServer ? TEXT("Listen server") : (World->GetNetMode() == NM_Standalone ? TEXT("Standalone") : TEXT("Client")))
+		: TEXT("No world");
+	const AGameStateBase* BaseGameState = World ? World->GetGameState() : nullptr;
+	const ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
+	const int32 ConnectedPlayers = BaseGameState ? BaseGameState->PlayerArray.Num() : 0;
+	const FString ActiveMapName = World ? FPackageName::GetShortName(World->GetMapName()) : TEXT("<unknown>");
+	const FString ClassroomModeText = BHGS && BHGS->bRevisionMode
+		? TEXT("Live Classroom active")
+		: (bClassroomMode ? TEXT("Classroom profile enabled") : TEXT("Classroom profile disabled"));
+	const FString LoopbackText = bLoopbackOnly
+		? (BHHasMultihomeOverride() ? TEXT("Enabled, but -MULTIHOME override is present") : TEXT("Enabled, host binds 127.0.0.1"))
+		: TEXT("Disabled, host may bind a LAN interface");
+	const FString DirectLanText = bLoopbackOnly
+		? TEXT("IT-managed only from Host LAN; Live Classroom avoids inbound firewall prompts")
+		: TEXT("IT-managed: confirm UDP 7777/firewall before students join");
+	const FString AdminAccessText = bLoopbackOnly
+		? TEXT("Not required for Live Classroom defaults; Playit/loopback avoids Windows Firewall consent")
+		: TEXT("May be required by direct LAN/firewall policy; prefer Playit/loopback on locked-down PCs");
+	const FString HotspotText = bHotspotAllowed
+		? TEXT("Enabled, but likely requires school IT or administrator networking permission")
+		: TEXT("Disabled for classroom default; use Playit/loopback instead");
+	const FString TeacherSafeActionsText = bSupportBundleToolFound
+		? TEXT("Refresh, Copy Join Code, Start Playit, Open Logs, Open Package, Support Bundle")
+		: TEXT("Refresh, Copy Join Code, Start Playit, Open Logs, Open Package; support-bundle tool is missing");
+	const FString ItManagedActionsText = TEXT("Direct LAN firewall changes and hotspot setup; do not require these from a standard teacher account");
+	FString JoinCodeAddress = PublicJoinAddress.IsEmpty() ? ConfiguredEndpoint : PublicJoinAddress;
+	if (JoinCodeAddress.IsEmpty() && !TunnelStatus.TunnelAddress.IsEmpty())
+	{
+		JoinCodeAddress = TunnelStatus.TunnelAddress;
+	}
+	if (JoinCodeAddress.IsEmpty() && !bLoopbackOnly)
+	{
+		JoinCodeAddress = PreferredJoinAddress;
+	}
+	const FString JoinCodeText = !JoinCodeAddress.IsEmpty()
+		? FString::Printf(TEXT("Copy action available for %s"), *JoinCodeAddress)
+		: TEXT("<not ready for loopback classroom>");
+	const FString PackageText = bPackageRootFound
+		? FString::Printf(TEXT("%s (found)"), *WindowsPackageRoot)
+		: FString::Printf(TEXT("%s (not found; use runtime executable folder below)"), *WindowsPackageRoot);
+	const FString GraphicsStatus = bGraphicsLikelySoftwareGpu
+		? TEXT("Needs hardware validation")
+		: (GraphicsPresetQuality <= 0 ? TEXT("Low graphics profile") : TEXT("Ready"));
+
+	BHAppendPreflightLine(Lines, TEXT("Ready"), Summary.ReadyStatus);
+	BHAppendPreflightLine(Lines, TEXT("Next action"), NextAction);
+	BHAppendPreflightLine(Lines, TEXT("Version / beta target"), FString::Printf(TEXT("%s %s"), *ProjectName, *ProjectVersion));
+	BHAppendPreflightLine(Lines, TEXT("Map / classroom mode"), FString::Printf(TEXT("%s, %s"), *ActiveMapName, *ClassroomModeText));
+	BHAppendPreflightLine(Lines, TEXT("Host mode"), FString::Printf(TEXT("%s, %d connected player(s)"), *NetModeText, ConnectedPlayers));
+	BHAppendPreflightLine(Lines, TEXT("Configured Playit endpoint"), ConfiguredEndpoint.IsEmpty() ? TEXT("<unset>") : ConfiguredEndpoint);
+	BHAppendPreflightLine(Lines, TEXT("Preferred join address"), PreferredJoinAddress.IsEmpty() ? TEXT("<unavailable>") : PreferredJoinAddress);
+	BHAppendPreflightLine(Lines, TEXT("Classroom join code"), JoinCodeText);
+	BHAppendPreflightLine(Lines, TEXT("Loopback mode"), LoopbackText);
+	BHAppendPreflightLine(Lines, TEXT("Direct LAN availability"), DirectLanText);
+	BHAppendPreflightLine(Lines, TEXT("Admin access"), AdminAccessText);
+	BHAppendPreflightLine(Lines, TEXT("Teacher-safe actions"), TeacherSafeActionsText);
+	BHAppendPreflightLine(Lines, TEXT("IT-managed actions"), ItManagedActionsText);
+	BHAppendPreflightLine(Lines, TEXT("Tunnel helper permission"), BHBoolSettingText(bTunnelAllowed));
+	BHAppendPreflightLine(Lines, TEXT("Tunnel status"), TunnelStatus.Message.IsEmpty() ? TEXT("No tunnel status available.") : TunnelStatus.Message);
+	BHAppendPreflightLine(Lines, TEXT("Hotspot helper"), HotspotText);
+	BHAppendPreflightLine(Lines, TEXT("Online subsystem"), OnlineSubsystem);
+	BHAppendPreflightLine(Lines, TEXT("Default RHI"), DefaultRHI);
+	BHAppendPreflightLine(Lines, TEXT("Graphics"), GetGraphicsSummaryForMenu());
+	BHAppendPreflightLine(Lines, TEXT("Graphics status"), GraphicsStatus);
+	BHAppendPreflightLine(Lines, TEXT("Runtime logs"), BHPathStateText(RuntimeLogDir, true));
+	BHAppendPreflightLine(Lines, TEXT("Playit log"), TunnelStatus.LogPath.IsEmpty() ? TEXT("<not available on this platform>") : BHPathStateText(TunnelStatus.LogPath, false));
+	BHAppendPreflightLine(Lines, TEXT("Support bundle folder"), BHPathStateText(SupportDir, true));
+	BHAppendPreflightLine(Lines, TEXT("Support bundle tool"), FString::Printf(TEXT("%s (%s)"), *SupportBundleScriptPath, bSupportBundleToolFound ? TEXT("found") : TEXT("missing in this build")));
+	BHAppendPreflightLine(Lines, TEXT("Windows package root"), PackageText);
+	BHAppendPreflightLine(Lines, TEXT("Runtime executable folder"), FString::Printf(TEXT("%s (%s)"), *RuntimeBinaryDir, bRuntimeBinaryDirFound ? TEXT("found") : TEXT("missing")));
+	BHAppendPreflightLine(Lines, TEXT("Latest PREFLIGHT.md"), LatestPreflight.IsEmpty() ? TEXT("<none yet>") : LatestPreflight);
+	BHAppendPreflightLine(Lines, TEXT("Deployment guide"), FString::Printf(TEXT("%s (%s)"), *DeploymentGuidePath, bDeploymentGuideFound ? TEXT("found") : TEXT("missing")));
+	BHAppendPreflightLine(Lines, TEXT("Warnings"), BHJoinWarnings(Warnings));
+	BHAppendPreflightLine(Lines, TEXT("Privacy"), TEXT("Only paths and safe setup state are shown here; saved account data and secrets are not displayed."));
+
+	Summary.DetailText = FString::Join(Lines, TEXT("\n"));
+	CachedClassroomPreflightSummary = Summary;
+	LastClassroomPreflightSummaryTime = Now;
+	return Summary;
+}
+
+bool ABHPlayerController::CanUseClassroomHostControlsForMenu() const
+{
+	return IsLocalHostAdminContext();
 }
 
 bool ABHPlayerController::CreateGameHotspotForMenu(FString& OutMessage)
@@ -2039,71 +2696,87 @@ bool ABHPlayerController::CycleAvatarForMenu(FString& OutMessage)
 {
 	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
 	const int32 CurrentAvatar = BHPS ? BHPS->AvatarIndex : 0;
-	const int32 NextAvatar = (CurrentAvatar + 1) % 8;
-	if (ABHPlayerState* MutableBHPS = GetPlayerState<ABHPlayerState>())
+	const UBHAccountSubsystem* ReadOnlyAccountSubsystem = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr;
+	const int32 XP = ReadOnlyAccountSubsystem ? ReadOnlyAccountSubsystem->GetProgress().XP : TNumericLimits<int32>::Max();
+	const int32 NextAvatar = BHCosmeticNextUnlockedIndex(EBHCosmeticCategory::Outfit, CurrentAvatar, XP);
+	if (UBHAccountSubsystem* AccountSubsystem = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
 	{
-		MutableBHPS->SetAvatarIndex(NextAvatar);
+		if (!AccountSubsystem->SetSelectedCosmetic(EBHCosmeticCategory::Outfit, NextAvatar, OutMessage))
+		{
+			ShowLocalStatusMessage(OutMessage, 4.0f);
+			return false;
+		}
 	}
-	BHApplyLocalAvatarStyle(this);
-	ServerSetAvatar(NextAvatar);
-	OutMessage = FString::Printf(TEXT("Avatar request sent: %d."), NextAvatar + 1);
+	PushLocalCosmeticsToServer(false);
+	OutMessage = FString::Printf(TEXT("Outfit saved: %s."), BHCosmeticItemName(EBHCosmeticCategory::Outfit, NextAvatar));
 	ShowLocalStatusMessage(OutMessage, 2.5f);
 	return true;
 }
 
 bool ABHPlayerController::SetAvatarForMenu(int32 AvatarIndex, FString& OutMessage)
 {
-	const int32 NormalizedIndex = FMath::Clamp(AvatarIndex, 0, 7);
-	if (ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>())
+	const int32 NormalizedIndex = BHCosmeticClampIndex(EBHCosmeticCategory::Outfit, AvatarIndex);
+	if (UBHAccountSubsystem* AccountSubsystem = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
 	{
-		BHPS->SetAvatarIndex(NormalizedIndex);
+		if (!AccountSubsystem->SetSelectedCosmetic(EBHCosmeticCategory::Outfit, NormalizedIndex, OutMessage))
+		{
+			ShowLocalStatusMessage(OutMessage, 4.0f);
+			return false;
+		}
 	}
-	BHApplyLocalAvatarStyle(this);
-	ServerSetAvatar(NormalizedIndex);
-	OutMessage = FString::Printf(TEXT("Avatar look request sent: %d."), NormalizedIndex + 1);
+	PushLocalCosmeticsToServer(false);
+	OutMessage = FString::Printf(TEXT("Outfit saved: %s."), BHCosmeticItemName(EBHCosmeticCategory::Outfit, NormalizedIndex));
 	ShowLocalStatusMessage(OutMessage, 2.5f);
 	return true;
 }
 
 bool ABHPlayerController::SetAvatarColorForMenu(int32 ColorIndex, FString& OutMessage)
 {
-	const int32 NormalizedIndex = FMath::Clamp(ColorIndex, 0, 7);
-	const FLinearColor AvatarColor = BHAvatarPaletteColor(NormalizedIndex);
-	if (ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>())
+	const int32 NormalizedIndex = BHCosmeticClampIndex(EBHCosmeticCategory::ShirtColor, ColorIndex);
+	if (UBHAccountSubsystem* AccountSubsystem = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
 	{
-		BHPS->SetAvatarColor(AvatarColor);
+		if (!AccountSubsystem->SetSelectedCosmetic(EBHCosmeticCategory::ShirtColor, NormalizedIndex, OutMessage))
+		{
+			ShowLocalStatusMessage(OutMessage, 4.0f);
+			return false;
+		}
 	}
-	BHApplyLocalAvatarStyle(this);
-	ServerSetAvatarColor(AvatarColor, NormalizedIndex);
-	OutMessage = FString::Printf(TEXT("Avatar color request sent: %d."), NormalizedIndex + 1);
+	PushLocalCosmeticsToServer(false);
+	OutMessage = FString::Printf(TEXT("Shirt saved: %s."), BHCosmeticItemName(EBHCosmeticCategory::ShirtColor, NormalizedIndex));
 	ShowLocalStatusMessage(OutMessage, 2.5f);
 	return true;
 }
 
 bool ABHPlayerController::SetAvatarHeadwearForMenu(int32 HeadwearIndex, FString& OutMessage)
 {
-	constexpr int32 NormalizedIndex = 0;
-	if (ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>())
+	const int32 NormalizedIndex = BHCosmeticClampIndex(EBHCosmeticCategory::Headwear, HeadwearIndex);
+	if (UBHAccountSubsystem* AccountSubsystem = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
 	{
-		BHPS->SetAvatarHeadwearIndex(NormalizedIndex);
+		if (!AccountSubsystem->SetSelectedCosmetic(EBHCosmeticCategory::Headwear, NormalizedIndex, OutMessage))
+		{
+			ShowLocalStatusMessage(OutMessage, 4.0f);
+			return false;
+		}
 	}
-	BHApplyLocalAvatarStyle(this);
-	ServerSetAvatarHeadwear(NormalizedIndex);
-	OutMessage = TEXT("Headwear reset.");
+	PushLocalCosmeticsToServer(false);
+	OutMessage = FString::Printf(TEXT("Headwear saved: %s."), BHCosmeticItemName(EBHCosmeticCategory::Headwear, NormalizedIndex));
 	ShowLocalStatusMessage(OutMessage, 2.5f);
 	return true;
 }
 
 bool ABHPlayerController::SetAvatarGearForMenu(int32 GearIndex, FString& OutMessage)
 {
-	constexpr int32 NormalizedIndex = 0;
-	if (ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>())
+	(void)GearIndex;
+	if (UBHAccountSubsystem* AccountSubsystem = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
 	{
-		BHPS->SetAvatarGearIndex(NormalizedIndex);
+		if (!AccountSubsystem->SetSelectedCosmetic(EBHCosmeticCategory::Gear, 0, OutMessage))
+		{
+			ShowLocalStatusMessage(OutMessage, 4.0f);
+			return false;
+		}
 	}
-	BHApplyLocalAvatarStyle(this);
-	ServerSetAvatarGear(NormalizedIndex);
-	OutMessage = TEXT("Gear reset.");
+	PushLocalCosmeticsToServer(false);
+	OutMessage = TEXT("Gear customization has been removed.");
 	ShowLocalStatusMessage(OutMessage, 2.5f);
 	return true;
 }
@@ -2173,6 +2846,29 @@ bool ABHPlayerController::SetRevisionThresholdsForMenu(float ClassPercent, float
 	const float ClampedIndividualPercent = FMath::Clamp(IndividualPercent, 0.0f, 100.0f);
 	ServerSetRevisionThresholds(ClampedClassPercent, ClampedIndividualPercent);
 	OutMessage = FString::Printf(TEXT("Mastery targets request sent: class %.0f%%, individual %.0f%%."), ClampedClassPercent, ClampedIndividualPercent);
+	ShowLocalStatusMessage(OutMessage, 3.0f);
+	return true;
+}
+
+bool ABHPlayerController::SetRevisionRoundDurationForMenu(int32 RoundSeconds, FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("change classroom round duration")))
+	{
+		return false;
+	}
+
+	const UWorld* World = GetWorld();
+	const ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
+	if (!BHGS || !BHGS->bRevisionMode)
+	{
+		OutMessage = TEXT("Host Live Classroom before changing round duration.");
+		ShowLocalStatusMessage(OutMessage, 4.0f);
+		return false;
+	}
+
+	const int32 ClampedRoundSeconds = FMath::Clamp(RoundSeconds, 60, 3600);
+	ServerSetRevisionRoundDuration(ClampedRoundSeconds);
+	OutMessage = FString::Printf(TEXT("Round duration request sent: %d seconds."), ClampedRoundSeconds);
 	ShowLocalStatusMessage(OutMessage, 3.0f);
 	return true;
 }
@@ -2266,6 +2962,189 @@ bool ABHPlayerController::ExportRevisionReportForMenu(FString& OutMessage)
 	return true;
 }
 
+bool ABHPlayerController::SendSpectatorEncouragementForMenu(FString& OutMessage)
+{
+	const UWorld* World = GetWorld();
+	const ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
+	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	if (!BHGS || !BHPS || BHPS->PlayerRole != EBHPlayerRole::Spectator)
+	{
+		OutMessage = TEXT("Spectator support is only available to late-join spectators.");
+		ShowLocalStatusMessage(OutMessage, 3.0f);
+		return false;
+	}
+
+	if (BHGS->RoundPhase != EBHRoundPhase::Hunt && BHGS->RoundPhase != EBHRoundPhase::FinalEscape)
+	{
+		OutMessage = TEXT("Spectator support opens during the Hunt and final escape.");
+		ShowLocalStatusMessage(OutMessage, 3.0f);
+		return false;
+	}
+
+	ServerRequestSpectatorEncouragement();
+	OutMessage = TEXT("Spectator support request sent.");
+	ShowLocalStatusMessage(OutMessage, 2.5f);
+	return true;
+}
+
+bool ABHPlayerController::QueueSpectatorRolePreferenceForMenu(EBHPlayerRole DesiredRole, FString& OutMessage)
+{
+	const UWorld* World = GetWorld();
+	const ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
+	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	if (!BHGS || !BHPS || BHPS->PlayerRole != EBHPlayerRole::Spectator)
+	{
+		OutMessage = TEXT("Only late-join spectators can request a next-round role.");
+		ShowLocalStatusMessage(OutMessage, 3.0f);
+		return false;
+	}
+
+	if (BHGS->RoundPhase == EBHRoundPhase::Lobby)
+	{
+		OutMessage = TEXT("Use the lobby roster for role assignment now.");
+		ShowLocalStatusMessage(OutMessage, 3.0f);
+		return false;
+	}
+
+	ServerSetSpectatorRolePreference(DesiredRole);
+	OutMessage = TEXT("Next-round role preference sent to the host roster.");
+	ShowLocalStatusMessage(OutMessage, 3.0f);
+	return true;
+}
+
+bool ABHPlayerController::ExportPlaytestTelemetryForMenu(FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("export playtest telemetry")))
+	{
+		return false;
+	}
+
+	ServerExportPlaytestTelemetry();
+	OutMessage = TEXT("Playtest telemetry export requested.");
+	ShowLocalStatusMessage(OutMessage, 3.0f);
+	return true;
+}
+
+bool ABHPlayerController::GetLessonPresetsForMenu(TArray<FBHLessonPreset>& OutPresets, FString& OutMessage) const
+{
+	return FBHLessonPresetStore::LoadAllPresets(OutPresets, OutMessage);
+}
+
+bool ABHPlayerController::GetSelectedLessonPresetForMenu(FBHLessonPreset& OutPreset, FString& OutMessage) const
+{
+	return FBHLessonPresetStore::TryFindPreset(FBHLessonPresetStore::GetSelectedPresetId(), OutPreset, OutMessage);
+}
+
+FString ABHPlayerController::GetSelectedLessonPresetIdForMenu() const
+{
+	return FBHLessonPresetStore::GetSelectedPresetId();
+}
+
+FString ABHPlayerController::GetLessonPresetStoragePathForMenu() const
+{
+	return FBHLessonPresetStore::GetStoragePath();
+}
+
+bool ABHPlayerController::ApplyLessonPresetForMenu(const FString& PresetId, FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("apply lesson presets")))
+	{
+		return false;
+	}
+
+	FBHLessonPreset Preset;
+	FString LoadMessage;
+	const bool bExactPresetFound = FBHLessonPresetStore::TryFindPreset(PresetId, Preset, LoadMessage);
+	if (!bExactPresetFound && !PresetId.IsEmpty())
+	{
+		OutMessage = LoadMessage;
+		ShowLocalStatusMessage(OutMessage, 4.0f);
+		return false;
+	}
+
+	bool bAdjusted = false;
+	Preset = FBHLessonPresetStore::ValidatePreset(Preset, &bAdjusted);
+	FBHLessonPresetStore::SetSelectedPresetId(Preset.Id);
+
+	EnsureComfortPreferencesLoaded();
+	bReducedJumpscares = Preset.bReducedJumpscares;
+	bReducedFlash = Preset.bReducedFlash;
+	bReducedCameraShake = Preset.bReducedCameraShake;
+	bCaptionsEnabled = Preset.bCaptions;
+	bHighContrastHud = Preset.bHighContrastHud;
+	SaveComfortPreference(TEXT("ReducedJumpscares"), bReducedJumpscares);
+	SaveComfortPreference(TEXT("ReducedFlash"), bReducedFlash);
+	SaveComfortPreference(TEXT("ReducedCameraShake"), bReducedCameraShake);
+	SaveComfortPreference(TEXT("Captions"), bCaptionsEnabled);
+	SaveComfortPreference(TEXT("HighContrastHud"), bHighContrastHud);
+
+	const UWorld* World = GetWorld();
+	const ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
+	const bool bCanApplyLive = World
+		&& World->GetNetMode() == NM_ListenServer
+		&& BHGS
+		&& BHGS->bRevisionMode
+		&& BHGS->RoundPhase == EBHRoundPhase::Lobby;
+	if (bCanApplyLive)
+	{
+		ABHGameMode* BHGM = World ? World->GetAuthGameMode<ABHGameMode>() : nullptr;
+		if (!BHGM || !BHGM->ApplyLessonPreset(this, Preset, OutMessage))
+		{
+			if (OutMessage.IsEmpty())
+			{
+				OutMessage = TEXT("Could not apply the lesson preset to this lobby.");
+			}
+			ShowLocalStatusMessage(OutMessage, 4.0f);
+			return false;
+		}
+	}
+	else
+	{
+		OutMessage = BHGS && BHGS->bRevisionMode && BHGS->RoundPhase != EBHRoundPhase::Lobby
+			? FString::Printf(TEXT("Selected lesson preset '%s' for the next Live Classroom. Active rounds keep their current settings."), *Preset.DisplayName)
+			: FString::Printf(TEXT("Selected lesson preset '%s' for the next Live Classroom."), *Preset.DisplayName);
+	}
+
+	if (bAdjusted && !bCanApplyLive)
+	{
+		OutMessage += TEXT(" Stale values were clamped to current limits.");
+	}
+	ShowLocalStatusMessage(OutMessage, 4.0f);
+	return true;
+}
+
+bool ABHPlayerController::SaveCurrentLessonPresetForMenu(const FString& DisplayName, const FString& SelectedMapName, FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("save lesson presets")))
+	{
+		return false;
+	}
+
+	FBHLessonPreset Preset = BuildCurrentLessonPresetSnapshot(DisplayName, SelectedMapName);
+	const bool bSaved = FBHLessonPresetStore::SaveCustomPreset(Preset, OutMessage);
+	ShowLocalStatusMessage(OutMessage, bSaved ? 4.0f : 5.0f);
+	return bSaved;
+}
+
+bool ABHPlayerController::GenerateManualQuestionSetForMenu(int32 QuestionCount, FString& OutPath, FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("generate manual question sets")))
+	{
+		return false;
+	}
+
+	FBHLessonPreset Preset;
+	FString LoadMessage;
+	const bool bFoundPreset = FBHLessonPresetStore::TryFindPreset(FBHLessonPresetStore::GetSelectedPresetId(), Preset, LoadMessage);
+	const bool bSaved = FBHLessonPresetStore::SaveManualQuestionSet(Preset, QuestionCount, OutPath, OutMessage);
+	if (bSaved && !bFoundPreset && !LoadMessage.IsEmpty())
+	{
+		OutMessage = LoadMessage + TEXT(" ") + OutMessage;
+	}
+	ShowLocalStatusMessage(OutMessage, bSaved ? 5.0f : 6.0f);
+	return bSaved;
+}
+
 void ABHPlayerController::EnsureGraphicsPreferencesLoaded()
 {
 	if (bGraphicsPreferencesLoaded)
@@ -2315,6 +3194,10 @@ void ABHPlayerController::EnsureGraphicsPreferencesLoaded()
 	GraphicsRenderScalePercent = BHClampRenderScale(GraphicsRenderScalePercent);
 	GraphicsAdaptiveFpsGoal = BHClampFpsGoal(GraphicsAdaptiveFpsGoal);
 	GraphicsFrameRateLimit = GraphicsFrameRateLimit <= 0 ? 0 : FMath::Clamp(GraphicsFrameRateLimit, 30, 360);
+	if (bAdaptiveGraphicsEnabled && GraphicsFrameRateLimit > 0 && GraphicsAdaptiveFpsGoal > GraphicsFrameRateLimit)
+	{
+		GraphicsAdaptiveFpsGoal = GraphicsFrameRateLimit;
+	}
 	GraphicsTextureQuality = BHClampGraphicsQuality(GraphicsTextureQuality);
 	GraphicsShadowQuality = BHClampGraphicsQuality(GraphicsShadowQuality);
 	GraphicsEffectsQuality = BHClampGraphicsQuality(GraphicsEffectsQuality);
@@ -2422,8 +3305,8 @@ void ABHPlayerController::ApplySavedManualGraphicsTuning()
 		ConsoleCommand(TEXT("r.MipMapLODBias 0"));
 		break;
 	default:
-		ConsoleCommand(TEXT("r.Streaming.UseFixedPoolSize 0"));
-		ConsoleCommand(TEXT("r.Streaming.PoolSize 0"));
+		ConsoleCommand(TEXT("r.Streaming.UseFixedPoolSize 1"));
+		ConsoleCommand(TEXT("r.Streaming.PoolSize 4096"));
 		ConsoleCommand(TEXT("r.Streaming.MaxTempMemoryAllowed 512"));
 		ConsoleCommand(TEXT("r.MipMapLODBias 0"));
 		break;
@@ -2435,7 +3318,6 @@ void ABHPlayerController::ApplySavedManualGraphicsTuning()
 	GraphicsAverageFrameTimeMs = 0.0f;
 	GraphicsAdaptiveEvaluationSeconds = -1.0f;
 	ApplyAdaptiveGraphicsState(false);
-	ConsoleCommand(FString::Printf(TEXT("t.MaxFPS %d"), GraphicsFrameRateLimit));
 }
 
 void ABHPlayerController::ApplySavedGraphicsResolution()
@@ -2458,16 +3340,20 @@ void ABHPlayerController::ApplyAdaptiveGraphicsState(bool bAnnounce)
 	}
 
 	const int32 SafeRenderScale = BHClampRenderScale(GraphicsRenderScalePercent);
+	const int32 SafeGoal = BHClampFpsGoal(GraphicsAdaptiveFpsGoal);
 	const int32 EffectiveStep = bAdaptiveGraphicsEnabled ? FMath::Clamp(GraphicsAdaptiveStep, 0, BHAdaptiveMaxStep) : 0;
 	const int32 EffectiveRenderScale = BHClampRenderScale(SafeRenderScale - EffectiveStep * 8);
 	const int32 EffectiveShadowQuality = FMath::Clamp(GraphicsShadowQuality - (EffectiveStep >= 2 ? 1 : 0) - (EffectiveStep >= 4 ? 1 : 0), 0, 3);
 	const int32 EffectiveEffectsQuality = FMath::Clamp(GraphicsEffectsQuality - (EffectiveStep >= 2 ? 1 : 0) - (EffectiveStep >= 3 ? 1 : 0), 0, 3);
+	const int32 EffectiveFrameRateLimit = BHResolveGraphicsFrameRateLimit(bAdaptiveGraphicsEnabled, SafeGoal, GraphicsFrameRateLimit);
+
+	ConsoleCommand(FString::Printf(TEXT("t.MaxFPS %d"), EffectiveFrameRateLimit));
 
 	if (bAdaptiveGraphicsEnabled)
 	{
 		const int32 MinDynamicScale = FMath::Clamp(EffectiveRenderScale - 18, BHAdaptiveMinRenderScale, EffectiveRenderScale);
 		ConsoleCommand(TEXT("r.DynamicRes.OperationMode 2"));
-		ConsoleCommand(FString::Printf(TEXT("r.DynamicRes.FrameTimeBudget %.2f"), BHFpsGoalToFrameTimeBudgetMs(GraphicsAdaptiveFpsGoal)));
+		ConsoleCommand(FString::Printf(TEXT("r.DynamicRes.FrameTimeBudget %.2f"), BHFpsGoalToFrameTimeBudgetMs(SafeGoal)));
 		ConsoleCommand(FString::Printf(TEXT("r.DynamicRes.MinScreenPercentage %d"), MinDynamicScale));
 		ConsoleCommand(FString::Printf(TEXT("r.DynamicRes.MaxScreenPercentage %d"), EffectiveRenderScale));
 	}
@@ -2551,30 +3437,40 @@ void ABHPlayerController::TickAdaptiveGraphics(float DeltaSeconds)
 		: FMath::Lerp(GraphicsAverageFrameTimeMs, FrameTimeMs, 0.05f);
 
 	GraphicsAdaptiveEvaluationSeconds += DeltaSeconds;
-	if (GraphicsAdaptiveEvaluationSeconds < 2.0f)
+	if (GraphicsAdaptiveEvaluationSeconds < BHAdaptiveEvaluationIntervalSeconds)
 	{
 		return;
 	}
 	GraphicsAdaptiveEvaluationSeconds = 0.0f;
 
 	const float AverageFps = GraphicsAverageFrameTimeMs > KINDA_SMALL_NUMBER ? 1000.0f / GraphicsAverageFrameTimeMs : 0.0f;
+	if (AverageFps <= 0.0f)
+	{
+		return;
+	}
+
 	const int32 PreviousStep = GraphicsAdaptiveStep;
 	const int32 SafeGoal = BHClampFpsGoal(GraphicsAdaptiveFpsGoal);
-	if (AverageFps > 0.0f && AverageFps < static_cast<float>(SafeGoal) * 0.88f)
+	const float TargetRatio = AverageFps / static_cast<float>(SafeGoal);
+	if (TargetRatio < BHAdaptiveUnderTargetRatio)
 	{
 		++GraphicsUnderTargetSamples;
 		GraphicsOverTargetSamples = 0;
-		if (GraphicsUnderTargetSamples >= 2)
+		if (TargetRatio < BHAdaptiveSevereUnderTargetRatio || GraphicsUnderTargetSamples >= BHAdaptiveUnderTargetSamplesBeforeAdjust)
 		{
-			GraphicsAdaptiveStep = FMath::Min(GraphicsAdaptiveStep + 1, BHAdaptiveMaxStep);
+			const int32 StepDelta = TargetRatio < BHAdaptiveSevereUnderTargetRatio ? 2 : 1;
+			GraphicsAdaptiveStep = FMath::Min(GraphicsAdaptiveStep + StepDelta, BHAdaptiveMaxStep);
 			GraphicsUnderTargetSamples = 0;
 		}
 	}
-	else if (AverageFps > static_cast<float>(SafeGoal) * 1.20f)
+	else if (GraphicsAdaptiveStep > 0 && TargetRatio >= BHAdaptiveStableTargetRatio)
 	{
 		GraphicsUnderTargetSamples = 0;
 		++GraphicsOverTargetSamples;
-		if (GraphicsOverTargetSamples >= 4)
+		const int32 RecoverySamples = TargetRatio >= BHAdaptiveClearlyOverTargetRatio
+			? BHAdaptiveOverTargetSamplesBeforeRecover
+			: BHAdaptiveStableSamplesBeforeRecover;
+		if (GraphicsOverTargetSamples >= RecoverySamples)
 		{
 			GraphicsAdaptiveStep = FMath::Max(GraphicsAdaptiveStep - 1, 0);
 			GraphicsOverTargetSamples = 0;
@@ -2589,11 +3485,13 @@ void ABHPlayerController::TickAdaptiveGraphics(float DeltaSeconds)
 	if (GraphicsAdaptiveStep != PreviousStep)
 	{
 		ApplyAdaptiveGraphicsState(false);
+		GraphicsAverageFrameTimeMs = 0.0f;
+		GraphicsAdaptiveEvaluationSeconds = -0.5f;
 		const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 		if (Now - GraphicsLastAdaptiveMessageTime > 12.0f)
 		{
 			GraphicsLastAdaptiveMessageTime = Now;
-			ShowLocalStatusMessage(FString::Printf(TEXT("Adaptive graphics adjusted render scale for %.0f FPS average."), AverageFps), 2.5f);
+			ShowLocalStatusMessage(FString::Printf(TEXT("Adaptive graphics adjusted toward %d FPS after %.0f FPS average."), SafeGoal, AverageFps), 2.5f);
 		}
 	}
 }
@@ -2737,17 +3635,18 @@ bool ABHPlayerController::ApplyGraphicsPresetInternal(int32 Quality, bool bSaveA
 	default:
 	{
 		GraphicsRenderScalePercent = 100;
-		GraphicsFrameRateLimit = 0;
+		GraphicsFrameRateLimit = 120;
 		GraphicsTextureQuality = 3;
 		GraphicsShadowQuality = 3;
 		GraphicsEffectsQuality = 3;
 		static const FBHConsoleVariableSetting UltraSettings[] = {
 			{ TEXT("r.ScreenPercentage"), TEXT("100") },
 			{ TEXT("r.DynamicRes.OperationMode"), TEXT("0") },
-			{ TEXT("t.MaxFPS"), TEXT("0") },
+			{ TEXT("t.MaxFPS"), TEXT("120") },
 			{ TEXT("r.TextureStreaming"), TEXT("1") },
-			{ TEXT("r.Streaming.UseFixedPoolSize"), TEXT("0") },
-			{ TEXT("r.Streaming.PoolSize"), TEXT("0") },
+			{ TEXT("r.Streaming.UseFixedPoolSize"), TEXT("1") },
+			{ TEXT("r.Streaming.PoolSize"), TEXT("4096") },
+			{ TEXT("r.Streaming.MaxTempMemoryAllowed"), TEXT("512") },
 			{ TEXT("r.MipMapLODBias"), TEXT("0") },
 			{ TEXT("r.StaticMeshLODDistanceScale"), TEXT("1.0") },
 			{ TEXT("r.SkeletalMeshLODBias"), TEXT("0") },
@@ -2828,7 +3727,6 @@ bool ABHPlayerController::ApplyAutoGraphicsForMenu(FString& OutMessage)
 	GraphicsUnderTargetSamples = 0;
 	GraphicsOverTargetSamples = 0;
 	ApplyAdaptiveGraphicsState(false);
-	ConsoleCommand(FString::Printf(TEXT("t.MaxFPS %d"), GraphicsFrameRateLimit));
 	SaveGraphicsPreferences();
 
 	OutMessage = FString::Printf(TEXT("Auto graphics selected %s. %s"), BHGraphicsPresetLabel(GraphicsPresetQuality), *GetGraphicsSummaryForMenu());
@@ -2878,7 +3776,6 @@ bool ABHPlayerController::SetAdaptiveFrameRateGoalForMenu(int32 FpsGoal, FString
 	if (GraphicsFrameRateLimit > 0 && GraphicsFrameRateLimit < GraphicsAdaptiveFpsGoal)
 	{
 		GraphicsFrameRateLimit = GraphicsAdaptiveFpsGoal;
-		ConsoleCommand(FString::Printf(TEXT("t.MaxFPS %d"), GraphicsFrameRateLimit));
 		bRaisedFrameCap = true;
 	}
 	GraphicsAdaptiveStep = 0;
@@ -2888,9 +3785,18 @@ bool ABHPlayerController::SetAdaptiveFrameRateGoalForMenu(int32 FpsGoal, FString
 	GraphicsAdaptiveEvaluationSeconds = -1.0f;
 	ApplyAdaptiveGraphicsState(true);
 	SaveGraphicsPreferences();
-	OutMessage = bRaisedFrameCap
-		? FString::Printf(TEXT("Adaptive graphics target set to %d FPS; frame cap raised to match."), GraphicsAdaptiveFpsGoal)
-		: FString::Printf(TEXT("Adaptive graphics target set to %d FPS."), GraphicsAdaptiveFpsGoal);
+	if (bAdaptiveGraphicsEnabled)
+	{
+		OutMessage = bRaisedFrameCap
+			? FString::Printf(TEXT("Adaptive graphics target set to %d FPS; frame cap raised and effective cap follows the goal."), GraphicsAdaptiveFpsGoal)
+			: FString::Printf(TEXT("Adaptive graphics target set to %d FPS; effective cap follows the goal."), GraphicsAdaptiveFpsGoal);
+	}
+	else
+	{
+		OutMessage = bRaisedFrameCap
+			? FString::Printf(TEXT("Adaptive graphics target set to %d FPS; frame cap raised to match."), GraphicsAdaptiveFpsGoal)
+			: FString::Printf(TEXT("Adaptive graphics target set to %d FPS."), GraphicsAdaptiveFpsGoal);
+	}
 	ShowLocalStatusMessage(OutMessage, 3.0f);
 	return true;
 }
@@ -3026,16 +3932,21 @@ bool ABHPlayerController::ApplyFrameRateLimitForMenu(int32 FrameRateLimit, FStri
 		GraphicsAverageFrameTimeMs = 0.0f;
 		GraphicsAdaptiveEvaluationSeconds = -1.0f;
 	}
-	ConsoleCommand(FString::Printf(TEXT("t.MaxFPS %d"), SafeLimit));
 	ApplyAdaptiveGraphicsState(false);
 	SaveGraphicsPreferences();
 	if (SafeLimit == 0)
 	{
-		OutMessage = TEXT("Local frame cap removed.");
+		OutMessage = bAdaptiveGraphicsEnabled
+			? FString::Printf(TEXT("Local frame cap removed; adaptive target still caps at %d FPS."), GraphicsAdaptiveFpsGoal)
+			: TEXT("Local frame cap removed.");
 	}
 	else if (bLoweredAdaptiveGoal)
 	{
 		OutMessage = FString::Printf(TEXT("Local frame cap set to %d FPS; adaptive target lowered to match."), SafeLimit);
+	}
+	else if (bAdaptiveGraphicsEnabled && SafeLimit != GraphicsAdaptiveFpsGoal)
+	{
+		OutMessage = FString::Printf(TEXT("Local frame cap set to %d FPS; adaptive target still caps at %d FPS."), SafeLimit, GraphicsAdaptiveFpsGoal);
 	}
 	else
 	{
@@ -3071,9 +3982,13 @@ FString ABHPlayerController::GetGraphicsSummaryForMenu() const
 	const FString ScaleText = EffectiveRenderScale == GraphicsRenderScalePercent
 		? FString::Printf(TEXT("Scale %d%%"), GraphicsRenderScalePercent)
 		: FString::Printf(TEXT("Scale %d%%, effective %d%%"), GraphicsRenderScalePercent, EffectiveRenderScale);
-	const FString CapText = GraphicsFrameRateLimit > 0
+	const int32 EffectiveFrameRateLimit = BHResolveGraphicsFrameRateLimit(bAdaptiveGraphicsEnabled, GraphicsAdaptiveFpsGoal, GraphicsFrameRateLimit);
+	const FString BaseCapText = GraphicsFrameRateLimit > 0
 		? FString::Printf(TEXT("Cap %d FPS"), GraphicsFrameRateLimit)
 		: TEXT("Cap free");
+	const FString CapText = EffectiveFrameRateLimit != GraphicsFrameRateLimit
+		? FString::Printf(TEXT("%s, effective %d FPS"), *BaseCapText, EffectiveFrameRateLimit)
+		: BaseCapText;
 	const FString ResolutionText = bGraphicsResolutionOverrideEnabled && GraphicsResolutionWidth > 0 && GraphicsResolutionHeight > 0
 		? FString::Printf(TEXT("Res %dx%d %s"), GraphicsResolutionWidth, GraphicsResolutionHeight, bGraphicsFullscreen ? TEXT("F") : TEXT("W"))
 		: TEXT("Res default");
@@ -3201,7 +4116,7 @@ bool ABHPlayerController::SetLocalDisplayNameForMenu(const FString& DisplayName,
 	const bool bSuccess = AccountSubsystem->SetLocalDisplayName(DisplayName, OutMessage);
 	if (bSuccess)
 	{
-		PushLocalDisplayNameToServer();
+		PushLocalProfileToServer();
 	}
 	ShowLocalStatusMessage(OutMessage, bSuccess ? 3.0f : 5.0f);
 	return bSuccess;
@@ -3237,6 +4152,57 @@ void ABHPlayerController::PushLocalDisplayNameToServer()
 	}
 
 	ServerSetPlayerDisplayName(DisplayName);
+}
+
+void ABHPlayerController::PushLocalCosmeticsToServer(bool bAnnounce)
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	const UBHAccountSubsystem* AccountSubsystem = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr;
+	const FBHAccountProgress* Progress = AccountSubsystem ? &AccountSubsystem->GetProgress() : nullptr;
+	const ABHPlayerState* CurrentBHPS = GetPlayerState<ABHPlayerState>();
+
+	const int32 XP = Progress ? Progress->XP : TNumericLimits<int32>::Max();
+	const int32 AvatarIndex = Progress
+		? BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Outfit, Progress->SelectedAvatarIndex, XP)
+		: BHCosmeticClampIndex(EBHCosmeticCategory::Outfit, CurrentBHPS ? CurrentBHPS->AvatarIndex : 0);
+	const int32 ColorIndex = Progress
+		? BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::ShirtColor, Progress->SelectedAvatarColorIndex, XP)
+		: BHCosmeticClampIndex(EBHCosmeticCategory::ShirtColor, CurrentBHPS ? BHNearestAvatarColorIndex(CurrentBHPS->AvatarColor) : 0);
+	const int32 HeadwearIndex = Progress
+		? BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Headwear, Progress->SelectedAvatarHeadwearIndex, XP)
+		: BHCosmeticClampIndex(EBHCosmeticCategory::Headwear, CurrentBHPS ? CurrentBHPS->AvatarHeadwearIndex : 0);
+	const int32 GearIndex = 0;
+	const FLinearColor AvatarColor = BHAvatarPaletteColor(ColorIndex);
+
+	bool bChanged = false;
+	if (ABHPlayerState* MutableBHPS = GetPlayerState<ABHPlayerState>())
+	{
+		bChanged = MutableBHPS->AvatarIndex != AvatarIndex
+			|| !MutableBHPS->AvatarColor.Equals(AvatarColor, 0.005f)
+			|| MutableBHPS->AvatarHeadwearIndex != HeadwearIndex
+			|| MutableBHPS->AvatarGearIndex != GearIndex;
+		MutableBHPS->SetAvatarIndex(AvatarIndex);
+		MutableBHPS->SetAvatarColor(AvatarColor);
+		MutableBHPS->SetAvatarHeadwearIndex(HeadwearIndex);
+		MutableBHPS->SetAvatarGearIndex(GearIndex);
+	}
+
+	if (bChanged)
+	{
+		BHApplyLocalAvatarStyle(this);
+	}
+
+	ServerApplyAvatarCosmetics(AvatarIndex, AvatarColor, ColorIndex, HeadwearIndex, GearIndex, bAnnounce);
+}
+
+void ABHPlayerController::PushLocalProfileToServer()
+{
+	PushLocalDisplayNameToServer();
+	PushLocalCosmeticsToServer(false);
 }
 
 void ABHPlayerController::SetDesiredRole(APlayerState* TargetPlayerState, EBHPlayerRole DesiredRole)
@@ -3314,6 +4280,47 @@ float ABHPlayerController::GetStatusMessageAlpha() const
 	return FMath::Min(FadeInAlpha, FadeOutAlpha);
 }
 
+bool ABHPlayerController::HasActiveCCTVReveal() const
+{
+	const UWorld* World = GetWorld();
+	return World && World->GetTimeSeconds() < CCTVRevealEndTime;
+}
+
+float ABHPlayerController::GetCCTVRevealAlpha() const
+{
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return 0.0f;
+	}
+
+	const float Now = World->GetTimeSeconds();
+	const float Remaining = CCTVRevealEndTime - Now;
+	if (Remaining <= 0.0f)
+	{
+		return 0.0f;
+	}
+
+	const float FadeInAlpha = FMath::Clamp((Now - CCTVRevealStartTime) / 0.12f, 0.0f, 1.0f);
+	const float FadeOutAlpha = FMath::Clamp(Remaining / 0.45f, 0.0f, 1.0f);
+	return FMath::Min(FadeInAlpha, FadeOutAlpha);
+}
+
+const FVector& ABHPlayerController::GetCCTVRevealLocation() const
+{
+	return CCTVRevealLocation;
+}
+
+const FString& ABHPlayerController::GetCCTVRevealTargetName() const
+{
+	return CCTVRevealTargetName;
+}
+
+const ABHCharacter* ABHPlayerController::GetCCTVRevealTarget() const
+{
+	return CCTVRevealTarget.Get();
+}
+
 bool ABHPlayerController::IsHudMapVisible() const
 {
 	return bHudMapVisible;
@@ -3348,6 +4355,48 @@ float ABHPlayerController::GetHorrorCueFlashAlpha() const
 FLinearColor ABHPlayerController::GetHorrorCueFlashColor() const
 {
 	return HorrorCueFlashColor;
+}
+
+FBHLessonPreset ABHPlayerController::BuildCurrentLessonPresetSnapshot(const FString& DisplayName, const FString& SelectedMapName) const
+{
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	FBHLessonPreset Preset = FBHLessonPresetStore::MakeDefaultPreset(Settings);
+	Preset.DisplayName = FBHLessonPresetStore::SanitizeDisplayName(DisplayName);
+	Preset.Id = FBHLessonPresetStore::MakeCustomPresetId(Preset.DisplayName);
+	Preset.bBuiltin = false;
+	Preset.MapName = FBHLessonPresetStore::NormalizeMapName(SelectedMapName);
+
+	const UWorld* World = GetWorld();
+	const ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
+	if (BHGS)
+	{
+		if (BHGS->bRevisionMode)
+		{
+			Preset.TopicMask = BHGS->RevisionTopicMask;
+			Preset.DifficultyMix = BHGS->RevisionDifficultyMix;
+			Preset.ClassThreshold = BHGS->RevisionClassThreshold;
+			Preset.IndividualThreshold = BHGS->RevisionIndividualThreshold;
+			Preset.RoundSeconds = BHGS->RevisionRoundDuration;
+			Preset.ScareIntensity = BHGS->RevisionScareIntensity;
+			if (!BHGS->NextLevelName.IsEmpty())
+			{
+				Preset.MapName = FBHLessonPresetStore::NormalizeMapName(BHGS->NextLevelName);
+			}
+			else if (!BHGS->ActiveLevelName.IsEmpty())
+			{
+				Preset.MapName = FBHLessonPresetStore::NormalizeMapName(BHGS->ActiveLevelName);
+			}
+		}
+		Preset.BotCount = BHGS->TargetBotCount;
+		Preset.BotDifficulty = BHGS->BotDifficulty;
+	}
+
+	Preset.bReducedJumpscares = bReducedJumpscares;
+	Preset.bReducedFlash = bReducedFlash;
+	Preset.bReducedCameraShake = bReducedCameraShake;
+	Preset.bCaptions = bCaptionsEnabled;
+	Preset.bHighContrastHud = bHighContrastHud;
+	return FBHLessonPresetStore::ValidatePreset(Preset);
 }
 
 void ABHPlayerController::ApplyGameplayInputMode()
@@ -3421,6 +4470,33 @@ void ABHPlayerController::SaveAudioPreference(const TCHAR* Key, float Value) con
 	}
 
 	GConfig->SetFloat(BHAudioConfigSection, Key, BHClampVolume(Value), GGameUserSettingsIni);
+	GConfig->Flush(false, GGameUserSettingsIni);
+}
+
+void ABHPlayerController::EnsureComfortPreferencesLoaded()
+{
+	if (bComfortPreferencesLoaded)
+	{
+		return;
+	}
+
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	bReducedJumpscares = BHLoadComfortPreference(TEXT("ReducedJumpscares"), Settings ? Settings->bDefaultReducedJumpscares : false);
+	bReducedFlash = BHLoadComfortPreference(TEXT("ReducedFlash"), Settings ? Settings->bDefaultReducedFlash : false);
+	bReducedCameraShake = BHLoadComfortPreference(TEXT("ReducedCameraShake"), Settings ? Settings->bDefaultReducedCameraShake : false);
+	bCaptionsEnabled = BHLoadComfortPreference(TEXT("Captions"), Settings ? Settings->bDefaultCaptions : true);
+	bHighContrastHud = BHLoadComfortPreference(TEXT("HighContrastHud"), Settings ? Settings->bDefaultHighContrastHud : false);
+	bComfortPreferencesLoaded = true;
+}
+
+void ABHPlayerController::SaveComfortPreference(const TCHAR* Key, bool bValue) const
+{
+	if (!Key || !GConfig)
+	{
+		return;
+	}
+
+	GConfig->SetBool(BHComfortConfigSection, Key, bValue, GGameUserSettingsIni);
 	GConfig->Flush(false, GGameUserSettingsIni);
 }
 
@@ -3629,6 +4705,88 @@ void ABHPlayerController::SetUiVolumeForMenu(float Volume)
 	SaveAudioPreference(TEXT("UiVolume"), UiVolume);
 }
 
+bool ABHPlayerController::SetComfortOptionForMenu(FName OptionName, bool bEnabled, FString& OutMessage)
+{
+	EnsureComfortPreferencesLoaded();
+
+	const FString Option = OptionName.ToString();
+	if (Option.Equals(TEXT("ReducedJumpscares"), ESearchCase::IgnoreCase))
+	{
+		bReducedJumpscares = bEnabled;
+		SaveComfortPreference(TEXT("ReducedJumpscares"), bReducedJumpscares);
+		OutMessage = bReducedJumpscares ? TEXT("Reduced jumpscares enabled.") : TEXT("Reduced jumpscares disabled.");
+	}
+	else if (Option.Equals(TEXT("ReducedFlash"), ESearchCase::IgnoreCase))
+	{
+		bReducedFlash = bEnabled;
+		SaveComfortPreference(TEXT("ReducedFlash"), bReducedFlash);
+		OutMessage = bReducedFlash ? TEXT("Reduced flash enabled.") : TEXT("Reduced flash disabled.");
+	}
+	else if (Option.Equals(TEXT("ReducedCameraShake"), ESearchCase::IgnoreCase))
+	{
+		bReducedCameraShake = bEnabled;
+		SaveComfortPreference(TEXT("ReducedCameraShake"), bReducedCameraShake);
+		OutMessage = bReducedCameraShake ? TEXT("Reduced camera shake enabled.") : TEXT("Reduced camera shake disabled.");
+	}
+	else if (Option.Equals(TEXT("Captions"), ESearchCase::IgnoreCase))
+	{
+		bCaptionsEnabled = bEnabled;
+		SaveComfortPreference(TEXT("Captions"), bCaptionsEnabled);
+		OutMessage = bCaptionsEnabled ? TEXT("Captions enabled.") : TEXT("Captions disabled.");
+	}
+	else if (Option.Equals(TEXT("HighContrastHud"), ESearchCase::IgnoreCase))
+	{
+		bHighContrastHud = bEnabled;
+		SaveComfortPreference(TEXT("HighContrastHud"), bHighContrastHud);
+		OutMessage = bHighContrastHud ? TEXT("High contrast HUD enabled.") : TEXT("High contrast HUD disabled.");
+	}
+	else
+	{
+		OutMessage = FString::Printf(TEXT("Unknown comfort option: %s."), *Option);
+		ShowLocalStatusMessage(OutMessage, 3.0f);
+		return false;
+	}
+
+	ShowLocalStatusMessage(OutMessage, 2.5f);
+	return true;
+}
+
+bool ABHPlayerController::IsComfortOptionEnabledForMenu(FName OptionName) const
+{
+	const FString Option = OptionName.ToString();
+	if (Option.Equals(TEXT("ReducedJumpscares"), ESearchCase::IgnoreCase))
+	{
+		return bReducedJumpscares;
+	}
+	if (Option.Equals(TEXT("ReducedFlash"), ESearchCase::IgnoreCase))
+	{
+		return bReducedFlash;
+	}
+	if (Option.Equals(TEXT("ReducedCameraShake"), ESearchCase::IgnoreCase))
+	{
+		return bReducedCameraShake;
+	}
+	if (Option.Equals(TEXT("Captions"), ESearchCase::IgnoreCase))
+	{
+		return bCaptionsEnabled;
+	}
+	if (Option.Equals(TEXT("HighContrastHud"), ESearchCase::IgnoreCase))
+	{
+		return bHighContrastHud;
+	}
+	return false;
+}
+
+bool ABHPlayerController::AreCaptionsEnabled() const
+{
+	return bCaptionsEnabled;
+}
+
+bool ABHPlayerController::IsHighContrastHudEnabled() const
+{
+	return bHighContrastHud;
+}
+
 bool ABHPlayerController::IsLocalHostAdminContext() const
 {
 	const UWorld* World = GetWorld();
@@ -3753,6 +4911,10 @@ void ABHPlayerController::ApplyVirtualBoxSafeModeIfNeeded()
 		{ TEXT("r.RHICmdBypass"), TEXT("0") },
 		{ TEXT("r.DynamicRes.OperationMode"), TEXT("0") },
 		{ TEXT("r.ScreenPercentage"), TEXT("60") },
+		{ TEXT("r.TextureStreaming"), TEXT("1") },
+		{ TEXT("r.Streaming.UseFixedPoolSize"), TEXT("1") },
+		{ TEXT("r.Streaming.PoolSize"), TEXT("384") },
+		{ TEXT("r.Streaming.MaxTempMemoryAllowed"), TEXT("64") },
 		{ TEXT("r.VolumetricFog"), TEXT("0") },
 		{ TEXT("r.Nanite"), TEXT("0") },
 		{ TEXT("r.RayTracing.ForceAllRayTracingEffects"), TEXT("0") },
@@ -4203,32 +5365,73 @@ void ABHPlayerController::ServerSetAvatarHeadwear_Implementation(int32 HeadwearI
 		return;
 	}
 
-	constexpr int32 NormalizedIndex = 0;
+	const int32 NormalizedIndex = BHCosmeticClampIndex(EBHCosmeticCategory::Headwear, HeadwearIndex);
 	BHPS->SetAvatarHeadwearIndex(NormalizedIndex);
 	if (ABHCharacter* ControlledCharacter = Cast<ABHCharacter>(GetPawn()))
 	{
 		ControlledCharacter->ApplyAvatarStyle();
 	}
 
-	ClientShowStatusMessage(TEXT("Headwear reset."), 2.5f);
+	ClientShowStatusMessage(FString::Printf(TEXT("Headwear set to %s."), BHCosmeticItemName(EBHCosmeticCategory::Headwear, NormalizedIndex)), 2.5f);
 }
 
 void ABHPlayerController::ServerSetAvatarGear_Implementation(int32 GearIndex)
 {
+	(void)GearIndex;
 	ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
 	if (!BHPS)
 	{
 		return;
 	}
 
-	constexpr int32 NormalizedIndex = 0;
-	BHPS->SetAvatarGearIndex(NormalizedIndex);
+	BHPS->SetAvatarGearIndex(0);
 	if (ABHCharacter* ControlledCharacter = Cast<ABHCharacter>(GetPawn()))
 	{
 		ControlledCharacter->ApplyAvatarStyle();
 	}
 
-	ClientShowStatusMessage(TEXT("Gear reset."), 2.5f);
+	ClientShowStatusMessage(TEXT("Gear customization has been removed."), 2.5f);
+}
+
+void ABHPlayerController::ServerApplyAvatarCosmetics_Implementation(
+	int32 AvatarIndex,
+	const FLinearColor& AvatarColor,
+	int32 ColorIndex,
+	int32 HeadwearIndex,
+	int32 GearIndex,
+	bool bAnnounce)
+{
+	(void)GearIndex;
+	ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	if (!BHPS)
+	{
+		return;
+	}
+
+	const int32 NormalizedAvatarIndex = BHCosmeticClampIndex(EBHCosmeticCategory::Outfit, AvatarIndex);
+	const int32 NormalizedColorIndex = BHCosmeticClampIndex(EBHCosmeticCategory::ShirtColor, ColorIndex);
+	const int32 NormalizedHeadwearIndex = BHCosmeticClampIndex(EBHCosmeticCategory::Headwear, HeadwearIndex);
+	const int32 NormalizedGearIndex = 0;
+
+	BHPS->SetAvatarIndex(NormalizedAvatarIndex);
+	BHPS->SetAvatarColor(BHSanitizeAvatarColor(AvatarColor));
+	BHPS->SetAvatarHeadwearIndex(NormalizedHeadwearIndex);
+	BHPS->SetAvatarGearIndex(NormalizedGearIndex);
+
+	if (ABHCharacter* ControlledCharacter = Cast<ABHCharacter>(GetPawn()))
+	{
+		ControlledCharacter->ApplyAvatarStyle();
+	}
+
+	if (bAnnounce)
+	{
+		ClientShowStatusMessage(
+			FString::Printf(
+				TEXT("Cosmetics applied: %s, %s."),
+				BHCosmeticItemName(EBHCosmeticCategory::Outfit, NormalizedAvatarIndex),
+				BHCosmeticItemName(EBHCosmeticCategory::Headwear, NormalizedHeadwearIndex)),
+			2.5f);
+	}
 }
 
 void ABHPlayerController::ServerSetMapVote_Implementation(const FString& LevelName)
@@ -4380,6 +5583,14 @@ void ABHPlayerController::ServerSetRevisionThresholds_Implementation(float Class
 	}
 }
 
+void ABHPlayerController::ServerSetRevisionRoundDuration_Implementation(int32 RoundSeconds)
+{
+	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+	{
+		BHGM->SetRevisionRoundDuration(this, RoundSeconds);
+	}
+}
+
 void ABHPlayerController::ServerSetScareIntensity_Implementation(int32 Intensity)
 {
 	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
@@ -4466,6 +5677,32 @@ void ABHPlayerController::ServerExportRevisionReport_Implementation()
 		FString Message;
 		BHGM->ExportRevisionReport(this, Message);
 		UE_LOG(LogTemp, Display, TEXT("%s"), *Message);
+	}
+}
+
+void ABHPlayerController::ServerExportPlaytestTelemetry_Implementation()
+{
+	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+	{
+		FString Message;
+		BHGM->ExportPlaytestTelemetry(this, Message);
+		UE_LOG(LogTemp, Display, TEXT("%s"), *Message);
+	}
+}
+
+void ABHPlayerController::ServerRequestSpectatorEncouragement_Implementation()
+{
+	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+	{
+		BHGM->RequestSpectatorEncouragement(this);
+	}
+}
+
+void ABHPlayerController::ServerSetSpectatorRolePreference_Implementation(EBHPlayerRole DesiredRole)
+{
+	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+	{
+		BHGM->QueueSpectatorRolePreference(this, DesiredRole);
 	}
 }
 
@@ -4620,6 +5857,7 @@ void ABHPlayerController::ServerAtmosphereTest_Implementation(const FString& Com
 		Spec.Origin = Origin;
 		Spec.Intensity = 0.9f;
 		Spec.Message = TEXT("Security feed distortion: host test.");
+		Spec.bBypassDirectorBudget = true;
 		BHGM->TriggerAtmosphereCue(Spec);
 		ClientShowStatusMessage(TEXT("Atmosphere test: CCTV glitch."), 2.5f);
 	}
@@ -4644,6 +5882,33 @@ void ABHPlayerController::ServerAtmosphereTest_Implementation(const FString& Com
 void ABHPlayerController::ClientShowStatusMessage_Implementation(const FString& Message, float DurationSeconds)
 {
 	ShowLocalStatusMessage(Message, DurationSeconds);
+}
+
+void ABHPlayerController::ClientShowCCTVReveal_Implementation(ABHCharacter* RevealTarget, const FVector& RevealLocation, const FString& TargetName, float DurationSeconds)
+{
+	const UWorld* World = GetWorld();
+	const float Now = World ? World->GetTimeSeconds() : 0.0f;
+	const float NewDuration = FMath::Max(0.1f, DurationSeconds);
+	const float NewEndTime = Now + NewDuration;
+	const bool bSameActiveTarget = World
+		&& Now < CCTVRevealEndTime
+		&& CCTVRevealTarget.Get() == RevealTarget
+		&& CCTVRevealTargetName.Equals(TargetName.IsEmpty() ? TEXT("Survivor") : TargetName, ESearchCase::IgnoreCase);
+	const float ExistingEndTime = CCTVRevealEndTime;
+
+	CCTVRevealLocation = RevealLocation;
+	CCTVRevealTargetName = TargetName.IsEmpty() ? TEXT("Survivor") : TargetName;
+	CCTVRevealTarget = RevealTarget;
+	if (bSameActiveTarget && ExistingEndTime > NewEndTime)
+	{
+		CCTVRevealDuration = FMath::Max(CCTVRevealDuration, ExistingEndTime - CCTVRevealStartTime);
+		CCTVRevealEndTime = ExistingEndTime;
+		return;
+	}
+
+	CCTVRevealStartTime = Now;
+	CCTVRevealDuration = NewDuration;
+	CCTVRevealEndTime = NewEndTime;
 }
 
 void ABHPlayerController::ClientSetJumpscareInputLocked_Implementation(bool bLocked)
@@ -4671,6 +5936,75 @@ void ABHPlayerController::ClientSetJumpscareInputLocked_Implementation(bool bLoc
 	{
 		ApplyGameplayInputMode();
 	}
+}
+
+void ABHPlayerController::PlayGameplayAudioCueLocal(const FBHGameplayAudioCue& Cue)
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	EnsureAudioPreferencesLoaded();
+	EnsureComfortPreferencesLoaded();
+
+	float DistanceScale = 1.0f;
+	if (Cue.bSpatial && Cue.MaxAudibleDistance > 0.0f)
+	{
+		FVector ViewLocation = FVector::ZeroVector;
+		FRotator ViewRotation = FRotator::ZeroRotator;
+		GetPlayerViewPoint(ViewLocation, ViewRotation);
+
+		const float Distance = FVector::Dist(ViewLocation, Cue.Location);
+		if (Distance > Cue.MaxAudibleDistance)
+		{
+			return;
+		}
+
+		const float FullVolumeDistance = FMath::Max(120.0f, Cue.MaxAudibleDistance * 0.18f);
+		DistanceScale = FMath::GetMappedRangeValueClamped(
+			FVector2D(Cue.MaxAudibleDistance, FullVolumeDistance),
+			FVector2D(0.0f, 1.0f),
+			Distance);
+	}
+
+	if (bCaptionsEnabled && !Cue.Caption.IsEmpty())
+	{
+		ShowLocalStatusMessage(Cue.Caption, FMath::Max(0.4f, Cue.CaptionSeconds));
+	}
+
+	if (Cue.AudioAsset.IsNull())
+	{
+		return;
+	}
+
+	USoundBase* Sound = BHLoadGameplaySound(Cue.AudioAsset, TEXT("gameplay audio"));
+	if (!Sound)
+	{
+		return;
+	}
+
+	const float ComfortScale = Cue.bApplyHorrorComfort && bReducedJumpscares ? 0.45f : 1.0f;
+	const float EffectiveVolume = BHClampVolume(MasterVolume) * FMath::Clamp(Cue.Volume * DistanceScale * ComfortScale, 0.0f, 2.0f);
+	const float EffectivePitch = FMath::Clamp(Cue.Pitch, 0.1f, 3.0f);
+	if (EffectiveVolume <= 0.0f)
+	{
+		return;
+	}
+
+	if (Cue.bSpatial)
+	{
+		UGameplayStatics::PlaySoundAtLocation(this, Sound, Cue.Location, EffectiveVolume, EffectivePitch);
+	}
+	else
+	{
+		UGameplayStatics::PlaySound2D(this, Sound, EffectiveVolume, EffectivePitch, 0.0f, nullptr, this, true);
+	}
+}
+
+void ABHPlayerController::ClientPlayGameplayAudioCue_Implementation(const FBHGameplayAudioCue& Cue)
+{
+	PlayGameplayAudioCueLocal(Cue);
 }
 
 void ABHPlayerController::ClientSnapViewToFlatFocus_Implementation(const FVector& FocusLocation)
@@ -4707,6 +6041,13 @@ void ABHPlayerController::ClientPlayHorrorCue_Implementation(const FBHClientHorr
 		return;
 	}
 
+	EnsureAudioPreferencesLoaded();
+	EnsureComfortPreferencesLoaded();
+	const float JumpscareScale = bReducedJumpscares ? 0.45f : 1.0f;
+	const float FlashScale = bReducedFlash ? 0.25f : 1.0f;
+	const float ShakeScale = bReducedCameraShake ? 0.25f : 1.0f;
+	const bool bSuppressCloseVisual = bReducedJumpscares && Cue.bCloseRangeFocus;
+
 	if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
 	{
 		if (BHGI->IsAutomationEnabled())
@@ -4727,25 +6068,24 @@ void ABHPlayerController::ClientPlayHorrorCue_Implementation(const FBHClientHorr
 	{
 		ShowLocalStatusMessage(Cue.Message, FMath::Max(0.25f, Cue.DurationSeconds));
 	}
+	else if (bCaptionsEnabled && Cue.EventType != EBHScareEventType::Ambient)
+	{
+		ShowLocalStatusMessage(TEXT("Audio scare cue nearby."), FMath::Max(1.2f, Cue.DurationSeconds * 0.6f));
+	}
 
 	if (!Cue.AudioAsset.IsNull())
 	{
-		if (BHPlayerControllerSoftObjectPathExists(Cue.AudioAsset.ToSoftObjectPath()))
+		if (USoundBase* Sound = BHLoadGameplaySound(Cue.AudioAsset, TEXT("horror cue audio")))
 		{
-			if (USoundBase* Sound = Cue.AudioAsset.LoadSynchronous())
-			{
-				UGameplayStatics::PlaySound2D(this, Sound, GetEffectiveUiVolume() * FMath::Clamp(Cue.AudioVolume, 0.0f, 2.0f));
-			}
-		}
-		else
-		{
-			UE_LOG(LogTemp, Verbose, TEXT("BlackoutHunt horror cue audio missing, using silent fallback: %s"), *Cue.AudioAsset.ToSoftObjectPath().ToString());
+			UGameplayStatics::PlaySound2D(this, Sound, GetEffectiveUiVolume() * FMath::Clamp(Cue.AudioVolume * JumpscareScale, 0.0f, 2.0f));
 		}
 	}
 
-	if (!Cue.VisualActorClass.IsNull())
+	bool bSpawnedCueVisual = false;
+	if (!bSuppressCloseVisual && !Cue.VisualActorClass.IsNull())
 	{
-		if (BHPlayerControllerSoftObjectPathExists(Cue.VisualActorClass.ToSoftObjectPath()))
+		const FSoftObjectPath VisualActorPath = Cue.VisualActorClass.ToSoftObjectPath();
+		if (BHPlayerControllerSoftObjectPathExists(VisualActorPath))
 		{
 			if (UClass* VisualClass = Cue.VisualActorClass.LoadSynchronous())
 			{
@@ -4769,10 +6109,12 @@ void ABHPlayerController::ClientPlayHorrorCue_Implementation(const FBHClientHorr
 				SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 				if (AActor* VisualActor = GetWorld() ? GetWorld()->SpawnActor<AActor>(VisualClass, VisualSpawnLocation, SpawnRotation, SpawnParams) : nullptr)
 				{
+					bSpawnedCueVisual = true;
 					VisualActor->SetActorEnableCollision(false);
 					if (Cue.bCloseRangeFocus)
 					{
 						VisualActor->SetActorScale3D(VisualActor->GetActorScale3D() * Cue.CloseVisualScale);
+						BHFitCloseVisualActorToCamera(VisualActor);
 					}
 					if (Cue.bUpperBodyCloseVisual)
 					{
@@ -4790,10 +6132,40 @@ void ABHPlayerController::ClientPlayHorrorCue_Implementation(const FBHClientHorr
 					VisualActor->SetLifeSpan(FMath::Clamp(Cue.DurationSeconds, 0.2f, 5.0f));
 				}
 			}
+			else
+			{
+				BHLogOptionalPlayerAssetFallbackOnce(VisualActorPath, TEXT("horror cue visual"), TEXT("failed to load"));
+			}
 		}
 		else
 		{
-			UE_LOG(LogTemp, Verbose, TEXT("BlackoutHunt horror cue visual actor missing, using client flash fallback: %s"), *Cue.VisualActorClass.ToSoftObjectPath().ToString());
+			BHLogOptionalPlayerAssetFallbackOnce(VisualActorPath, TEXT("horror cue visual"), TEXT("missing"));
+		}
+	}
+
+	if (!bSuppressCloseVisual && !bSpawnedCueVisual && Cue.bCloseRangeFocus && !Cue.VariantId.IsNone())
+	{
+		FBHJumpscareVariant CueVariant;
+		if (BHFindJumpscareVariantForCue(Cue.VariantId, CueVariant))
+		{
+			FVector ViewLocation = FVector::ZeroVector;
+			FRotator ViewRotation = FRotator::ZeroRotator;
+			GetPlayerViewPoint(ViewLocation, ViewRotation);
+
+			const FRotationMatrix ViewMatrix(ViewRotation);
+			const FVector VisualSpawnLocation = ViewLocation
+				+ ViewMatrix.GetUnitAxis(EAxis::X) * Cue.CloseVisualOffset.X
+				+ ViewMatrix.GetUnitAxis(EAxis::Y) * Cue.CloseVisualOffset.Y
+				+ ViewMatrix.GetUnitAxis(EAxis::Z) * Cue.CloseVisualOffset.Z;
+			const FRotator SpawnRotation = ((ViewLocation - VisualSpawnLocation).Rotation() + Cue.CloseVisualRotation);
+
+			FActorSpawnParameters SpawnParams;
+			SpawnParams.Owner = this;
+			SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			if (ABHJumpscareMonster* CloseMonster = GetWorld() ? GetWorld()->SpawnActor<ABHJumpscareMonster>(VisualSpawnLocation, SpawnRotation, SpawnParams) : nullptr)
+			{
+				CloseMonster->ConfigureCloseupPresentation(CueVariant, FMath::Clamp(Cue.DurationSeconds, 0.2f, 5.0f), Cue.bUpperBodyCloseVisual);
+			}
 		}
 	}
 
@@ -4812,28 +6184,28 @@ void ABHPlayerController::ClientPlayHorrorCue_Implementation(const FBHClientHorr
 		}
 	}
 
-	if (Cue.ShakeIntensity > 0.0f)
+	if (Cue.ShakeIntensity > 0.0f && ShakeScale > 0.0f)
 	{
-		const float Shake = FMath::Clamp(Cue.ShakeIntensity, 0.0f, 1.0f);
+		const float Shake = FMath::Clamp(Cue.ShakeIntensity * ShakeScale, 0.0f, 1.0f);
 		const FRotator CurrentRotation = GetControlRotation();
 		SetControlRotation(CurrentRotation + FRotator(FMath::FRandRange(-1.4f, 1.4f) * Shake, FMath::FRandRange(-2.5f, 2.5f) * Shake, 0.0f));
 	}
 
-	if (Cue.CameraJitterDuration > 0.0f && Cue.ShakeIntensity > 0.0f)
+	if (Cue.CameraJitterDuration > 0.0f && Cue.ShakeIntensity > 0.0f && ShakeScale > 0.0f)
 	{
 		const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
-		HorrorCueJitterEndTime = FMath::Max(HorrorCueJitterEndTime, Now + FMath::Clamp(Cue.CameraJitterDuration, 0.0f, 4.0f));
+		HorrorCueJitterEndTime = FMath::Max(HorrorCueJitterEndTime, Now + FMath::Clamp(Cue.CameraJitterDuration * FMath::Lerp(0.55f, 1.0f, ShakeScale), 0.0f, 4.0f));
 		HorrorCueNextJitterTime = Now;
-		HorrorCueJitterIntensity = FMath::Max(HorrorCueJitterIntensity, FMath::Clamp(Cue.ShakeIntensity, 0.0f, 1.0f));
+		HorrorCueJitterIntensity = FMath::Max(HorrorCueJitterIntensity, FMath::Clamp(Cue.ShakeIntensity * ShakeScale, 0.0f, 1.0f));
 		HorrorCueJitterFrequency = FMath::Clamp(Cue.CameraJitterFrequency, 8.0f, 90.0f);
 	}
 
-	if (Cue.FlashIntensity > 0.0f)
+	if (Cue.FlashIntensity > 0.0f && FlashScale > 0.0f)
 	{
 		const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 		HorrorCueFlashStartTime = Now;
 		HorrorCueFlashEndTime = Now + FMath::Clamp(Cue.DurationSeconds * 0.42f, 0.22f, 1.65f);
-		HorrorCueFlashIntensity = FMath::Clamp(Cue.FlashIntensity, 0.0f, 1.0f);
+		HorrorCueFlashIntensity = FMath::Clamp(Cue.FlashIntensity * FlashScale * JumpscareScale, 0.0f, 1.0f);
 		HorrorCueFlashColor = Cue.FlashColor;
 	}
 
@@ -4874,6 +6246,50 @@ void ABHPlayerController::ClientRecordRoundResult_Implementation(EBHPlayerRole A
 {
 	if (UBHAccountSubsystem* AccountSubsystem = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
 	{
+		const int32 PreviousXP = AccountSubsystem->GetProgress().XP;
 		AccountSubsystem->RecordRoundResult(AccountRole, LifeState, ResultPhase);
+		const int32 CurrentXP = AccountSubsystem->GetProgress().XP;
+		if (CurrentXP > PreviousXP)
+		{
+			TArray<FString> NewlyUnlocked;
+			const EBHCosmeticCategory Categories[] = {
+				EBHCosmeticCategory::Outfit,
+				EBHCosmeticCategory::Headwear
+			};
+			for (EBHCosmeticCategory Category : Categories)
+			{
+				for (int32 Index = 0; Index <= BHCosmeticMaxIndex(Category); ++Index)
+				{
+					const int32 RequiredXP = BHCosmeticRequiredXP(Category, Index);
+					if (RequiredXP > PreviousXP && RequiredXP <= CurrentXP)
+					{
+						NewlyUnlocked.Add(FString::Printf(
+							TEXT("%s %s"),
+							BHCosmeticCategoryName(Category),
+							BHCosmeticItemName(Category, Index)));
+					}
+				}
+			}
+
+			if (!NewlyUnlocked.IsEmpty())
+			{
+				const int32 MaxShown = FMath::Min(2, NewlyUnlocked.Num());
+				FString UnlockText;
+				for (int32 Index = 0; Index < MaxShown; ++Index)
+				{
+					if (!UnlockText.IsEmpty())
+					{
+						UnlockText += TEXT(", ");
+					}
+					UnlockText += NewlyUnlocked[Index];
+				}
+				if (NewlyUnlocked.Num() > MaxShown)
+				{
+					UnlockText += FString::Printf(TEXT(" +%d more"), NewlyUnlocked.Num() - MaxShown);
+				}
+
+				ShowLocalStatusMessage(FString::Printf(TEXT("New cosmetic unlocked: %s."), *UnlockText), 4.0f);
+			}
+		}
 	}
 }

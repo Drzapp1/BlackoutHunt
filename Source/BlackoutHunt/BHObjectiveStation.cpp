@@ -7,6 +7,10 @@
 #include "BHPlayerState.h"
 #include "BHRevisionQuestionBank.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "Materials/MaterialInterface.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "Net/UnrealNetwork.h"
 
 namespace
@@ -26,6 +30,14 @@ float BHStationWorkerNerveMultiplier(const ABHCharacter* Character)
 	const float FearPenalty = BHStationStressAlpha(Character->GetFear(), 60.0f, 100.0f) * 0.18f;
 	const float DreadPenalty = BHStationStressAlpha(Character->GetDread(), 55.0f, 100.0f) * 0.24f;
 	return FMath::Clamp(1.0f - FearPenalty - DreadPenalty, 0.58f, 1.0f);
+}
+
+bool BHStationAllowsWarmup(const ABHGameState* GameState)
+{
+	return GameState
+		&& GameState->RoundPhase == EBHRoundPhase::Prep
+		&& !GameState->bPracticeMode
+		&& !GameState->bTestMode;
 }
 
 struct FBHStationQuestion
@@ -266,6 +278,68 @@ const FBHStationQuestion* QuestionBankForType(EBHObjectiveStationType StationTyp
 		return TerminalQuestions;
 	}
 }
+
+bool BHUseImportedStationVisuals()
+{
+	const TCHAR* CommandLine = FCommandLine::Get();
+	if (!FParse::Param(CommandLine, TEXT("BHImportedStationVisuals")))
+	{
+		return false;
+	}
+
+#if WITH_DEV_AUTOMATION_TESTS
+	const bool bAutomationRun = FString(CommandLine).Contains(TEXT("Automation RunTests"), ESearchCase::IgnoreCase);
+	if (bAutomationRun)
+	{
+		return false;
+	}
+#endif
+
+	return true;
+}
+
+UStaticMesh* ImportedStationMesh(const TCHAR* Path, UStaticMesh* Fallback)
+{
+	if (!Path || !Path[0] || !BHUseImportedStationVisuals())
+	{
+		return Fallback;
+	}
+
+	UStaticMesh* LoadedMesh = LoadObject<UStaticMesh>(nullptr, Path);
+	return LoadedMesh ? LoadedMesh : Fallback;
+}
+
+UMaterialInterface* ImportedStationMaterial(const TCHAR* Path, UMaterialInterface* Fallback)
+{
+	if (!Path || !Path[0] || !BHUseImportedStationVisuals())
+	{
+		return Fallback;
+	}
+
+	UMaterialInterface* LoadedMaterial = LoadObject<UMaterialInterface>(nullptr, Path);
+	return LoadedMaterial ? LoadedMaterial : Fallback;
+}
+
+void ConfigureImportedStationPart(
+	UStaticMeshComponent* Component,
+	const TCHAR* MeshPath,
+	UStaticMesh* FallbackMesh,
+	const TCHAR* MaterialPath,
+	UMaterialInterface* FallbackMaterial,
+	const FVector& RelativeLocation,
+	const FRotator& RelativeRotation,
+	const FVector& RelativeScale,
+	bool bCollisionEnabled = false)
+{
+	BHPropVisuals::ConfigurePart(
+		Component,
+		ImportedStationMesh(MeshPath, FallbackMesh),
+		ImportedStationMaterial(MaterialPath, FallbackMaterial),
+		RelativeLocation,
+		RelativeRotation,
+		RelativeScale,
+		bCollisionEnabled);
+}
 }
 
 ABHObjectiveStation::ABHObjectiveStation()
@@ -331,7 +405,7 @@ void ABHObjectiveStation::Tick(float DeltaSeconds)
 	}
 
 	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
-	if (!BHGS || BHGS->RoundPhase != EBHRoundPhase::Hunt)
+	if (!BHGS || (BHGS->RoundPhase != EBHRoundPhase::Hunt && !BHStationAllowsWarmup(BHGS)))
 	{
 		Workers.Empty();
 		SetActorTickEnabled(false);
@@ -400,12 +474,13 @@ bool ABHObjectiveStation::CanInteract_Implementation(ABHCharacter* Character) co
 {
 	const ABHPlayerState* BHPS = Character ? Character->GetBHPlayerState() : nullptr;
 	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	const bool bRoleWarmup = BHStationAllowsWarmup(BHGS);
 	if (bTeacherMirrorTrapNode)
 	{
 		return bDirectorActive && !bCompleted && BHPS && BHGS && BHGS->RoundPhase == EBHRoundPhase::Hunt && BHPS->IsAliveSurvivor();
 	}
 	const bool bQuestionReady = bQuestionSolved || QuestionChoices.Num() == 0;
-	return bDirectorActive && !bCompleted && bQuestionReady && BHPS && BHGS && BHGS->RoundPhase == EBHRoundPhase::Hunt && BHPS->IsAliveSurvivor();
+	return bDirectorActive && !bCompleted && bQuestionReady && BHPS && BHGS && (BHGS->RoundPhase == EBHRoundPhase::Hunt || bRoleWarmup) && BHPS->IsAliveSurvivor();
 }
 
 void ABHObjectiveStation::BeginInteract_Implementation(ABHCharacter* Character)
@@ -428,15 +503,29 @@ void ABHObjectiveStation::BeginInteract_Implementation(ABHCharacter* Character)
 
 	if (HasAuthority() && CanInteract_Implementation(Character))
 	{
+		const bool bNewWorker = !Workers.Contains(Character);
 		Workers.Add(Character);
 		SetActorTickEnabled(true);
+		const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+		if (bNewWorker && !BHStationAllowsWarmup(BHGS))
+		{
+			if (ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
+			{
+				const UEnum* StationEnum = StaticEnum<EBHObjectiveStationType>();
+				const FString StationTypeName = StationEnum ? StationEnum->GetNameStringByValue(static_cast<int64>(StationType)) : TEXT("Station");
+				BHGM->RecordPlaytestTelemetryMarker(TEXT("objective_work_started"), GetActorLocation(), FString::Printf(TEXT("%s progress=%.2f"), *StationTypeName, WorkProgress), Character->GetBHPlayerState());
+			}
+		}
 		const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 		if (Now - LastNoiseTime > 2.0f)
 		{
 			LastNoiseTime = Now;
-			if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+			if (!BHStationAllowsWarmup(BHGS))
 			{
-				BHGM->NotifyLoudNoise(GetActorLocation(), GetStationName().ToLower());
+				if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+				{
+					BHGM->NotifyLoudNoise(GetActorLocation(), GetStationName().ToLower());
+				}
 			}
 		}
 	}
@@ -488,6 +577,15 @@ FText ABHObjectiveStation::GetInteractionLabel_Implementation(ABHCharacter* Char
 		return FText::FromString(BHPS->PlayerRole == EBHPlayerRole::FakeHunter ? TEXT("Monitor Must Revise") : TEXT("Survivor Objective"));
 	}
 
+	if (BHStationAllowsWarmup(BHGS))
+	{
+		if (!bQuestionSolved && QuestionChoices.Num() > 0)
+		{
+			return FText::FromString(FString::Printf(TEXT("Warmup Answer %s: press 1-4"), *GetStationName()));
+		}
+		return FText::FromString(FString::Printf(TEXT("Warmup %s %s %d%%"), *GetActionVerb(), *GetStationName(), FMath::RoundToInt(WorkProgress * 100.0f)));
+	}
+
 	if (!BHGS || BHGS->RoundPhase != EBHRoundPhase::Hunt)
 	{
 		return FText::FromString(TEXT("Objective During Hunt"));
@@ -503,6 +601,65 @@ FText ABHObjectiveStation::GetInteractionLabel_Implementation(ABHCharacter* Char
 	}
 
 	return FText::FromString(FString::Printf(TEXT("%s %s %d%%"), *GetActionVerb(), *GetStationName(), FMath::RoundToInt(WorkProgress * 100.0f)));
+}
+
+FBHInteractionPromptInfo ABHObjectiveStation::GetInteractionPromptInfo_Implementation(ABHCharacter* Character) const
+{
+	FBHInteractionPromptInfo Info;
+	Info.bUsePromptInfo = true;
+	Info.Label = GetInteractionLabel_Implementation(Character);
+	Info.bCanInteract = CanInteract_Implementation(Character);
+	Info.HoldSeconds = Info.bCanInteract ? WorkSeconds : 0.0f;
+	Info.Progress = WorkProgress;
+
+	const ABHPlayerState* BHPS = Character ? Character->GetBHPlayerState() : nullptr;
+	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	const bool bRoleWarmup = BHStationAllowsWarmup(BHGS);
+	const bool bObjectivePhaseActive = BHGS && (BHGS->RoundPhase == EBHRoundPhase::Hunt || bRoleWarmup);
+	Info.RiskText = FText::FromString(bRoleWarmup ? TEXT("WARMUP") : (!bQuestionSolved && QuestionChoices.Num() > 0 ? TEXT("ANSWER WITH 1-4") : TEXT("LISTENING")));
+	Info.bDangerous = !bRoleWarmup;
+	if (Info.bCanInteract)
+	{
+		return Info;
+	}
+
+	if (!bDirectorActive)
+	{
+		Info.DisabledReason = FText::FromString(TEXT("INACTIVE THIS ROUND"));
+	}
+	else if (bCompleted)
+	{
+		Info.DisabledReason = FText::FromString(TEXT("DONE"));
+	}
+	else if (!BHPS || BHPS->PlayerRole == EBHPlayerRole::Unassigned)
+	{
+		Info.DisabledReason = FText::FromString(TEXT("READY UP FIRST"));
+	}
+	else if (!bObjectivePhaseActive)
+	{
+		Info.DisabledReason = FText::FromString(TEXT("HUNT PHASE ONLY"));
+	}
+	else
+	{
+		const bool bAliveMonitorCanAnswer = BHPS->PlayerRole == EBHPlayerRole::FakeHunter
+			&& BHPS->LifeState == EBHPlayerLifeState::Alive
+			&& BHGS->bRevisionMode
+			&& !bQuestionSolved
+			&& QuestionChoices.Num() > 0;
+		if (!BHPS->IsAliveSurvivor() && !bAliveMonitorCanAnswer)
+		{
+			Info.DisabledReason = FText::FromString(BHPS->PlayerRole == EBHPlayerRole::FakeHunter ? TEXT("CONTRIBUTE IN PHYSICS CLASSROOM") : TEXT("SURVIVOR OBJECTIVE"));
+		}
+		else if (!bQuestionSolved && QuestionChoices.Num() > 0)
+		{
+			Info.DisabledReason = FText::FromString(TEXT("ANSWER WITH 1-4 FIRST"));
+		}
+		else
+		{
+			Info.DisabledReason = FText::FromString(TEXT("LOCKED"));
+		}
+	}
+	return Info;
 }
 
 void ABHObjectiveStation::Configure(EBHObjectiveStationType NewStationType)
@@ -607,7 +764,8 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 		&& BHPS->LifeState == EBHPlayerLifeState::Alive
 		&& BHGS
 		&& BHGS->bRevisionMode;
-	if (!bDirectorActive || bCompleted || !BHPS || (!bAliveSurvivor && !bAliveMonitorCanAnswer) || !BHGS || BHGS->RoundPhase != EBHRoundPhase::Hunt)
+	const bool bRoleWarmup = BHStationAllowsWarmup(BHGS);
+	if (!bDirectorActive || bCompleted || !BHPS || (!bAliveSurvivor && !bAliveMonitorCanAnswer) || !BHGS || (BHGS->RoundPhase != EBHRoundPhase::Hunt && !bRoleWarmup))
 	{
 		if (PC)
 		{
@@ -640,6 +798,40 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 		return false;
 	}
 	LastAnswerTime = Now;
+
+	if (bRoleWarmup)
+	{
+		const bool bCorrect = AnswerIndex == CorrectAnswerIndex;
+		if (bCorrect)
+		{
+			bQuestionSolved = true;
+			QuestionFeedback = FString::Printf(TEXT("Warmup correct: %s Hold E to try the %s. The live Hunt reloads this node."), *QuestionExplanation, *GetStationName());
+			bQuestionFeedbackCorrect = true;
+			WorkProgress = FMath::Max(WorkProgress, 0.18f);
+			if (Character)
+			{
+				Character->RecoverStamina(8.0f);
+				Character->RefillFlashlight(4.0f);
+			}
+			if (PC)
+			{
+				PC->ClientShowStatusMessage(TEXT("Warmup correct. No report, XP, or mastery changes recorded."), 3.0f);
+			}
+		}
+		else
+		{
+			QuestionFeedback = QuestionHint.IsEmpty()
+				? TEXT("Warmup miss. Try another answer; no report data recorded.")
+				: FString::Printf(TEXT("Warmup miss. Hint: %s No report data recorded."), *QuestionHint);
+			bQuestionFeedbackCorrect = false;
+			if (PC)
+			{
+				PC->ClientShowStatusMessage(TEXT("Warmup answer only. No detention mark or report entry recorded."), 3.0f);
+			}
+		}
+		ApplyStationVisuals();
+		return bCorrect;
+	}
 
 	int32 EvaluatedAnswerIndex = AnswerIndex;
 	TArray<ABHCharacter*> RevisionParticipants;
@@ -891,6 +1083,28 @@ EBHObjectiveStationType ABHObjectiveStation::GetStationType() const
 	return StationType;
 }
 
+FString ABHObjectiveStation::GetPhysicalTaskInstruction() const
+{
+	if (bTeacherMirrorTrapNode)
+	{
+		return TEXT("After finding the relay, hold E to arm the class counter-scare.");
+	}
+
+	switch (StationType)
+	{
+	case EBHObjectiveStationType::Valve:
+		return TEXT("After the question, hold E to balance the counterweight lock.");
+	case EBHObjectiveStationType::Terminal:
+		return TEXT("After the question, hold E to restore the circuit breaker.");
+	case EBHObjectiveStationType::Antenna:
+		return TEXT("After the question, hold E to tune the signal receiver.");
+	case EBHObjectiveStationType::Evidence:
+		return TEXT("After the question, hold E to charge the energy store.");
+	default:
+		return TEXT("After the question, hold E to finish the objective.");
+	}
+}
+
 bool ABHObjectiveStation::IsQuestionSolved() const
 {
 	return bQuestionSolved || QuestionChoices.Num() == 0;
@@ -998,6 +1212,14 @@ void ABHObjectiveStation::CompleteObjective()
 	Workers.Empty();
 	SetActorTickEnabled(false);
 	ApplyStationVisuals();
+
+	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	if (BHStationAllowsWarmup(BHGS))
+	{
+		QuestionFeedback = FString::Printf(TEXT("Warmup %s complete. Live objective progress resets when Hunt starts."), *GetStationName());
+		bQuestionFeedbackCorrect = true;
+		return;
+	}
 
 	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
 	{
@@ -1172,13 +1394,13 @@ FString ABHObjectiveStation::GetActionVerb() const
 	switch (StationType)
 	{
 	case EBHObjectiveStationType::Valve:
-		return TEXT("Turn");
+		return TEXT("Balance");
 	case EBHObjectiveStationType::Terminal:
-		return TEXT("Hack");
+		return TEXT("Restore");
 	case EBHObjectiveStationType::Antenna:
 		return TEXT("Tune");
 	case EBHObjectiveStationType::Evidence:
-		return TEXT("Burn");
+		return TEXT("Charge");
 	default:
 		return TEXT("Use");
 	}
@@ -1189,13 +1411,13 @@ FString ABHObjectiveStation::GetStationName() const
 	switch (StationType)
 	{
 	case EBHObjectiveStationType::Valve:
-		return TEXT("Valve");
+		return TEXT("Counterweight Lock");
 	case EBHObjectiveStationType::Terminal:
-		return TEXT("Terminal");
+		return TEXT("Circuit Breaker");
 	case EBHObjectiveStationType::Antenna:
-		return TEXT("Antenna");
+		return TEXT("Signal Receiver");
 	case EBHObjectiveStationType::Evidence:
-		return TEXT("Evidence");
+		return TEXT("Energy Store");
 	default:
 		return TEXT("Station");
 	}
@@ -1221,48 +1443,63 @@ void ABHObjectiveStation::ApplyStationVisuals()
 
 	UMaterialInterface* BodyMaterial = BHPropVisuals::PaintedMetalMaterial();
 	FLinearColor AccentColor(0.20f, 0.24f, 0.28f, 1.0f);
-	switch (StationType)
+	if (bTeacherMirrorTrapNode)
 	{
-	case EBHObjectiveStationType::Valve:
 		BodyMaterial = BHPropVisuals::RustedMetalMaterial();
-		AccentColor = FLinearColor(0.56f, 0.10f, 0.06f, 1.0f);
-		BHPropVisuals::ConfigurePart(Mesh, BHPropVisuals::CylinderMesh(), BodyMaterial, FVector(0.0f, 0.0f, -36.0f), FRotator::ZeroRotator, FVector(0.16f, 0.16f, 1.18f), true);
-		BHPropVisuals::ConfigurePart(FixtureA, BHPropVisuals::CylinderMesh(), BHPropVisuals::BasicMaterial(), FVector(38.0f, 0.0f, 25.0f), FRotator(0.0f, 90.0f, 0.0f), FVector(0.34f, 0.34f, 0.035f));
-		BHPropVisuals::ConfigurePart(FixtureB, BHPropVisuals::CubeMesh(), BHPropVisuals::BasicMaterial(), FVector(41.5f, 0.0f, 25.0f), FRotator::ZeroRotator, FVector(0.022f, 0.58f, 0.035f));
-		BHPropVisuals::ConfigurePart(FixtureC, BHPropVisuals::CubeMesh(), BHPropVisuals::BasicMaterial(), FVector(41.5f, 0.0f, 25.0f), FRotator::ZeroRotator, FVector(0.022f, 0.035f, 0.58f));
-		BHPropVisuals::ConfigurePart(FixtureD, BHPropVisuals::CylinderMesh(), BHPropVisuals::RustedMetalMaterial(), FVector(0.0f, 0.0f, 24.0f), FRotator(0.0f, 90.0f, 0.0f), FVector(0.11f, 0.11f, 0.64f));
-		break;
-	case EBHObjectiveStationType::Terminal:
-		BodyMaterial = BHPropVisuals::PaintedMetalMaterial();
-		AccentColor = FLinearColor(0.08f, 0.76f, 0.92f, 1.0f);
-		BHPropVisuals::ConfigurePart(Mesh, BHPropVisuals::CubeMesh(), BodyMaterial, FVector(0.0f, 0.0f, -32.0f), FRotator::ZeroRotator, FVector(0.88f, 0.36f, 1.25f), true);
-		BHPropVisuals::ConfigurePart(FixtureA, BHPropVisuals::CubeMesh(), BHPropVisuals::BasicMaterial(), FVector(47.0f, 0.0f, 6.0f), FRotator::ZeroRotator, FVector(0.020f, 0.24f, 0.30f));
-		BHPropVisuals::ConfigurePart(FixtureB, BHPropVisuals::CubeMesh(), BHPropVisuals::BasicMaterial(), FVector(48.0f, 0.0f, -31.0f), FRotator::ZeroRotator, FVector(0.018f, 0.24f, 0.13f));
-		BHPropVisuals::ConfigurePart(FixtureC, BHPropVisuals::CubeMesh(), BHPropVisuals::BasicMaterial(), FVector(50.0f, -12.0f, -31.0f), FRotator::ZeroRotator, FVector(0.016f, 0.045f, 0.040f));
-		BHPropVisuals::ConfigurePart(FixtureD, BHPropVisuals::CubeMesh(), BHPropVisuals::BasicMaterial(), FVector(50.0f, 0.0f, -31.0f), FRotator::ZeroRotator, FVector(0.016f, 0.045f, 0.040f));
-		BHPropVisuals::ConfigurePart(FixtureE, BHPropVisuals::CubeMesh(), BHPropVisuals::BasicMaterial(), FVector(50.0f, 12.0f, -31.0f), FRotator::ZeroRotator, FVector(0.016f, 0.045f, 0.040f));
-		break;
-	case EBHObjectiveStationType::Antenna:
-		BodyMaterial = BHPropVisuals::PaintedMetalMaterial();
-		AccentColor = FLinearColor(0.74f, 0.78f, 0.52f, 1.0f);
-		BHPropVisuals::ConfigurePart(Mesh, BHPropVisuals::CylinderMesh(), BodyMaterial, FVector(0.0f, 0.0f, -8.0f), FRotator::ZeroRotator, FVector(0.075f, 0.075f, 1.72f), true);
-		BHPropVisuals::ConfigurePart(FixtureA, BHPropVisuals::CubeMesh(), BHPropVisuals::DiamondPlateMaterial(), FVector(0.0f, 0.0f, -92.0f), FRotator::ZeroRotator, FVector(0.54f, 0.54f, 0.13f));
-		BHPropVisuals::ConfigurePart(FixtureB, BHPropVisuals::CylinderMesh(), BHPropVisuals::BasicMaterial(), FVector(34.0f, 0.0f, 42.0f), FRotator(0.0f, 68.0f, 0.0f), FVector(0.26f, 0.26f, 0.030f));
-		BHPropVisuals::ConfigurePart(FixtureC, BHPropVisuals::CubeMesh(), BHPropVisuals::BasicMaterial(), FVector(0.0f, 0.0f, 62.0f), FRotator::ZeroRotator, FVector(0.05f, 0.62f, 0.04f));
-		BHPropVisuals::ConfigurePart(FixtureD, BHPropVisuals::SphereMesh(), BHPropVisuals::BasicMaterial(), FVector(0.0f, 0.0f, 84.0f), FRotator::ZeroRotator, FVector(0.09f));
-		break;
-	case EBHObjectiveStationType::Evidence:
-		BodyMaterial = BHPropVisuals::RustedMetalMaterial();
-		AccentColor = FLinearColor(0.92f, 0.28f, 0.08f, 1.0f);
-		BHPropVisuals::ConfigurePart(Mesh, BHPropVisuals::CubeMesh(), BodyMaterial, FVector(0.0f, 0.0f, -52.0f), FRotator::ZeroRotator, FVector(0.78f, 0.58f, 0.72f), true);
-		BHPropVisuals::ConfigurePart(FixtureA, BHPropVisuals::CubeMesh(), BHPropVisuals::BasicMaterial(), FVector(0.0f, -9.0f, -8.0f), FRotator(0.0f, 0.0f, -4.0f), FVector(0.54f, 0.20f, 0.035f));
-		BHPropVisuals::ConfigurePart(FixtureB, BHPropVisuals::CubeMesh(), BHPropVisuals::BasicMaterial(), FVector(0.0f, 13.0f, -4.0f), FRotator(0.0f, 0.0f, 5.0f), FVector(0.50f, 0.20f, 0.035f));
-		BHPropVisuals::ConfigurePart(FixtureC, BHPropVisuals::SphereMesh(), BHPropVisuals::BasicMaterial(), FVector(35.0f, 0.0f, -4.0f), FRotator::ZeroRotator, FVector(0.11f, 0.07f, 0.18f));
-		BHPropVisuals::ConfigurePart(FixtureD, BHPropVisuals::CubeMesh(), BHPropVisuals::BasicMaterial(), FVector(42.0f, 0.0f, -24.0f), FRotator::ZeroRotator, FVector(0.018f, 0.20f, 0.08f));
-		break;
-	default:
-		BHPropVisuals::ConfigurePart(Mesh, BHPropVisuals::CubeMesh(), BodyMaterial, FVector(0.0f, 0.0f, -35.0f), FRotator::ZeroRotator, FVector(0.75f, 0.55f, 1.0f), true);
-		break;
+		AccentColor = FLinearColor(0.72f, 0.12f, 0.88f, 1.0f);
+		BHPropVisuals::ConfigurePart(Mesh, BHPropVisuals::CubeMesh(), BodyMaterial, FVector(0.0f, 0.0f, -45.0f), FRotator::ZeroRotator, FVector(0.48f, 0.36f, 0.42f), true);
+		ConfigureImportedStationPart(FixtureA, TEXT("/Game/SmartBasicInterfaces/Meshes/SM_powerbtn.SM_powerbtn"), BHPropVisuals::SphereMesh(), TEXT("/Game/SmartBasicInterfaces/Materials/MI_PowerBTN.MI_PowerBTN"), BHPropVisuals::BasicMaterial(), FVector(34.0f, 0.0f, -12.0f), FRotator::ZeroRotator, FVector(0.34f));
+		ConfigureImportedStationPart(FixtureB, TEXT("/Game/SmartBasicInterfaces/Meshes/SM_panel.SM_panel"), BHPropVisuals::CubeMesh(), TEXT("/Game/SmartBasicInterfaces/Materials/MI_Panel.MI_Panel"), BHPropVisuals::PaintedMetalMaterial(), FVector(18.0f, 0.0f, -32.0f), FRotator::ZeroRotator, FVector(0.42f));
+		BHPropVisuals::ConfigurePart(FixtureC, BHPropVisuals::CubeMesh(), BHPropVisuals::BasicMaterial(), FVector(37.0f, 0.0f, 12.0f), FRotator::ZeroRotator, FVector(0.014f, 0.32f, 0.035f));
+	}
+	else
+	{
+		switch (StationType)
+		{
+		case EBHObjectiveStationType::Valve:
+			BodyMaterial = BHPropVisuals::RustedMetalMaterial();
+			AccentColor = FLinearColor(0.66f, 0.16f, 0.08f, 1.0f);
+			BHPropVisuals::ConfigurePart(Mesh, BHPropVisuals::CubeMesh(), BodyMaterial, FVector(0.0f, 0.0f, -48.0f), FRotator::ZeroRotator, FVector(0.82f, 0.56f, 0.62f), true);
+			ConfigureImportedStationPart(FixtureA, TEXT("/Game/SmartBasicInterfaces/Meshes/SM_pressureplate.SM_pressureplate"), BHPropVisuals::CubeMesh(), TEXT("/Game/SmartBasicInterfaces/Materials/MI_PressurePlate.MI_PressurePlate"), BHPropVisuals::DiamondPlateMaterial(), FVector(22.0f, 0.0f, -7.0f), FRotator::ZeroRotator, FVector(0.72f));
+			ConfigureImportedStationPart(FixtureB, TEXT("/Game/SmartBasicInterfaces/Meshes/SM_leverbase.SM_leverbase"), BHPropVisuals::CylinderMesh(), TEXT("/Game/SmartBasicInterfaces/Materials/MI_Lever.MI_Lever"), BHPropVisuals::RustedMetalMaterial(), FVector(40.0f, -25.0f, -3.0f), FRotator::ZeroRotator, FVector(0.68f));
+			ConfigureImportedStationPart(FixtureC, TEXT("/Game/SmartBasicInterfaces/Meshes/SM_lever.SM_lever"), BHPropVisuals::CubeMesh(), TEXT("/Game/SmartBasicInterfaces/Materials/MI_Lever.MI_Lever"), BHPropVisuals::RustedMetalMaterial(), FVector(40.0f, -25.0f, 22.0f), FRotator(0.0f, 0.0f, -28.0f), FVector(0.68f));
+			BHPropVisuals::ConfigurePart(FixtureD, BHPropVisuals::CubeMesh(), BHPropVisuals::BasicMaterial(), FVector(-38.0f, 26.0f, 10.0f), FRotator::ZeroRotator, FVector(0.16f, 0.16f, 0.44f));
+			BHPropVisuals::ConfigurePart(FixtureE, BHPropVisuals::CubeMesh(), BHPropVisuals::BasicMaterial(), FVector(-12.0f, 0.0f, 42.0f), FRotator(0.0f, 0.0f, -6.0f), FVector(0.76f, 0.060f, 0.055f));
+			break;
+		case EBHObjectiveStationType::Terminal:
+			BodyMaterial = BHPropVisuals::PaintedMetalMaterial();
+			AccentColor = FLinearColor(0.08f, 0.76f, 0.92f, 1.0f);
+			BHPropVisuals::ConfigurePart(Mesh, BHPropVisuals::CubeMesh(), BodyMaterial, FVector(0.0f, 0.0f, -32.0f), FRotator::ZeroRotator, FVector(0.88f, 0.38f, 1.25f), true);
+			ConfigureImportedStationPart(FixtureA, TEXT("/Game/SmartBasicInterfaces/Meshes/SM_panel.SM_panel"), BHPropVisuals::CubeMesh(), TEXT("/Game/SmartBasicInterfaces/Materials/MI_Panel.MI_Panel"), BHPropVisuals::PaintedMetalMaterial(), FVector(46.0f, 0.0f, 5.0f), FRotator::ZeroRotator, FVector(0.62f));
+			ConfigureImportedStationPart(FixtureB, TEXT("/Game/SmartBasicInterfaces/Meshes/SM_powerbtn.SM_powerbtn"), BHPropVisuals::SphereMesh(), TEXT("/Game/SmartBasicInterfaces/Materials/MI_PowerBTN.MI_PowerBTN"), BHPropVisuals::BasicMaterial(), FVector(49.0f, -22.0f, 26.0f), FRotator::ZeroRotator, FVector(0.30f));
+			ConfigureImportedStationPart(FixtureC, TEXT("/Game/SmartBasicInterfaces/Meshes/SM_smallbattery.SM_smallbattery"), BHPropVisuals::CubeMesh(), TEXT("/Game/SmartBasicInterfaces/Materials/MI_SmallBattery.MI_SmallBattery"), BHPropVisuals::PaintedMetalMaterial(), FVector(-16.0f, 0.0f, 24.0f), FRotator(0.0f, 90.0f, 0.0f), FVector(0.62f));
+			BHPropVisuals::ConfigurePart(FixtureD, BHPropVisuals::CubeMesh(), BHPropVisuals::BasicMaterial(), FVector(51.0f, 0.0f, -31.0f), FRotator::ZeroRotator, FVector(0.016f, 0.30f, 0.050f));
+			BHPropVisuals::ConfigurePart(FixtureE, BHPropVisuals::CubeMesh(), BHPropVisuals::BasicMaterial(), FVector(52.0f, 0.0f, -12.0f), FRotator::ZeroRotator, FVector(0.014f, 0.052f, 0.34f));
+			break;
+		case EBHObjectiveStationType::Antenna:
+			BodyMaterial = BHPropVisuals::PaintedMetalMaterial();
+			AccentColor = FLinearColor(0.60f, 0.84f, 0.92f, 1.0f);
+			BHPropVisuals::ConfigurePart(Mesh, BHPropVisuals::CylinderMesh(), BodyMaterial, FVector(0.0f, 0.0f, -8.0f), FRotator::ZeroRotator, FVector(0.075f, 0.075f, 1.72f), true);
+			ConfigureImportedStationPart(FixtureA, TEXT("/Game/SmartBasicInterfaces/Meshes/SM_panel.SM_panel"), BHPropVisuals::CubeMesh(), TEXT("/Game/SmartBasicInterfaces/Materials/MI_ScreenPanel1.MI_ScreenPanel1"), BHPropVisuals::DiamondPlateMaterial(), FVector(0.0f, 0.0f, -92.0f), FRotator::ZeroRotator, FVector(0.54f));
+			BHPropVisuals::ConfigurePart(FixtureB, BHPropVisuals::CylinderMesh(), BHPropVisuals::BasicMaterial(), FVector(34.0f, 0.0f, 42.0f), FRotator(0.0f, 68.0f, 0.0f), FVector(0.30f, 0.30f, 0.026f));
+			BHPropVisuals::ConfigurePart(FixtureC, BHPropVisuals::CubeMesh(), BHPropVisuals::BasicMaterial(), FVector(0.0f, 0.0f, 62.0f), FRotator::ZeroRotator, FVector(0.05f, 0.68f, 0.04f));
+			BHPropVisuals::ConfigurePart(FixtureD, BHPropVisuals::SphereMesh(), BHPropVisuals::BasicMaterial(), FVector(0.0f, 0.0f, 84.0f), FRotator::ZeroRotator, FVector(0.09f));
+			ConfigureImportedStationPart(FixtureE, TEXT("/Game/SmartBasicInterfaces/Meshes/SM_powerbtnring.SM_powerbtnring"), BHPropVisuals::CylinderMesh(), TEXT("/Game/SmartBasicInterfaces/Materials/MI_PowerBTN.MI_PowerBTN"), BHPropVisuals::BasicMaterial(), FVector(30.0f, 0.0f, 18.0f), FRotator(0.0f, 90.0f, 0.0f), FVector(0.40f));
+			break;
+		case EBHObjectiveStationType::Evidence:
+			BodyMaterial = BHPropVisuals::RustedMetalMaterial();
+			AccentColor = FLinearColor(0.96f, 0.46f, 0.12f, 1.0f);
+			BHPropVisuals::ConfigurePart(Mesh, BHPropVisuals::CubeMesh(), BodyMaterial, FVector(0.0f, 0.0f, -52.0f), FRotator::ZeroRotator, FVector(0.82f, 0.60f, 0.74f), true);
+			ConfigureImportedStationPart(FixtureA, TEXT("/Game/SmartBasicInterfaces/Meshes/SM_generatorFront.SM_generatorFront"), BHPropVisuals::CubeMesh(), TEXT("/Game/SmartBasicInterfaces/Materials/MI_GeneratorFront.MI_GeneratorFront"), BHPropVisuals::PaintedMetalMaterial(), FVector(32.0f, 0.0f, -16.0f), FRotator::ZeroRotator, FVector(0.54f));
+			ConfigureImportedStationPart(FixtureB, TEXT("/Game/SmartBasicInterfaces/Meshes/SM_generatorSection.SM_generatorSection"), BHPropVisuals::CubeMesh(), TEXT("/Game/SmartBasicInterfaces/Materials/MI_GeneratorSection.MI_GeneratorSection"), BHPropVisuals::PaintedMetalMaterial(), FVector(0.0f, 0.0f, -16.0f), FRotator::ZeroRotator, FVector(0.54f));
+			ConfigureImportedStationPart(FixtureC, TEXT("/Game/SmartBasicInterfaces/Meshes/SM_smallbattery.SM_smallbattery"), BHPropVisuals::CubeMesh(), TEXT("/Game/SmartBasicInterfaces/Materials/MI_SmallBattery.MI_SmallBattery"), BHPropVisuals::BasicMaterial(), FVector(0.0f, 28.0f, 18.0f), FRotator(0.0f, 90.0f, 0.0f), FVector(0.64f));
+			BHPropVisuals::ConfigurePart(FixtureD, BHPropVisuals::SphereMesh(), BHPropVisuals::BasicMaterial(), FVector(37.0f, -18.0f, 12.0f), FRotator::ZeroRotator, FVector(0.11f, 0.07f, 0.18f));
+			BHPropVisuals::ConfigurePart(FixtureE, BHPropVisuals::CubeMesh(), BHPropVisuals::BasicMaterial(), FVector(43.0f, 0.0f, -24.0f), FRotator::ZeroRotator, FVector(0.018f, 0.24f, 0.08f));
+			break;
+		default:
+			BHPropVisuals::ConfigurePart(Mesh, BHPropVisuals::CubeMesh(), BodyMaterial, FVector(0.0f, 0.0f, -35.0f), FRotator::ZeroRotator, FVector(0.75f, 0.55f, 1.0f), true);
+			break;
+		}
 	}
 
 	for (UStaticMeshComponent* Fixture : Fixtures)
@@ -1291,33 +1528,46 @@ void ABHObjectiveStation::ApplyStationVisuals()
 	const FLinearColor IndicatorColor = bDirectorActive ? AccentColor : FLinearColor(0.025f, 0.025f, 0.025f, 1.0f);
 	const float IndicatorEmissive = bDirectorActive ? 2.0f : 0.0f;
 
-	switch (StationType)
+	if (bTeacherMirrorTrapNode)
 	{
-	case EBHObjectiveStationType::Valve:
-		BHPropVisuals::TintPart(FixtureA, AccentColor);
-		BHPropVisuals::TintPart(FixtureB, FLinearColor(0.12f, 0.04f, 0.035f, 1.0f));
-		BHPropVisuals::TintPart(FixtureC, FLinearColor(0.12f, 0.04f, 0.035f, 1.0f));
-		break;
-	case EBHObjectiveStationType::Terminal:
 		BHPropVisuals::TintPart(FixtureA, AccentColor, IndicatorEmissive);
 		BHPropVisuals::TintPart(FixtureB, DarkInset);
-		BHPropVisuals::TintPart(FixtureC, FLinearColor(0.05f, 0.06f, 0.065f, 1.0f));
-		BHPropVisuals::TintPart(FixtureD, FLinearColor(0.05f, 0.06f, 0.065f, 1.0f));
-		BHPropVisuals::TintPart(FixtureE, FLinearColor(0.05f, 0.06f, 0.065f, 1.0f));
-		break;
-	case EBHObjectiveStationType::Antenna:
-		BHPropVisuals::TintPart(FixtureB, AccentColor);
-		BHPropVisuals::TintPart(FixtureC, FLinearColor(0.12f, 0.13f, 0.13f, 1.0f));
-		BHPropVisuals::TintPart(FixtureD, AccentColor, IndicatorEmissive);
-		break;
-	case EBHObjectiveStationType::Evidence:
-		BHPropVisuals::TintPart(FixtureA, PaperColor);
-		BHPropVisuals::TintPart(FixtureB, PaperColor * 0.88f);
-		BHPropVisuals::TintPart(FixtureC, AccentColor, bDirectorActive ? 2.6f : 0.0f);
-		BHPropVisuals::TintPart(FixtureD, FLinearColor(0.88f, 0.62f, 0.12f, 1.0f));
-		break;
-	default:
-		break;
+		BHPropVisuals::TintPart(FixtureC, AccentColor, IndicatorEmissive);
+	}
+	else
+	{
+		switch (StationType)
+		{
+		case EBHObjectiveStationType::Valve:
+			BHPropVisuals::TintPart(FixtureA, FLinearColor(0.20f, 0.18f, 0.15f, 1.0f));
+			BHPropVisuals::TintPart(FixtureB, FLinearColor(0.16f, 0.08f, 0.04f, 1.0f));
+			BHPropVisuals::TintPart(FixtureC, FLinearColor(0.16f, 0.08f, 0.04f, 1.0f));
+			BHPropVisuals::TintPart(FixtureD, AccentColor, bDirectorActive ? 0.7f : 0.0f);
+			BHPropVisuals::TintPart(FixtureE, FLinearColor(0.10f, 0.08f, 0.06f, 1.0f));
+			break;
+		case EBHObjectiveStationType::Terminal:
+			BHPropVisuals::TintPart(FixtureA, AccentColor, IndicatorEmissive * 0.65f);
+			BHPropVisuals::TintPart(FixtureB, AccentColor, IndicatorEmissive);
+			BHPropVisuals::TintPart(FixtureC, FLinearColor(0.12f, 0.82f, 0.42f, 1.0f), bDirectorActive ? 1.2f : 0.0f);
+			BHPropVisuals::TintPart(FixtureD, DarkInset);
+			BHPropVisuals::TintPart(FixtureE, AccentColor, bDirectorActive ? 1.3f : 0.0f);
+			break;
+		case EBHObjectiveStationType::Antenna:
+			BHPropVisuals::TintPart(FixtureB, AccentColor, bDirectorActive ? 1.0f : 0.0f);
+			BHPropVisuals::TintPart(FixtureC, FLinearColor(0.12f, 0.13f, 0.13f, 1.0f));
+			BHPropVisuals::TintPart(FixtureD, AccentColor, IndicatorEmissive);
+			BHPropVisuals::TintPart(FixtureE, AccentColor, bDirectorActive ? 1.4f : 0.0f);
+			break;
+		case EBHObjectiveStationType::Evidence:
+			BHPropVisuals::TintPart(FixtureA, PaperColor);
+			BHPropVisuals::TintPart(FixtureB, FLinearColor(0.40f, 0.34f, 0.28f, 1.0f));
+			BHPropVisuals::TintPart(FixtureC, FLinearColor(0.32f, 1.0f, 0.58f, 1.0f), bDirectorActive ? 1.4f : 0.0f);
+			BHPropVisuals::TintPart(FixtureD, AccentColor, bDirectorActive ? 2.6f : 0.0f);
+			BHPropVisuals::TintPart(FixtureE, FLinearColor(0.88f, 0.62f, 0.12f, 1.0f));
+			break;
+		default:
+			break;
+		}
 	}
 
 	BHPropVisuals::ConfigurePart(StatusLight, BHPropVisuals::SphereMesh(), BHPropVisuals::BasicMaterial(), FVector(52.0f, -25.0f, 36.0f), FRotator::ZeroRotator, FVector(0.060f));

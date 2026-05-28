@@ -2,10 +2,22 @@
 #include "BHPropVisuals.h"
 #include "BHCharacter.h"
 #include "BHGameMode.h"
+#include "BHGameSettings.h"
 #include "BHGameState.h"
 #include "BHPlayerState.h"
 #include "Components/StaticMeshComponent.h"
 #include "Net/UnrealNetwork.h"
+
+namespace
+{
+bool BHBreakerAllowsWarmup(const ABHGameState* GameState)
+{
+	return GameState
+		&& GameState->RoundPhase == EBHRoundPhase::Prep
+		&& !GameState->bPracticeMode
+		&& !GameState->bTestMode;
+}
+}
 
 ABHBreaker::ABHBreaker()
 {
@@ -18,6 +30,7 @@ ABHBreaker::ABHBreaker()
 	bDirectorActive = true;
 	RepairSeconds = 6.0f;
 	LastNoiseTime = -999.0f;
+	LastHumCueTime = -999.0f;
 	SetActorScale3D(FVector::OneVector);
 
 	FrontPanel = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("FrontPanel"));
@@ -69,7 +82,7 @@ void ABHBreaker::Tick(float DeltaSeconds)
 	}
 
 	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
-	if (!BHGS || BHGS->RoundPhase != EBHRoundPhase::Hunt)
+	if (!BHGS || (BHGS->RoundPhase != EBHRoundPhase::Hunt && !BHBreakerAllowsWarmup(BHGS)))
 	{
 		Repairers.Empty();
 		SetActorTickEnabled(false);
@@ -94,6 +107,12 @@ void ABHBreaker::Tick(float DeltaSeconds)
 	RepairProgress = FMath::Clamp(RepairProgress + (DeltaSeconds * Repairers.Num() / RepairRate), 0.0f, 1.0f);
 	ApplyBreakerVisuals();
 
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	if (Now - LastHumCueTime >= 2.4f)
+	{
+		BroadcastBreakerAudioCue(false);
+	}
+
 	if (RepairProgress >= 1.0f)
 	{
 		CompleteRepair();
@@ -112,7 +131,7 @@ bool ABHBreaker::CanInteract_Implementation(ABHCharacter* Character) const
 {
 	const ABHPlayerState* BHPS = Character ? Character->GetBHPlayerState() : nullptr;
 	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
-	return bDirectorActive && BHPS && BHGS && BHGS->RoundPhase == EBHRoundPhase::Hunt && BHPS->IsAliveSurvivor() && !bRepaired;
+	return bDirectorActive && BHPS && BHGS && (BHGS->RoundPhase == EBHRoundPhase::Hunt || BHBreakerAllowsWarmup(BHGS)) && BHPS->IsAliveSurvivor() && !bRepaired;
 }
 
 void ABHBreaker::BeginInteract_Implementation(ABHCharacter* Character)
@@ -125,9 +144,13 @@ void ABHBreaker::BeginInteract_Implementation(ABHCharacter* Character)
 		if (Now - LastNoiseTime > 2.0f)
 		{
 			LastNoiseTime = Now;
-			if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+			const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+			if (!BHBreakerAllowsWarmup(BHGS))
 			{
-				BHGM->NotifyLoudNoise(GetActorLocation(), TEXT("breaker repair"));
+				if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+				{
+					BHGM->NotifyLoudNoise(GetActorLocation(), TEXT("breaker repair"));
+				}
 			}
 		}
 	}
@@ -169,6 +192,11 @@ FText ABHBreaker::GetInteractionLabel_Implementation(ABHCharacter* Character) co
 	}
 
 	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	if (BHBreakerAllowsWarmup(BHGS))
+	{
+		return FText::FromString(FString::Printf(TEXT("Warmup Repair Breaker %d%%"), FMath::RoundToInt(RepairProgress * 100.0f)));
+	}
+
 	if (!BHGS || BHGS->RoundPhase != EBHRoundPhase::Hunt)
 	{
 		return FText::FromString(TEXT("Repair During Hunt"));
@@ -177,15 +205,54 @@ FText ABHBreaker::GetInteractionLabel_Implementation(ABHCharacter* Character) co
 	return FText::FromString(FString::Printf(TEXT("Repair Breaker %d%%"), FMath::RoundToInt(RepairProgress * 100.0f)));
 }
 
+FBHInteractionPromptInfo ABHBreaker::GetInteractionPromptInfo_Implementation(ABHCharacter* Character) const
+{
+	FBHInteractionPromptInfo Info;
+	Info.bUsePromptInfo = true;
+	Info.Label = GetInteractionLabel_Implementation(Character);
+	Info.bCanInteract = CanInteract_Implementation(Character);
+	Info.HoldSeconds = RepairSeconds;
+	Info.Progress = RepairProgress;
+	const ABHPlayerState* BHPS = Character ? Character->GetBHPlayerState() : nullptr;
+	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	const bool bRoleWarmup = BHBreakerAllowsWarmup(BHGS);
+	Info.RiskText = FText::FromString(bRoleWarmup ? TEXT("WARMUP") : TEXT("NOISY"));
+	if (!bDirectorActive)
+	{
+		Info.DisabledReason = FText::FromString(TEXT("INACTIVE THIS ROUND"));
+	}
+	else if (bRepaired)
+	{
+		Info.DisabledReason = FText::FromString(TEXT("DONE"));
+	}
+	else if (!BHPS || BHPS->PlayerRole == EBHPlayerRole::Unassigned)
+	{
+		Info.DisabledReason = FText::FromString(TEXT("READY UP FIRST"));
+	}
+	else if (!BHPS->IsAliveSurvivor())
+	{
+		Info.DisabledReason = FText::FromString(BHPS->PlayerRole == EBHPlayerRole::FakeHunter ? TEXT("HALL MONITORS CANNOT REPAIR") : TEXT("SURVIVOR REPAIR ONLY"));
+	}
+	else if (!BHGS || (BHGS->RoundPhase != EBHRoundPhase::Hunt && !bRoleWarmup))
+	{
+		Info.DisabledReason = FText::FromString(TEXT("HUNT PHASE ONLY"));
+	}
+	else
+	{
+		Info.DisabledReason = FText::FromString(TEXT("LOCKED"));
+	}
+	Info.bNoisy = !bRoleWarmup;
+	Info.bDangerous = !bRoleWarmup;
+	return Info;
+}
+
 void ABHBreaker::SetDirectorActive(bool bNewActive)
 {
 	bDirectorActive = bNewActive;
-	if (!bDirectorActive)
-	{
-		Repairers.Empty();
-		RepairProgress = 0.0f;
-		SetActorTickEnabled(false);
-	}
+	bRepaired = false;
+	Repairers.Empty();
+	RepairProgress = 0.0f;
+	SetActorTickEnabled(false);
 	ApplyBreakerVisuals();
 }
 
@@ -248,6 +315,36 @@ void ABHBreaker::ApplyBreakerVisuals()
 	BHPropVisuals::TintPart(StatusLightC, bWorking ? FLinearColor(0.90f, 0.58f, 0.10f, 1.0f) : LightColor, Emissive);
 }
 
+void ABHBreaker::BroadcastBreakerAudioCue(bool bCompleted)
+{
+	if (!HasAuthority() || !GetWorld())
+	{
+		return;
+	}
+
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	if (!Settings)
+	{
+		return;
+	}
+
+	FBHGameplayAudioCue Cue;
+	Cue.AudioAsset = bCompleted ? Settings->BreakerCompleteSound : Settings->BreakerHumSound;
+	Cue.Location = GetActorLocation() + FVector(0.0f, 0.0f, 62.0f);
+	Cue.Caption = bCompleted ? TEXT("Breaker locks in.") : TEXT("Breaker hums under load.");
+	Cue.Volume = bCompleted ? 0.54f : FMath::Lerp(0.24f, 0.40f, RepairProgress);
+	Cue.Pitch = bCompleted ? 1.05f : FMath::Lerp(0.88f, 1.08f, RepairProgress);
+	Cue.MaxAudibleDistance = bCompleted ? 2600.0f : 1900.0f;
+	Cue.CaptionSeconds = bCompleted ? 1.5f : 1.1f;
+	Cue.bSpatial = true;
+
+	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+	{
+		LastHumCueTime = GetWorld()->GetTimeSeconds();
+		BHGM->BroadcastGameplayAudioCue(Cue);
+	}
+}
+
 void ABHBreaker::CompleteRepair()
 {
 	bRepaired = true;
@@ -255,9 +352,15 @@ void ABHBreaker::CompleteRepair()
 	Repairers.Empty();
 	SetActorTickEnabled(false);
 	ApplyBreakerVisuals();
+	BroadcastBreakerAudioCue(true);
 
 	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
 	{
+		const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+		if (BHBreakerAllowsWarmup(BHGS))
+		{
+			return;
+		}
 		BHGM->NotifyBreakerRepaired(GetActorLocation());
 	}
 }

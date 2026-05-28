@@ -69,6 +69,18 @@ void ABHCrawlSpaceVolume::BeginPlay()
 	}
 }
 
+void ABHCrawlSpaceVolume::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (Volume)
+	{
+		Volume->OnComponentBeginOverlap.RemoveDynamic(this, &ABHCrawlSpaceVolume::OnVolumeBeginOverlap);
+		Volume->OnComponentEndOverlap.RemoveDynamic(this, &ABHCrawlSpaceVolume::OnVolumeEndOverlap);
+	}
+
+	ActiveRejectDirections.Reset();
+	Super::EndPlay(EndPlayReason);
+}
+
 void ABHCrawlSpaceVolume::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);

@@ -1,6 +1,7 @@
 #include "BHBatteryPickup.h"
 #include "BHPropVisuals.h"
 #include "BHCharacter.h"
+#include "BHGameMode.h"
 #include "BHGameSettings.h"
 #include "BHPlayerController.h"
 #include "BHPlayerState.h"
@@ -56,6 +57,10 @@ void ABHBatteryPickup::BeginInteract_Implementation(ABHCharacter* Character)
 	Character->RefillFlashlight(RefillAmount);
 	Character->RecoverStamina(32.0f);
 	Character->AddFear(-18.0f);
+	if (ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
+	{
+		BHGM->RecordPlaytestTelemetryMarker(TEXT("battery_pickup"), GetActorLocation(), FString::Printf(TEXT("refill=%.0f"), RefillAmount), Character->GetBHPlayerState());
+	}
 	if (ABHPlayerController* PC = Cast<ABHPlayerController>(Character->GetController()))
 	{
 		PC->ClientShowStatusMessage(TEXT("Battery recovered flashlight, stamina, and nerve."), 2.75f);

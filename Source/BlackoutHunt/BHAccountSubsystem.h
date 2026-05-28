@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "BHCosmeticUnlocks.h"
 #include "BHTypes.h"
 #include "HttpFwd.h"
 #include "Subsystems/GameInstanceSubsystem.h"
@@ -68,6 +69,18 @@ struct FBHAccountProgress
 	FString SelectedAvatarUrl;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	int32 SelectedAvatarIndex = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	int32 SelectedAvatarColorIndex = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	int32 SelectedAvatarHeadwearIndex = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	int32 SelectedAvatarGearIndex = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	FString LastUpdatedUtc;
 };
 
@@ -128,6 +141,10 @@ public:
 	bool IsLoginPending() const;
 	bool IsLoggedIn() const;
 	bool HasLocalCredential() const;
+	bool IsCosmeticUnlocked(EBHCosmeticCategory Category, int32 Index) const;
+	int32 GetSelectedCosmeticIndex(EBHCosmeticCategory Category) const;
+	bool SetSelectedCosmetic(EBHCosmeticCategory Category, int32 Index, FString& OutMessage);
+	FString GetCosmeticSummary() const;
 	FString GetAccountSummary() const;
 
 private:
@@ -146,6 +163,7 @@ private:
 	void LoadProgress();
 	void SaveProfile() const;
 	void SaveProgress() const;
+	void SanitizeProgressCosmetics();
 	TSharedRef<FJsonObject> ProfileToJson() const;
 	TSharedRef<FJsonObject> ProgressToJson() const;
 	void ApplyProfileJson(const TSharedPtr<FJsonObject>& JsonObject);

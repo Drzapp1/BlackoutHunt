@@ -20,6 +20,7 @@ public:
 	virtual void BeginInteract_Implementation(ABHCharacter* Character) override;
 	virtual void EndInteract_Implementation(ABHCharacter* Character) override;
 	virtual FText GetInteractionLabel_Implementation(ABHCharacter* Character) const override;
+	virtual FBHInteractionPromptInfo GetInteractionPromptInfo_Implementation(ABHCharacter* Character) const override;
 
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")

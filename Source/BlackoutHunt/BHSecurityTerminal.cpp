@@ -83,13 +83,25 @@ void ABHSecurityTerminal::BeginInteract_Implementation(ABHCharacter* Character)
 {
 	if (HasAuthority())
 	{
+		const bool bOpeningCircuit = CircuitHasClosedShutter();
 		if (ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
 		{
-			if (!BHGM->ToggleSecurityCircuit(CircuitId) && Character)
+			const bool bToggled = BHGM->ToggleSecurityCircuit(CircuitId);
+			if (Character)
 			{
 				if (ABHPlayerController* PC = Cast<ABHPlayerController>(Character->GetController()))
 				{
-					PC->ClientShowStatusMessage(TEXT("Security shutter blocked."), 2.5f);
+					if (bToggled)
+					{
+						PC->ClientShowStatusMessage(bOpeningCircuit
+							? TEXT("Security shutters open. CCTV circuit blinded.")
+							: TEXT("Security shutters closed. CCTV circuit rearmed."),
+							2.8f);
+					}
+					else
+					{
+						PC->ClientShowStatusMessage(TEXT("Security shutter blocked."), 2.5f);
+					}
 				}
 			}
 		}

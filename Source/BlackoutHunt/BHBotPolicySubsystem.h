@@ -21,9 +21,11 @@ public:
 private:
 	float ScoreSingleCandidate(const FBHBotPolicyFeatures& Features, const FBHBotDecisionCandidate& Candidate) const;
 	float GetIntentWeight(EBHBotIntent Intent) const;
+	float GetPersonalityIntentWeight(EBHBotPersonality Personality, EBHBotIntent Intent) const;
 	void LoadPolicyFile();
 
 	TMap<EBHBotIntent, float> IntentWeights;
+	TMap<FName, float> PersonalityIntentWeights;
 	bool bPolicyFileLoaded = false;
 	bool bDisabledForBudget = false;
 	double TotalScoreSeconds = 0.0;

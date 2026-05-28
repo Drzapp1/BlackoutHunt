@@ -4,6 +4,7 @@
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/TextRenderComponent.h"
+#include "GameFramework/GameStateBase.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 #include "Net/UnrealNetwork.h"
@@ -92,6 +93,118 @@ FString BHWrapDisplayText(const FString& SourceText, int32 MaxCharsPerLine, int3
 	}
 
 	return FString::Join(OutputLines, TEXT("\n"));
+}
+
+FString BHFormatDisplayClock(int32 TotalSeconds)
+{
+	const int32 ClampedSeconds = FMath::Max(0, TotalSeconds);
+	return FString::Printf(TEXT("%02d:%02d"), ClampedSeconds / 60, ClampedSeconds % 60);
+}
+
+FString BHTrainDisplayPhaseLabel(EBHTrainPhase Phase)
+{
+	switch (Phase)
+	{
+	case EBHTrainPhase::Arrival:
+		return TEXT("BOARDING");
+	case EBHTrainPhase::Recap:
+		return TEXT("CLASS RECAP");
+	case EBHTrainPhase::BonusQuestion:
+		return TEXT("BONUS LIVE");
+	case EBHTrainPhase::Shop:
+		return TEXT("SHOP OPEN");
+	case EBHTrainPhase::StationStop:
+		return TEXT("STATION STOP");
+	case EBHTrainPhase::Departing:
+		return TEXT("DEPARTING");
+	case EBHTrainPhase::Inactive:
+	default:
+		return TEXT("BLACKOUT TRANSIT");
+	}
+}
+
+FString BHTrainDisplayPhaseAction(EBHTrainPhase Phase)
+{
+	switch (Phase)
+	{
+	case EBHTrainPhase::Arrival:
+		return TEXT("Board now. Doors close when the timer ends.");
+	case EBHTrainPhase::Recap:
+		return TEXT("Read recap boards, or try optional snacks, drinks, and minigames.");
+	case EBHTrainPhase::BonusQuestion:
+		return TEXT("Use the yellow terminal, or play social-car activities.");
+	case EBHTrainPhase::Shop:
+		return TEXT("Spend points, grab food/drink, or play one more minigame.");
+	case EBHTrainPhase::StationStop:
+		return TEXT("Doors are open. Board before departure.");
+	case EBHTrainPhase::Departing:
+		return TEXT("Doors closed. Hold position for travel.");
+	case EBHTrainPhase::Inactive:
+	default:
+		return TEXT("Awaiting class route data.");
+	}
+}
+
+FString BHTrainDisplayNextBeat(EBHTrainPhase Phase)
+{
+	switch (Phase)
+	{
+	case EBHTrainPhase::Arrival:
+		return TEXT("Next: recap boards.");
+	case EBHTrainPhase::Recap:
+		return TEXT("Next: bonus question terminal.");
+	case EBHTrainPhase::BonusQuestion:
+		return TEXT("Next: shop carriage.");
+	case EBHTrainPhase::Shop:
+		return TEXT("Next: station stop and boarding.");
+	case EBHTrainPhase::StationStop:
+		return TEXT("Next: departure countdown.");
+	case EBHTrainPhase::Departing:
+		return TEXT("Next: route loads.");
+	case EBHTrainPhase::Inactive:
+	default:
+		return TEXT("Next: waiting for route data.");
+	}
+}
+
+FString BHTrainDisplayDoorStatus(EBHTrainPhase Phase)
+{
+	switch (Phase)
+	{
+	case EBHTrainPhase::Arrival:
+	case EBHTrainPhase::StationStop:
+		return TEXT("Doors: open for boarding.");
+	case EBHTrainPhase::Departing:
+		return TEXT("Doors: closed for departure.");
+	case EBHTrainPhase::Recap:
+	case EBHTrainPhase::BonusQuestion:
+	case EBHTrainPhase::Shop:
+		return TEXT("Doors: closed while the train is moving.");
+	case EBHTrainPhase::Inactive:
+	default:
+		return TEXT("Doors: waiting for train state.");
+	}
+}
+
+FLinearColor BHTrainDisplayPhaseAccent(EBHTrainPhase Phase)
+{
+	switch (Phase)
+	{
+	case EBHTrainPhase::Arrival:
+	case EBHTrainPhase::StationStop:
+		return FLinearColor(0.18f, 1.0f, 0.50f, 1.0f);
+	case EBHTrainPhase::Recap:
+		return FLinearColor(0.46f, 0.90f, 0.62f, 1.0f);
+	case EBHTrainPhase::BonusQuestion:
+		return FLinearColor(1.0f, 0.72f, 0.20f, 1.0f);
+	case EBHTrainPhase::Shop:
+		return FLinearColor(0.82f, 0.58f, 1.0f, 1.0f);
+	case EBHTrainPhase::Departing:
+		return FLinearColor(1.0f, 0.26f, 0.14f, 1.0f);
+	case EBHTrainPhase::Inactive:
+	default:
+		return FLinearColor(0.14f, 0.82f, 0.74f, 1.0f);
+	}
 }
 
 void BHConfigureDisplayTextComponent(UTextRenderComponent* TextComponent, const FVector& Location, const FRotator& Rotation, float WorldSize, const FColor& Color, UMaterialInterface* TextMaterial)
@@ -251,32 +364,46 @@ ABHTrainDisplayActor::ABHTrainDisplayActor()
 	DisplayHeader = TEXT("BLACKOUT TRANSIT");
 	DisplayBody = TEXT("Awaiting class data.");
 	Accent = FLinearColor(0.10f, 0.66f, 0.62f, 1.0f);
+	DisplayProfile = EBHTrainDisplayProfile::Standard;
 	CountdownStationName = DisplayHeader;
 	CountdownDestinationText = TEXT("");
+	TrainPhaseDestinationText = TEXT("");
 	NextCountdownRefreshTime = 0.0f;
+	NextTrainPhaseRefreshTime = 0.0f;
 	LastCountdownSeconds = INDEX_NONE;
 	LastCountdownBreakersCompleted = INDEX_NONE;
 	LastCountdownBreakersRequired = INDEX_NONE;
 	LastCountdownSideObjectivesCompleted = INDEX_NONE;
 	LastCountdownSideObjectivesRequired = INDEX_NONE;
+	LastTrainPhaseCountdownSeconds = INDEX_NONE;
+	LastTrainDisplayPhase = EBHTrainPhase::Inactive;
+	LastTrainAnnouncement = TEXT("");
+	LastTrainDestination = TEXT("");
 	bExitCountdownDisplay = false;
 	bLastCountdownExitUnlocked = false;
+	bTrainPhaseDisplay = false;
+	ApplyDisplayProfile();
 }
 
 void ABHTrainDisplayActor::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 
-	if (!bExitCountdownDisplay || !HasAuthority() || !GetWorld())
+	if (!HasAuthority() || !GetWorld())
 	{
 		return;
 	}
 
 	const float Now = GetWorld()->GetTimeSeconds();
-	if (Now >= NextCountdownRefreshTime)
+	if (bExitCountdownDisplay && Now >= NextCountdownRefreshTime)
 	{
 		UpdateExitCountdownDisplay(false);
 		NextCountdownRefreshTime = Now + 0.5f;
+	}
+	if (bTrainPhaseDisplay && Now >= NextTrainPhaseRefreshTime)
+	{
+		UpdateTrainPhaseDisplay(false);
+		NextTrainPhaseRefreshTime = Now + 0.5f;
 	}
 }
 
@@ -286,11 +413,13 @@ void ABHTrainDisplayActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>&
 	DOREPLIFETIME(ABHTrainDisplayActor, DisplayHeader);
 	DOREPLIFETIME(ABHTrainDisplayActor, DisplayBody);
 	DOREPLIFETIME(ABHTrainDisplayActor, Accent);
+	DOREPLIFETIME(ABHTrainDisplayActor, DisplayProfile);
 }
 
 void ABHTrainDisplayActor::ConfigureDisplay(const FString& NewHeader, const FString& NewBody, const FLinearColor& AccentColor)
 {
 	bExitCountdownDisplay = false;
+	bTrainPhaseDisplay = false;
 	DisplayHeader = NewHeader;
 	DisplayBody = NewBody;
 	Accent = AccentColor;
@@ -300,6 +429,7 @@ void ABHTrainDisplayActor::ConfigureDisplay(const FString& NewHeader, const FStr
 void ABHTrainDisplayActor::ConfigureExitCountdownDisplay(const FString& NewStationName, const FString& NewDestinationText, const FLinearColor& AccentColor)
 {
 	bExitCountdownDisplay = true;
+	bTrainPhaseDisplay = false;
 	CountdownStationName = NewStationName;
 	CountdownDestinationText = NewDestinationText;
 	Accent = AccentColor;
@@ -312,9 +442,30 @@ void ABHTrainDisplayActor::ConfigureExitCountdownDisplay(const FString& NewStati
 	UpdateExitCountdownDisplay(true);
 }
 
+void ABHTrainDisplayActor::ConfigureTrainPhaseDisplay(const FString& NewDestinationText, const FLinearColor& AccentColor)
+{
+	bExitCountdownDisplay = false;
+	bTrainPhaseDisplay = true;
+	TrainPhaseDestinationText = NewDestinationText;
+	Accent = AccentColor;
+	LastTrainPhaseCountdownSeconds = INDEX_NONE;
+	LastTrainDisplayPhase = EBHTrainPhase::Inactive;
+	LastTrainAnnouncement = TEXT("");
+	LastTrainDestination = TEXT("");
+	UpdateTrainPhaseDisplay(true);
+}
+
+void ABHTrainDisplayActor::SetDisplayProfile(EBHTrainDisplayProfile NewProfile)
+{
+	DisplayProfile = NewProfile;
+	ApplyDisplayProfile();
+	ApplyText();
+}
+
 void ABHTrainDisplayActor::SetBodyText(const FString& NewBody)
 {
 	bExitCountdownDisplay = false;
+	bTrainPhaseDisplay = false;
 	DisplayBody = NewBody;
 	ApplyText();
 }
@@ -326,6 +477,12 @@ FString ABHTrainDisplayActor::GetBodyText() const
 
 void ABHTrainDisplayActor::OnRep_DisplayText()
 {
+	ApplyText();
+}
+
+void ABHTrainDisplayActor::OnRep_DisplayProfile()
+{
+	ApplyDisplayProfile();
 	ApplyText();
 }
 
@@ -380,16 +537,59 @@ void ABHTrainDisplayActor::UpdateExitCountdownDisplay(bool bForce)
 			*Destination);
 		Accent = RemainingSeconds > 0 && RemainingSeconds <= 90
 			? FLinearColor(1.0f, 0.24f, 0.12f, 1.0f)
-			: FLinearColor(1.0f, 0.68f, 0.18f, 1.0f);
+			: FLinearColor(0.82f, 0.08f, 0.06f, 1.0f);
 	}
 
 	ApplyText();
 }
 
+void ABHTrainDisplayActor::UpdateTrainPhaseDisplay(bool bForce)
+{
+	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	const AGameStateBase* BaseGameState = GetWorld() ? GetWorld()->GetGameState() : nullptr;
+	const float ServerNow = BaseGameState ? BaseGameState->GetServerWorldTimeSeconds() : (GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f);
+	const EBHTrainPhase Phase = BHGS ? BHGS->TrainPhase : EBHTrainPhase::Inactive;
+	const int32 CountdownSeconds = BHGS ? FMath::Max(0, FMath::CeilToInt(BHGS->TrainPhaseEndServerTime - ServerNow)) : 0;
+	const FString Destination = !TrainPhaseDestinationText.IsEmpty()
+		? TrainPhaseDestinationText
+		: (BHGS && !BHGS->TrainDestinationName.IsEmpty() ? BHGS->TrainDestinationName : FString(TEXT("Next Stop")));
+	const FString Announcement = BHGS && !BHGS->TrainAnnouncement.IsEmpty()
+		? BHGS->TrainAnnouncement
+		: BHTrainDisplayPhaseAction(Phase);
+
+	if (!bForce
+		&& Phase == LastTrainDisplayPhase
+		&& CountdownSeconds == LastTrainPhaseCountdownSeconds
+		&& Announcement == LastTrainAnnouncement
+		&& Destination == LastTrainDestination)
+	{
+		return;
+	}
+
+	LastTrainDisplayPhase = Phase;
+	LastTrainPhaseCountdownSeconds = CountdownSeconds;
+	LastTrainAnnouncement = Announcement;
+	LastTrainDestination = Destination;
+
+	DisplayHeader = FString::Printf(TEXT("%s  %s"), *BHTrainDisplayPhaseLabel(Phase), *BHFormatDisplayClock(CountdownSeconds));
+	DisplayBody = FString::Printf(TEXT("%s\nNow: %s\nAction: %s\n%s\n%s"),
+		*Destination,
+		*Announcement,
+		*BHTrainDisplayPhaseAction(Phase),
+		*BHTrainDisplayNextBeat(Phase),
+		*BHTrainDisplayDoorStatus(Phase));
+	Accent = BHTrainDisplayPhaseAccent(Phase);
+	ApplyText();
+}
+
 void ABHTrainDisplayActor::ApplyText()
 {
-	const FString Header = BHWrapDisplayText(DisplayHeader.Left(72), 28, 2);
-	const FString Body = BHWrapDisplayText(DisplayBody.Left(720), 52, 7);
+	const int32 HeaderChars = DisplayProfile == EBHTrainDisplayProfile::StationCountdownCompact ? 22 : 28;
+	const int32 HeaderLines = DisplayProfile == EBHTrainDisplayProfile::StationCountdownCompact ? 1 : 2;
+	const int32 BodyChars = DisplayProfile == EBHTrainDisplayProfile::StationCountdownCompact ? 38 : (DisplayProfile == EBHTrainDisplayProfile::TrainWallRecap ? 44 : 52);
+	const int32 BodyLines = DisplayProfile == EBHTrainDisplayProfile::StationCountdownCompact ? 4 : (DisplayProfile == EBHTrainDisplayProfile::TrainWallRecap ? 6 : 7);
+	const FString Header = BHWrapDisplayText(DisplayHeader.Left(72), HeaderChars, HeaderLines);
+	const FString Body = BHWrapDisplayText(DisplayBody.Left(720), BodyChars, BodyLines);
 	const FColor HeaderColor = Accent.ToFColor(true);
 	const FColor BodyColor(226, 245, 232);
 
@@ -438,5 +638,91 @@ void ABHTrainDisplayActor::ApplyText()
 	if (BackReadLight)
 	{
 		BackReadLight->SetLightColor(Accent);
+	}
+}
+
+void ABHTrainDisplayActor::ApplyDisplayProfile()
+{
+	const auto SetPanel = [](UStaticMeshComponent* Component, const FVector& Location, const FVector& Scale, bool bCollides)
+	{
+		if (!Component)
+		{
+			return;
+		}
+		Component->SetRelativeLocation(Location);
+		Component->SetRelativeScale3D(Scale);
+		Component->SetCollisionEnabled(bCollides ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
+		Component->SetCollisionResponseToAllChannels(bCollides ? ECR_Block : ECR_Ignore);
+	};
+	const auto SetText = [](UTextRenderComponent* TextComponent, const FVector& Location, const FRotator& Rotation, float WorldSize)
+	{
+		if (!TextComponent)
+		{
+			return;
+		}
+		TextComponent->SetRelativeLocation(Location);
+		TextComponent->SetRelativeRotation(Rotation);
+		TextComponent->SetWorldSize(WorldSize);
+	};
+
+	if (DisplayProfile == EBHTrainDisplayProfile::StationCountdownCompact)
+	{
+		SetPanel(BackingPanel, FVector::ZeroVector, FVector(4.45f, 0.10f, 1.42f), true);
+		SetPanel(ScreenFront, FVector(0.0f, -7.0f, 0.0f), FVector(4.04f, 0.014f, 1.12f), false);
+		SetPanel(ScreenBack, FVector(0.0f, 7.0f, 0.0f), FVector(4.04f, 0.014f, 1.12f), false);
+		SetPanel(HeaderRailFront, FVector(0.0f, -8.0f, 62.0f), FVector(4.16f, 0.016f, 0.055f), false);
+		SetPanel(HeaderRailBack, FVector(0.0f, 8.0f, 62.0f), FVector(4.16f, 0.016f, 0.055f), false);
+		SetPanel(FooterRailFront, FVector(0.0f, -8.0f, -64.0f), FVector(4.16f, 0.016f, 0.055f), false);
+		SetPanel(FooterRailBack, FVector(0.0f, 8.0f, -64.0f), FVector(4.16f, 0.016f, 0.055f), false);
+		SetPanel(TopFrame, FVector(0.0f, 0.0f, 76.0f), FVector(4.70f, 0.16f, 0.075f), false);
+		SetPanel(BottomFrame, FVector(0.0f, 0.0f, -76.0f), FVector(4.70f, 0.16f, 0.075f), false);
+		SetPanel(LeftFrame, FVector(-236.0f, 0.0f, 0.0f), FVector(0.075f, 0.16f, 1.50f), false);
+		SetPanel(RightFrame, FVector(236.0f, 0.0f, 0.0f), FVector(0.075f, 0.16f, 1.50f), false);
+		SetPanel(LeftHanger, FVector(-168.0f, 0.0f, 120.0f), FVector(0.050f, 0.050f, 0.72f), false);
+		SetPanel(RightHanger, FVector(168.0f, 0.0f, 120.0f), FVector(0.050f, 0.050f, 0.72f), false);
+		SetText(HeaderText, FVector(-194.0f, -10.0f, 51.0f), FRotator(0.0f, -90.0f, 0.0f), 14.0f);
+		SetText(BodyText, FVector(-194.0f, -10.5f, 24.0f), FRotator(0.0f, -90.0f, 0.0f), 8.4f);
+		SetText(HeaderTextBack, FVector(194.0f, 10.0f, 51.0f), FRotator(0.0f, 90.0f, 0.0f), 14.0f);
+		SetText(BodyTextBack, FVector(194.0f, 10.5f, 24.0f), FRotator(0.0f, 90.0f, 0.0f), 8.4f);
+	}
+	else if (DisplayProfile == EBHTrainDisplayProfile::TrainWallRecap)
+	{
+		SetPanel(BackingPanel, FVector(0.0f, 10.0f, 0.0f), FVector(5.35f, 0.08f, 1.76f), false);
+		SetPanel(ScreenFront, FVector(0.0f, 17.0f, 0.0f), FVector(4.92f, 0.014f, 1.44f), false);
+		SetPanel(ScreenBack, FVector(0.0f, -17.0f, 0.0f), FVector(4.92f, 0.014f, 1.44f), false);
+		SetPanel(HeaderRailFront, FVector(0.0f, 18.0f, 76.0f), FVector(5.02f, 0.016f, 0.060f), false);
+		SetPanel(HeaderRailBack, FVector(0.0f, -18.0f, 76.0f), FVector(5.02f, 0.016f, 0.060f), false);
+		SetPanel(FooterRailFront, FVector(0.0f, 18.0f, -78.0f), FVector(5.02f, 0.016f, 0.060f), false);
+		SetPanel(FooterRailBack, FVector(0.0f, -18.0f, -78.0f), FVector(5.02f, 0.016f, 0.060f), false);
+		SetPanel(TopFrame, FVector(0.0f, 10.0f, 93.0f), FVector(5.60f, 0.14f, 0.080f), false);
+		SetPanel(BottomFrame, FVector(0.0f, 10.0f, -93.0f), FVector(5.60f, 0.14f, 0.080f), false);
+		SetPanel(LeftFrame, FVector(-282.0f, 10.0f, 0.0f), FVector(0.080f, 0.14f, 1.86f), false);
+		SetPanel(RightFrame, FVector(282.0f, 10.0f, 0.0f), FVector(0.080f, 0.14f, 1.86f), false);
+		SetPanel(LeftHanger, FVector(-196.0f, 10.0f, 146.0f), FVector(0.052f, 0.052f, 0.86f), false);
+		SetPanel(RightHanger, FVector(196.0f, 10.0f, 146.0f), FVector(0.052f, 0.052f, 0.86f), false);
+		SetText(HeaderText, FVector(-226.0f, 23.0f, 63.0f), FRotator(0.0f, -90.0f, 0.0f), 17.0f);
+		SetText(BodyText, FVector(-226.0f, 23.5f, 32.0f), FRotator(0.0f, -90.0f, 0.0f), 9.2f);
+		SetText(HeaderTextBack, FVector(226.0f, -23.0f, 63.0f), FRotator(0.0f, 90.0f, 0.0f), 17.0f);
+		SetText(BodyTextBack, FVector(226.0f, -23.5f, 32.0f), FRotator(0.0f, 90.0f, 0.0f), 9.2f);
+	}
+	else
+	{
+		SetPanel(BackingPanel, FVector::ZeroVector, FVector(5.90f, 0.14f, 2.20f), true);
+		SetPanel(ScreenFront, FVector(0.0f, -8.2f, 0.0f), FVector(5.36f, 0.018f, 1.72f), false);
+		SetPanel(ScreenBack, FVector(0.0f, 8.2f, 0.0f), FVector(5.36f, 0.018f, 1.72f), false);
+		SetPanel(HeaderRailFront, FVector(0.0f, -9.3f, 92.0f), FVector(5.52f, 0.020f, 0.075f), false);
+		SetPanel(HeaderRailBack, FVector(0.0f, 9.3f, 92.0f), FVector(5.52f, 0.020f, 0.075f), false);
+		SetPanel(FooterRailFront, FVector(0.0f, -9.3f, -92.0f), FVector(5.52f, 0.020f, 0.075f), false);
+		SetPanel(FooterRailBack, FVector(0.0f, 9.3f, -92.0f), FVector(5.52f, 0.020f, 0.075f), false);
+		SetPanel(TopFrame, FVector(0.0f, 0.0f, 112.0f), FVector(6.08f, 0.22f, 0.10f), false);
+		SetPanel(BottomFrame, FVector(0.0f, 0.0f, -112.0f), FVector(6.08f, 0.22f, 0.10f), false);
+		SetPanel(LeftFrame, FVector(-306.0f, 0.0f, 0.0f), FVector(0.10f, 0.22f, 2.28f), false);
+		SetPanel(RightFrame, FVector(306.0f, 0.0f, 0.0f), FVector(0.10f, 0.22f, 2.28f), false);
+		SetPanel(LeftHanger, FVector(-214.0f, 0.0f, 178.0f), FVector(0.065f, 0.065f, 1.10f), false);
+		SetPanel(RightHanger, FVector(214.0f, 0.0f, 178.0f), FVector(0.065f, 0.065f, 1.10f), false);
+		SetText(HeaderText, FVector(-248.0f, -12.0f, 80.0f), FRotator(0.0f, -90.0f, 0.0f), 20.0f);
+		SetText(BodyText, FVector(-248.0f, -12.5f, 42.0f), FRotator(0.0f, -90.0f, 0.0f), 11.0f);
+		SetText(HeaderTextBack, FVector(248.0f, 12.0f, 80.0f), FRotator(0.0f, 90.0f, 0.0f), 20.0f);
+		SetText(BodyTextBack, FVector(248.0f, 12.5f, 42.0f), FRotator(0.0f, 90.0f, 0.0f), 11.0f);
 	}
 }

@@ -31,5 +31,7 @@ protected:
 	TObjectPtr<UBHSynthComponent> Synth;
 
 	float AgeSeconds;
+	float ArmDelaySeconds;
+	float ArmedServerTime;
 	bool bTriggered;
 };

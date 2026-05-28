@@ -18,6 +18,8 @@ ABHAlarmTrap::ABHAlarmTrap()
 	MinNetUpdateFrequency = 2.0f;
 	InitialLifeSpan = 55.0f;
 	AgeSeconds = 0.0f;
+	ArmDelaySeconds = 1.15f;
+	ArmedServerTime = 0.0f;
 	bTriggered = false;
 
 	TriggerRadius = CreateDefaultSubobject<USphereComponent>(TEXT("TriggerRadius"));
@@ -49,6 +51,8 @@ void ABHAlarmTrap::BeginPlay()
 {
 	Super::BeginPlay();
 
+	ArmedServerTime = GetWorld() ? GetWorld()->GetTimeSeconds() + ArmDelaySeconds : 0.0f;
+
 	if (GetNetMode() == NM_DedicatedServer)
 	{
 		SetActorTickEnabled(false);
@@ -67,8 +71,11 @@ void ABHAlarmTrap::Tick(float DeltaSeconds)
 	AgeSeconds += DeltaSeconds;
 	if (Mesh)
 	{
-		const float Pulse = 1.0f + FMath::Sin(AgeSeconds * 5.5f) * 0.10f;
-		Mesh->SetRelativeScale3D(FVector(0.28f * Pulse, 0.28f * Pulse, 0.08f));
+		const bool bArmed = !GetWorld() || GetWorld()->GetTimeSeconds() >= ArmedServerTime;
+		const float BaseXY = bArmed ? 0.28f : 0.20f;
+		const float BaseZ = bArmed ? 0.08f : 0.055f;
+		const float Pulse = 1.0f + FMath::Sin(AgeSeconds * (bArmed ? 5.5f : 8.5f)) * (bArmed ? 0.10f : 0.18f);
+		Mesh->SetRelativeScale3D(FVector(BaseXY * Pulse, BaseXY * Pulse, BaseZ));
 	}
 }
 
@@ -77,6 +84,11 @@ void ABHAlarmTrap::NotifyActorBeginOverlap(AActor* OtherActor)
 	Super::NotifyActorBeginOverlap(OtherActor);
 
 	if (!HasAuthority() || bTriggered)
+	{
+		return;
+	}
+
+	if (GetWorld() && GetWorld()->GetTimeSeconds() < ArmedServerTime)
 	{
 		return;
 	}

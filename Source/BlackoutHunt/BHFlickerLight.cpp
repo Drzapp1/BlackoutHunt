@@ -45,6 +45,17 @@ void ABHFlickerLight::BeginPlay()
 	}
 }
 
+void ABHFlickerLight::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (GetWorld())
+	{
+		GetWorldTimerManager().ClearTimer(FlickerBurstTimerHandle);
+		GetWorldTimerManager().ClearAllTimersForObject(this);
+	}
+
+	Super::EndPlay(EndPlayReason);
+}
+
 void ABHFlickerLight::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);

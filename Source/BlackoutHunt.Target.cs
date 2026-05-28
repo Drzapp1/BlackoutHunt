@@ -10,6 +10,11 @@ public class BlackoutHuntTarget : TargetRules
 		IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
 		bOverrideBuildEnvironment = true;
 		bEnableTrace = false;
+		string SteamAppId = System.Environment.GetEnvironmentVariable("BH_STEAM_APP_ID");
+		if (!string.IsNullOrWhiteSpace(SteamAppId))
+		{
+			GlobalDefinitions.Add("UE_PROJECT_STEAMSHIPPINGID=" + SteamAppId);
+		}
 		ExtraModuleNames.Add("BlackoutHunt");
 	}
 }

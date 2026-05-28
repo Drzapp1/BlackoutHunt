@@ -81,6 +81,11 @@ void ConfigurePart(
 		return;
 	}
 
+	if (Component->IsRegistered() && Component->Mobility == EComponentMobility::Static)
+	{
+		Component->SetMobility(EComponentMobility::Movable);
+	}
+
 	Component->SetStaticMesh(MeshAsset);
 	Component->SetRelativeLocation(RelativeLocation);
 	Component->SetRelativeRotation(RelativeRotation);

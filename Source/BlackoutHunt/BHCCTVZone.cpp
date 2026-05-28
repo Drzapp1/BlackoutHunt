@@ -41,6 +41,7 @@ ABHCCTVZone::ABHCCTVZone()
 	LinkedCamera = nullptr;
 	bZoneEnabled = true;
 	bZoneVisible = true;
+	bRoundOffline = false;
 	CircuitId = 0;
 	AlertLabel = TEXT("CCTV zone");
 
@@ -59,6 +60,16 @@ void ABHCCTVZone::BeginPlay()
 
 	SetActorTickEnabled(HasAuthority());
 	ApplyZoneVisuals();
+}
+
+void ABHCCTVZone::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (ZoneTrigger)
+	{
+		ZoneTrigger->OnComponentBeginOverlap.RemoveDynamic(this, &ABHCCTVZone::OnZoneBeginOverlap);
+	}
+
+	Super::EndPlay(EndPlayReason);
 }
 
 void ABHCCTVZone::Tick(float DeltaSeconds)
@@ -116,7 +127,7 @@ void ABHCCTVZone::SetZoneEnabled(bool bNewEnabled)
 		return;
 	}
 
-	bZoneEnabled = bNewEnabled;
+	bZoneEnabled = bNewEnabled && !bRoundOffline;
 	if (ZoneTrigger)
 	{
 		ZoneTrigger->SetGenerateOverlapEvents(bZoneEnabled);
@@ -124,6 +135,17 @@ void ABHCCTVZone::SetZoneEnabled(bool bNewEnabled)
 	}
 	ApplyZoneVisuals();
 	ForceNetUpdate();
+}
+
+void ABHCCTVZone::SetRoundOffline(bool bNewRoundOffline)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	bRoundOffline = bNewRoundOffline;
+	SetZoneEnabled(!bRoundOffline);
 }
 
 void ABHCCTVZone::SetZoneVisible(bool bNewVisible)
@@ -146,6 +168,16 @@ int32 ABHCCTVZone::GetCircuitId() const
 bool ABHCCTVZone::IsZoneEnabled() const
 {
 	return bZoneEnabled;
+}
+
+bool ABHCCTVZone::IsRoundOffline() const
+{
+	return bRoundOffline;
+}
+
+ABHSecurityCamera* ABHCCTVZone::GetLinkedCamera() const
+{
+	return LinkedCamera;
 }
 
 void ABHCCTVZone::OnRep_ZoneState()
@@ -183,23 +215,20 @@ void ABHCCTVZone::ApplyZoneVisuals()
 		ZoneTrigger->SetCollisionEnabled(bZoneEnabled ? ECollisionEnabled::QueryOnly : ECollisionEnabled::NoCollision);
 	}
 
-	const bool bShowMarkers = bZoneVisible;
-	const FLinearColor PlateColor = bZoneEnabled
-		? FLinearColor(0.03f, 0.42f, 0.48f, 0.72f)
-		: FLinearColor(0.05f, 0.055f, 0.06f, 0.45f);
+	const bool bShowOutline = bZoneVisible;
+	const FLinearColor PlateColor(0.012f, 0.018f, 0.018f, 0.0f);
 	const FLinearColor StripeColor = bZoneEnabled
-		? FLinearColor(1.0f, 0.78f, 0.18f, 1.0f)
-		: FLinearColor(0.18f, 0.18f, 0.16f, 1.0f);
-	const float PlateGlow = bZoneEnabled ? 0.55f : 0.0f;
-	const float StripeGlow = bZoneEnabled ? 1.2f : 0.0f;
+		? FLinearColor(0.26f, 0.58f, 0.54f, 0.72f)
+		: FLinearColor(0.12f, 0.15f, 0.15f, 0.48f);
+	const float StripeGlow = bZoneEnabled ? 0.32f : 0.0f;
 
-	BHPropVisuals::SetPartVisible(ZonePlate, bShowMarkers);
-	BHPropVisuals::SetPartVisible(WarningStripeA, bShowMarkers);
-	BHPropVisuals::SetPartVisible(WarningStripeB, bShowMarkers);
-	BHPropVisuals::SetPartVisible(WarningStripeC, bShowMarkers);
-	BHPropVisuals::SetPartVisible(WarningStripeD, bShowMarkers);
+	BHPropVisuals::SetPartVisible(ZonePlate, false);
+	BHPropVisuals::SetPartVisible(WarningStripeA, bShowOutline);
+	BHPropVisuals::SetPartVisible(WarningStripeB, bShowOutline);
+	BHPropVisuals::SetPartVisible(WarningStripeC, bShowOutline);
+	BHPropVisuals::SetPartVisible(WarningStripeD, bShowOutline);
 
-	BHPropVisuals::TintPart(ZonePlate, PlateColor, PlateGlow);
+	BHPropVisuals::TintPart(ZonePlate, PlateColor, 0.0f);
 	BHPropVisuals::TintPart(WarningStripeA, StripeColor, StripeGlow);
 	BHPropVisuals::TintPart(WarningStripeB, StripeColor, StripeGlow);
 	BHPropVisuals::TintPart(WarningStripeC, StripeColor, StripeGlow);
@@ -213,8 +242,8 @@ void ABHCCTVZone::RefreshMarkerScale(const FVector& BoxExtent)
 	const float PlateScaleY = FMath::Max(0.08f, BoxExtent.Y / 50.0f);
 	const float StripeScaleX = FMath::Max(0.08f, BoxExtent.X / 50.0f);
 	const float StripeScaleY = FMath::Max(0.08f, BoxExtent.Y / 50.0f);
-	const float StripeWidth = 0.055f;
-	const float StripeInset = 28.0f;
+	const float StripeWidth = 0.035f;
+	const float StripeInset = 18.0f;
 
 	BHPropVisuals::ConfigurePart(ZonePlate, BHPropVisuals::CubeMesh(), BHPropVisuals::BasicMaterial(), FVector(0.0f, 0.0f, MarkerZ), FRotator::ZeroRotator, FVector(PlateScaleX, PlateScaleY, 0.018f), false);
 	BHPropVisuals::ConfigurePart(WarningStripeA, BHPropVisuals::CubeMesh(), BHPropVisuals::BasicMaterial(), FVector(0.0f, BoxExtent.Y - StripeInset, MarkerZ + 2.0f), FRotator::ZeroRotator, FVector(StripeScaleX, StripeWidth, 0.022f), false);

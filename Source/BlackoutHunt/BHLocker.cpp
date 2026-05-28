@@ -3,9 +3,21 @@
 #include "BHCharacter.h"
 #include "BHGameMode.h"
 #include "BHGameState.h"
+#include "BHPlayerController.h"
 #include "BHPlayerState.h"
 #include "Components/StaticMeshComponent.h"
 #include "Net/UnrealNetwork.h"
+
+namespace
+{
+bool BHLockerAllowsWarmupSearch(const ABHGameState* GameState)
+{
+	return GameState
+		&& GameState->RoundPhase == EBHRoundPhase::Prep
+		&& !GameState->bPracticeMode
+		&& !GameState->bTestMode;
+}
+}
 
 ABHLocker::ABHLocker()
 {
@@ -64,7 +76,8 @@ bool ABHLocker::CanInteract_Implementation(ABHCharacter* Character) const
 
 	if (BHPS->IsAliveHunter())
 	{
-		return false;
+		const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+		return BHLockerAllowsWarmupSearch(BHGS) && Occupant != nullptr;
 	}
 
 	return BHPS->IsAliveSurvivor() && Occupant == nullptr;
@@ -90,9 +103,10 @@ void ABHLocker::BeginInteract_Implementation(ABHCharacter* Character)
 	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
 	if (BHPS->PlayerRole == EBHPlayerRole::Tester && BHGS && BHGS->RoundPhase == EBHRoundPhase::Hunt && Occupant && Occupant != Character)
 	{
-		if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+		if (ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
 		{
-			BHGM->NotifySurvivorCaptured(Occupant);
+			BHGM->RecordPlaytestTelemetryMarker(TEXT("locker_searched"), GetActorLocation(), TEXT("tester_search"), BHPS, Occupant->GetBHPlayerState());
+			BHGM->NotifySurvivorCaptured(Occupant, Character);
 		}
 		Occupant = nullptr;
 		ApplyLockerVisuals();
@@ -101,6 +115,18 @@ void ABHLocker::BeginInteract_Implementation(ABHCharacter* Character)
 
 	if (BHPS->IsAliveHunter())
 	{
+		const ABHGameState* LockerGameState = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+		if (BHLockerAllowsWarmupSearch(LockerGameState) && Occupant)
+		{
+			if (ABHPlayerController* HunterPC = Cast<ABHPlayerController>(Character->GetController()))
+			{
+				HunterPC->ClientShowStatusMessage(TEXT("Warmup locker search: this survivor would be found. Hunt start resets everyone."), 3.0f);
+			}
+			if (ABHPlayerController* OccupantPC = Cast<ABHPlayerController>(Occupant->GetController()))
+			{
+				OccupantPC->ClientShowStatusMessage(TEXT("Warmup locker search found you. You stay in play until Hunt starts."), 3.0f);
+			}
+		}
 		return;
 	}
 
@@ -109,6 +135,14 @@ void ABHLocker::BeginInteract_Implementation(ABHCharacter* Character)
 		Occupant = Character;
 		ApplyLockerVisuals();
 		Character->EnterLocker(this);
+		const ABHGameState* LockerGameState = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+		if (!BHLockerAllowsWarmupSearch(LockerGameState))
+		{
+			if (ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
+			{
+				BHGM->RecordPlaytestTelemetryMarker(TEXT("locker_entered"), GetActorLocation(), TEXT("hide"), BHPS);
+			}
+		}
 	}
 }
 
@@ -127,6 +161,11 @@ FText ABHLocker::GetInteractionLabel_Implementation(ABHCharacter* Character) con
 
 	if (BHPS && BHPS->IsAliveHunter())
 	{
+		const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+		if (BHLockerAllowsWarmupSearch(BHGS) && Occupant)
+		{
+			return FText::FromString(TEXT("Warmup Search Locker"));
+		}
 		return Occupant ? FText::FromString(TEXT("Hidden From Teacher")) : FText::FromString(TEXT("Hiding Spot"));
 	}
 
@@ -141,6 +180,47 @@ FText ABHLocker::GetInteractionLabel_Implementation(ABHCharacter* Character) con
 	}
 
 	return Occupant ? FText::FromString(TEXT("Occupied")) : FText::FromString(TEXT("Hide"));
+}
+
+FBHInteractionPromptInfo ABHLocker::GetInteractionPromptInfo_Implementation(ABHCharacter* Character) const
+{
+	FBHInteractionPromptInfo Info;
+	Info.bUsePromptInfo = true;
+	Info.Label = GetInteractionLabel_Implementation(Character);
+	Info.bCanInteract = CanInteract_Implementation(Character);
+	if (Info.bCanInteract)
+	{
+		const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+		Info.RiskText = FText::FromString(BHLockerAllowsWarmupSearch(BHGS) ? TEXT("WARMUP") : (Occupant && Occupant != Character ? TEXT("SEARCH") : TEXT("HIDE QUIETLY")));
+		return Info;
+	}
+
+	const ABHPlayerState* BHPS = Character ? Character->GetBHPlayerState() : nullptr;
+	if (!BHPS || BHPS->PlayerRole == EBHPlayerRole::Unassigned)
+	{
+		Info.DisabledReason = FText::FromString(TEXT("READY UP FIRST"));
+	}
+	else if (BHPS->LifeState != EBHPlayerLifeState::Alive)
+	{
+		Info.DisabledReason = FText::FromString(TEXT("OUT OF PLAY"));
+	}
+	else if (BHPS->IsAliveHunter())
+	{
+		Info.DisabledReason = Occupant ? FText::FromString(TEXT("USE CAPTURE TO SEARCH")) : FText::FromString(TEXT("TEACHER CANNOT HIDE"));
+	}
+	else if (BHPS->PlayerRole == EBHPlayerRole::FakeHunter)
+	{
+		Info.DisabledReason = FText::FromString(TEXT("HALL MONITORS CANNOT HIDE"));
+	}
+	else if (Occupant)
+	{
+		Info.DisabledReason = FText::FromString(TEXT("OCCUPIED"));
+	}
+	else
+	{
+		Info.DisabledReason = FText::FromString(TEXT("LOCKED"));
+	}
+	return Info;
 }
 
 void ABHLocker::ClearOccupant(ABHCharacter* Character)

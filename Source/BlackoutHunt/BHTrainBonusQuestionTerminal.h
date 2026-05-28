@@ -16,10 +16,12 @@ class BLACKOUTHUNT_API ABHTrainBonusQuestionTerminal : public ABHInteractableAct
 public:
 	ABHTrainBonusQuestionTerminal();
 
+	virtual void Tick(float DeltaSeconds) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual bool CanInteract_Implementation(ABHCharacter* Character) const override;
 	virtual void BeginInteract_Implementation(ABHCharacter* Character) override;
 	virtual FText GetInteractionLabel_Implementation(ABHCharacter* Character) const override;
+	virtual FBHInteractionPromptInfo GetInteractionPromptInfo_Implementation(ABHCharacter* Character) const override;
 
 	bool SubmitAnswer(ABHCharacter* Character, int32 AnswerIndex);
 	void LoadQuestion(EBHPhysicsTopic PreferredTopic, int32 Seed, const ABHPlayerState* AdaptivePlayerState = nullptr, bool bLastAnswerCorrect = true);

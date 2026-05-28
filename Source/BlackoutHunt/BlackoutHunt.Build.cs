@@ -23,6 +23,7 @@ public class BlackoutHunt : ModuleRules
 			"Sockets",
 			"HTTP",
 			"Json",
+			"Niagara",
 			"AIModule",
 			"NavigationSystem",
 			"GameplayTasks",
@@ -31,8 +32,11 @@ public class BlackoutHunt : ModuleRules
 			"GameplayStateTreeModule",
 			"OnlineSubsystem",
 			"OnlineSubsystemUtils",
-			"OnlineBase"
+			"OnlineBase",
+			"AssetRegistry"
 		});
+
+		DynamicallyLoadedModuleNames.Add("OnlineSubsystemSteam");
 
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
@@ -43,7 +47,6 @@ public class BlackoutHunt : ModuleRules
 		{
 			PrivateDependencyModuleNames.AddRange(new string[]
 			{
-				"AssetRegistry",
 				"PropertyBindingUtils",
 				"PropertyBindingUtilsEditor",
 				"StructUtilsEditor",

@@ -28,9 +28,11 @@ public:
 	ABHBotController();
 
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void OnPossess(APawn* InPawn) override;
 	FString GetBotDebugLine() const;
+	FString GetBotArchetypeLabel() const;
 	bool RunStateTreeIntent(EBHBotIntent Intent, AActor* Target, const FVector& Location, float AcceptanceRadius);
 	bool HasRecentStateTreeStimulus(EBHBotStimulusType Type, float MaxAgeSeconds, FVector& OutLocation) const;
 	void ReportStateTreeDebugState(const FString& InStateName);
@@ -114,9 +116,12 @@ private:
 	FVector LastProgressLocation;
 	FVector LastKnownSurvivorLocation;
 	float LastKnownSurvivorTime;
+	float LastDecisionScore;
+	int32 LastDecisionCandidateCount;
 	FBHBotMemory LocalMemory;
 	EBHBotPersonality Personality;
 	bool bPersonalityChosen;
+	bool bLastDecisionUsedPolicyModel;
 	TWeakObjectPtr<AActor> CurrentInteractTarget;
 	TWeakObjectPtr<AActor> LastUnreachableTarget;
 	TWeakObjectPtr<AActor> CurrentClaimTarget;

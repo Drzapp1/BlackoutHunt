@@ -5,6 +5,7 @@
 #include "BHTrainDoor.generated.h"
 
 class UBoxComponent;
+class UMaterialInstanceDynamic;
 class UPointLightComponent;
 class UStaticMeshComponent;
 
@@ -16,11 +17,13 @@ class BLACKOUTHUNT_API ABHTrainDoor : public ABHInteractableActor
 public:
 	ABHTrainDoor();
 
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual bool CanInteract_Implementation(ABHCharacter* Character) const override;
 	virtual void BeginInteract_Implementation(ABHCharacter* Character) override;
 	virtual FText GetInteractionLabel_Implementation(ABHCharacter* Character) const override;
+	virtual FBHInteractionPromptInfo GetInteractionPromptInfo_Implementation(ABHCharacter* Character) const override;
 
 	void ConfigureDoor(bool bNewEscapeDoor, const FString& NewDoorName);
 	void SetDoorOpen(bool bNewOpen);
@@ -55,6 +58,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPointLightComponent> StatusLight;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> HeaderLightMaterial;
 
 	UPROPERTY(ReplicatedUsing = OnRep_DoorState, BlueprintReadOnly, Category = "Train Door")
 	bool bOpen;

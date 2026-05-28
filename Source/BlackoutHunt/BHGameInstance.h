@@ -23,6 +23,7 @@ struct FBHOnlineSessionSummary
 };
 
 class ABHPlayerState;
+class APlayerState;
 
 struct FBHTravelPlayerProgress
 {
@@ -30,12 +31,39 @@ struct FBHTravelPlayerProgress
 	FString PlayerName;
 	EBHPlayerRole PlayerRole = EBHPlayerRole::Unassigned;
 	EBHPlayerRole DesiredRole = EBHPlayerRole::Unassigned;
+	EBHPlayerRole SpectatorRolePreference = EBHPlayerRole::Unassigned;
 	EBHPlayerLifeState LifeState = EBHPlayerLifeState::Alive;
 	bool bFakeHunterEligible = false;
 	FBHPlayerRevisionStats RevisionStats;
 	int32 QuestionPoints = 0;
 	int32 LifetimeQuestionPoints = 0;
+	int32 HunterPoints = 0;
+	int32 LifetimeHunterPoints = 0;
 	TArray<FBHPowerupInventoryEntry> Powerups;
+};
+
+USTRUCT()
+struct FBHPlaytestTelemetryEvent
+{
+	GENERATED_BODY()
+
+	FString EventType;
+	FString EventDetail;
+	FString RuntimeLevelName;
+	FString RoundPhase;
+	FString PlayerTag;
+	FString PlayerRole;
+	FString TargetTag;
+	FString TargetRole;
+	FString QuestionId;
+	FString Topic;
+	FString Difficulty;
+	FVector Location = FVector::ZeroVector;
+	float ServerTimeSeconds = 0.0f;
+	int32 StageIndex = 0;
+	int32 RoundSeed = 0;
+	int32 Count = 1;
+	bool bRevisionMode = false;
 };
 
 UCLASS()
@@ -128,9 +156,15 @@ public:
 	void RequestCleanExit(const FString& Reason);
 	void PersistTravelPlayerState(const ABHPlayerState* PlayerState);
 	bool RestoreTravelPlayerState(ABHPlayerState* PlayerState) const;
+	void ResetPersistentHunterPoints();
 	void RecordQuestionAttempt(const FBHQuestionAttemptRecord& Attempt);
 	const TArray<FBHQuestionAttemptRecord>& GetQuestionAttemptHistory() const;
 	void ClearQuestionAttemptHistory();
+	FString GetAnonymousTelemetryPlayerTag(const APlayerState* PlayerState);
+	void RecordPlaytestTelemetryEvent(const FBHPlaytestTelemetryEvent& Event);
+	bool ExportPlaytestTelemetry(FString& OutMessage, bool bClearAfterExport = false);
+	void ClearPlaytestTelemetry();
+	int32 GetPlaytestTelemetryEventCount() const;
 	void SetPersistentStageIndex(int32 NewStageIndex);
 	int32 GetPersistentStageIndex() const;
 	FString BuildTrainRecapOverview() const;
@@ -140,6 +174,7 @@ public:
 
 private:
 	IOnlineSessionPtr GetOnlineSessionInterface(FString& OutMessage) const;
+	bool IsOnlineIdentityReadyForSessions(FString& OutMessage);
 	bool IsHostNetworkContext(FString& OutMessage, const TCHAR* ActionDescription) const;
 	void SetLastNetworkMessage(const FString& Message);
 	void OpenListenLevel(const FString& LevelName);
@@ -162,6 +197,7 @@ private:
 	TArray<FBHOnlineSessionSummary> OnlineSessionSummaries;
 	FString PendingOnlineLevelName;
 	bool bOnlineSessionBusy = false;
+	bool bSteamAutoLoginAttempted = false;
 
 	FString GameHotspotSsid;
 	FString GameHotspotPassphrase;
@@ -173,5 +209,9 @@ private:
 	TSet<FString> AutomationMarkersLogged;
 	TArray<FBHTravelPlayerProgress> TravelPlayerProgress;
 	TArray<FBHQuestionAttemptRecord> QuestionAttemptHistory;
+	TArray<FBHPlaytestTelemetryEvent> PlaytestTelemetryEvents;
+	TMap<FString, FString> PlaytestTelemetryPlayerTagsById;
+	FString PlaytestTelemetrySessionId;
+	int32 NextPlaytestTelemetryPlayerOrdinal = 1;
 	int32 PersistentStageIndex = 0;
 };

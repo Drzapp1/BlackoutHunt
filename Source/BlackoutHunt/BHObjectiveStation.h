@@ -19,6 +19,7 @@ public:
 	virtual void BeginInteract_Implementation(ABHCharacter* Character) override;
 	virtual void EndInteract_Implementation(ABHCharacter* Character) override;
 	virtual FText GetInteractionLabel_Implementation(ABHCharacter* Character) const override;
+	virtual FBHInteractionPromptInfo GetInteractionPromptInfo_Implementation(ABHCharacter* Character) const override;
 
 	void Configure(EBHObjectiveStationType NewStationType);
 	void ConfigureRevisionCounterNode(EBHRevisionCounterNodeType NewCounterType);
@@ -34,6 +35,9 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt")
 	EBHObjectiveStationType GetStationType() const;
+
+	UFUNCTION(BlueprintPure, Category = "Blackout Hunt")
+	FString GetPhysicalTaskInstruction() const;
 
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Question")
 	bool IsQuestionSolved() const;
