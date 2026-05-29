@@ -24,6 +24,7 @@
 #include "BHJumpscarePresentation.h"
 #include "BHJumpscareVariantLibrary.h"
 #include "BHLessonPreset.h"
+#include "BHLevelMarker.h"
 #include "BHLocker.h"
 #include "BHNoiseDecoy.h"
 #include "BHObjectiveStation.h"
@@ -65,6 +66,7 @@
 #include "Engine/World.h"
 #include "GameFramework/GameStateBase.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/PlayerStart.h"
 #include "AI/Navigation/NavigationDirtyArea.h"
 #include "NavMesh/NavMeshBoundsVolume.h"
 #include "NavigationPath.h"
@@ -1030,6 +1032,7 @@ void ABHGameMode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		GetWorldTimerManager().ClearTimer(RoundTimerHandle);
 		GetWorldTimerManager().ClearTimer(DirectorTimerHandle);
 		GetWorldTimerManager().ClearTimer(VoidRecoveryTimerHandle);
+		GetWorldTimerManager().ClearTimer(FinalEscapeFallbackTimerHandle);
 		GetWorldTimerManager().ClearAllTimersForObject(this);
 	}
 	Super::EndPlay(EndPlayReason);
@@ -1222,13 +1225,33 @@ void ABHGameMode::Logout(AController* Exiting)
 		}
 	}
 
+	// Drop the leaving player's spectator-encouragement cooldown entry so the map does not grow
+	// unbounded over a long-lived listen server, and a recycled APlayerState address can't inherit
+	// a stale cooldown.
+	if (const APlayerState* ExitingPS = Exiting ? Exiting->GetPlayerState<APlayerState>() : nullptr)
+	{
+		SpectatorEncouragementTimes.Remove(TObjectKey<APlayerState>(ExitingPS));
+	}
+
 	Super::Logout(Exiting);
 
 	if (ABHGameState* BHGS = GetGameState<ABHGameState>())
 	{
-		if (!bPracticeMode && !bTestMode && BHGS->RoundPhase == EBHRoundPhase::Hunt && CountAliveSurvivors() <= 0)
+		const bool bRoundActive = BHGS->RoundPhase == EBHRoundPhase::Hunt
+			|| BHGS->RoundPhase == EBHRoundPhase::FinalEscape;
+		if (!bPracticeMode && !bTestMode && bRoundActive)
 		{
-			EndRound(EBHRoundPhase::HunterWin);
+			if (CountAliveSurvivors() <= 0)
+			{
+				EndRound(EBHRoundPhase::HunterWin);
+			}
+			else if (CountAliveHunters() <= 0)
+			{
+				// The last hunter (human or bot) disconnected, so no one can capture the survivors.
+				// Resolve in the survivors' favor now instead of letting the match hang until the round
+				// timer expires — which would otherwise wrongly credit the (now absent) hunters with a win.
+				EndRound(EBHRoundPhase::SurvivorsWin);
+			}
 		}
 	}
 }
@@ -3562,6 +3585,21 @@ bool ABHGameMode::CanUseTesterShortcut(ABHPlayerController* RequestingController
 {
 	const ABHGameState* BHGS = GetGameState<ABHGameState>();
 	const ABHPlayerState* BHPS = RequestingController ? RequestingController->GetPlayerState<ABHPlayerState>() : nullptr;
+
+	// Tester shortcuts force session-wide travel/escape/train-phase changes for everyone, so they
+	// must stay on the host machine. In a Test Round every joined client is temporarily granted the
+	// Tester role and bTestMode is true server-wide, so the tester-context check below is not enough
+	// on its own: without this host gate a student client could press a tester key and hijack the
+	// shared session (force final-station travel, trigger the escape, advance the train phase, ...).
+	if (!IsHostAdminController(RequestingController))
+	{
+		if (RequestingController)
+		{
+			RequestingController->ClientShowStatusMessage(TEXT("Tester train shortcuts are host-only."), 4.0f);
+		}
+		return false;
+	}
+
 	const bool bTesterContext = bTestMode
 		|| (BHGS && BHGS->bTestMode)
 		|| (BHPS && BHPS->PlayerRole == EBHPlayerRole::Tester);
@@ -3633,7 +3671,7 @@ void ABHGameMode::TesterOpenTrainIntermission(ABHPlayerController* RequestingCon
 	PersistPlayersForTravel();
 	FString TravelURL = BuildTravelOptionsForLevel(TEXT("TrainIntermission"), true, RuntimeStageIndex, EBHRoundPhase::SurvivorsWin);
 	TravelURL += TEXT("?BHTestMode=1");
-	GetWorld()->ServerTravel(TravelURL, true);
+	RequestServerTravel(TravelURL, true);
 }
 
 void ABHGameMode::TesterAdvanceTrainPhase(ABHPlayerController* RequestingController)
@@ -3671,13 +3709,14 @@ void ABHGameMode::TesterLoadFinalStation(ABHPlayerController* RequestingControll
 		BHGI->SetPersistentStageIndex(RuntimeStageIndex);
 	}
 
-	FString TravelURL = FString::Printf(TEXT("/Engine/Maps/Entry?listen?BHLevel=Foggrounds?BHFogPreset=%s?BHStageIndex=2?BHTestMode=1"),
+	FString TravelURL = FString::Printf(TEXT("%s?listen?BHLevel=Foggrounds?BHFogPreset=%s?BHStageIndex=2?BHTestMode=1"),
+		*ResolveTravelMapForLevel(TEXT("Foggrounds")),
 		*FogPresetToString(NextFogPreset));
 	if (bFogPresetOverride)
 	{
 		TravelURL += TEXT("?BHFogOverride=1");
 	}
-	GetWorld()->ServerTravel(TravelURL, true);
+	RequestServerTravel(TravelURL, true);
 }
 
 void ABHGameMode::TesterTriggerFinalEscape(ABHPlayerController* RequestingController)
@@ -3722,7 +3761,7 @@ void ABHGameMode::TesterForceFinalRecap(ABHPlayerController* RequestingControlle
 
 	FString TravelURL = BuildTravelOptionsForLevel(TEXT("TrainIntermission"), true, RuntimeStageIndex, EBHRoundPhase::SurvivorsWin);
 	TravelURL += TEXT("?BHTestMode=1");
-	GetWorld()->ServerTravel(TravelURL, true);
+	RequestServerTravel(TravelURL, true);
 }
 
 void ABHGameMode::ResetRevisionStats()
@@ -5047,6 +5086,198 @@ void ABHGameMode::TriggerHunterBlackout(const FVector& SourceLocation, int32 Sur
 	BroadcastStatus(TEXT("The Teacher killed a bank of lights."), 3.5f);
 }
 
+#if WITH_EDITOR
+void ABHGameMode::BuildLevelForExport(const FString& InLevelName)
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+
+	// Editor export only: produce the same geometry + gameplay actors a live build would, but with none
+	// of the round/timer/atmosphere state (those come from BeginPlay at runtime, not the builders). Reset
+	// the tracked arrays the way BuildRuntimeFacility would before a dispatch, then run one builder.
+	bFacilityBuilt = false;
+	bTrainIntermissionLevel = false;
+	BreakerActors.Reset();
+	DoorActors.Reset();
+	ExitGates.Reset();
+	FlickerLights.Reset();
+	StationSignalBlocks.Reset();
+	StationSignalLights.Reset();
+	ObjectiveStations.Reset();
+	EscapeStationManagers.Reset();
+	SurvivorSpawns.Reset();
+	ScarePoints.Reset();
+
+	const FString Normalized = NormalizeBHLevelName(InLevelName);
+	RuntimeLevelName = Normalized;
+	NextRuntimeLevelName = Normalized;
+	RuntimeFogPreset = EBHFogPreset::Heavy;
+	NextFogPreset = EBHFogPreset::Heavy;
+
+	if (Normalized.Equals(TEXT("Substation"), ESearchCase::IgnoreCase))
+	{
+		BuildSubstationLevel();
+	}
+	else if (Normalized.Equals(TEXT("Foggrounds"), ESearchCase::IgnoreCase))
+	{
+		BuildFoggroundsLevel();
+	}
+	else
+	{
+		RuntimeLevelName = TEXT("Facility");
+		BuildFacilityLevel();
+	}
+}
+#endif
+
+bool ABHGameMode::DiscoverAuthoredLevel()
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return false;
+	}
+
+	// A single placed ABHLevelMarker flags the level as hand-authored. No marker => runtime generator.
+	ABHLevelMarker* Marker = nullptr;
+	for (TActorIterator<ABHLevelMarker> It(World); It; ++It)
+	{
+		Marker = *It;
+		break;
+	}
+	if (!Marker)
+	{
+		return false;
+	}
+
+	bFacilityBuilt = true;
+
+	// Start from a clean slate, matching how each Build*Level() resets its tracked arrays.
+	BreakerActors.Reset();
+	DoorActors.Reset();
+	ExitGates.Reset();
+	FlickerLights.Reset();
+	StationSignalBlocks.Reset();
+	StationSignalLights.Reset();
+	ObjectiveStations.Reset();
+	EscapeStationManagers.Reset();
+	SurvivorSpawns.Reset();
+
+	// Honour the marker's identity/fog/stage only where the travel URL did not already pin a value, so
+	// host-driven travel options keep priority over the asset-baked defaults.
+	if ((RuntimeLevelName.IsEmpty() || RuntimeLevelName.Equals(TEXT("Facility"), ESearchCase::IgnoreCase))
+		&& !Marker->LevelName.IsEmpty())
+	{
+		RuntimeLevelName = NormalizeBHLevelName(Marker->LevelName);
+	}
+	if (!bFogPresetOverride && FString(World->URL.GetOption(TEXT("BHFogPreset="), TEXT(""))).IsEmpty())
+	{
+		RuntimeFogPreset = Marker->DefaultFogPreset;
+		NextFogPreset = Marker->DefaultFogPreset;
+	}
+
+	// Collect only the actor types the game mode tracks by pointer. Everything else (lockers, batteries,
+	// panic alarms, cameras + CCTV zones, security terminals/monitors, power switches, shutters) is
+	// already located via TActorIterator at its use sites, so authored placement of those needs no
+	// registration here.
+	for (TActorIterator<ABHBreaker> It(World); It; ++It)
+	{
+		BreakerActors.Add(*It);
+	}
+	for (TActorIterator<ABHDoor> It(World); It; ++It)
+	{
+		DoorActors.Add(*It);
+	}
+	for (TActorIterator<ABHExitGate> It(World); It; ++It)
+	{
+		ExitGates.Add(*It);
+	}
+	for (TActorIterator<ABHObjectiveStation> It(World); It; ++It)
+	{
+		ObjectiveStations.Add(*It);
+	}
+	for (TActorIterator<ABHEscapeStationManager> It(World); It; ++It)
+	{
+		EscapeStationManagers.Add(*It);
+	}
+	for (TActorIterator<ABHFlickerLight> It(World); It; ++It)
+	{
+		FlickerLights.Add(*It);
+	}
+
+	// Survivor spawns come from placed APlayerStart actors; a PlayerStart with the "Hunter" tag becomes
+	// the teacher/hunter spawn. Falls back to the marker transform when no hunter start was authored.
+	bool bFoundHunterSpawn = false;
+	for (TActorIterator<APlayerStart> It(World); It; ++It)
+	{
+		APlayerStart* Start = *It;
+		if (!Start)
+		{
+			continue;
+		}
+		if (Start->PlayerStartTag == FName(TEXT("Hunter")))
+		{
+			HunterSpawn = Start->GetActorLocation();
+			bFoundHunterSpawn = true;
+		}
+		else
+		{
+			SurvivorSpawns.Add(Start->GetActorLocation());
+		}
+	}
+	if (!bFoundHunterSpawn)
+	{
+		HunterSpawn = Marker->GetActorLocation();
+	}
+
+	// Authored maps are hand-placed, so fail loudly (and recover where safe) when a required element is
+	// missing — these are the mistakes a designer makes. This is all authored-path only; the procedural
+	// builders always spawn the right counts, so none of it triggers for the generated levels.
+	if (BreakerActors.Num() == 0)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlackoutHunt] Authored level '%s' has no ABHBreaker actors; survivors cannot unlock the exit. Place breakers in the level."), *RuntimeLevelName);
+	}
+	else if (BreakerActors.Num() < RequiredBreakers)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[BlackoutHunt] Authored level '%s' has %d breakers but RequiredBreakers=%d; clamping to the placed count so the round stays winnable."), *RuntimeLevelName, BreakerActors.Num(), RequiredBreakers);
+		RequiredBreakers = FMath::Max(1, BreakerActors.Num());
+	}
+	if (ExitGates.Num() == 0)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlackoutHunt] Authored level '%s' has no ABHExitGate actors; survivors have no way to escape. Place at least one exit gate."), *RuntimeLevelName);
+	}
+	if (SurvivorSpawns.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[BlackoutHunt] Authored level '%s' has no survivor APlayerStart actors; survivors will use the fallback spawn. Place APlayerStart actors (tag one 'Hunter' for the teacher)."), *RuntimeLevelName);
+	}
+	if (bRevisionMode && ObjectiveStations.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[BlackoutHunt] Authored level '%s' is in revision mode but has no ABHObjectiveStation actors; revision rounds need stations. Place stations or disable revision for this map."), *RuntimeLevelName);
+	}
+
+	// Authored maps should ship a baked NavMeshBoundsVolume; until then the marker keeps the runtime
+	// navigation rebuild enabled so bots have a usable nav mesh.
+	if (Marker->bRebuildRuntimeNavigation)
+	{
+		BuildRuntimeNavigation();
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("[BlackoutHunt] Authored level '%s' discovered: %d breakers, %d doors, %d exits, %d objective stations, %d escape managers, %d flicker lights, %d survivor spawns (hunter spawn %s)."),
+		*RuntimeLevelName,
+		BreakerActors.Num(),
+		DoorActors.Num(),
+		ExitGates.Num(),
+		ObjectiveStations.Num(),
+		EscapeStationManagers.Num(),
+		FlickerLights.Num(),
+		SurvivorSpawns.Num(),
+		bFoundHunterSpawn ? TEXT("from tagged PlayerStart") : TEXT("from marker"));
+
+	return true;
+}
+
 void ABHGameMode::BuildRuntimeFacility()
 {
 	if (bFacilityBuilt || !GetWorld())
@@ -5154,6 +5385,14 @@ void ABHGameMode::BuildRuntimeFacility()
 		BHGI->SetPersistentStageIndex(RuntimeStageIndex);
 	}
 
+	// Authored maps (Facility/Substation/Foggrounds shipped as real .umap assets) carry a single
+	// ABHLevelMarker. The train intermission is never authored, so it always uses the generator below.
+	if (!bTrainIntermissionLevel && DiscoverAuthoredLevel())
+	{
+		NextRuntimeLevelName = GetNextMapAfterStage(RuntimeStageIndex);
+		return;
+	}
+
 	if (bTrainIntermissionLevel)
 	{
 		NextRuntimeLevelName = GetNextMapAfterStage(RuntimeStageIndex);
@@ -5178,6 +5417,11 @@ void ABHGameMode::BuildRuntimeFacility()
 
 	RuntimeLevelName = TEXT("Facility");
 	NextRuntimeLevelName = GetNextMapAfterStage(RuntimeStageIndex);
+	BuildFacilityLevel();
+}
+
+void ABHGameMode::BuildFacilityLevel()
+{
 	SurvivorSpawns = {
 		FVector(4320.0f, -1320.0f, 120.0f),
 		FVector(4520.0f, -960.0f, 120.0f),
@@ -6135,12 +6379,46 @@ void ABHGameMode::BuildFoggroundsLevel()
 	AddIndustrialClutter({FVector(-7350.0f, -5550.0f, 55.0f), FVector(7350.0f, -5550.0f, 55.0f), FVector(-7350.0f, 5550.0f, 55.0f), FVector(7350.0f, 5550.0f, 55.0f)}, WetMetal);
 	AddSurfaceDetailGrid(7600.0f, 5900.0f, FLinearColor(0.08f, 0.12f, 0.13f, 1.0f));
 
+	// Random ground clutter (trees/boulders) is scattered below. It must steer clear of every crawl
+	// passage, or a collidable trunk/boulder can spawn on a crawl mouth and seal a route the player is
+	// meant to slip through. Gather a keep-out footprint from every crawl volume that already exists in
+	// the world — this covers the maze-wall crawl runs, the secret-room/standalone culverts, AND the
+	// final-station crawl tubes built in BuildFoggroundsFinalStation() above (which live in a separate
+	// function and so cannot be tracked through this builder's local state). Each volume's world XY
+	// bounds are padded so a boulder's footprint, not just its centre, stays clear of the opening.
+	const float CrawlKeepoutPadding = 140.0f; // widest scattered boulder is ~73 half-width; pad beyond it.
+	TArray<FBox2D> CrawlKeepoutBounds;
+	for (TActorIterator<ABHCrawlSpaceVolume> It(GetWorld()); It; ++It)
+	{
+		const FBox WorldBounds = It->GetComponentsBoundingBox(true);
+		if (!WorldBounds.IsValid)
+		{
+			continue;
+		}
+		CrawlKeepoutBounds.Emplace(
+			FVector2D(WorldBounds.Min.X - CrawlKeepoutPadding, WorldBounds.Min.Y - CrawlKeepoutPadding),
+			FVector2D(WorldBounds.Max.X + CrawlKeepoutPadding, WorldBounds.Max.Y + CrawlKeepoutPadding));
+	}
+
+	const auto HitsCrawlKeepout = [&CrawlKeepoutBounds](float X, float Y)
+	{
+		const FVector2D Point(X, Y);
+		for (const FBox2D& Bounds : CrawlKeepoutBounds)
+		{
+			if (Bounds.IsInside(Point))
+			{
+				return true;
+			}
+		}
+		return false;
+	};
+
 	FRandomStream NatureStream(73421);
 	for (int32 Index = 0; Index < 62; ++Index)
 	{
 		const float X = NatureStream.FRandRange(-7350.0f, 7350.0f);
 		const float Y = NatureStream.FRandRange(-5650.0f, 5650.0f);
-		if ((X > 5100.0f && FMath::Abs(Y) < 1600.0f) || FMath::Abs(Y + 3600.0f) < 460.0f || FMath::Abs(Y - 3950.0f) < 360.0f)
+		if ((X > 5100.0f && FMath::Abs(Y) < 1600.0f) || FMath::Abs(Y + 3600.0f) < 460.0f || FMath::Abs(Y - 3950.0f) < 360.0f || HitsCrawlKeepout(X, Y))
 		{
 			continue;
 		}
@@ -6155,6 +6433,12 @@ void ABHGameMode::BuildFoggroundsLevel()
 	{
 		const float X = NatureStream.FRandRange(-7200.0f, 7200.0f);
 		const float Y = NatureStream.FRandRange(-5550.0f, 5550.0f);
+		// These boulders are collidable, so apply the same corridor exclusions as the trees above and
+		// keep them off every crawl passage.
+		if ((X > 5100.0f && FMath::Abs(Y) < 1600.0f) || FMath::Abs(Y + 3600.0f) < 460.0f || FMath::Abs(Y - 3950.0f) < 360.0f || HitsCrawlKeepout(X, Y))
+		{
+			continue;
+		}
 		SpawnBlock(FVector(X, Y, 36.0f), FVector(NatureStream.FRandRange(0.65f, 1.45f), NatureStream.FRandRange(0.45f, 1.20f), NatureStream.FRandRange(0.32f, 0.58f)), FLinearColor(0.13f, 0.14f, 0.13f, 1.0f), FRotator(0.0f, Index * 23.0f, 0.0f), true, EBHBlockMaterial::Concrete);
 	}
 
@@ -10881,7 +11165,24 @@ void ABHGameMode::EndRound(EBHRoundPhase ResultPhase)
 
 	GetWorldTimerManager().ClearTimer(RoundTimerHandle);
 	GetWorldTimerManager().ClearTimer(DirectorTimerHandle);
+	GetWorldTimerManager().ClearTimer(FinalEscapeFallbackTimerHandle);
+	// A post-round travel is now committed (fires in 8s). Block discretionary travels until then so a
+	// tester shortcut cannot redirect the session away from the intended post-round destination.
+	bServerTravelInProgress = true;
 	GetWorldTimerManager().SetTimer(RoundTimerHandle, this, &ABHGameMode::ResetRoundByTravel, 8.0f, false);
+}
+
+bool ABHGameMode::RequestServerTravel(const FString& URL, bool bAbsolute)
+{
+	if (bServerTravelInProgress || !GetWorld())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("BlackoutHunt: ignored a ServerTravel to '%s' because a travel is already pending."), *URL);
+		return false;
+	}
+
+	bServerTravelInProgress = true;
+	GetWorld()->ServerTravel(URL, bAbsolute);
+	return true;
 }
 
 void ABHGameMode::ResetRoundByTravel()
@@ -10898,7 +11199,8 @@ void ABHGameMode::ResetRoundByTravel()
 
 		PersistPlayersForTravel();
 		const FString TravelLevelName = NextRuntimeLevelName.IsEmpty() ? RuntimeLevelName : NextRuntimeLevelName;
-		FString TravelURL = FString::Printf(TEXT("/Engine/Maps/Entry?listen?BHLevel=%s?BHFogPreset=%s"),
+		FString TravelURL = FString::Printf(TEXT("%s?listen?BHLevel=%s?BHFogPreset=%s"),
+			*ResolveTravelMapForLevel(TravelLevelName),
 			*TravelLevelName,
 			*FogPresetToString(NextFogPreset));
 		if (bFogPresetOverride)
@@ -10964,10 +11266,37 @@ FString ABHGameMode::GetNextMapAfterStage(int32 StageIndex) const
 	return TEXT("Final");
 }
 
+FString BHResolveLevelMapPackage(const FString& LevelName)
+{
+	// The non-combat train intermission is never authored as a /Game map; keep it on the runtime base map.
+	if (LevelName.TrimStartAndEnd().Equals(TEXT("TrainIntermission"), ESearchCase::IgnoreCase))
+	{
+		return TEXT("/Engine/Maps/Entry");
+	}
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	if (Settings && Settings->bUseAuthoredLevels)
+	{
+		// NormalizeBHLevelName always yields one of Facility/Substation/Foggrounds, so the path is canonical.
+		const FString AuthoredPath = FString::Printf(TEXT("/Game/BlackoutHunt/Maps/%s"), *NormalizeBHLevelName(LevelName));
+		if (FPackageName::DoesPackageExist(AuthoredPath))
+		{
+			return AuthoredPath;
+		}
+	}
+	return TEXT("/Engine/Maps/Entry");
+}
+
+FString ABHGameMode::ResolveTravelMapForLevel(const FString& NormalizedLevel) const
+{
+	return BHResolveLevelMapPackage(NormalizedLevel);
+}
+
 FString ABHGameMode::BuildTravelOptionsForLevel(const FString& LevelName, bool bIntermission, int32 StageIndex, EBHRoundPhase ResultPhase) const
 {
 	const FString NormalizedLevel = bIntermission ? TEXT("TrainIntermission") : NormalizeBHLevelName(LevelName);
-	FString TravelURL = FString::Printf(TEXT("/Engine/Maps/Entry?listen?BHFogPreset=%s?BHStageIndex=%d"),
+	const FString BaseMap = ResolveTravelMapForLevel(NormalizedLevel);
+	FString TravelURL = FString::Printf(TEXT("%s?listen?BHFogPreset=%s?BHStageIndex=%d"),
+		*BaseMap,
 		*FogPresetToString(NextFogPreset),
 		FMath::Clamp(StageIndex, 0, 2));
 
@@ -11054,6 +11383,26 @@ int32 ABHGameMode::CountAliveSurvivors() const
 	{
 		const ABHPlayerState* BHPS = Cast<ABHPlayerState>(RawPS);
 		if (BHPS && BHPS->IsAliveSurvivor())
+		{
+			++Count;
+		}
+	}
+
+	return Count;
+}
+
+int32 ABHGameMode::CountAliveHunters() const
+{
+	int32 Count = 0;
+	if (!GameState)
+	{
+		return Count;
+	}
+
+	for (APlayerState* RawPS : GameState->PlayerArray)
+	{
+		const ABHPlayerState* BHPS = Cast<ABHPlayerState>(RawPS);
+		if (BHPS && BHPS->IsAliveHunter())
 		{
 			++Count;
 		}

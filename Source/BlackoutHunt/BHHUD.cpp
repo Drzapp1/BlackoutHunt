@@ -157,16 +157,6 @@ namespace
 		}
 	}
 
-	FLinearColor MutedText()
-	{
-		return FLinearColor(0.58f, 0.66f, 0.66f, 0.92f);
-	}
-
-	FLinearColor MainText()
-	{
-		return FLinearColor(0.88f, 0.95f, 0.92f, 1.0f);
-	}
-
 	FLinearColor WithAlpha(FLinearColor Color, float Alpha)
 	{
 		Color.A *= FMath::Clamp(Alpha, 0.0f, 1.0f);
@@ -927,6 +917,9 @@ void ABHHUD::DrawHUD()
 	const bool bShowSurvivorWarnings = BHPS && BHPS->IsAliveSurvivor();
 	const bool bHighContrastHud = BHPC && BHPC->IsHighContrastHudEnabled();
 
+	// Resolve cached UI preferences (palette, scale, opacity, element toggles) once per frame.
+	RefreshHudPreferences(BHPC, BHGS);
+
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	if (BHGS)
 	{
@@ -963,7 +956,7 @@ void ABHHUD::DrawHUD()
 		const FString ActionLine = BuildHudActionLine(GetWorld(), BHGS, BHPS, Character).ToUpper();
 		const FString DetailLine = BuildHudDetailLine(BHGS, BHPS).ToUpper();
 		const FString AuxLine = BuildHudAuxLine(BHGS).ToUpper();
-		const FLinearColor ExitColor = BHGS->bExitUnlocked ? FLinearColor(0.73f, 0.96f, 0.64f, 0.95f) : FLinearColor(0.96f, 0.24f, 0.16f, 0.95f);
+		const FLinearColor ExitColor = BHGS->bExitUnlocked ? ActivePalette.Good : ActivePalette.Bad;
 		DrawHudText(FString::Printf(TEXT("%s / %s"), *TimerText, *ExitText), SafePad, SafePad, ExitColor, GEngine->GetSmallFont(), 0.88f);
 		DrawWrappedHudText(ActionLine, SafePad, SafePad + 22.0f, ReadoutW, bHighContrastHud ? FLinearColor(0.92f, 0.98f, 0.90f, 1.0f) : FLinearColor(0.84f, 0.80f, 0.70f, 0.90f), GEngine->GetSmallFont(), 0.70f, 13.0f, 2);
 		DrawWrappedHudText(DetailLine, SafePad, SafePad + 55.0f, ReadoutW, bHighContrastHud ? FLinearColor(0.78f, 0.92f, 0.88f, 0.96f) : FLinearColor(0.62f, 0.58f, 0.51f, 0.84f), GEngine->GetSmallFont(), 0.60f, 12.0f, 1);
@@ -1064,38 +1057,44 @@ void ABHHUD::DrawHUD()
 
 	if (Character)
 	{
-		const float MeterW = FMath::Clamp(Canvas->ClipX * 0.22f, 210.0f, 310.0f);
-		const float VitalsY = Canvas->ClipY - SafePad - 132.0f;
-		const FString VitalsTitle = Character->IsDetentionMarked()
-			? FString::Printf(TEXT("MARKED %.0fs"), Character->GetDetentionMarkRemaining())
-			: (Character->IsHiddenInLocker() ? FString(TEXT("CONCEALED")) : FString(TEXT("STATUS")));
-		DrawHudText(VitalsTitle.ToUpper(), SafePad, VitalsY - 19.0f, Character->IsDetentionMarked() ? FLinearColor(1.0f, 0.20f, 0.12f, 0.96f) : FLinearColor(0.76f, 0.72f, 0.64f, 0.84f), GEngine->GetSmallFont(), 0.66f);
-		DrawProgressBar(TEXT("BATTERY"), Character->GetFlashlightBattery(), SafePad, VitalsY, MeterW, FLinearColor(0.80f, 0.82f, 0.70f, 0.88f));
-
+		// Probe teacher proximity once -- it feeds both the vitals meter and the threat arrow,
+		// so it stays outside the per-element visibility gates below.
 		const FBHTeacherProximityReadout TeacherProximity = FindTeacherProximity(GetWorld(), Character);
-		const FString TeacherText = TeacherProximity.bFound
-			? FString::Printf(TEXT("%s %.0fm"), TeacherProximity.bLineOfSight ? TEXT("VISIBLE") : TEXT("NEAR"), TeacherProximity.DistanceCm / 100.0f)
-			: FString(TEXT("CLEAR"));
-		DrawProgressBar(TEXT("TEACHER"), TeacherProximity.ProximityPercent, SafePad, VitalsY + 32.0f, MeterW, FLinearColor(0.90f, 0.36f, 0.22f, 0.90f), TeacherText);
-		DrawRawMeter(TEXT("STAMINA"), Character->GetStaminaPercent(), SafePad, VitalsY + 68.0f, MeterW, FLinearColor(0.75f, 0.83f, 0.54f, 0.88f), false);
-		DrawRawMeter(TEXT("FEAR"), Character->GetFear(), SafePad, VitalsY + 86.0f, MeterW, FLinearColor(0.92f, 0.28f, 0.20f, 0.88f), true);
-		DrawRawMeter(TEXT("DREAD"), Character->GetDread(), SafePad, VitalsY + 104.0f, MeterW, FLinearColor(0.84f, 0.18f, 0.14f, 0.90f), true);
-		FString StressHint;
-		if (bShowSurvivorWarnings && (Character->GetFear() >= HudFearPanicHintThreshold || Character->GetDread() >= HudDreadPanicHintThreshold))
+
+		if (bShowVitals)
 		{
-			StressHint = TEXT("PANIC NOISE: SLOW DOWN OR BREAK LINE OF SIGHT");
-		}
-		else if (bShowSurvivorWarnings && Character->GetDread() >= HudDreadHintThreshold)
-		{
-			StressHint = TEXT("DREAD: TASKS SLOW AND HIDING GETS RISKY");
-		}
-		else if (bShowSurvivorWarnings && Character->GetFear() >= HudFearHintThreshold)
-		{
-			StressHint = TEXT("FEAR: SPRINTING GETS LOUDER");
-		}
-		if (!StressHint.IsEmpty())
-		{
-			DrawWrappedHudText(StressHint, SafePad, VitalsY + 122.0f, MeterW, FLinearColor(0.96f, 0.42f, 0.30f, 0.88f), GEngine->GetSmallFont(), 0.48f, 10.0f, 1);
+			const float MeterW = FMath::Clamp(Canvas->ClipX * 0.22f, 210.0f, 310.0f);
+			const float VitalsY = Canvas->ClipY - SafePad - 132.0f;
+			const FString VitalsTitle = Character->IsDetentionMarked()
+				? FString::Printf(TEXT("MARKED %.0fs"), Character->GetDetentionMarkRemaining())
+				: (Character->IsHiddenInLocker() ? FString(TEXT("CONCEALED")) : FString(TEXT("STATUS")));
+			DrawHudText(VitalsTitle.ToUpper(), SafePad, VitalsY - 19.0f, Character->IsDetentionMarked() ? FLinearColor(1.0f, 0.20f, 0.12f, 0.96f) : FLinearColor(0.76f, 0.72f, 0.64f, 0.84f), GEngine->GetSmallFont(), 0.66f);
+			DrawProgressBar(TEXT("BATTERY"), Character->GetFlashlightBattery(), SafePad, VitalsY, MeterW, FLinearColor(0.80f, 0.82f, 0.70f, 0.88f));
+
+			const FString TeacherText = TeacherProximity.bFound
+				? FString::Printf(TEXT("%s %.0fm"), TeacherProximity.bLineOfSight ? TEXT("VISIBLE") : TEXT("NEAR"), TeacherProximity.DistanceCm / 100.0f)
+				: FString(TEXT("CLEAR"));
+			DrawProgressBar(TEXT("TEACHER"), TeacherProximity.ProximityPercent, SafePad, VitalsY + 32.0f, MeterW, FLinearColor(0.90f, 0.36f, 0.22f, 0.90f), TeacherText);
+			DrawRawMeter(TEXT("STAMINA"), Character->GetStaminaPercent(), SafePad, VitalsY + 68.0f, MeterW, FLinearColor(0.75f, 0.83f, 0.54f, 0.88f), false);
+			DrawRawMeter(TEXT("FEAR"), Character->GetFear(), SafePad, VitalsY + 86.0f, MeterW, FLinearColor(0.92f, 0.28f, 0.20f, 0.88f), true);
+			DrawRawMeter(TEXT("DREAD"), Character->GetDread(), SafePad, VitalsY + 104.0f, MeterW, FLinearColor(0.84f, 0.18f, 0.14f, 0.90f), true);
+			FString StressHint;
+			if (bShowSurvivorWarnings && (Character->GetFear() >= HudFearPanicHintThreshold || Character->GetDread() >= HudDreadPanicHintThreshold))
+			{
+				StressHint = TEXT("PANIC NOISE: SLOW DOWN OR BREAK LINE OF SIGHT");
+			}
+			else if (bShowSurvivorWarnings && Character->GetDread() >= HudDreadHintThreshold)
+			{
+				StressHint = TEXT("DREAD: TASKS SLOW AND HIDING GETS RISKY");
+			}
+			else if (bShowSurvivorWarnings && Character->GetFear() >= HudFearHintThreshold)
+			{
+				StressHint = TEXT("FEAR: SPRINTING GETS LOUDER");
+			}
+			if (!StressHint.IsEmpty())
+			{
+				DrawWrappedHudText(StressHint, SafePad, VitalsY + 122.0f, MeterW, FLinearColor(0.96f, 0.42f, 0.30f, 0.88f), GEngine->GetSmallFont(), 0.48f, 10.0f, 1);
+			}
 		}
 
 		if (!bShowSurvivorWarnings)
@@ -1116,7 +1115,10 @@ void ABHHUD::DrawHUD()
 			const float CueStrength = FMath::Clamp((VisibleHunterCueUntilTime - Now) / 0.34f, 0.0f, 1.0f);
 			if (CueStrength > 0.02f)
 			{
-				DrawVisibleHunterArrow(Character, LastVisibleHunterLocation, LastVisibleHunterDistanceCm, CueStrength);
+				if (bShowThreatArrow)
+				{
+					DrawVisibleHunterArrow(Character, LastVisibleHunterLocation, LastVisibleHunterDistanceCm, CueStrength);
+				}
 			}
 			else
 			{
@@ -1129,7 +1131,9 @@ void ABHHUD::DrawHUD()
 	float PathThreatAlpha = 0.0f;
 	const bool bPathDetected = bShowSurvivorWarnings && Character && BHGS && BHGS->RoundPhase == EBHRoundPhase::Hunt && HasNearbyPathThreat(GetWorld(), Character, PathThreatAlpha);
 
-	if (Character && BHGS && BHGS->RoundPhase != EBHRoundPhase::Lobby && BHPC && (BHPC->IsHudMapVisible() || bPathDetected))
+	// The minimap toggle hides the heat sensor, but a detected path threat still forces it
+	// up as a safety reveal regardless of the preference.
+	if (Character && BHGS && BHGS->RoundPhase != EBHRoundPhase::Lobby && BHPC && ((BHPC->IsHudMapVisible() && bShowMinimap) || bPathDetected))
 	{
 		const float MapW = FMath::Clamp(Canvas->ClipX * 0.26f, 280.0f, 380.0f);
 		const float MapX = Canvas->ClipX - SafePad - MapW;
@@ -1139,12 +1143,18 @@ void ABHHUD::DrawHUD()
 	}
 
 	DrawCCTVRevealMarker(Character, BHPC);
-	DrawObjectiveBeats(Character, BHGS);
+	if (bShowObjectiveBeats)
+	{
+		DrawObjectiveBeats(Character, BHGS);
+	}
 
-	const float WarningLevel = bShowSurvivorWarnings ? FMath::Max(Character ? Character->GetDread() : 0.0f, BHGS ? BHGS->PresenceLevel : 0.0f) : 0.0f;
+	const float WarningLevel = (bShowSurvivorWarnings && bShowCrosshairDanger) ? FMath::Max(Character ? Character->GetDread() : 0.0f, BHGS ? BHGS->PresenceLevel : 0.0f) : 0.0f;
 	const float DangerAlpha = FMath::Clamp(WarningLevel / 100.0f, 0.0f, 1.0f);
 	DrawCrosshair(DangerAlpha);
-	DrawNearbyNameTags(Character);
+	if (bShowNameplates)
+	{
+		DrawNearbyNameTags(Character);
+	}
 	DrawInteractionPrompt(Character);
 
 	if (bPathDetected)
@@ -1187,12 +1197,78 @@ void ABHHUD::DrawHUD()
 	DrawPhaseBanner(BHGS, Character);
 }
 
-void ABHHUD::DrawPanel(float X, float Y, float W, float H, const FLinearColor& FillColor, const FLinearColor& AccentColor)
+FLinearColor ABHHUD::MainText() const
+{
+	return ActivePalette.TextMain;
+}
+
+FLinearColor ABHHUD::MutedText() const
+{
+	return ActivePalette.TextMuted;
+}
+
+void ABHHUD::RefreshHudPreferences(const ABHPlayerController* PlayerController, const ABHGameState* GameState)
+{
+	// Defaults keep the HUD unchanged when no controller/preferences are available.
+	HudScale = 1.0f;
+	HudPanelOpacity = 1.0f;
+	bColorblindPalette = false;
+	bShowMinimap = true;
+	bShowNameplates = true;
+	bShowVitals = true;
+	bShowObjectiveBeats = true;
+	bShowThreatArrow = true;
+	bShowCrosshairDanger = true;
+
+	bool bHighContrast = false;
+	if (PlayerController)
+	{
+		HudScale = FMath::Clamp(PlayerController->GetHudScale(), 0.75f, 1.5f);
+		HudPanelOpacity = FMath::Clamp(PlayerController->GetHudPanelOpacity(), 0.35f, 1.0f);
+		bColorblindPalette = PlayerController->IsColorblindHudEnabled();
+		bHighContrast = PlayerController->IsHighContrastHudEnabled();
+		bShowMinimap = PlayerController->IsHudMinimapVisible();
+		bShowNameplates = PlayerController->IsHudNameplatesVisible();
+		bShowVitals = PlayerController->IsHudVitalsVisible();
+		bShowObjectiveBeats = PlayerController->IsHudObjectiveBeatsVisible();
+		bShowThreatArrow = PlayerController->IsHudThreatArrowVisible();
+		bShowCrosshairDanger = PlayerController->IsHudCrosshairDangerVisible();
+	}
+
+	const FString LevelName = (GameState && GameState->GetWorld())
+		? GameState->GetWorld()->GetMapName()
+		: (GetWorld() ? GetWorld()->GetMapName() : FString());
+	// Strip the PIE prefix (e.g. "UEDPIE_0_") so map-name matching works in editor play.
+	FString CleanLevel = LevelName;
+	int32 PrefixEnd = INDEX_NONE;
+	if (CleanLevel.StartsWith(TEXT("UEDPIE_")) && CleanLevel.FindChar(TEXT('_'), PrefixEnd))
+	{
+		// Skip the "UEDPIE_<n>_" prefix entirely.
+		const int32 SecondUnderscore = CleanLevel.Find(TEXT("_"), ESearchCase::IgnoreCase, ESearchDir::FromStart, PrefixEnd + 1);
+		if (SecondUnderscore != INDEX_NONE)
+		{
+			CleanLevel = CleanLevel.RightChop(SecondUnderscore + 1);
+		}
+	}
+
+	const FLinearColor MapAccent = BHHudTheme::MapAccentTintForLevel(CleanLevel);
+	const BHHudTheme::EPaletteMode Mode = bColorblindPalette
+		? BHHudTheme::EPaletteMode::Colorblind
+		: BHHudTheme::EPaletteMode::Standard;
+	ActivePalette = BHHudTheme::ResolveActivePalette(Mode, MapAccent, bHighContrast);
+}
+
+void ABHHUD::DrawPanel(float X, float Y, float W, float H, const FLinearColor& FillColorIn, const FLinearColor& AccentColorIn)
 {
 	if (!Canvas || W <= 1.0f || H <= 1.0f)
 	{
 		return;
 	}
+
+	// Panel opacity preference scales the fill/accent alpha once; every derived shade below
+	// is expressed as a fraction of these, so they fade together while text stays readable.
+	const FLinearColor FillColor = WithAlpha(FillColorIn, HudPanelOpacity);
+	const FLinearColor AccentColor = WithAlpha(AccentColorIn, HudPanelOpacity);
 
 	DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, FillColor.A * 0.42f), X + 6.0f, Y + 7.0f, W, H);
 	DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, FillColor.A * 0.26f), X + 2.0f, Y + 2.0f, W, H);
@@ -1432,7 +1508,7 @@ void ABHHUD::DrawProgressBar(const FString& Label, float Value, float X, float Y
 	const bool bHighContrast = BHPC && BHPC->IsHighContrastHudEnabled();
 	const FString RightText = ValueText.IsEmpty() ? FString::Printf(TEXT("%.0f%%"), ClampedValue) : ValueText;
 	const FLinearColor LabelColor = bHighContrast ? FLinearColor(0.90f, 0.98f, 0.94f, 1.0f) : MutedText();
-	const FLinearColor ReadoutColor = bWarning ? FLinearColor(1.0f, 0.42f, 0.30f, 0.98f) : LabelColor;
+	const FLinearColor ReadoutColor = bWarning ? ActivePalette.WarnHot : LabelColor;
 	DrawHudText(Label, X, Y - 4.0f, LabelColor, GEngine->GetSmallFont(), 0.66f);
 	DrawRightAlignedText(RightText, X + W, Y - 4.0f, ReadoutColor, GEngine->GetSmallFont(), 0.66f);
 	DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, bHighContrast ? 0.64f : 0.42f), X, BarY + 1.0f, W, BarH);
@@ -2415,15 +2491,20 @@ void ABHHUD::DrawQuestionPanel(const ABHObjectiveStation* Station)
 		return;
 	}
 
+	// HUD scale enlarges this centered, readability-critical panel. Because the panel is
+	// centered (PanelX derives from PanelW) and every offset/font below is multiplied by S,
+	// the layout stays self-consistent and on-screen at any scale; width is re-clamped so it
+	// never exceeds the viewport.
+	const float S = HudScale;
 	const int32 ChoiceCount = FMath::Min(4, Station->GetQuestionChoiceCount());
-	const float PanelW = FMath::Clamp(Canvas->ClipX * 0.60f, 560.0f, 920.0f);
+	const float PanelW = FMath::Min(FMath::Clamp(Canvas->ClipX * 0.60f, 560.0f, 920.0f) * S, Canvas->ClipX * 0.94f);
 	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
 	const bool bRevisionQuestion = BHGS && BHGS->bRevisionMode;
 	// Draw a diagram whenever the question carries one, in any mode -- so visual tasks
 	// also appear at nodes during standard play, not only in the classroom.
 	const bool bShowDiagram = Station->GetQuestionDiagramType() != EBHDiagramType::None;
-	const float DiagramH = bShowDiagram ? 118.0f : 0.0f;
-	const float PanelH = 194.0f + DiagramH + ChoiceCount * 32.0f + (Station->GetQuestionFeedback().IsEmpty() ? 0.0f : 42.0f);
+	const float DiagramH = (bShowDiagram ? 118.0f : 0.0f) * S;
+	const float PanelH = (194.0f + ChoiceCount * 32.0f + (Station->GetQuestionFeedback().IsEmpty() ? 0.0f : 42.0f)) * S + DiagramH;
 	const float PanelX = (Canvas->ClipX - PanelW) * 0.5f;
 	const float MaxPanelY = FMath::Max(120.0f, Canvas->ClipY - PanelH - 92.0f);
 	const float PanelY = FMath::Min(FMath::Max(Canvas->ClipY * 0.58f, 120.0f), MaxPanelY);
@@ -2440,9 +2521,9 @@ void ABHHUD::DrawQuestionPanel(const ABHObjectiveStation* Station)
 	const bool bReviewQuestion = bRevisionQuestion && Station->IsReviewQuestion();
 	const FString ReviewTag = bReviewQuestion ? TEXT("  -  SECOND CHANCE") : TEXT("");
 	DrawHudText(FString::Printf(TEXT("%s CHECKPOINT%s%s"), *Topic.ToUpper(), *ProgressSuffix, *ReviewTag),
-		PanelX + 22.0f, PanelY + 16.0f,
+		PanelX + 22.0f * S, PanelY + 16.0f * S,
 		bReviewQuestion ? FLinearColor(0.62f, 0.92f, 1.0f, 1.0f) : FLinearColor(1.0f, 0.72f, 0.36f, 1.0f),
-		GEngine->GetSmallFont(), 0.94f);
+		GEngine->GetSmallFont(), 0.94f * S);
 	if (bRevisionQuestion)
 	{
 		FString CounterText;
@@ -2459,20 +2540,20 @@ void ABHHUD::DrawQuestionPanel(const ABHObjectiveStation* Station)
 			*FBHRevisionQuestionBank::DifficultyToString(Station->GetQuestionDifficulty()),
 			*Station->GetQuestionSubtopic(),
 			*CounterText);
-		DrawRightAlignedText(Meta, PanelX + PanelW - 22.0f, PanelY + 16.0f, FLinearColor(0.78f, 0.86f, 0.94f, 1.0f), GEngine->GetSmallFont(), 0.76f);
+		DrawRightAlignedText(Meta, PanelX + PanelW - 22.0f * S, PanelY + 16.0f * S, FLinearColor(0.78f, 0.86f, 0.94f, 1.0f), GEngine->GetSmallFont(), 0.76f * S);
 	}
-	DrawWrappedHudText(Station->GetPhysicalTaskInstruction(), PanelX + 22.0f, PanelY + 42.0f, PanelW - 44.0f, FLinearColor(0.74f, 0.88f, 0.88f, 1.0f), GEngine->GetSmallFont(), 0.72f, 13.0f, 1);
-	DrawWrappedHudText(Station->GetQuestionPrompt(), PanelX + 22.0f, PanelY + 62.0f, PanelW - 44.0f, MainText(), GEngine->GetSmallFont(), 0.92f, 17.0f, 2);
+	DrawWrappedHudText(Station->GetPhysicalTaskInstruction(), PanelX + 22.0f * S, PanelY + 42.0f * S, PanelW - 44.0f * S, FLinearColor(0.74f, 0.88f, 0.88f, 1.0f), GEngine->GetSmallFont(), 0.72f * S, 13.0f * S, 1);
+	DrawWrappedHudText(Station->GetQuestionPrompt(), PanelX + 22.0f * S, PanelY + 62.0f * S, PanelW - 44.0f * S, MainText(), GEngine->GetSmallFont(), 0.92f * S, 17.0f * S, 2);
 
-	float ChoiceStartY = PanelY + 112.0f;
+	float ChoiceStartY = PanelY + 112.0f * S;
 	if (bShowDiagram)
 	{
-		DrawRevisionDiagram(Station, PanelX + 24.0f, PanelY + 108.0f, PanelW - 48.0f, DiagramH - 10.0f);
-		ChoiceStartY = PanelY + 112.0f + DiagramH;
+		DrawRevisionDiagram(Station, PanelX + 24.0f * S, PanelY + 108.0f * S, PanelW - 48.0f * S, DiagramH - 10.0f * S);
+		ChoiceStartY = PanelY + 112.0f * S + DiagramH;
 		// The collaborative "answer team" line is a classroom-mode concept only.
 		if (bRevisionQuestion && !Station->GetRevisionTeamSummary().IsEmpty())
 		{
-			DrawWrappedHudText(FString::Printf(TEXT("Answer team: %s"), *Station->GetRevisionTeamSummary()), PanelX + 28.0f, ChoiceStartY - 17.0f, PanelW - 56.0f, FLinearColor(0.76f, 0.92f, 0.98f, 1.0f), GEngine->GetSmallFont(), 0.72f, 12.0f, 1);
+			DrawWrappedHudText(FString::Printf(TEXT("Answer team: %s"), *Station->GetRevisionTeamSummary()), PanelX + 28.0f * S, ChoiceStartY - 17.0f * S, PanelW - 56.0f * S, FLinearColor(0.76f, 0.92f, 0.98f, 1.0f), GEngine->GetSmallFont(), 0.72f * S, 12.0f * S, 1);
 		}
 	}
 
@@ -2482,33 +2563,35 @@ void ABHHUD::DrawQuestionPanel(const ABHObjectiveStation* Station)
 	{
 		const ABHCharacter* LocalChar = Cast<ABHCharacter>(GetOwningPawn());
 		const FString Typed = LocalChar ? LocalChar->GetNumericAnswerEntry() : FString();
-		const float EntryY = ChoiceStartY + 4.0f;
-		DrawRect(FLinearColor(0.05f, 0.06f, 0.06f, 0.86f), PanelX + 26.0f, EntryY - 5.0f, PanelW - 52.0f, 30.0f);
-		DrawRect(FLinearColor(0.30f, 0.78f, 0.95f, 0.42f), PanelX + 26.0f, EntryY - 5.0f, 3.0f, 30.0f);
-		DrawKeyBox(TEXT("0-9"), PanelX + 38.0f, EntryY - 2.0f, 40.0f, 22.0f, FLinearColor(0.40f, 0.82f, 0.96f, 0.94f), true);
+		const float EntryY = ChoiceStartY + 4.0f * S;
+		DrawRect(FLinearColor(0.05f, 0.06f, 0.06f, 0.86f), PanelX + 26.0f * S, EntryY - 5.0f * S, PanelW - 52.0f * S, 30.0f * S);
+		DrawRect(FLinearColor(0.30f, 0.78f, 0.95f, 0.42f), PanelX + 26.0f * S, EntryY - 5.0f * S, 3.0f * S, 30.0f * S);
+		DrawKeyBox(TEXT("0-9"), PanelX + 38.0f * S, EntryY - 2.0f * S, 40.0f * S, 22.0f * S, FLinearColor(0.40f, 0.82f, 0.96f, 0.94f), true);
 		const FString Shown = Typed.IsEmpty() ? TEXT("_") : (Typed + TEXT("_"));
-		DrawHudText(FString::Printf(TEXT("Your answer: %s"), *Shown), PanelX + 92.0f, EntryY + 2.0f, FLinearColor(0.92f, 0.98f, 1.0f, 1.0f), GEngine->GetSmallFont(), 0.92f);
-		DrawWrappedHudText(TEXT("Type the value (digits, . and -). Backspace edits. Press Enter to submit."), PanelX + 28.0f, EntryY + 28.0f, PanelW - 56.0f, FLinearColor(0.66f, 0.78f, 0.84f, 0.92f), GEngine->GetSmallFont(), 0.62f, 11.0f, 1);
+		DrawHudText(FString::Printf(TEXT("Your answer: %s"), *Shown), PanelX + 92.0f * S, EntryY + 2.0f * S, FLinearColor(0.92f, 0.98f, 1.0f, 1.0f), GEngine->GetSmallFont(), 0.92f * S);
+		DrawWrappedHudText(TEXT("Type the value (digits, . and -). Backspace edits. Press Enter to submit."), PanelX + 28.0f * S, EntryY + 28.0f * S, PanelW - 56.0f * S, FLinearColor(0.66f, 0.78f, 0.84f, 0.92f), GEngine->GetSmallFont(), 0.62f * S, 11.0f * S, 1);
 	}
 	else
 	{
 		for (int32 Index = 0; Index < ChoiceCount; ++Index)
 		{
-			const float ChoiceY = ChoiceStartY + Index * 32.0f;
+			const float ChoiceY = ChoiceStartY + Index * 32.0f * S;
 			const FLinearColor RowColor = Index % 2 == 0 ? FLinearColor(0.045f, 0.052f, 0.050f, 0.80f) : FLinearColor(0.034f, 0.041f, 0.040f, 0.80f);
-			DrawRect(RowColor, PanelX + 26.0f, ChoiceY - 5.0f, PanelW - 52.0f, 27.0f);
-			DrawRect(FLinearColor(0.95f, 0.56f, 0.18f, 0.34f), PanelX + 26.0f, ChoiceY - 5.0f, 3.0f, 27.0f);
-			DrawKeyBox(FString::Printf(TEXT("%d"), Index + 1), PanelX + 38.0f, ChoiceY - 2.0f, 26.0f, 21.0f, FLinearColor(0.95f, 0.56f, 0.18f, 0.94f), true);
-			DrawWrappedHudText(Station->GetQuestionChoice(Index), PanelX + 76.0f, ChoiceY + 1.0f, PanelW - 116.0f, FLinearColor(0.88f, 0.92f, 0.88f, 1.0f), GEngine->GetSmallFont(), 0.82f, 14.0f, 1);
+			DrawRect(RowColor, PanelX + 26.0f * S, ChoiceY - 5.0f * S, PanelW - 52.0f * S, 27.0f * S);
+			DrawRect(FLinearColor(0.95f, 0.56f, 0.18f, 0.34f), PanelX + 26.0f * S, ChoiceY - 5.0f * S, 3.0f * S, 27.0f * S);
+			DrawKeyBox(FString::Printf(TEXT("%d"), Index + 1), PanelX + 38.0f * S, ChoiceY - 2.0f * S, 26.0f * S, 21.0f * S, FLinearColor(0.95f, 0.56f, 0.18f, 0.94f), true);
+			DrawWrappedHudText(Station->GetQuestionChoice(Index), PanelX + 76.0f * S, ChoiceY + 1.0f * S, PanelW - 116.0f * S, FLinearColor(0.88f, 0.92f, 0.88f, 1.0f), GEngine->GetSmallFont(), 0.82f * S, 14.0f * S, 1);
 		}
 	}
 
 	if (!Station->GetQuestionFeedback().IsEmpty())
 	{
+		// Right/wrong feedback uses the shared Good/Bad tokens so colorblind-safe mode remaps
+		// the green/red answer cue -- important in an educational context.
 		const FLinearColor FeedbackColor = Station->IsQuestionFeedbackCorrect()
-			? FLinearColor(0.42f, 1.0f, 0.62f, 1.0f)
-			: FLinearColor(1.0f, 0.42f, 0.34f, 1.0f);
-		DrawWrappedHudText(Station->GetQuestionFeedback(), PanelX + 22.0f, PanelY + PanelH - 38.0f, PanelW - 44.0f, FeedbackColor, GEngine->GetSmallFont(), 0.80f, 14.0f, 2);
+			? ActivePalette.Good
+			: ActivePalette.Bad;
+		DrawWrappedHudText(Station->GetQuestionFeedback(), PanelX + 22.0f * S, PanelY + PanelH - 38.0f * S, PanelW - 44.0f * S, FeedbackColor, GEngine->GetSmallFont(), 0.80f * S, 14.0f * S, 2);
 	}
 }
 
@@ -2814,7 +2897,8 @@ void ABHHUD::DrawPhaseBanner(const ABHGameState* GameState, const ABHCharacter* 
 	const float SmoothAlpha = Alpha * Alpha * (3.0f - 2.0f * Alpha);
 	FString Title = GameState->GetPhaseText().ToUpper();
 	FString Subtitle = GameState->ObjectiveText;
-	FLinearColor Accent(0.40f, 0.90f, 0.82f, 1.0f);
+	// Neutral default accent picks up the active map's tint via the palette.
+	FLinearColor Accent = ActivePalette.AccentPrimary;
 
 	switch (GameState->RoundPhase)
 	{
@@ -2831,7 +2915,7 @@ void ABHHUD::DrawPhaseBanner(const ABHGameState* GameState, const ABHCharacter* 
 	case EBHRoundPhase::Intermission:
 		Title = FString::Printf(TEXT("SUBWAY %s"), *TrainPhaseLabel(GameState->TrainPhase));
 		Subtitle = GameState->TrainAnnouncement.IsEmpty() ? TrainPhaseObjective(GameState->TrainPhase) : GameState->TrainAnnouncement;
-		Accent = FLinearColor(0.30f, 0.92f, 0.82f, 1.0f);
+		Accent = ActivePalette.AccentSecondary;
 		break;
 	case EBHRoundPhase::FinalEscape:
 		Title = TEXT("FINAL TRAIN");
@@ -2843,12 +2927,12 @@ void ABHHUD::DrawPhaseBanner(const ABHGameState* GameState, const ABHCharacter* 
 	case EBHRoundPhase::SurvivorsWin:
 		Title = TEXT("SURVIVORS ESCAPED");
 		Subtitle = TEXT("Round complete. Returning to lobby shortly.");
-		Accent = FLinearColor(0.42f, 1.0f, 0.62f, 1.0f);
+		Accent = ActivePalette.Good;
 		break;
 	case EBHRoundPhase::HunterWin:
 		Title = TEXT("TEACHER WINS");
 		Subtitle = TEXT("Round complete. Returning to lobby shortly.");
-		Accent = FLinearColor(1.0f, 0.24f, 0.16f, 1.0f);
+		Accent = ActivePalette.Bad;
 		break;
 	case EBHRoundPhase::Lobby:
 	default:
@@ -2866,16 +2950,18 @@ void ABHHUD::DrawPhaseBanner(const ABHGameState* GameState, const ABHCharacter* 
 		Subtitle = FString::Printf(TEXT("Modifier: %s. %s"), *GameState->GetRoundModifierText(), *GameState->GetRoundModifierHint());
 	}
 
-	const float PanelW = FMath::Clamp(Canvas->ClipX * 0.48f, 420.0f, 720.0f);
-	const float PanelH = 86.0f;
+	// Centered banner: scale width/height/offsets/fonts by the HUD scale preference.
+	const float S = HudScale;
+	const float PanelW = FMath::Min(FMath::Clamp(Canvas->ClipX * 0.48f, 420.0f, 720.0f) * S, Canvas->ClipX * 0.94f);
+	const float PanelH = 86.0f * S;
 	const float PanelX = (Canvas->ClipX - PanelW) * 0.5f;
 	const float PanelY = Canvas->ClipY * 0.20f - (1.0f - SmoothAlpha) * 18.0f;
 	DrawPanel(PanelX, PanelY, PanelW, PanelH, WithAlpha(FLinearColor(0.012f, 0.014f, 0.016f, 0.86f), SmoothAlpha), WithAlpha(Accent, SmoothAlpha));
 
 	float TitleW = 0.0f;
 	float TextH = 0.0f;
-	Canvas->TextSize(GEngine->GetSmallFont(), Title, TitleW, TextH, 1.34f, 1.34f);
-	DrawHudText(Title, PanelX + (PanelW - TitleW) * 0.5f, PanelY + 17.0f, WithAlpha(Accent, SmoothAlpha), GEngine->GetSmallFont(), 1.34f);
+	Canvas->TextSize(GEngine->GetSmallFont(), Title, TitleW, TextH, 1.34f * S, 1.34f * S);
+	DrawHudText(Title, PanelX + (PanelW - TitleW) * 0.5f, PanelY + 17.0f * S, WithAlpha(Accent, SmoothAlpha), GEngine->GetSmallFont(), 1.34f * S);
 
-	DrawWrappedHudText(Subtitle, PanelX + 28.0f, PanelY + 52.0f, PanelW - 56.0f, WithAlpha(FLinearColor(0.82f, 0.90f, 0.88f, 1.0f), SmoothAlpha), GEngine->GetSmallFont(), 0.82f, 14.0f, 1);
+	DrawWrappedHudText(Subtitle, PanelX + 28.0f * S, PanelY + 52.0f * S, PanelW - 56.0f * S, WithAlpha(FLinearColor(0.82f, 0.90f, 0.88f, 1.0f), SmoothAlpha), GEngine->GetSmallFont(), 0.82f * S, 14.0f * S, 1);
 }

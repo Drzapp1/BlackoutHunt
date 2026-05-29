@@ -1,10 +1,28 @@
 param(
     [switch]$Classroom,
     [ValidateSet("Development", "Shipping")]
-    [string]$Configuration
+    [string]$Configuration,
+    # UnrealBuildTool compile parallelism. The previous hardcoded value of 1
+    # compiled serially and was the dominant cost of packaging. Defaults to the
+    # processor count; lower it on memory-constrained hosts where parallel
+    # cl.exe actions risk OOM. Honors the BUILD_PARALLEL env var when set.
+    [int]$MaxParallel = 0,
+    # Skip the full -clean rebuild and cook iteratively. Much faster for repeat
+    # builds when code/content is unchanged. Leave off for hermetic releases.
+    [switch]$Incremental
 )
 
 $ErrorActionPreference = "Stop"
+
+if ($MaxParallel -le 0) {
+    if ($env:BUILD_PARALLEL) {
+        $MaxParallel = [int]$env:BUILD_PARALLEL
+    }
+    else {
+        $MaxParallel = [Environment]::ProcessorCount
+    }
+}
+if ($MaxParallel -lt 1) { $MaxParallel = 1 }
 
 $projectRoot = Resolve-Path "$PSScriptRoot\.."
 $project = Resolve-Path "$projectRoot\BlackoutHunt.uproject"
@@ -167,17 +185,22 @@ try {
         "-map=/Engine/Maps/Entry",
         "-build",
         "-noxge",
-        "-ubtargs=-WaitMutex -NoXGE -NoUBA -MaxParallelActions=1",
+        "-ubtargs=-WaitMutex -NoXGE -NoUBA -MaxParallelActions=$MaxParallel",
         "-stage",
         "-pak",
         "-archive",
         "-archivedirectory=$archive"
     )
+    if ($Incremental) {
+        $uatArgs += "-iterativecooking"
+    }
     if ($Classroom) {
         $uatArgs += "-distribution"
         $uatArgs += "-nodebuginfo"
-        $uatArgs += "-clean"
         $uatArgs += "-applocaldirectory=$appLocalDependencies"
+        if (-not $Incremental) {
+            $uatArgs += "-clean"
+        }
     }
 
     & $unreal.RunUAT @uatArgs
@@ -199,4 +222,8 @@ if ($Classroom) {
     Write-NoAccountQuickstart -PackageRoot $archive
     Copy-ClassroomPackageNotices -PackageRoot $archive
     & "$PSScriptRoot\Verify-ClassroomPackage.ps1" -PackageRoot $archive -ExpectedAppLocalDependencyRoot $appLocalDependenciesX64
+    # Fail the package build if verification fails. Mirrors the explicit exit-code propagation used
+    # for the UAT call above (line 207) so a future refactor of the verifier cannot let a failed
+    # classroom package slip through to distribution.
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }

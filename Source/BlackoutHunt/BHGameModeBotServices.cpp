@@ -295,13 +295,14 @@ void ABHGameMode::StartBotSoak(ABHPlayerController* RequestingController, const 
 	const FString NormalizedLevel = NormalizeBotServiceLevelName(LevelName);
 	if (!RuntimeLevelName.Equals(NormalizedLevel, ESearchCase::IgnoreCase) && GetWorld())
 	{
-		const FString TravelURL = FString::Printf(TEXT("/Engine/Maps/Entry?listen?BHLevel=%s?BHFogPreset=%s?BHBotMode=1?BHBotCount=%d?BHBotDifficulty=%s?BHHuntSeconds=%d?BHForceHunt=1"),
+		const FString TravelURL = FString::Printf(TEXT("%s?listen?BHLevel=%s?BHFogPreset=%s?BHBotMode=1?BHBotCount=%d?BHBotDifficulty=%s?BHHuntSeconds=%d?BHForceHunt=1"),
+			*BHResolveLevelMapPackage(NormalizedLevel),
 			*NormalizedLevel,
 			*FogPresetToBotServiceString(NextFogPreset),
 			FMath::Clamp(NewBotCount, 0, FMath::Max(0, MaxPlayers - 1)),
 			*BotDifficultyToStatusString(BotDifficulty),
 			FMath::Clamp(DurationSeconds, 30, 3600));
-		GetWorld()->ServerTravel(TravelURL);
+		RequestServerTravel(TravelURL);
 		return;
 	}
 

@@ -13,6 +13,7 @@ class USoundBase;
 class SWindow;
 class SWidget;
 struct FBHLessonPreset;
+enum class EBHFeedbackKind : uint8;
 
 struct FBHClassroomPreflightSummary
 {
@@ -326,6 +327,14 @@ public:
 	bool LoginLocalCredentialForMenu(const FString& Username, const FString& Password, FString& OutMessage);
 	bool ForgetLocalCredentialForMenu(FString& OutMessage);
 	bool ResetLocalClassroomDataForMenu(FString& OutMessage);
+	// In-game feedback / bug report / feature idea / end-of-round survey, routed to the feedback subsystem.
+	bool SubmitFeedbackForMenu(EBHFeedbackKind Kind, const FString& Message, int32 Rating, const FString& Contact, bool bIncludeDiagnostics, FString& OutMessage);
+	bool SubmitRoundSurveyForMenu(int32 OverallRating, const FString& Difficulty, bool bWouldRecommend, const FString& Comment, FString& OutMessage);
+	bool IsFeedbackBackendConfiguredForMenu() const;
+	bool IsEndOfRoundSurveyPendingForMenu() const;
+	bool ShouldIncludeFeedbackDiagnosticsByDefaultForMenu() const;
+	FString GetFeedbackPrivacySummaryForMenu() const;
+	void ClearEndOfRoundSurveyPendingForMenu();
 	bool OpenClassroomBoardForMenu(FString& OutMessage);
 	bool OpenClassroomSupportFolderForMenu(FString& OutMessage);
 	bool OpenClassroomLogFolderForMenu(FString& OutMessage);
@@ -445,6 +454,19 @@ public:
 	bool AreCaptionsEnabled() const;
 	bool IsHighContrastHudEnabled() const;
 	bool IsReducedFlashEnabled() const;
+	// HUD customization preferences (local-only, persisted to the Comfort config section).
+	float GetHudScale() const;
+	float GetHudPanelOpacity() const;
+	bool IsColorblindHudEnabled() const;
+	bool IsHudMinimapVisible() const;
+	bool IsHudNameplatesVisible() const;
+	bool IsHudVitalsVisible() const;
+	bool IsHudObjectiveBeatsVisible() const;
+	bool IsHudThreatArrowVisible() const;
+	bool IsHudCrosshairDangerVisible() const;
+	// Scalar (slider) HUD options for the menu, parallel to the bool SetComfortOptionForMenu.
+	bool SetHudScalarOptionForMenu(FName OptionName, float Value, FString& OutMessage);
+	float GetHudScalarOptionForMenu(FName OptionName) const;
 	float GetHorrorCueFlashAlpha() const;
 	FLinearColor GetHorrorCueFlashColor() const;
 	// Near-opaque black "blink" overlay alpha, fired at the instant of a strong jumpscare impact.
@@ -629,6 +651,7 @@ private:
 	void SaveAudioPreference(const TCHAR* Key, float Value) const;
 	void EnsureComfortPreferencesLoaded();
 	void SaveComfortPreference(const TCHAR* Key, bool bValue) const;
+	void SaveComfortScalarPreference(const TCHAR* Key, float Value) const;
 	void EnsureGraphicsPreferencesLoaded();
 	void SaveGraphicsPreference(const TCHAR* Key, int32 Value) const;
 	void SaveGraphicsPreference(const TCHAR* Key, bool bValue) const;
@@ -695,6 +718,11 @@ private:
 	float MusicVolume = 0.85f;
 	float UiVolume = 0.9f;
 	float LastMenuSelectionSoundTime = -100.0f;
+	// Server-side flood guard for cheap-but-spammable lobby RPCs (votes / cosmetics / display name).
+	// These do per-player work and/or fan out reliable client RPCs, so an unbounded call rate could
+	// saturate the host and overflow reliable buffers. Updated and checked only on the server.
+	float LastLobbyActionServerTime = -100.0f;
+	bool AllowLobbyActionRpc(float MinIntervalSeconds = 0.25f);
 	FString GraphicsGpuBrand;
 	float GraphicsSystemMemoryGB = 0.0f;
 	float GraphicsDedicatedVideoMemoryGB = 0.0f;
@@ -731,6 +759,16 @@ private:
 	bool bReducedCameraShake = false;
 	bool bCaptionsEnabled = true;
 	bool bHighContrastHud = false;
+	// HUD customization preferences (local-only).
+	float HudScale = 1.0f;
+	float HudPanelOpacity = 1.0f;
+	bool bColorblindHud = false;
+	bool bShowHudMinimap = true;
+	bool bShowHudNameplates = true;
+	bool bShowHudVitals = true;
+	bool bShowHudObjectiveBeats = true;
+	bool bShowHudThreatArrow = true;
+	bool bShowHudCrosshairDanger = true;
 	bool bAutoHardwareGraphicsEnabled = true;
 	bool bAdaptiveGraphicsEnabled = true;
 	bool bGraphicsAppliedAtStartup = false;

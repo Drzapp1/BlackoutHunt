@@ -1,0 +1,369 @@
+{
+	"version": 1,
+	"questions": [
+		{
+			"id": "forces_example_mc",
+			"topic": "ForcesAndMotion",
+			"topicName": "Forces and Motion",
+			"subtopic": "Units",
+			"difficulty": "Easy",
+			"type": "MultipleChoice",
+			"diagramType": "None",
+			"prompt": "What is the SI unit of acceleration?",
+			"answer": {
+				"choices": ["m/s²", "m/s", "N", "kg"],
+				"correctChoiceIndex": 0,
+				"formula": "a = (v - u) / t",
+				"numericAnswer": 0.0,
+				"numericTolerance": 0.0
+			},
+			"diagram": {
+				"valueA": 0.0, "valueB": 0.0, "valueC": 0.0, "valueD": 0.0,
+				"labelA": "", "labelB": "", "labelC": "", "labelD": "",
+				"xAxis": "", "yAxis": "", "angleOrShape": 0.0, "imageSoftPath": ""
+			},
+			"hint": "Acceleration is a change in velocity over time.",
+			"correctionPrompt": "Acceleration is velocity per unit time, so its unit is the velocity unit divided by seconds.",
+			"explanation": "Acceleration = change in velocity / time, measured in metres per second squared (m/s²).",
+			"masteryWeight": 1.0
+		},
+		{
+			"id": "forces_example_resultant",
+			"topic": "ForcesAndMotion",
+			"topicName": "Forces and Motion",
+			"subtopic": "Resultant force",
+			"difficulty": "Medium",
+			"type": "Calculation",
+			"diagramType": "ForceArrows",
+			"prompt": "A box is pushed right with 12 N while friction acts left with 4 N. What is the resultant force?",
+			"answer": {
+				"choices": ["8 N to the right", "16 N to the right", "8 N to the left", "48 N to the right"],
+				"correctChoiceIndex": 0,
+				"formula": "resultant = F_forward - F_backward",
+				"numericAnswer": 8.0,
+				"numericTolerance": 0.1
+			},
+			"diagram": {
+				"valueA": 4.0, "valueB": 12.0, "valueC": 0.0, "valueD": 0.0,
+				"labelA": "4 N", "labelB": "12 N", "labelC": "", "labelD": "",
+				"xAxis": "", "yAxis": "", "angleOrShape": 0.0, "imageSoftPath": ""
+			},
+			"hint": "Forces in opposite directions subtract.",
+			"correctionPrompt": "Take the backward force away from the forward force and keep the direction of the larger one.",
+			"explanation": "Resultant = 12 N - 4 N = 8 N in the direction of the larger (forward) force.",
+			"masteryWeight": 1.2
+		},
+		{
+			"id": "forces_example_vt",
+			"topic": "ForcesAndMotion",
+			"topicName": "Forces and Motion",
+			"subtopic": "Velocity-time graphs",
+			"difficulty": "Medium",
+			"type": "GraphReading",
+			"diagramType": "VelocityGraph",
+			"prompt": "On a velocity-time graph, what does the area under the line represent?",
+			"answer": {
+				"choices": ["Distance travelled", "Acceleration", "Force", "Mass"],
+				"correctChoiceIndex": 0,
+				"formula": "distance = area under v-t graph",
+				"numericAnswer": 0.0,
+				"numericTolerance": 0.0
+			},
+			"diagram": {
+				"valueA": 0.0, "valueB": 0.0, "valueC": 0.0, "valueD": 0.0,
+				"labelA": "area = distance", "labelB": "", "labelC": "", "labelD": "",
+				"xAxis": "time / s", "yAxis": "velocity / m/s", "angleOrShape": 0.0, "imageSoftPath": ""
+			},
+			"hint": "Think about what multiplying the two axes gives.",
+			"correctionPrompt": "Velocity multiplied by time gives distance, which is the area under the line.",
+			"explanation": "The area under a velocity-time graph equals velocity × time = distance travelled.",
+			"masteryWeight": 1.2
+		},
+		{
+			"id": "forces_example_match",
+			"topic": "ForcesAndMotion",
+			"topicName": "Forces and Motion",
+			"subtopic": "Quantities and units",
+			"difficulty": "Easy",
+			"type": "DragDropMatching",
+			"diagramType": "None",
+			"prompt": "Which unit correctly matches the quantity 'force'?",
+			"answer": {
+				"choices": ["newton (N)", "metre (m)", "joule (J)", "watt (W)"],
+				"correctChoiceIndex": 0,
+				"formula": "F = m a",
+				"numericAnswer": 0.0,
+				"numericTolerance": 0.0
+			},
+			"diagram": {
+				"valueA": 0.0, "valueB": 0.0, "valueC": 0.0, "valueD": 0.0,
+				"labelA": "", "labelB": "", "labelC": "", "labelD": "",
+				"xAxis": "", "yAxis": "", "angleOrShape": 0.0, "imageSoftPath": ""
+			},
+			"hint": "Force is mass times acceleration.",
+			"correctionPrompt": "The unit of force is named after Isaac Newton.",
+			"explanation": "Force is measured in newtons (N); metres measure length, joules energy, and watts power.",
+			"masteryWeight": 1.0
+		},
+		{
+			"id": "elec_example_series",
+			"topic": "Electricity",
+			"topicName": "Electricity",
+			"subtopic": "Series resistance",
+			"difficulty": "Medium",
+			"type": "Calculation",
+			"diagramType": "Circuit",
+			"prompt": "Three resistors of 2 Ω, 5 Ω and 8 Ω are connected in series. What is the total resistance?",
+			"answer": {
+				"choices": ["15 Ω", "10 Ω", "80 Ω", "1.5 Ω"],
+				"correctChoiceIndex": 0,
+				"formula": "R_total = R1 + R2 + R3",
+				"numericAnswer": 15.0,
+				"numericTolerance": 0.1
+			},
+			"diagram": {
+				"valueA": 2.0, "valueB": 5.0, "valueC": 8.0, "valueD": 0.0,
+				"labelA": "2 Ω", "labelB": "supply", "labelC": "8 Ω", "labelD": "",
+				"xAxis": "", "yAxis": "", "angleOrShape": 0.0, "imageSoftPath": ""
+			},
+			"hint": "Series resistances add directly.",
+			"correctionPrompt": "Add all three resistor values together.",
+			"explanation": "In series the resistances add: 2 + 5 + 8 = 15 Ω.",
+			"masteryWeight": 1.2
+		},
+		{
+			"id": "elec_example_iv",
+			"topic": "Electricity",
+			"topicName": "Electricity",
+			"subtopic": "I-V graphs",
+			"difficulty": "Medium",
+			"type": "GraphReading",
+			"diagramType": "IVGraph",
+			"prompt": "Which I-V graph shape shows an ohmic conductor at constant temperature?",
+			"answer": {
+				"choices": ["Straight line through the origin", "Curve flattening at high current", "Vertical line only", "Random spikes"],
+				"correctChoiceIndex": 0,
+				"formula": "V = I R",
+				"numericAnswer": 0.0,
+				"numericTolerance": 0.0
+			},
+			"diagram": {
+				"valueA": 0.0, "valueB": 0.0, "valueC": 0.0, "valueD": 0.0,
+				"labelA": "straight: ohmic", "labelB": "", "labelC": "", "labelD": "",
+				"xAxis": "V / V", "yAxis": "I / A", "angleOrShape": 0.0, "imageSoftPath": ""
+			},
+			"hint": "Ohmic means current is proportional to voltage.",
+			"correctionPrompt": "A proportional relationship plots as a straight line through the origin.",
+			"explanation": "An ohmic conductor at constant temperature has a straight-line I-V graph through the origin.",
+			"masteryWeight": 1.2
+		},
+		{
+			"id": "elec_example_formula",
+			"topic": "Electricity",
+			"topicName": "Electricity",
+			"subtopic": "Equations",
+			"difficulty": "Easy",
+			"type": "FormulaFill",
+			"diagramType": "None",
+			"prompt": "Complete the equation for potential difference:  V = I × ___",
+			"answer": {
+				"choices": ["R (resistance)", "P (power)", "Q (charge)", "t (time)"],
+				"correctChoiceIndex": 0,
+				"formula": "V = I R",
+				"numericAnswer": 0.0,
+				"numericTolerance": 0.0
+			},
+			"diagram": {
+				"valueA": 0.0, "valueB": 0.0, "valueC": 0.0, "valueD": 0.0,
+				"labelA": "", "labelB": "", "labelC": "", "labelD": "",
+				"xAxis": "", "yAxis": "", "angleOrShape": 0.0, "imageSoftPath": ""
+			},
+			"hint": "Ohm's law links voltage, current and resistance.",
+			"correctionPrompt": "Voltage equals current multiplied by resistance.",
+			"explanation": "Ohm's law: V = I × R, so the missing term is resistance R.",
+			"masteryWeight": 1.0
+		},
+		{
+			"id": "elec_example_charge",
+			"topic": "Electricity",
+			"topicName": "Electricity",
+			"subtopic": "Static charge",
+			"difficulty": "Easy",
+			"type": "TrueFalse",
+			"diagramType": "StaticCharge",
+			"prompt": "True or false: two objects carrying like charges attract each other.",
+			"answer": {
+				"choices": ["False", "True", "Only metals do", "Only when earthed"],
+				"correctChoiceIndex": 0,
+				"formula": "",
+				"numericAnswer": 0.0,
+				"numericTolerance": 0.0
+			},
+			"diagram": {
+				"valueA": 0.0, "valueB": 0.0, "valueC": 0.0, "valueD": 0.0,
+				"labelA": "", "labelB": "", "labelC": "", "labelD": "",
+				"xAxis": "", "yAxis": "", "angleOrShape": 0.0, "imageSoftPath": ""
+			},
+			"hint": "Remember the rule about like and opposite charges.",
+			"correctionPrompt": "Like charges repel; only opposite charges attract.",
+			"explanation": "Like charges repel and opposite charges attract, so the statement is false.",
+			"masteryWeight": 1.0
+		},
+		{
+			"id": "waves_example_amplitude",
+			"topic": "Waves",
+			"topicName": "Waves",
+			"subtopic": "Reading amplitude",
+			"difficulty": "Medium",
+			"type": "GraphReading",
+			"diagramType": "Wave",
+			"prompt": "A wave on an oscilloscope oscillates between +4 cm and -4 cm about the middle line. What is its amplitude?",
+			"answer": {
+				"choices": ["4 cm", "8 cm", "2 cm", "0 cm"],
+				"correctChoiceIndex": 0,
+				"formula": "amplitude = max displacement from equilibrium",
+				"numericAnswer": 4.0,
+				"numericTolerance": 0.1
+			},
+			"diagram": {
+				"valueA": 0.30, "valueB": 3.0, "valueC": 0.0, "valueD": 0.0,
+				"labelA": "amplitude", "labelB": "wavelength", "labelC": "", "labelD": "",
+				"xAxis": "", "yAxis": "", "angleOrShape": 0.0, "imageSoftPath": ""
+			},
+			"hint": "Amplitude is measured from the middle line to a crest.",
+			"correctionPrompt": "Do not use the crest-to-trough distance; measure from equilibrium.",
+			"explanation": "Amplitude is from equilibrium to the crest, so 4 cm; crest-to-trough is 8 cm.",
+			"masteryWeight": 1.2
+		},
+		{
+			"id": "waves_example_reflection",
+			"topic": "Waves",
+			"topicName": "Waves",
+			"subtopic": "Reflection",
+			"difficulty": "Easy",
+			"type": "GraphReading",
+			"diagramType": "RayDiagram",
+			"prompt": "A ray hits a plane mirror at 35 degrees to the normal. What is the angle of reflection?",
+			"answer": {
+				"choices": ["35 degrees", "55 degrees", "70 degrees", "0 degrees"],
+				"correctChoiceIndex": 0,
+				"formula": "angle of incidence = angle of reflection",
+				"numericAnswer": 35.0,
+				"numericTolerance": 0.1
+			},
+			"diagram": {
+				"valueA": 0.0, "valueB": 0.0, "valueC": 0.0, "valueD": 0.0,
+				"labelA": "normal | i = r", "labelB": "", "labelC": "", "labelD": "",
+				"xAxis": "", "yAxis": "", "angleOrShape": 35.0, "imageSoftPath": ""
+			},
+			"hint": "Angles are measured from the normal.",
+			"correctionPrompt": "The law of reflection states the angle of incidence equals the angle of reflection.",
+			"explanation": "By the law of reflection, the angle of reflection equals the 35-degree angle of incidence.",
+			"masteryWeight": 1.0
+		},
+		{
+			"id": "waves_example_em",
+			"topic": "Waves",
+			"topicName": "Waves",
+			"subtopic": "EM spectrum",
+			"difficulty": "Easy",
+			"type": "TrueFalse",
+			"diagramType": "EMSpectrum",
+			"prompt": "True or false: radio waves have a longer wavelength than X-rays.",
+			"answer": {
+				"choices": ["True", "False", "They are equal", "Only in a vacuum"],
+				"correctChoiceIndex": 0,
+				"formula": "",
+				"numericAnswer": 0.0,
+				"numericTolerance": 0.0
+			},
+			"diagram": {
+				"valueA": 0.0, "valueB": 0.0, "valueC": 0.0, "valueD": 0.0,
+				"labelA": "", "labelB": "", "labelC": "", "labelD": "",
+				"xAxis": "", "yAxis": "", "angleOrShape": 0.0, "imageSoftPath": ""
+			},
+			"hint": "Order the EM spectrum from long to short wavelength.",
+			"correctionPrompt": "Radio waves sit at the long-wavelength end; X-rays sit near the short end.",
+			"explanation": "Radio waves have the longest wavelengths in the EM spectrum, far longer than X-rays, so this is true.",
+			"masteryWeight": 1.0
+		},
+		{
+			"id": "energy_example_efficiency",
+			"topic": "Energy",
+			"topicName": "Energy",
+			"subtopic": "Efficiency",
+			"difficulty": "Hard",
+			"type": "Calculation",
+			"diagramType": "Sankey",
+			"prompt": "A generator receives 500 J of input energy and delivers 350 J of useful output. What is its efficiency?",
+			"answer": {
+				"choices": ["70%", "35%", "150%", "850%"],
+				"correctChoiceIndex": 0,
+				"formula": "efficiency = useful output / total input × 100%",
+				"numericAnswer": 70.0,
+				"numericTolerance": 0.5
+			},
+			"diagram": {
+				"valueA": 500.0, "valueB": 350.0, "valueC": 150.0, "valueD": 0.0,
+				"labelA": "in 500 J", "labelB": "useful 350 J", "labelC": "wasted 150 J", "labelD": "",
+				"xAxis": "", "yAxis": "", "angleOrShape": 0.0, "imageSoftPath": ""
+			},
+			"hint": "Divide useful output by total input, then multiply by 100.",
+			"correctionPrompt": "Efficiency = useful / total × 100%.",
+			"explanation": "Efficiency = 350 / 500 × 100% = 70%.",
+			"masteryWeight": 1.5
+		},
+		{
+			"id": "energy_example_chain",
+			"topic": "Energy",
+			"topicName": "Energy",
+			"subtopic": "Energy transfer chains",
+			"difficulty": "Easy",
+			"type": "MultipleChoice",
+			"diagramType": "EnergyChain",
+			"prompt": "A battery torch transfers energy as: chemical -> ? -> light + heat. What belongs in the middle box?",
+			"answer": {
+				"choices": ["Electrical", "Nuclear", "Elastic", "Sound"],
+				"correctChoiceIndex": 0,
+				"formula": "",
+				"numericAnswer": 0.0,
+				"numericTolerance": 0.0
+			},
+			"diagram": {
+				"valueA": 0.0, "valueB": 0.0, "valueC": 0.0, "valueD": 0.0,
+				"labelA": "chemical", "labelB": "electrical", "labelC": "light+heat", "labelD": "",
+				"xAxis": "", "yAxis": "", "angleOrShape": 0.0, "imageSoftPath": ""
+			},
+			"hint": "A battery drives an electric current.",
+			"correctionPrompt": "The cell's chemical store becomes electrical energy in the current.",
+			"explanation": "Chemical energy in the cell is transferred to electrical energy, then to light and wasted heat.",
+			"masteryWeight": 1.0
+		},
+		{
+			"id": "energy_example_ordering",
+			"topic": "Energy",
+			"topicName": "Energy",
+			"subtopic": "Conservation of energy",
+			"difficulty": "Medium",
+			"type": "Ordering",
+			"diagramType": "None",
+			"prompt": "Which statement about conservation of energy is correct?",
+			"answer": {
+				"choices": ["Total energy before a change equals total energy after", "Energy is always useful", "Energy can be destroyed by friction", "Only batteries store energy"],
+				"correctChoiceIndex": 0,
+				"formula": "energy in = energy out",
+				"numericAnswer": 0.0,
+				"numericTolerance": 0.0
+			},
+			"diagram": {
+				"valueA": 0.0, "valueB": 0.0, "valueC": 0.0, "valueD": 0.0,
+				"labelA": "", "labelB": "", "labelC": "", "labelD": "",
+				"xAxis": "", "yAxis": "", "angleOrShape": 0.0, "imageSoftPath": ""
+			},
+			"hint": "Energy is transferred, not created or destroyed.",
+			"correctionPrompt": "Conservation of energy means the total stays the same; wasted energy is dissipated, not destroyed.",
+			"explanation": "Energy is conserved: the total before a change equals the total after; friction only dissipates energy as heat.",
+			"masteryWeight": 1.2
+		}
+	]
+}

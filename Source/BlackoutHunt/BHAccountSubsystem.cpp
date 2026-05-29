@@ -54,6 +54,11 @@ namespace
 		return TrimTrailingSlash(Url);
 	}
 
+	// Highest progress schema version this build understands. If a save declares a higher version we
+	// refuse to parse it with the old schema and refuse to overwrite it (avoids silently wiping a
+	// newer build's data when an older build runs against the same profile).
+	constexpr int32 BHCurrentProgressVersion = 1;
+
 	FString JsonObjectToString(const TSharedRef<FJsonObject>& JsonObject)
 	{
 		FString Output;
@@ -66,6 +71,56 @@ namespace
 	{
 		const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Input);
 		return FJsonSerializer::Deserialize(Reader, OutJsonObject) && OutJsonObject.IsValid();
+	}
+
+	// Crash-safe write: serialize to "<path>.tmp", rotate the current file to "<path>.bak", then move
+	// the temp into place. A power loss / crash mid-write can only corrupt the throwaway .tmp; the
+	// live file and its backup are never both truncated, so progress/account data is never lost.
+	bool AtomicSaveStringToFile(const FString& Contents, const FString& Path)
+	{
+		IFileManager& FileManager = IFileManager::Get();
+		const FString TempPath = Path + TEXT(".tmp");
+		const FString BackupPath = Path + TEXT(".bak");
+
+		if (!FFileHelper::SaveStringToFile(Contents, *TempPath))
+		{
+			return false;
+		}
+
+		if (FileManager.FileExists(*Path))
+		{
+			// Keep one rollback copy; ignore failure (target may simply not exist yet).
+			FileManager.Move(*BackupPath, *Path, /*bReplace=*/true, /*bEvenIfReadOnly=*/true);
+		}
+
+		if (!FileManager.Move(*Path, *TempPath, /*bReplace=*/true, /*bEvenIfReadOnly=*/true))
+		{
+			// Could not commit the temp into place; leave the prior file/backup intact.
+			FileManager.Delete(*TempPath, false, true, true);
+			return false;
+		}
+
+		return true;
+	}
+
+	// Read a file, falling back to its ".bak" rollback if the primary is missing or fails to parse.
+	// Returns the parsed object via OutJsonObject; false only if neither copy yields valid JSON.
+	bool LoadJsonWithBackup(const FString& Path, TSharedPtr<FJsonObject>& OutJsonObject)
+	{
+		FString Input;
+		if (FFileHelper::LoadFileToString(Input, *Path) && StringToJsonObject(Input, OutJsonObject))
+		{
+			return true;
+		}
+
+		const FString BackupPath = Path + TEXT(".bak");
+		if (FFileHelper::LoadFileToString(Input, *BackupPath) && StringToJsonObject(Input, OutJsonObject))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("BlackoutHunt account data: primary %s was unreadable; recovered from backup."), *Path);
+			return true;
+		}
+
+		return false;
 	}
 
 	FString JsonString(const TSharedPtr<FJsonObject>& JsonObject, const TCHAR* FieldName)
@@ -415,7 +470,7 @@ namespace
 		Root->SetStringField(TEXT("mac"), MakePayloadMac(Iv, Ciphertext));
 
 		IFileManager::Get().MakeDirectory(*FPaths::GetPath(Path), true);
-		return FFileHelper::SaveStringToFile(JsonObjectToString(Root), *Path);
+		return AtomicSaveStringToFile(JsonObjectToString(Root), Path);
 	}
 
 	bool LoadEncryptedCredentialFile(const FString& Path, FBHLocalCredentialRecord& OutRecord)
@@ -850,12 +905,17 @@ bool UBHAccountSubsystem::ResetLocalClassroomData(FString& OutMessage)
 	StopLoginPolling();
 
 	IFileManager& FileManager = IFileManager::Get();
-	FileManager.Delete(*GetProfilePath(), false, true, true);
-	FileManager.Delete(*GetProgressPath(), false, true, true);
+	const TCHAR* const Suffixes[] = { TEXT(""), TEXT(".bak"), TEXT(".tmp") };
+	for (const TCHAR* Suffix : Suffixes)
+	{
+		FileManager.Delete(*(GetProfilePath() + Suffix), false, true, true);
+		FileManager.Delete(*(GetProgressPath() + Suffix), false, true, true);
+	}
 	FileManager.Delete(*GetCredentialPath(), false, true, true);
 
 	Profile = FBHAccountProfile();
 	Progress = FBHAccountProgress();
+	bProgressSaveLocked = false;
 
 	FString GuestMessage;
 	ContinueAsGuest(GuestMessage);
@@ -1159,14 +1219,8 @@ void UBHAccountSubsystem::SetLastAccountMessage(const FString& Message)
 
 void UBHAccountSubsystem::LoadProfile()
 {
-	FString Input;
-	if (!FFileHelper::LoadFileToString(Input, *GetProfilePath()))
-	{
-		return;
-	}
-
 	TSharedPtr<FJsonObject> JsonObject;
-	if (StringToJsonObject(Input, JsonObject))
+	if (LoadJsonWithBackup(GetProfilePath(), JsonObject))
 	{
 		ApplyProfileJson(JsonObject);
 	}
@@ -1174,14 +1228,8 @@ void UBHAccountSubsystem::LoadProfile()
 
 void UBHAccountSubsystem::LoadProgress()
 {
-	FString Input;
-	if (!FFileHelper::LoadFileToString(Input, *GetProgressPath()))
-	{
-		return;
-	}
-
 	TSharedPtr<FJsonObject> JsonObject;
-	if (StringToJsonObject(Input, JsonObject))
+	if (LoadJsonWithBackup(GetProgressPath(), JsonObject))
 	{
 		ApplyProgressJson(JsonObject);
 	}
@@ -1190,13 +1238,18 @@ void UBHAccountSubsystem::LoadProgress()
 void UBHAccountSubsystem::SaveProfile() const
 {
 	IFileManager::Get().MakeDirectory(*GetAccountDirectory(), true);
-	FFileHelper::SaveStringToFile(JsonObjectToString(ProfileToJson()), *GetProfilePath());
+	AtomicSaveStringToFile(JsonObjectToString(ProfileToJson()), GetProfilePath());
 }
 
 void UBHAccountSubsystem::SaveProgress() const
 {
+	if (bProgressSaveLocked)
+	{
+		// On-disk file is from a newer build; refuse to overwrite it with this build's schema.
+		return;
+	}
 	IFileManager::Get().MakeDirectory(*GetAccountDirectory(), true);
-	FFileHelper::SaveStringToFile(JsonObjectToString(ProgressToJson()), *GetProgressPath());
+	AtomicSaveStringToFile(JsonObjectToString(ProgressToJson()), GetProgressPath());
 }
 
 void UBHAccountSubsystem::SanitizeProgressCosmetics()
@@ -1263,7 +1316,19 @@ void UBHAccountSubsystem::ApplyProfileJson(const TSharedPtr<FJsonObject>& JsonOb
 
 void UBHAccountSubsystem::ApplyProgressJson(const TSharedPtr<FJsonObject>& JsonObject)
 {
-	Progress.ProfileVersion = JsonInt(JsonObject, TEXT("profile_version"), 1);
+	const int32 OnDiskVersion = JsonInt(JsonObject, TEXT("profile_version"), 1);
+	if (OnDiskVersion > BHCurrentProgressVersion)
+	{
+		// A newer build wrote this file. Don't reinterpret it with the old schema, and lock saving so
+		// we never overwrite the newer data with a downgraded copy. Keep current in-memory progress.
+		bProgressSaveLocked = true;
+		Progress.ProfileVersion = OnDiskVersion;
+		UE_LOG(LogTemp, Warning, TEXT("BlackoutHunt progress file is version %d (build supports %d); loading read-only to avoid clobbering newer data."), OnDiskVersion, BHCurrentProgressVersion);
+		return;
+	}
+
+	bProgressSaveLocked = false;
+	Progress.ProfileVersion = OnDiskVersion;
 	Progress.RoundsPlayed = JsonInt(JsonObject, TEXT("rounds_played"));
 	Progress.HunterWins = JsonInt(JsonObject, TEXT("hunter_wins"));
 	Progress.SurvivorWins = JsonInt(JsonObject, TEXT("survivor_wins"));

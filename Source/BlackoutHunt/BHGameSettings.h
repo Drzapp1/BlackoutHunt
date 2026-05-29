@@ -35,6 +35,12 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Rules")
 	bool bAllowHostForceStart;
 
+	// When true, travel prefers an authored /Game/BlackoutHunt/Maps/<Level> .umap (discovered via a placed
+	// ABHLevelMarker) over the procedural runtime generator, falling back to /Engine/Maps/Entry when the
+	// authored asset is missing. Leave false until authored maps ship and host/launch travel is fully routed.
+	UPROPERTY(Config, EditAnywhere, Category = "Levels")
+	bool bUseAuthoredLevels;
+
 	// Seconds a student who drops mid-round may rejoin straight back into their role/state before
 	// falling back to a late-join spectator. 0 disables mid-round reconnect restore.
 	UPROPERTY(Config, EditAnywhere, Category = "Rules")
@@ -209,6 +215,34 @@ public:
 
 	UPROPERTY(Config, EditAnywhere, Category = "Comfort")
 	bool bDefaultHighContrastHud;
+
+	// HUD customization defaults (overridable per-player in the menu, persisted locally).
+	UPROPERTY(Config, EditAnywhere, Category = "Comfort", meta = (ClampMin = "0.75", ClampMax = "1.5"))
+	float DefaultHudScale = 1.0f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Comfort", meta = (ClampMin = "0.35", ClampMax = "1.0"))
+	float DefaultHudPanelOpacity = 1.0f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Comfort")
+	bool bDefaultColorblindHud = false;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Comfort")
+	bool bDefaultShowMinimap = true;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Comfort")
+	bool bDefaultShowNameplates = true;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Comfort")
+	bool bDefaultShowVitals = true;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Comfort")
+	bool bDefaultShowObjectiveBeats = true;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Comfort")
+	bool bDefaultShowThreatArrow = true;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Comfort")
+	bool bDefaultShowCrosshairDanger = true;
 
 	UPROPERTY(Config, EditAnywhere, Category = "Bots")
 	int32 DefaultBotCount;

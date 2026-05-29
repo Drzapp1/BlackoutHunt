@@ -4,9 +4,12 @@
 #include "BHAutomationSupport.h"
 #include "BHTypes.h"
 #include "Engine/GameInstance.h"
+#include "Engine/EngineBaseTypes.h"
 #include "Interfaces/OnlineSessionInterface.h"
 #include "OnlineSessionSettings.h"
 #include "BHGameInstance.generated.h"
+
+class UNetDriver;
 
 USTRUCT()
 struct FBHOnlineSessionSummary
@@ -40,9 +43,12 @@ struct FBHTravelPlayerProgress
 	int32 HunterPoints = 0;
 	int32 LifetimeHunterPoints = 0;
 	TArray<FBHPowerupInventoryEntry> Powerups;
-	// Server time (seconds) this player disconnected during an active round, or < 0 if this entry
-	// is a normal travel snapshot rather than a pending mid-round reconnect.
-	float LeftServerWorldTime = -1.0f;
+	// Monotonic wall-clock time (FPlatformTime::Seconds) this player disconnected during an active
+	// round, or < 0 if this entry is a normal travel snapshot rather than a pending mid-round
+	// reconnect. Wall-clock (not world time) so the grace window stays correct across ServerTravel,
+	// where the new world's GetTimeSeconds() resets to ~0 and would otherwise make the elapsed time
+	// negative and silently bypass the grace check.
+	double LeftServerWorldTime = -1.0;
 };
 
 USTRUCT()
@@ -130,6 +136,10 @@ public:
 	bool TryFindOnlineGames(FString& OutMessage);
 	bool TryJoinOnlineGame(int32 SessionIndex, FString& OutMessage);
 	bool TryDestroyOnlineSession(FString& OutMessage);
+	// Destroy any active NAME_GameSession when leaving to the menu, for BOTH host and client (unlike
+	// TryDestroyOnlineSession, which is host-gated). The GameInstance survives map travel, so without
+	// this the stale session blocks re-hosting and blocks a client from ever joining again.
+	void LeaveOnlineSessionIfActive();
 	bool TryCreateGameHotspot(FString& OutMessage);
 	bool TryStopGameHotspot(FString& OutMessage);
 	bool TryStartInternetTunnel(FString& OutMessage, int32 LocalPort = 7777);
@@ -141,6 +151,9 @@ public:
 	const FString& GetGameHotspotSsid() const;
 	const FString& GetGameHotspotPassphrase() const;
 	const FString& GetLastNetworkMessage() const;
+	// Returns and clears a connection/travel failure message stashed by the engine failure delegates,
+	// so the controller can surface it after a failed join bounces the student back to the menu map.
+	FString ConsumePendingNetworkFailureMessage();
 	const FString& GetPublicJoinAddress() const;
 	FString GetPreferredJoinAddress(int32 LocalPort = 7777) const;
 	FString GetConfiguredClassroomJoinAddress(int32 LocalPort = 7777) const;
@@ -197,6 +210,14 @@ private:
 	void OnFindOnlineSessionsComplete(bool bWasSuccessful);
 	void OnJoinOnlineSessionComplete(FName SessionName, EOnJoinSessionCompleteResult::Type Result);
 	void OnDestroyOnlineSessionComplete(FName SessionName, bool bWasSuccessful);
+
+	// Engine-level connection/travel failure handlers so a student whose join fails (timeout, refused,
+	// version mismatch, full server) sees a reason instead of a silent bounce to a black screen/menu.
+	void HandleEngineNetworkFailure(UWorld* FailedWorld, UNetDriver* NetDriver, ENetworkFailure::Type FailureType, const FString& ErrorString);
+	void HandleEngineTravelFailure(UWorld* FailedWorld, ETravelFailure::Type FailureType, const FString& ErrorString);
+	FDelegateHandle EngineNetworkFailureHandle;
+	FDelegateHandle EngineTravelFailureHandle;
+	FString PendingNetworkFailureMessage;
 
 	FDelegateHandle CreateOnlineSessionCompleteHandle;
 	FDelegateHandle StartOnlineSessionCompleteHandle;

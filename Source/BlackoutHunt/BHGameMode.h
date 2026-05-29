@@ -27,6 +27,12 @@ class ANavMeshBoundsVolume;
 class UBHAtmosphereDirector;
 struct FBHLessonPreset;
 
+// Shared travel-map resolver usable outside ABHGameMode (e.g. BHPlayerController/BHGameInstance host and
+// launch paths): returns the authored /Game/BlackoutHunt/Maps/<Level> package when bUseAuthoredLevels is
+// enabled and that asset exists, otherwise the stock runtime base map /Engine/Maps/Entry. Never reroutes
+// the special TrainIntermission level. ABHGameMode::ResolveTravelMapForLevel delegates to this.
+BLACKOUTHUNT_API FString BHResolveLevelMapPackage(const FString& LevelName);
+
 UCLASS()
 class BLACKOUTHUNT_API ABHGameMode : public AGameModeBase
 {
@@ -40,6 +46,13 @@ public:
 	virtual void Logout(AController* Exiting) override;
 	virtual void RestartPlayer(AController* NewPlayer) override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
+#if WITH_EDITOR
+	// Editor-only export entry used by UBHExportLevelCommandlet: builds one logical level's geometry and
+	// gameplay actors into the current world with no round/timer/atmosphere state, so the result can be
+	// saved as an authored /Game/BlackoutHunt/Maps/<Level>.umap seed. Not used at runtime.
+	void BuildLevelForExport(const FString& InLevelName);
+#endif
 
 	void SetPlayerReady(ABHPlayerController* Controller, bool bReady);
 	void NotifyBreakerRepaired(const FVector& BreakerLocation = FVector::ZeroVector);
@@ -85,6 +98,10 @@ public:
 	void TriggerHunterBlackout(const FVector& SourceLocation, int32 SurgeCharges = 0);
 	void CompleteTrainIntermission(const FString& NextMapName, bool bFinalRecap);
 	void NotifyFinalEscapeExpired();
+	// Issue a discretionary ServerTravel (tester shortcuts, bot soak) only if no round-end/other
+	// travel is already committed. Returns false (and does nothing) if a travel is already in flight,
+	// preventing a second travel from overwriting the pending post-round destination.
+	bool RequestServerTravel(const FString& URL, bool bAbsolute = false);
 	void SetBotCount(ABHPlayerController* RequestingController, int32 NewBotCount);
 	void SetBotDifficulty(ABHPlayerController* RequestingController, EBHBotDifficulty NewDifficulty);
 	bool IsRevisionMode() const;
@@ -153,7 +170,14 @@ protected:
 	friend class UBHAtmosphereDirector;
 
 	void BuildRuntimeFacility();
+	// Authored-level path: when a placed ABHLevelMarker is found, collect the gameplay actors already
+	// in the loaded .umap instead of running the runtime block generator. Returns true if the level was
+	// authored (and generation should be skipped); false leaves the procedural generator to run as before.
+	bool DiscoverAuthoredLevel();
 	void BuildTrainIntermissionLevel();
+	// Procedural geometry/actor builders, one per logical level. Each is self-contained (sets spawns and
+	// spawns all gameplay actors); BuildRuntimeFacility() parses travel options then dispatches to one.
+	void BuildFacilityLevel();
 	void BuildSubstationLevel();
 	void BuildFoggroundsLevel();
 	void BuildFoggroundsFinalStation();
@@ -274,8 +298,13 @@ protected:
 	FString GetDefaultMapForStage(int32 StageIndex) const;
 	FString GetNextMapAfterStage(int32 StageIndex) const;
 	FString BuildTravelOptionsForLevel(const FString& LevelName, bool bIntermission, int32 StageIndex, EBHRoundPhase ResultPhase) const;
+	// Returns the .umap package to travel to for a logical level. When bUseAuthoredLevels is enabled and an
+	// authored /Game/BlackoutHunt/Maps/<Level> asset exists it is used; otherwise the stock runtime base
+	// map (/Engine/Maps/Entry) is returned so the procedural generator runs as before.
+	FString ResolveTravelMapForLevel(const FString& NormalizedLevel) const;
 	bool AreAllReady() const;
 	int32 CountAliveSurvivors() const;
+	int32 CountAliveHunters() const;
 	int32 CountEscapedSurvivors() const;
 	void RefreshBotRoster(ABHPlayerController* RequestingController);
 	bool RemoveOneBot();
@@ -300,6 +329,13 @@ protected:
 public:
 	void DebugRestorePlayersAfterTravelForTest(AController* Controller) { RestorePlayersAfterTravel(Controller); }
 	void DebugSetTrainIntermissionLevelForTest(bool bEnabled) { bTrainIntermissionLevel = bEnabled; }
+	bool DebugDiscoverAuthoredLevelForTest() { return DiscoverAuthoredLevel(); }
+	int32 DebugGetBreakerCountForTest() const { return BreakerActors.Num(); }
+	int32 DebugGetObjectiveStationCountForTest() const { return ObjectiveStations.Num(); }
+	int32 DebugGetExitGateCountForTest() const { return ExitGates.Num(); }
+	int32 DebugGetSurvivorSpawnCountForTest() const { return SurvivorSpawns.Num(); }
+	FVector DebugGetHunterSpawnForTest() const { return HunterSpawn; }
+	FString DebugResolveTravelMapForLevelForTest(const FString& Level) const { return ResolveTravelMapForLevel(Level); }
 protected:
 #endif
 
@@ -355,6 +391,13 @@ protected:
 	FTimerHandle RoundTimerHandle;
 	FTimerHandle DirectorTimerHandle;
 	FTimerHandle VoidRecoveryTimerHandle;
+	// Armed only on the FinalEscape fallback path (no EscapeStationManager present) so the match
+	// cannot hang forever; the normal path uses the manager's own escape timer.
+	FTimerHandle FinalEscapeFallbackTimerHandle;
+	// True once a ServerTravel has been committed/scheduled for this GameMode instance (e.g. the
+	// post-round reset). Discretionary travels routed through RequestServerTravel() bail when set, so
+	// a tester shortcut cannot overwrite the pending destination during the post-round window.
+	bool bServerTravelInProgress = false;
 	int32 RoundSeed;
 	int32 TargetHunterCount;
 	int32 ObjectiveIntensity;

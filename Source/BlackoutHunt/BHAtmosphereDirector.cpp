@@ -530,6 +530,16 @@ EBHScareEventType UBHAtmosphereDirector::ChoosePressureCueType(ABHCharacter* Tar
 UBHAtmosphereDirector::FBHPlayerScareMemory& UBHAtmosphereDirector::GetOrCreateMemory(ABHCharacter* Target, float Now)
 {
 	check(Target);
+	// Drop entries whose pawn has been destroyed (each respawn gets a new UniqueID, so the old key
+	// would otherwise linger). Keeps the map sized to live players instead of growing per respawn.
+	for (auto It = PlayerScareMemory.CreateIterator(); It; ++It)
+	{
+		if (!It.Value().Target.IsValid())
+		{
+			It.RemoveCurrent();
+		}
+	}
+
 	const int32 Key = Target->GetUniqueID();
 	FBHPlayerScareMemory& Memory = PlayerScareMemory.FindOrAdd(Key);
 	if (Memory.Target.Get() != Target)

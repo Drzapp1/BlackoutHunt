@@ -2,6 +2,7 @@
 
 #include "BHEscapeStationManager.h"
 #include "BHGameInstance.h"
+#include "BHGameSettings.h"
 #include "BHGameState.h"
 #include "BHPlayerState.h"
 #include "Engine/World.h"
@@ -195,6 +196,21 @@ void ABHGameMode::TriggerFinalEscapeIfNeeded()
 	BHGS->SetFinalEscapeState(EBHFinalEscapeState::EscapeActive, 0.0f, 0.0f, 0.0f);
 	BHGS->SetIntermissionLocks(false, false, false);
 	BroadcastStatus(TEXT("Evacuation train authorized. Reach the final platform."), 4.5f);
+
+	// No EscapeStationManager owns an expiry timer on this fallback path, and TickRoundTimer does
+	// not evaluate FinalEscape. Without a timeout the match hangs forever if any survivor stays
+	// alive and never reaches an exit. Arm the same expiry the manager would, mirroring its bound.
+	if (UWorld* World = GetWorld())
+	{
+		const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+		const float EscapeSeconds = static_cast<float>(FMath::Max(20, Settings ? Settings->FinalEscapeSeconds : 60));
+		World->GetTimerManager().SetTimer(
+			FinalEscapeFallbackTimerHandle,
+			this,
+			&ABHGameMode::NotifyFinalEscapeExpired,
+			EscapeSeconds,
+			false);
+	}
 }
 
 bool ABHGameMode::IsFinalStage() const

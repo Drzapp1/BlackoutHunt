@@ -1,6 +1,7 @@
 #include "BHPlayerController.h"
 #include "BHAccountSubsystem.h"
 #include "BHAutomationSupport.h"
+#include "BHFeedbackSubsystem.h"
 #include "BHCharacter.h"
 #include "BHCosmeticUnlocks.h"
 #include "BHGameInstance.h"
@@ -467,6 +468,16 @@ bool BHLoadComfortPreference(const TCHAR* Key, bool bDefaultValue)
 	return bValue;
 }
 
+float BHLoadComfortScalarPreference(const TCHAR* Key, float DefaultValue)
+{
+	float Value = DefaultValue;
+	if (GConfig)
+	{
+		GConfig->GetFloat(BHComfortConfigSection, Key, Value, GGameUserSettingsIni);
+	}
+	return Value;
+}
+
 FString BHBotDifficultyToString(EBHBotDifficulty Difficulty)
 {
 	switch (Difficulty)
@@ -590,6 +601,23 @@ FString BHMakeListenOptions(const FString& LevelName, const FString& ExtraOption
 	if (!ExtraOptions.IsEmpty())
 	{
 		Options += ExtraOptions.StartsWith(TEXT("?")) ? ExtraOptions : FString::Printf(TEXT("?%s"), *ExtraOptions);
+	}
+	// Pin a freshly hosted game (live classroom, Host*, bot, test) to stage 0 unless the caller already
+	// specified a stage. Without an explicit BHStageIndex the GameMode falls back to the GameInstance's
+	// persisted stage index (only reset at a train run's final recap), so abandoning a run mid-way and
+	// re-hosting would otherwise inherit a stale stage (wrong durations/targets/recap framing).
+	if (!Options.Contains(TEXT("BHStageIndex=")))
+	{
+		Options += TEXT("?BHStageIndex=0");
+	}
+	// Raise the engine session cap (AGameSession::MaxPlayers, default 16) to the configured class size
+	// via the ?MaxPlayers= URL option AGameSession::InitOptions reads. Without this the engine rejects
+	// students past 16 at login even though ABHGameMode's own cap is the configured value.
+	if (!Options.Contains(TEXT("MaxPlayers=")))
+	{
+		const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+		const int32 ClassCap = Settings ? FMath::Clamp(Settings->MaxPlayers, 2, 64) : 32;
+		Options += FString::Printf(TEXT("?MaxPlayers=%d"), ClassCap);
 	}
 	return Options;
 }
@@ -1396,6 +1424,16 @@ void ABHPlayerController::BeginPlay()
 			{
 				ShowLocalStatusMessage(TEXT("You were removed from the classroom lobby by the host. You can rejoin if invited."), 8.0f);
 			}
+			else if (UBHGameInstance* MenuBHGI = GetGameInstance<UBHGameInstance>())
+			{
+				// A student whose join failed is bounced here as Standalone; surface why (timeout,
+				// refused, version mismatch, full) instead of dropping them at a silent menu.
+				const FString FailureMessage = MenuBHGI->ConsumePendingNetworkFailureMessage();
+				if (!FailureMessage.IsEmpty())
+				{
+					ShowLocalStatusMessage(FailureMessage, 9.0f);
+				}
+			}
 		}
 		else
 		{
@@ -1515,28 +1553,28 @@ void ABHPlayerController::HostGame()
 {
 	HideMainMenu();
 	ShowTravelLoadingScreen(TEXT("LOADING FACILITY"), TEXT("Opening local lobby."));
-	UGameplayStatics::OpenLevel(this, FName(TEXT("/Engine/Maps/Entry")), true, BHMakeListenOptions(TEXT("Facility")));
+	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(TEXT("Facility"))), true, BHMakeListenOptions(TEXT("Facility")));
 }
 
 void ABHPlayerController::HostSubstationGame()
 {
 	HideMainMenu();
 	ShowTravelLoadingScreen(TEXT("LOADING SUBSTATION"), TEXT("Opening local lobby."));
-	UGameplayStatics::OpenLevel(this, FName(TEXT("/Engine/Maps/Entry")), true, BHMakeListenOptions(TEXT("Substation")));
+	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(TEXT("Substation"))), true, BHMakeListenOptions(TEXT("Substation")));
 }
 
 void ABHPlayerController::HostFoggroundsGame()
 {
 	HideMainMenu();
 	ShowTravelLoadingScreen(TEXT("LOADING FOGGROUNDS"), TEXT("Opening local lobby."));
-	UGameplayStatics::OpenLevel(this, FName(TEXT("/Engine/Maps/Entry")), true, BHMakeListenOptions(TEXT("Foggrounds")));
+	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(TEXT("Foggrounds"))), true, BHMakeListenOptions(TEXT("Foggrounds")));
 }
 
 void ABHPlayerController::HostPracticeGame()
 {
 	HideMainMenu();
 	ShowTravelLoadingScreen(TEXT("PRACTICE LAB"), TEXT("Preparing safe test route."));
-	UGameplayStatics::OpenLevel(this, FName(TEXT("/Engine/Maps/Entry")), true, TEXT("listen?BHLevel=Facility?BHPractice=1"));
+	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(TEXT("Facility"))), true, TEXT("listen?BHLevel=Facility?BHPractice=1"));
 }
 
 void ABHPlayerController::HostTestRound()
@@ -2163,6 +2201,12 @@ void ABHPlayerController::ToggleMainMenu()
 void ABHPlayerController::ReturnToMainMenu()
 {
 	HideMainMenu();
+	// Tear down any online session (host OR client) before leaving, so the lingering session does not
+	// block a later re-host ("session already exists") or block this client from joining another game.
+	if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
+	{
+		BHGI->LeaveOnlineSessionIfActive();
+	}
 	ShowTravelLoadingScreen(TEXT("MAIN MENU"), TEXT("Returning to the entry screen."));
 	UGameplayStatics::OpenLevel(this, FName(TEXT("/Engine/Maps/Entry")), true);
 }
@@ -2329,7 +2373,7 @@ bool ABHPlayerController::HostTestRoundForMenu(const FString& LevelName, FString
 	ShowLocalStatusMessage(OutMessage, 2.5f);
 	HideMainMenu();
 	ShowTravelLoadingScreen(FString::Printf(TEXT("TEST %s"), *NormalizedLevel.ToUpper()), TEXT("Loading mechanics sandbox."));
-	UGameplayStatics::OpenLevel(this, FName(TEXT("/Engine/Maps/Entry")), true, Options);
+	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(NormalizedLevel)), true, Options);
 	return true;
 }
 
@@ -2345,7 +2389,7 @@ bool ABHPlayerController::HostPhysicsClassroomForMenu(FString& OutMessage)
 	BHApplyClassroomLoopbackBinding(Settings);
 	HideMainMenu();
 	ShowTravelLoadingScreen(TEXT("PHYSICS CLASSROOM"), TEXT("Preparing revision escape route."));
-	UGameplayStatics::OpenLevel(this, FName(TEXT("/Engine/Maps/Entry")), true, BHMakeListenOptions(Preset.MapName, FBHLessonPresetStore::BuildRevisionLaunchOptions(Preset, false)));
+	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(Preset.MapName)), true, BHMakeListenOptions(Preset.MapName, FBHLessonPresetStore::BuildRevisionLaunchOptions(Preset, false)));
 	return true;
 }
 
@@ -2390,7 +2434,7 @@ bool ABHPlayerController::HostLiveClassroomForMenu(const FString& LevelName, FSt
 	BHApplyClassroomLoopbackBinding(Settings);
 	HideMainMenu();
 	ShowTravelLoadingScreen(FString::Printf(TEXT("LIVE %s"), *NormalizedLevel.ToUpper()), TEXT("Opening classroom host."));
-	UGameplayStatics::OpenLevel(this, FName(TEXT("/Engine/Maps/Entry")), true, Options);
+	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(NormalizedLevel)), true, Options);
 	return true;
 }
 
@@ -2408,7 +2452,7 @@ bool ABHPlayerController::HostBotGameForMenu(const FString& LevelName, FString& 
 	ShowLocalStatusMessage(OutMessage, 2.5f);
 	HideMainMenu();
 	ShowTravelLoadingScreen(FString::Printf(TEXT("BOT %s"), *NormalizedLevel.ToUpper()), TEXT("Spawning offline bot route."));
-	UGameplayStatics::OpenLevel(this, FName(TEXT("/Engine/Maps/Entry")), true, Options);
+	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(NormalizedLevel)), true, Options);
 	return true;
 }
 
@@ -2611,6 +2655,66 @@ bool ABHPlayerController::ResetLocalClassroomDataForMenu(FString& OutMessage)
 	}
 	ShowLocalStatusMessage(OutMessage, bSuccess ? 5.0f : 6.0f);
 	return bSuccess;
+}
+
+bool ABHPlayerController::SubmitFeedbackForMenu(EBHFeedbackKind Kind, const FString& Message, int32 Rating, const FString& Contact, bool bIncludeDiagnostics, FString& OutMessage)
+{
+	UBHFeedbackSubsystem* Feedback = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHFeedbackSubsystem>() : nullptr;
+	if (!Feedback)
+	{
+		OutMessage = TEXT("No feedback subsystem was available.");
+		return false;
+	}
+
+	const bool bSubmitted = Feedback->SubmitFeedback(Kind, Message, Rating, Contact, bIncludeDiagnostics, OutMessage);
+	ShowLocalStatusMessage(OutMessage, 4.0f);
+	return bSubmitted;
+}
+
+bool ABHPlayerController::SubmitRoundSurveyForMenu(int32 OverallRating, const FString& Difficulty, bool bWouldRecommend, const FString& Comment, FString& OutMessage)
+{
+	UBHFeedbackSubsystem* Feedback = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHFeedbackSubsystem>() : nullptr;
+	if (!Feedback)
+	{
+		OutMessage = TEXT("No feedback subsystem was available.");
+		return false;
+	}
+
+	const bool bSubmitted = Feedback->SubmitRoundSurvey(OverallRating, Difficulty, bWouldRecommend, Comment, OutMessage);
+	ShowLocalStatusMessage(OutMessage, 4.0f);
+	return bSubmitted;
+}
+
+bool ABHPlayerController::IsFeedbackBackendConfiguredForMenu() const
+{
+	const UBHFeedbackSubsystem* Feedback = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHFeedbackSubsystem>() : nullptr;
+	return Feedback ? Feedback->IsBackendConfigured() : false;
+}
+
+bool ABHPlayerController::IsEndOfRoundSurveyPendingForMenu() const
+{
+	const UBHFeedbackSubsystem* Feedback = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHFeedbackSubsystem>() : nullptr;
+	return Feedback ? Feedback->IsEndOfRoundSurveyPending() : false;
+}
+
+bool ABHPlayerController::ShouldIncludeFeedbackDiagnosticsByDefaultForMenu() const
+{
+	const UBHFeedbackSubsystem* Feedback = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHFeedbackSubsystem>() : nullptr;
+	return Feedback ? Feedback->ShouldIncludeDiagnosticsByDefault() : true;
+}
+
+FString ABHPlayerController::GetFeedbackPrivacySummaryForMenu() const
+{
+	const UBHFeedbackSubsystem* Feedback = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHFeedbackSubsystem>() : nullptr;
+	return Feedback ? Feedback->GetPrivacySummary() : FString();
+}
+
+void ABHPlayerController::ClearEndOfRoundSurveyPendingForMenu()
+{
+	if (UBHFeedbackSubsystem* Feedback = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHFeedbackSubsystem>() : nullptr)
+	{
+		Feedback->ClearEndOfRoundSurveyPending();
+	}
 }
 
 bool ABHPlayerController::OpenClassroomBoardForMenu(FString& OutMessage)
@@ -5804,6 +5908,28 @@ void ABHPlayerController::HandleRoundPhaseUiState()
 		ShowLocalStatusMessage(TEXT("Round started. Gameplay controls are active. Press Escape for menu or B for board."), 4.0f);
 	}
 
+	// When a round resolves to a win, offer the quick end-of-round survey. Arming here (rather than
+	// only from ClientRecordRoundResult) keeps the prompt reliable regardless of RPC ordering.
+	const bool bEnteredResult = (CurrentPhase == EBHRoundPhase::SurvivorsWin || CurrentPhase == EBHRoundPhase::HunterWin)
+		&& LastObservedRoundPhase != EBHRoundPhase::SurvivorsWin
+		&& LastObservedRoundPhase != EBHRoundPhase::HunterWin;
+	if (bEnteredResult)
+	{
+		if (UBHFeedbackSubsystem* Feedback = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHFeedbackSubsystem>() : nullptr)
+		{
+			Feedback->ArmEndOfRoundSurvey();
+			if (Feedback->ShouldAutoPromptEndOfRoundSurvey())
+			{
+				Feedback->MarkEndOfRoundSurveyShown();
+				ShowLocalStatusMessage(TEXT("Round over. Take a quick survey, or press Escape to dismiss."), 6.0f);
+				if (!MainMenuWidget.IsValid())
+				{
+					ShowMainMenu();
+				}
+			}
+		}
+	}
+
 	LastObservedRoundPhase = CurrentPhase;
 }
 
@@ -5845,6 +5971,15 @@ void ABHPlayerController::EnsureComfortPreferencesLoaded()
 	bReducedCameraShake = BHLoadComfortPreference(TEXT("ReducedCameraShake"), Settings ? Settings->bDefaultReducedCameraShake : false);
 	bCaptionsEnabled = BHLoadComfortPreference(TEXT("Captions"), Settings ? Settings->bDefaultCaptions : true);
 	bHighContrastHud = BHLoadComfortPreference(TEXT("HighContrastHud"), Settings ? Settings->bDefaultHighContrastHud : false);
+	HudScale = FMath::Clamp(BHLoadComfortScalarPreference(TEXT("HudScale"), Settings ? Settings->DefaultHudScale : 1.0f), 0.75f, 1.5f);
+	HudPanelOpacity = FMath::Clamp(BHLoadComfortScalarPreference(TEXT("HudPanelOpacity"), Settings ? Settings->DefaultHudPanelOpacity : 1.0f), 0.35f, 1.0f);
+	bColorblindHud = BHLoadComfortPreference(TEXT("ColorblindHud"), Settings ? Settings->bDefaultColorblindHud : false);
+	bShowHudMinimap = BHLoadComfortPreference(TEXT("ShowMinimap"), Settings ? Settings->bDefaultShowMinimap : true);
+	bShowHudNameplates = BHLoadComfortPreference(TEXT("ShowNameplates"), Settings ? Settings->bDefaultShowNameplates : true);
+	bShowHudVitals = BHLoadComfortPreference(TEXT("ShowVitals"), Settings ? Settings->bDefaultShowVitals : true);
+	bShowHudObjectiveBeats = BHLoadComfortPreference(TEXT("ShowObjectiveBeats"), Settings ? Settings->bDefaultShowObjectiveBeats : true);
+	bShowHudThreatArrow = BHLoadComfortPreference(TEXT("ShowThreatArrow"), Settings ? Settings->bDefaultShowThreatArrow : true);
+	bShowHudCrosshairDanger = BHLoadComfortPreference(TEXT("ShowCrosshairDanger"), Settings ? Settings->bDefaultShowCrosshairDanger : true);
 	bComfortPreferencesLoaded = true;
 }
 
@@ -5856,6 +5991,17 @@ void ABHPlayerController::SaveComfortPreference(const TCHAR* Key, bool bValue) c
 	}
 
 	GConfig->SetBool(BHComfortConfigSection, Key, bValue, GGameUserSettingsIni);
+	GConfig->Flush(false, GGameUserSettingsIni);
+}
+
+void ABHPlayerController::SaveComfortScalarPreference(const TCHAR* Key, float Value) const
+{
+	if (!Key || !GConfig)
+	{
+		return;
+	}
+
+	GConfig->SetFloat(BHComfortConfigSection, Key, Value, GGameUserSettingsIni);
 	GConfig->Flush(false, GGameUserSettingsIni);
 }
 
@@ -6099,6 +6245,48 @@ bool ABHPlayerController::SetComfortOptionForMenu(FName OptionName, bool bEnable
 		SaveComfortPreference(TEXT("HighContrastHud"), bHighContrastHud);
 		OutMessage = bHighContrastHud ? TEXT("High contrast HUD enabled.") : TEXT("High contrast HUD disabled.");
 	}
+	else if (Option.Equals(TEXT("ColorblindHud"), ESearchCase::IgnoreCase))
+	{
+		bColorblindHud = bEnabled;
+		SaveComfortPreference(TEXT("ColorblindHud"), bColorblindHud);
+		OutMessage = bColorblindHud ? TEXT("Colorblind-safe HUD enabled.") : TEXT("Colorblind-safe HUD disabled.");
+	}
+	else if (Option.Equals(TEXT("ShowMinimap"), ESearchCase::IgnoreCase))
+	{
+		bShowHudMinimap = bEnabled;
+		SaveComfortPreference(TEXT("ShowMinimap"), bShowHudMinimap);
+		OutMessage = bShowHudMinimap ? TEXT("HUD minimap shown.") : TEXT("HUD minimap hidden.");
+	}
+	else if (Option.Equals(TEXT("ShowNameplates"), ESearchCase::IgnoreCase))
+	{
+		bShowHudNameplates = bEnabled;
+		SaveComfortPreference(TEXT("ShowNameplates"), bShowHudNameplates);
+		OutMessage = bShowHudNameplates ? TEXT("HUD nameplates shown.") : TEXT("HUD nameplates hidden.");
+	}
+	else if (Option.Equals(TEXT("ShowVitals"), ESearchCase::IgnoreCase))
+	{
+		bShowHudVitals = bEnabled;
+		SaveComfortPreference(TEXT("ShowVitals"), bShowHudVitals);
+		OutMessage = bShowHudVitals ? TEXT("HUD vitals shown.") : TEXT("HUD vitals hidden.");
+	}
+	else if (Option.Equals(TEXT("ShowObjectiveBeats"), ESearchCase::IgnoreCase))
+	{
+		bShowHudObjectiveBeats = bEnabled;
+		SaveComfortPreference(TEXT("ShowObjectiveBeats"), bShowHudObjectiveBeats);
+		OutMessage = bShowHudObjectiveBeats ? TEXT("HUD objectives shown.") : TEXT("HUD objectives hidden.");
+	}
+	else if (Option.Equals(TEXT("ShowThreatArrow"), ESearchCase::IgnoreCase))
+	{
+		bShowHudThreatArrow = bEnabled;
+		SaveComfortPreference(TEXT("ShowThreatArrow"), bShowHudThreatArrow);
+		OutMessage = bShowHudThreatArrow ? TEXT("HUD threat arrow shown.") : TEXT("HUD threat arrow hidden.");
+	}
+	else if (Option.Equals(TEXT("ShowCrosshairDanger"), ESearchCase::IgnoreCase))
+	{
+		bShowHudCrosshairDanger = bEnabled;
+		SaveComfortPreference(TEXT("ShowCrosshairDanger"), bShowHudCrosshairDanger);
+		OutMessage = bShowHudCrosshairDanger ? TEXT("Crosshair alert shown.") : TEXT("Crosshair alert hidden.");
+	}
 	else
 	{
 		OutMessage = FString::Printf(TEXT("Unknown comfort option: %s."), *Option);
@@ -6108,6 +6296,46 @@ bool ABHPlayerController::SetComfortOptionForMenu(FName OptionName, bool bEnable
 
 	ShowLocalStatusMessage(OutMessage, 2.5f);
 	return true;
+}
+
+bool ABHPlayerController::SetHudScalarOptionForMenu(FName OptionName, float Value, FString& OutMessage)
+{
+	EnsureComfortPreferencesLoaded();
+
+	const FString Option = OptionName.ToString();
+	if (Option.Equals(TEXT("HudScale"), ESearchCase::IgnoreCase))
+	{
+		HudScale = FMath::Clamp(Value, 0.75f, 1.5f);
+		SaveComfortScalarPreference(TEXT("HudScale"), HudScale);
+		OutMessage = FString::Printf(TEXT("HUD size %d%%."), FMath::RoundToInt(HudScale * 100.0f));
+	}
+	else if (Option.Equals(TEXT("HudPanelOpacity"), ESearchCase::IgnoreCase))
+	{
+		HudPanelOpacity = FMath::Clamp(Value, 0.35f, 1.0f);
+		SaveComfortScalarPreference(TEXT("HudPanelOpacity"), HudPanelOpacity);
+		OutMessage = FString::Printf(TEXT("HUD panel opacity %d%%."), FMath::RoundToInt(HudPanelOpacity * 100.0f));
+	}
+	else
+	{
+		OutMessage = FString::Printf(TEXT("Unknown HUD option: %s."), *Option);
+		return false;
+	}
+
+	return true;
+}
+
+float ABHPlayerController::GetHudScalarOptionForMenu(FName OptionName) const
+{
+	const FString Option = OptionName.ToString();
+	if (Option.Equals(TEXT("HudScale"), ESearchCase::IgnoreCase))
+	{
+		return HudScale;
+	}
+	if (Option.Equals(TEXT("HudPanelOpacity"), ESearchCase::IgnoreCase))
+	{
+		return HudPanelOpacity;
+	}
+	return 1.0f;
 }
 
 bool ABHPlayerController::IsComfortOptionEnabledForMenu(FName OptionName) const
@@ -6133,6 +6361,34 @@ bool ABHPlayerController::IsComfortOptionEnabledForMenu(FName OptionName) const
 	{
 		return bHighContrastHud;
 	}
+	if (Option.Equals(TEXT("ColorblindHud"), ESearchCase::IgnoreCase))
+	{
+		return bColorblindHud;
+	}
+	if (Option.Equals(TEXT("ShowMinimap"), ESearchCase::IgnoreCase))
+	{
+		return bShowHudMinimap;
+	}
+	if (Option.Equals(TEXT("ShowNameplates"), ESearchCase::IgnoreCase))
+	{
+		return bShowHudNameplates;
+	}
+	if (Option.Equals(TEXT("ShowVitals"), ESearchCase::IgnoreCase))
+	{
+		return bShowHudVitals;
+	}
+	if (Option.Equals(TEXT("ShowObjectiveBeats"), ESearchCase::IgnoreCase))
+	{
+		return bShowHudObjectiveBeats;
+	}
+	if (Option.Equals(TEXT("ShowThreatArrow"), ESearchCase::IgnoreCase))
+	{
+		return bShowHudThreatArrow;
+	}
+	if (Option.Equals(TEXT("ShowCrosshairDanger"), ESearchCase::IgnoreCase))
+	{
+		return bShowHudCrosshairDanger;
+	}
 	return false;
 }
 
@@ -6149,6 +6405,51 @@ bool ABHPlayerController::IsHighContrastHudEnabled() const
 bool ABHPlayerController::IsReducedFlashEnabled() const
 {
 	return bReducedFlash;
+}
+
+float ABHPlayerController::GetHudScale() const
+{
+	return HudScale;
+}
+
+float ABHPlayerController::GetHudPanelOpacity() const
+{
+	return HudPanelOpacity;
+}
+
+bool ABHPlayerController::IsColorblindHudEnabled() const
+{
+	return bColorblindHud;
+}
+
+bool ABHPlayerController::IsHudMinimapVisible() const
+{
+	return bShowHudMinimap;
+}
+
+bool ABHPlayerController::IsHudNameplatesVisible() const
+{
+	return bShowHudNameplates;
+}
+
+bool ABHPlayerController::IsHudVitalsVisible() const
+{
+	return bShowHudVitals;
+}
+
+bool ABHPlayerController::IsHudObjectiveBeatsVisible() const
+{
+	return bShowHudObjectiveBeats;
+}
+
+bool ABHPlayerController::IsHudThreatArrowVisible() const
+{
+	return bShowHudThreatArrow;
+}
+
+bool ABHPlayerController::IsHudCrosshairDangerVisible() const
+{
+	return bShowHudCrosshairDanger;
 }
 
 bool ABHPlayerController::IsLocalHostAdminContext() const
@@ -6662,6 +6963,17 @@ void ABHPlayerController::RequestCleanQuit(FString Reason)
 	FPlatformMisc::RequestExit(false);
 }
 
+bool ABHPlayerController::AllowLobbyActionRpc(float MinIntervalSeconds)
+{
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	if (Now - LastLobbyActionServerTime < MinIntervalSeconds)
+	{
+		return false;
+	}
+	LastLobbyActionServerTime = Now;
+	return true;
+}
+
 void ABHPlayerController::ServerSetReady_Implementation(bool bReady)
 {
 	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
@@ -6672,6 +6984,11 @@ void ABHPlayerController::ServerSetReady_Implementation(bool bReady)
 
 void ABHPlayerController::ServerSetPlayerDisplayName_Implementation(const FString& DisplayName)
 {
+	if (!AllowLobbyActionRpc())
+	{
+		return;
+	}
+
 	const FString CleanDisplayName = BHSanitizeDisplayName(DisplayName);
 	if (!BHIsUsefulDisplayName(CleanDisplayName))
 	{
@@ -6718,6 +7035,11 @@ void ABHPlayerController::ServerSetNextLevel_Implementation(const FString& Level
 
 void ABHPlayerController::ServerSetAvatar_Implementation(int32 AvatarIndex)
 {
+	if (!AllowLobbyActionRpc())
+	{
+		return;
+	}
+
 	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
 	{
 		BHGM->SetPlayerAvatar(this, AvatarIndex);
@@ -6726,6 +7048,11 @@ void ABHPlayerController::ServerSetAvatar_Implementation(int32 AvatarIndex)
 
 void ABHPlayerController::ServerSetAvatarColor_Implementation(const FLinearColor& AvatarColor, int32 ColorIndex)
 {
+	if (!AllowLobbyActionRpc())
+	{
+		return;
+	}
+
 	ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
 	if (!BHPS)
 	{
@@ -6743,6 +7070,11 @@ void ABHPlayerController::ServerSetAvatarColor_Implementation(const FLinearColor
 
 void ABHPlayerController::ServerSetAvatarHeadwear_Implementation(int32 HeadwearIndex)
 {
+	if (!AllowLobbyActionRpc())
+	{
+		return;
+	}
+
 	ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
 	if (!BHPS)
 	{
@@ -6762,6 +7094,11 @@ void ABHPlayerController::ServerSetAvatarHeadwear_Implementation(int32 HeadwearI
 void ABHPlayerController::ServerSetAvatarGear_Implementation(int32 GearIndex)
 {
 	(void)GearIndex;
+	if (!AllowLobbyActionRpc())
+	{
+		return;
+	}
+
 	ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
 	if (!BHPS)
 	{
@@ -6786,6 +7123,11 @@ void ABHPlayerController::ServerApplyAvatarCosmetics_Implementation(
 	bool bAnnounce)
 {
 	(void)GearIndex;
+	if (!AllowLobbyActionRpc())
+	{
+		return;
+	}
+
 	ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
 	if (!BHPS)
 	{
@@ -6820,6 +7162,11 @@ void ABHPlayerController::ServerApplyAvatarCosmetics_Implementation(
 
 void ABHPlayerController::ServerSetMapVote_Implementation(const FString& LevelName)
 {
+	if (!AllowLobbyActionRpc())
+	{
+		return;
+	}
+
 	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
 	{
 		BHGM->SetMapVote(this, LevelName);
@@ -6828,6 +7175,11 @@ void ABHPlayerController::ServerSetMapVote_Implementation(const FString& LevelNa
 
 void ABHPlayerController::ServerSetFogPresetVote_Implementation(EBHFogPreset FogPreset)
 {
+	if (!AllowLobbyActionRpc())
+	{
+		return;
+	}
+
 	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
 	{
 		BHGM->SetFogPresetVote(this, FogPreset);
@@ -7682,6 +8034,12 @@ void ABHPlayerController::ClientPlayHorrorCue_Implementation(const FBHClientHorr
 
 void ABHPlayerController::ClientRecordRoundResult_Implementation(EBHPlayerRole AccountRole, EBHPlayerLifeState LifeState, EBHRoundPhase ResultPhase)
 {
+	// Record the result for session telemetry and arm the end-of-round survey prompt.
+	if (UBHFeedbackSubsystem* Feedback = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHFeedbackSubsystem>() : nullptr)
+	{
+		Feedback->RecordRoundResult(AccountRole, LifeState, ResultPhase);
+	}
+
 	if (UBHAccountSubsystem* AccountSubsystem = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
 	{
 		const int32 PreviousXP = AccountSubsystem->GetProgress().XP;

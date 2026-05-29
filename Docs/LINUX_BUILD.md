@@ -56,6 +56,32 @@ After `platform_Linux` is installed:
 
 This runs the Windows `RunUAT.bat` through Wine and archives the package to `Builds/Linux`.
 
+### Faster Cooks
+
+The package phase is dominated by C++ compilation and, on a cold run, shader
+compilation. `Package-Linux-Wine.sh` exposes three knobs to cut that time:
+
+| Env var | Default | Effect |
+| --- | --- | --- |
+| (built in) | on | Cooked shaders/DDC persist in `Builds/DerivedDataCache` between runs via `-ddc=InstalledNoZenLocalFallback` + `UE-LocalDataCachePath`, so a warm cook skips the ~250s cold shader compile. Set `BLACKOUTHUNT_DDC=/path` to relocate. |
+| `BUILD_PARALLEL` | `nproc` | UnrealBuildTool compile parallelism. The previous value was a serial `2`; the default now matches the core count. Lower it (`BUILD_PARALLEL=2`) if parallel clang actions exhaust RAM on a low-memory host. |
+| `ITERATE` | `0` | `ITERATE=1` re-cooks only changed assets (`-iterate`). Big win for repeat dev cooks; leave off for release/distribution packages. |
+
+Example fast iteration cook:
+
+```sh
+BUILD_PARALLEL=4 ITERATE=1 ./Tools/Package-Linux-Wine.sh
+```
+
+The first run after this change still pays the cold shader compile (Linux uses
+different shader formats than the Windows cook, so the warmed Windows DDC does
+not carry over); subsequent Linux cooks reuse the warmed Linux entries.
+
+The Windows packaging scripts mirror these knobs: `Tools/Package-Windows.ps1`
+accepts `-MaxParallel <n>` (default = processor count, was a serial `1`) and
+`-Incremental` (skip the `-clean` full rebuild and cook iteratively), and also
+honors `BUILD_PARALLEL`.
+
 Linux classroom packages use the default `OnlineSubsystemNull` direct-IP path. The
 project's EOS plugins are kept Win64-only because the current UE 5.7 Windows
 install does not provide Linux-ready `OnlineSubsystemEOS`/`SocketSubsystemEOS`

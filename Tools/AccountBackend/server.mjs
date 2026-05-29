@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, URL, URLSearchParams } from "node:url";
@@ -115,16 +115,35 @@ loadDotEnv(dotEnvPath);
 
 const port = Number(process.env.PORT || 8787);
 const publicBaseUrl = (process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${port}`).replace(/\/+$/, "");
-const dataDir = join(backendDir, "data");
+const dataDir = process.env.DATA_DIR || join(backendDir, "data");
 const playersPath = join(dataDir, "players.json");
 const stateSecretPath = join(dataDir, "state-secret.txt");
+const adminTokenPath = join(dataDir, "admin-token.txt");
+const feedbackPath = join(dataDir, "feedback.jsonl");
+const telemetryPath = join(dataDir, "telemetry.jsonl");
 const loginStateTtlMs = 15 * 60 * 1000;
+
+// Bind to loopback by default. Set BIND_HOST=0.0.0.0 to accept feedback from other
+// machines on a LAN (classroom), or front the loopback port with the Playit tunnel so
+// remote students can reach it without exposing the host directly. See ONLINE_SERVICES.md.
+const bindHost = process.env.BIND_HOST || "127.0.0.1";
+
+// Ingest guards. Bodies are already capped at 1 MB by readBody().
+const maxFeedbackChars = 8000;
+const maxContactChars = 200;
+const maxLogLines = 500;
+const maxLogLineChars = 1000;
+const maxStoredEntries = 5000; // newest-N kept in memory for the dashboard; the .jsonl file keeps everything.
+const feedbackKinds = new Set(["bug", "idea", "praise", "other", "survey"]);
 
 const pendingStates = new Map();
 const deviceAuth = new Map();
 const sessions = new Map();
+const rateBuckets = new Map();
 let players = {};
 let stateSecret = "";
+let adminToken = "";
+let writeChain = Promise.resolve();
 
 function json(res, status, body) {
   const payload = JSON.stringify(body);
@@ -151,12 +170,16 @@ function redirect(res, location) {
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
+    let bytes = 0;
     req.on("data", chunk => {
-      body += chunk;
-      if (body.length > 1024 * 1024) {
+      // chunk is a Buffer (no encoding set), so chunk.length is bytes, not UTF-16 units.
+      bytes += chunk.length;
+      if (bytes > 1024 * 1024) {
         reject(new Error("request body too large"));
         req.destroy();
+        return;
       }
+      body += chunk;
     });
     req.on("end", () => resolve(body));
     req.on("error", reject);
@@ -192,6 +215,169 @@ async function loadStateSecret() {
 
   stateSecret = randomBytes(32).toString("base64url");
   await writeFile(stateSecretPath, `${stateSecret}\n`, { mode: 0o600 });
+}
+
+async function loadAdminToken() {
+  if (process.env.ADMIN_TOKEN) {
+    adminToken = process.env.ADMIN_TOKEN;
+    return;
+  }
+
+  if (existsSync(adminTokenPath)) {
+    adminToken = (await readFile(adminTokenPath, "utf8")).trim();
+    if (adminToken) {
+      return;
+    }
+  }
+
+  adminToken = randomBytes(24).toString("base64url");
+  await writeFile(adminTokenPath, `${adminToken}\n`, { mode: 0o600 });
+}
+
+// Append-only JSONL writes, serialized through a single promise chain so two
+// concurrent requests cannot interleave partial lines.
+function appendJsonLine(path, record) {
+  writeChain = writeChain
+    .then(() => appendFile(path, `${JSON.stringify(record)}\n`))
+    .catch(error => console.error(`append ${path} failed:`, error.message));
+  return writeChain;
+}
+
+async function readJsonLines(path, limit) {
+  if (!existsSync(path)) {
+    return [];
+  }
+
+  const text = await readFile(path, "utf8");
+  const out = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) {
+      continue;
+    }
+    try {
+      out.push(JSON.parse(line));
+    } catch {
+      // Skip a corrupt line rather than failing the whole view.
+    }
+  }
+
+  return limit && out.length > limit ? out.slice(out.length - limit) : out;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[<>&"']/g, c => ({
+    "<": "&lt;",
+    ">": "&gt;",
+    "&": "&amp;",
+    "\"": "&quot;",
+    "'": "&#39;",
+  }[c]));
+}
+
+// Strip control characters (keeping tab and newline) and clamp length.
+const controlCharsRegex = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
+function cleanText(value, maxChars) {
+  const text = String(value ?? "").replace(controlCharsRegex, "").trim();
+  return text.length > maxChars ? text.slice(0, maxChars) : text;
+}
+
+function clampInt(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.round(n)));
+}
+
+function clientIp(req) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return forwarded || req.socket?.remoteAddress || "unknown";
+}
+
+// Simple fixed-window per-IP limiter. Keeps abusive clients from filling the log.
+function rateLimited(req, bucket, limit, windowMs) {
+  const key = `${bucket}:${clientIp(req)}`;
+  const now = Date.now();
+  const entry = rateBuckets.get(key);
+  if (!entry || now - entry.start >= windowMs) {
+    // Opportunistically drop expired buckets so a host on 0.0.0.0 (many client IPs) or
+    // behind a tunnel does not accumulate entries without bound.
+    if (rateBuckets.size > 1000) {
+      for (const [existingKey, existingEntry] of rateBuckets) {
+        if (now - existingEntry.start >= windowMs) {
+          rateBuckets.delete(existingKey);
+        }
+      }
+    }
+    rateBuckets.set(key, { start: now, count: 1 });
+    return false;
+  }
+  entry.count += 1;
+  return entry.count > limit;
+}
+
+function adminAuthorized(req, url) {
+  if (!adminToken) {
+    return false;
+  }
+  const header = req.headers.authorization || "";
+  const bearer = /^Bearer\s+(.+)$/i.exec(header);
+  const provided = (bearer && bearer[1]) || url.searchParams.get("key") || "";
+  return Boolean(provided) && constantTimeEquals(provided, adminToken);
+}
+
+function sanitizeDiagnostics(raw) {
+  if (!raw || typeof raw !== "object") {
+    return undefined;
+  }
+
+  const out = {};
+  if (raw.device && typeof raw.device === "object") {
+    out.device = {
+      cpu: cleanText(raw.device.cpu, 200),
+      gpu: cleanText(raw.device.gpu, 200),
+      os: cleanText(raw.device.os, 200),
+      ram_gb: clampInt(raw.device.ram_gb, 0, 4096, 0),
+    };
+  }
+  if (raw.perf && typeof raw.perf === "object") {
+    const p = raw.perf;
+    out.perf = {
+      samples: clampInt(p.samples, 0, 1e9, 0),
+      session_seconds: clampInt(p.session_seconds, 0, 1e9, 0),
+      avg_fps: clampInt(p.avg_fps, 0, 100000, 0),
+      min_fps: clampInt(p.min_fps, 0, 100000, 0),
+      max_fps: clampInt(p.max_fps, 0, 100000, 0),
+      p1_low_fps: clampInt(p.p1_low_fps, 0, 100000, 0),
+      hitches: clampInt(p.hitches, 0, 1e9, 0),
+    };
+  }
+  if (Array.isArray(raw.recent_logs)) {
+    out.recent_logs = raw.recent_logs
+      .slice(0, maxLogLines)
+      .map(line => cleanText(line, maxLogLineChars))
+      .filter(Boolean);
+  }
+  return out;
+}
+
+function sanitizeContext(raw) {
+  if (!raw || typeof raw !== "object") {
+    return {};
+  }
+  return {
+    app_version: cleanText(raw.app_version, 64),
+    engine_version: cleanText(raw.engine_version, 64),
+    platform: cleanText(raw.platform, 64),
+    session_id: cleanText(raw.session_id, 128),
+    player_name: cleanText(raw.player_name, 80),
+    player_id: cleanText(raw.player_id, 128),
+    level: cleanText(raw.level, 64),
+    role: cleanText(raw.role, 32),
+    round_phase: cleanText(raw.round_phase, 32),
+    play_seconds: clampInt(raw.play_seconds, 0, 1e9, 0),
+  };
 }
 
 function requireEnv(provider, name) {
@@ -575,6 +761,248 @@ async function handleAuthCallback(provider, url, res) {
   }
 }
 
+async function handleFeedback(req, res) {
+  if (rateLimited(req, "feedback", 30, 5 * 60 * 1000)) {
+    json(res, 429, { ok: false, error: "too many submissions, try again in a few minutes" });
+    return;
+  }
+
+  let body;
+  try {
+    body = JSON.parse((await readBody(req)) || "{}");
+  } catch {
+    json(res, 400, { ok: false, error: "invalid JSON body" });
+    return;
+  }
+
+  const kind = feedbackKinds.has(body.kind) ? body.kind : "other";
+  const message = cleanText(body.message, maxFeedbackChars);
+  const contact = cleanText(body.contact, maxContactChars);
+  const rating = clampInt(body.rating, 0, 5, 0);
+
+  // A survey can carry its content in the structured `survey` block, so it may have no free-text
+  // message; every other kind must say something.
+  if (!message && kind !== "survey") {
+    json(res, 400, { ok: false, error: "message is required" });
+    return;
+  }
+
+  const record = {
+    id: randomBytes(8).toString("hex"),
+    type: "feedback",
+    kind,
+    message,
+    rating,
+    contact,
+    context: sanitizeContext(body.context),
+    received_at: new Date().toISOString(),
+    ip: clientIp(req),
+  };
+
+  if (kind === "survey" && body.survey && typeof body.survey === "object") {
+    record.survey = {
+      overall: clampInt(body.survey.overall, 0, 5, 0),
+      difficulty: cleanText(body.survey.difficulty, 32),
+      would_recommend: Boolean(body.survey.would_recommend),
+      round_role: cleanText(body.survey.round_role, 32),
+      round_result: cleanText(body.survey.round_result, 32),
+      survived: Boolean(body.survey.survived),
+    };
+  }
+
+  const diagnostics = sanitizeDiagnostics(body.diagnostics);
+  if (diagnostics) {
+    record.diagnostics = diagnostics;
+  }
+
+  await appendJsonLine(feedbackPath, record);
+  json(res, 200, { ok: true, id: record.id });
+}
+
+async function handleTelemetrySession(req, res) {
+  if (rateLimited(req, "telemetry", 120, 5 * 60 * 1000)) {
+    json(res, 429, { ok: false, error: "too many telemetry posts" });
+    return;
+  }
+
+  let body;
+  try {
+    body = JSON.parse((await readBody(req)) || "{}");
+  } catch {
+    json(res, 400, { ok: false, error: "invalid JSON body" });
+    return;
+  }
+
+  const record = {
+    id: randomBytes(8).toString("hex"),
+    type: "telemetry",
+    reason: cleanText(body.reason, 32) || "session_end",
+    context: sanitizeContext({
+      app_version: body.app_version,
+      engine_version: body.engine_version,
+      platform: body.platform,
+      session_id: body.session_id,
+      player_name: body.player_name,
+      player_id: body.player_id,
+    }),
+    received_at: new Date().toISOString(),
+    ip: clientIp(req),
+  };
+
+  const diagnostics = sanitizeDiagnostics({
+    device: body.device,
+    perf: body.perf,
+    recent_logs: body.recent_logs,
+  });
+  if (diagnostics) {
+    record.diagnostics = diagnostics;
+  }
+
+  if (Array.isArray(body.round_results)) {
+    record.round_results = body.round_results.slice(0, 100).map(r => ({
+      role: cleanText(r && r.role, 32),
+      result: cleanText(r && r.result, 32),
+      survived: Boolean(r && r.survived),
+      level: cleanText(r && r.level, 64),
+      at: cleanText(r && r.at, 40),
+    }));
+  }
+
+  await appendJsonLine(telemetryPath, record);
+  json(res, 200, { ok: true, id: record.id });
+}
+
+function formatContextLine(ctx = {}) {
+  const bits = [];
+  if (ctx.player_name) bits.push(ctx.player_name);
+  if (ctx.role) bits.push(ctx.role);
+  if (ctx.level) bits.push(ctx.level);
+  if (ctx.round_phase) bits.push(ctx.round_phase);
+  if (ctx.app_version) bits.push(`v${ctx.app_version}`);
+  if (ctx.platform) bits.push(ctx.platform);
+  if (ctx.play_seconds) bits.push(`${ctx.play_seconds}s played`);
+  return bits.map(escapeHtml).join(" &middot; ");
+}
+
+function renderDiagnostics(d) {
+  if (!d) {
+    return "";
+  }
+  const perf = d.perf
+    ? `FPS avg ${d.perf.avg_fps} / min ${d.perf.min_fps} / 1%low ${d.perf.p1_low_fps} &middot; ${d.perf.hitches} hitches &middot; ${d.perf.session_seconds}s`
+    : "";
+  const dev = d.device
+    ? `${escapeHtml(d.device.cpu || "?")} &middot; ${escapeHtml(d.device.gpu || "?")} &middot; ${d.device.ram_gb}GB &middot; ${escapeHtml(d.device.os || "?")}`
+    : "";
+  const logs = Array.isArray(d.recent_logs) && d.recent_logs.length
+    ? `<details><summary>${d.recent_logs.length} recent log lines</summary><pre>${d.recent_logs.map(escapeHtml).join("\n")}</pre></details>`
+    : "";
+  return `<div class="diag">${perf}${dev ? `<br>${dev}` : ""}${logs}</div>`;
+}
+
+function renderFeedbackCard(e) {
+  const stars = e.rating ? ` <span class="stars">${"&#9733;".repeat(e.rating)}${"&#9734;".repeat(5 - e.rating)}</span>` : "";
+  let surveyHtml = "";
+  if (e.survey) {
+    const s = e.survey;
+    surveyHtml = `<div class="survey">Overall ${s.overall || "-"}/5 &middot; difficulty ${escapeHtml(s.difficulty || "-")} &middot; ${s.would_recommend ? "would recommend" : "would not recommend"}${s.round_role ? ` &middot; ${escapeHtml(s.round_role)}` : ""}${s.round_result ? ` ${escapeHtml(s.round_result)}` : ""}${s.survived ? " (survived)" : ""}</div>`;
+  }
+  return `<article class="card kind-${escapeHtml(e.kind)}">
+    <header><span class="kind">${escapeHtml(e.kind)}</span>${stars}<time>${escapeHtml(e.received_at)}</time></header>
+    <div class="ctx">${formatContextLine(e.context)}</div>
+    ${e.message ? `<p class="msg">${escapeHtml(e.message)}</p>` : ""}
+    ${surveyHtml}
+    ${e.contact ? `<div class="contact">Contact: ${escapeHtml(e.contact)}</div>` : ""}
+    ${renderDiagnostics(e.diagnostics)}
+  </article>`;
+}
+
+function renderTelemetryCard(e) {
+  const rounds = Array.isArray(e.round_results) && e.round_results.length
+    ? `<div class="rounds">${e.round_results.map(r => escapeHtml(`${r.level || "?"}: ${r.role || "?"} → ${r.result || "?"}${r.survived ? " (survived)" : ""}`)).join("<br>")}</div>`
+    : "";
+  return `<article class="card telemetry">
+    <header><span class="kind">telemetry</span><span class="reason">${escapeHtml(e.reason)}</span><time>${escapeHtml(e.received_at)}</time></header>
+    <div class="ctx">${formatContextLine(e.context)}</div>
+    ${rounds}
+    ${renderDiagnostics(e.diagnostics)}
+  </article>`;
+}
+
+function adminUnauthorizedPage() {
+  return `<!doctype html>
+<meta charset="utf-8">
+<title>Blackout Hunt feedback</title>
+<body style="font-family: system-ui, sans-serif; background:#0d1114; color:#e9f2ef; padding:32px; line-height:1.5">
+  <h1>Feedback dashboard is locked</h1>
+  <p>Open this page with the admin key, e.g. <code>/admin?key=YOUR_TOKEN</code>.</p>
+  <p>The key is printed in the backend console at startup and stored in <code>Tools/AccountBackend/data/admin-token.txt</code>. You can also set <code>ADMIN_TOKEN</code> in <code>.env</code>.</p>
+</body>`;
+}
+
+function adminDashboardPage(key, feedback, telemetry) {
+  const safeKey = encodeURIComponent(key);
+  const surveyCount = feedback.filter(e => e.kind === "survey").length;
+  const bugCount = feedback.filter(e => e.kind === "bug").length;
+  const ideaCount = feedback.filter(e => e.kind === "idea").length;
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="30">
+<title>Blackout Hunt feedback</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; background:#0d1114; color:#e9f2ef; margin:0; padding:24px; }
+  h1 { margin:0 0 4px; font-size:22px; }
+  .summary { color:#8aa; margin-bottom:20px; font-size:14px; }
+  .summary a { color:#7fd1ff; }
+  .cols { display:grid; grid-template-columns: 1fr; gap:24px; max-width:1100px; }
+  @media (min-width: 900px) { .cols { grid-template-columns: 3fr 2fr; } }
+  h2 { font-size:15px; text-transform:uppercase; letter-spacing:0.08em; color:#9fb; border-bottom:1px solid #243; padding-bottom:6px; }
+  .card { background:#141a1f; border:1px solid #223; border-left:4px solid #2a6; border-radius:8px; padding:12px 14px; margin-bottom:12px; }
+  .card.kind-bug { border-left-color:#e0584a; }
+  .card.kind-idea { border-left-color:#e9c46a; }
+  .card.kind-praise { border-left-color:#2a9d8f; }
+  .card.kind-survey { border-left-color:#7fb3ff; }
+  .card.telemetry { border-left-color:#6a7; }
+  header { display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; }
+  .kind { font-weight:700; text-transform:uppercase; font-size:12px; letter-spacing:0.05em; }
+  .reason { color:#9aa; font-size:12px; }
+  .stars { color:#e9c46a; }
+  time { margin-left:auto; color:#788; font-size:12px; }
+  .ctx { color:#8ba; font-size:12px; margin:4px 0; }
+  .msg { white-space:pre-wrap; margin:8px 0; }
+  .survey { font-size:13px; color:#bcd; }
+  .contact { font-size:12px; color:#9ab; margin-top:6px; }
+  .diag { font-size:12px; color:#789; margin-top:8px; }
+  .rounds { font-size:12px; color:#9ba; margin:6px 0; }
+  pre { white-space:pre-wrap; background:#0a0e10; padding:8px; border-radius:6px; max-height:280px; overflow:auto; font-size:11px; }
+  .empty { color:#677; font-style:italic; }
+</style>
+</head>
+<body>
+  <h1>Blackout Hunt &mdash; player feedback</h1>
+  <div class="summary">
+    ${feedback.length} feedback (${bugCount} bug, ${ideaCount} idea, ${surveyCount} survey) &middot; ${telemetry.length} telemetry sessions &middot; auto-refresh 30s &middot;
+    <a href="/admin/feedback.json?key=${safeKey}">feedback.json</a> &middot;
+    <a href="/admin/telemetry.json?key=${safeKey}">telemetry.json</a>
+  </div>
+  <div class="cols">
+    <section>
+      <h2>Feedback &amp; surveys</h2>
+      ${feedback.length ? feedback.map(renderFeedbackCard).join("\n") : '<p class="empty">No feedback yet.</p>'}
+    </section>
+    <section>
+      <h2>Performance &amp; logs</h2>
+      ${telemetry.length ? telemetry.map(renderTelemetryCard).join("\n") : '<p class="empty">No telemetry yet.</p>'}
+    </section>
+  </div>
+</body>
+</html>`;
+}
+
 async function route(req, res) {
   const url = new URL(req.url, publicBaseUrl);
 
@@ -584,6 +1012,8 @@ async function route(req, res) {
       features: {
         env_file: true,
         signed_login_state: true,
+        feedback: true,
+        telemetry: true,
       },
       providers: {
         google: isProviderConfigured("google"),
@@ -638,12 +1068,53 @@ async function route(req, res) {
       return;
     }
 
-    const body = JSON.parse(await readBody(req) || "{}");
+    let body;
+    try {
+      body = JSON.parse((await readBody(req)) || "{}");
+    } catch {
+      json(res, 400, { error: "invalid JSON body" });
+      return;
+    }
     player.progress = body.progress || {};
     player.selected_avatar_url = body.progress?.selected_avatar_url || player.avatar_url || "";
     player.updated_at = new Date().toISOString();
     await savePlayers();
     json(res, 200, { ok: true, player });
+    return;
+  }
+
+  // Player feedback, bug reports, feature ideas, and end-of-round surveys. No account required
+  // so guest clients can submit. The client posts to BackendBaseUrl + "/feedback".
+  if (req.method === "POST" && url.pathname === "/feedback") {
+    await handleFeedback(req, res);
+    return;
+  }
+
+  // Performance + recent-log session diagnostics. Client posts to "/telemetry/session".
+  if (req.method === "POST" && url.pathname === "/telemetry/session") {
+    await handleTelemetrySession(req, res);
+    return;
+  }
+
+  // Owner-only views, gated by the admin token.
+  if (req.method === "GET" && url.pathname === "/admin") {
+    if (!adminAuthorized(req, url)) {
+      html(res, 401, adminUnauthorizedPage());
+      return;
+    }
+    const feedback = (await readJsonLines(feedbackPath, maxStoredEntries)).reverse();
+    const telemetry = (await readJsonLines(telemetryPath, maxStoredEntries)).reverse();
+    html(res, 200, adminDashboardPage(url.searchParams.get("key") || "", feedback.slice(0, 300), telemetry.slice(0, 300)));
+    return;
+  }
+
+  if (req.method === "GET" && (url.pathname === "/admin/feedback.json" || url.pathname === "/admin/telemetry.json")) {
+    if (!adminAuthorized(req, url)) {
+      json(res, 401, { error: "unauthorized" });
+      return;
+    }
+    const path = url.pathname.includes("telemetry") ? telemetryPath : feedbackPath;
+    json(res, 200, { entries: (await readJsonLines(path, maxStoredEntries)).reverse() });
     return;
   }
 
@@ -653,13 +1124,16 @@ async function route(req, res) {
 await mkdir(dataDir, { recursive: true });
 await loadPlayers();
 await loadStateSecret();
+await loadAdminToken();
 
 createServer((req, res) => {
   route(req, res).catch(error => {
     console.error(error);
-    json(res, 500, { error: error.message });
+    // Log the detail server-side; do not leak parser/internal messages to clients.
+    json(res, 500, { error: "internal error" });
   });
-}).listen(port, "127.0.0.1", () => {
-  console.log(`Blackout Hunt account backend listening on http://127.0.0.1:${port}`);
+}).listen(port, bindHost, () => {
+  console.log(`Blackout Hunt account backend listening on http://${bindHost}:${port}`);
   console.log(`Public base URL: ${publicBaseUrl}`);
+  console.log(`Feedback dashboard: ${publicBaseUrl}/admin?key=${adminToken}`);
 });

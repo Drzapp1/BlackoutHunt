@@ -1,10 +1,13 @@
 #include "BHGameInstance.h"
+#include "BHGameMode.h"
 #include "BHGameSettings.h"
 #include "BHNetworkSupport.h"
 #include "BHPlayerController.h"
 #include "BHPlayerState.h"
 #include "BHRevisionQuestionBank.h"
 #include "Engine/World.h"
+#include "Engine/Engine.h"
+#include "Engine/NetDriver.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/PlayerState.h"
 #include "HAL/FileManager.h"
@@ -44,7 +47,11 @@ namespace
 
 	FString MakeListenOptions(const FString& LevelName)
 	{
-		return FString::Printf(TEXT("listen?BHLevel=%s?BHFogPreset=Heavy"), *NormalizeRuntimeLevelName(LevelName));
+		// Pin a fresh hosted game to stage 0. Without an explicit BHStageIndex option the GameMode
+		// falls back to the GameInstance's persisted stage index, which only resets when a train run
+		// reaches its final recap — so abandoning a run mid-way and hosting again would otherwise
+		// inherit the stale stage (wrong durations / inflated targets / "final" framing).
+		return FString::Printf(TEXT("listen?BHLevel=%s?BHFogPreset=Heavy?BHStageIndex=0"), *NormalizeRuntimeLevelName(LevelName));
 	}
 
 	void ShowTravelLoadingScreen(UWorld* World, const FString& Title, const FString& Detail)
@@ -69,6 +76,19 @@ namespace
 		}
 
 		return PlayerState->GetPlayerName();
+	}
+
+	// Match a stored travel entry to a player. When BOTH sides carry a real stable id (the online /
+	// unique-net-id case) they must match exactly — a coinciding display name must NOT bind a player
+	// to a different account's saved progress. The display-name fallback is allowed only when a stable
+	// id is unavailable on at least one side (the OSS-Null/LAN case), and never matches a blank name.
+	bool TravelEntryMatches(const FBHTravelPlayerProgress& Progress, const FString& StableId, const FString& PlayerName)
+	{
+		if (!StableId.IsEmpty() && !Progress.StableId.IsEmpty())
+		{
+			return Progress.StableId == StableId;
+		}
+		return !PlayerName.IsEmpty() && Progress.PlayerName == PlayerName;
 	}
 
 	FString BHTelemetryCsvEscape(const FString& Input)
@@ -108,6 +128,15 @@ void UBHGameInstance::Init()
 {
 	Super::Init();
 
+	// Surface connection/travel failures to the player. The engine otherwise bounces a failed join back
+	// to the menu map silently, so a student who mistypes the address, joins before the host is up, or
+	// runs a mismatched build just sees a black screen then the menu with no explanation.
+	if (GEngine)
+	{
+		EngineNetworkFailureHandle = GEngine->OnNetworkFailure().AddUObject(this, &UBHGameInstance::HandleEngineNetworkFailure);
+		EngineTravelFailureHandle = GEngine->OnTravelFailure().AddUObject(this, &UBHGameInstance::HandleEngineTravelFailure);
+	}
+
 	AutomationConfig = FBHAutomationSupport::ParseCommandLine(FCommandLine::Get());
 
 	const FString GpuBrand = FPlatformMisc::GetPrimaryGPUBrand();
@@ -131,6 +160,20 @@ void UBHGameInstance::Init()
 
 void UBHGameInstance::Shutdown()
 {
+	if (GEngine)
+	{
+		if (EngineNetworkFailureHandle.IsValid())
+		{
+			GEngine->OnNetworkFailure().Remove(EngineNetworkFailureHandle);
+			EngineNetworkFailureHandle.Reset();
+		}
+		if (EngineTravelFailureHandle.IsValid())
+		{
+			GEngine->OnTravelFailure().Remove(EngineTravelFailureHandle);
+			EngineTravelFailureHandle.Reset();
+		}
+	}
+
 	if (!GameHotspotSsid.IsEmpty())
 	{
 		FBHNetworkSupport::StopGameHotspot(GameHotspotSsid);
@@ -479,6 +522,31 @@ bool UBHGameInstance::TryDestroyOnlineSession(FString& OutMessage)
 	return true;
 }
 
+void UBHGameInstance::LeaveOnlineSessionIfActive()
+{
+	if (bOnlineSessionBusy)
+	{
+		return;
+	}
+
+	FString IgnoredMessage;
+	IOnlineSessionPtr Sessions = GetOnlineSessionInterface(IgnoredMessage);
+	if (!Sessions.IsValid() || !Sessions->GetNamedSession(NAME_GameSession))
+	{
+		return;
+	}
+
+	DestroyOnlineSessionCompleteHandle = Sessions->AddOnDestroySessionCompleteDelegate_Handle(
+		FOnDestroySessionCompleteDelegate::CreateUObject(this, &UBHGameInstance::OnDestroyOnlineSessionComplete));
+
+	bOnlineSessionBusy = true;
+	if (!Sessions->DestroySession(NAME_GameSession))
+	{
+		Sessions->ClearOnDestroySessionCompleteDelegate_Handle(DestroyOnlineSessionCompleteHandle);
+		bOnlineSessionBusy = false;
+	}
+}
+
 bool UBHGameInstance::TryCreateGameHotspot(FString& OutMessage)
 {
 	if (!IsHostNetworkContext(OutMessage, TEXT("create the game hotspot")))
@@ -624,6 +692,79 @@ const FString& UBHGameInstance::GetGameHotspotPassphrase() const
 const FString& UBHGameInstance::GetLastNetworkMessage() const
 {
 	return LastNetworkMessage;
+}
+
+FString UBHGameInstance::ConsumePendingNetworkFailureMessage()
+{
+	FString Message = PendingNetworkFailureMessage;
+	PendingNetworkFailureMessage.Reset();
+	return Message;
+}
+
+void UBHGameInstance::HandleEngineNetworkFailure(UWorld* FailedWorld, UNetDriver* NetDriver, ENetworkFailure::Type FailureType, const FString& ErrorString)
+{
+	// On a listen server the host is also notified when a student disconnects; don't overwrite the
+	// host's own status line with a client-side failure message.
+	const bool bIsServer = NetDriver ? (NetDriver->GetNetMode() != NM_Client) : false;
+	if (bIsServer)
+	{
+		return;
+	}
+
+	FString Message;
+	switch (FailureType)
+	{
+	case ENetworkFailure::ConnectionTimeout:
+		Message = TEXT("Could not reach the host (timed out). Check the join address and that the teacher has started hosting.");
+		break;
+	case ENetworkFailure::PendingConnectionFailure:
+		Message = TEXT("The host refused the connection or is not reachable yet. Make sure hosting has started and the tunnel/port is open.");
+		break;
+	case ENetworkFailure::ConnectionLost:
+		Message = TEXT("Lost connection to the host.");
+		break;
+	case ENetworkFailure::OutdatedClient:
+	case ENetworkFailure::OutdatedServer:
+		Message = TEXT("Your game build does not match the host. Make sure every device runs the same BlackoutHunt version, then try again.");
+		break;
+	case ENetworkFailure::NetGuidMismatch:
+	case ENetworkFailure::NetChecksumMismatch:
+		Message = TEXT("Content mismatch with the host. Make sure you are on the same build, then try again.");
+		break;
+	default:
+		Message = FString::Printf(TEXT("Could not connect to the host (%s)."), ENetworkFailure::ToString(FailureType));
+		break;
+	}
+
+	PendingNetworkFailureMessage = Message;
+	SetLastNetworkMessage(Message);
+	UE_LOG(LogTemp, Warning, TEXT("BlackoutHunt network failure: %s (%s)"), *Message, *ErrorString);
+}
+
+void UBHGameInstance::HandleEngineTravelFailure(UWorld* FailedWorld, ETravelFailure::Type FailureType, const FString& ErrorString)
+{
+	FString Message;
+	switch (FailureType)
+	{
+	case ETravelFailure::InvalidURL:
+		Message = TEXT("That join address is not valid. Use the host's address as host-or-domain:7777.");
+		break;
+	case ETravelFailure::PackageMissing:
+	case ETravelFailure::PackageVersion:
+		Message = TEXT("Missing or mismatched map/content versus the host. Update to the same build.");
+		break;
+	case ETravelFailure::PendingNetGameCreateFailure:
+	case ETravelFailure::ClientTravelFailure:
+		Message = TEXT("Could not connect to the host. Check the address and that the host is running.");
+		break;
+	default:
+		Message = FString::Printf(TEXT("Travel to the host failed (%s)."), ETravelFailure::ToString(FailureType));
+		break;
+	}
+
+	PendingNetworkFailureMessage = Message;
+	SetLastNetworkMessage(Message);
+	UE_LOG(LogTemp, Warning, TEXT("BlackoutHunt travel failure: %s (%s)"), *Message, *ErrorString);
 }
 
 const FString& UBHGameInstance::GetPublicJoinAddress() const
@@ -800,8 +941,7 @@ void UBHGameInstance::PersistTravelPlayerState(const ABHPlayerState* PlayerState
 
 	FBHTravelPlayerProgress* Existing = TravelPlayerProgress.FindByPredicate([&](const FBHTravelPlayerProgress& Progress)
 	{
-		return (!StableId.IsEmpty() && Progress.StableId == StableId)
-			|| (!PlayerName.IsEmpty() && Progress.PlayerName == PlayerName);
+		return TravelEntryMatches(Progress, StableId, PlayerName);
 	});
 
 	FBHTravelPlayerProgress& Progress = Existing ? *Existing : TravelPlayerProgress.AddDefaulted_GetRef();
@@ -831,8 +971,7 @@ bool UBHGameInstance::RestoreTravelPlayerState(ABHPlayerState* PlayerState) cons
 	const FString PlayerName = PlayerState->GetPlayerName();
 	const FBHTravelPlayerProgress* Existing = TravelPlayerProgress.FindByPredicate([&](const FBHTravelPlayerProgress& Progress)
 	{
-		return (!StableId.IsEmpty() && Progress.StableId == StableId)
-			|| (!PlayerName.IsEmpty() && Progress.PlayerName == PlayerName);
+		return TravelEntryMatches(Progress, StableId, PlayerName);
 	});
 
 	if (!Existing)
@@ -860,6 +999,9 @@ bool UBHGameInstance::RestoreTravelPlayerState(ABHPlayerState* PlayerState) cons
 
 void UBHGameInstance::MarkTravelPlayerLeftForReconnect(const ABHPlayerState* PlayerState, float ServerTimeSeconds)
 {
+	// The caller's world time is intentionally ignored for the grace stamp: it resets on ServerTravel.
+	// We stamp a process-wide monotonic clock so elapsed time stays valid across travel boundaries.
+	(void)ServerTimeSeconds;
 	if (!PlayerState)
 	{
 		return;
@@ -873,13 +1015,12 @@ void UBHGameInstance::MarkTravelPlayerLeftForReconnect(const ABHPlayerState* Pla
 	const FString PlayerName = PlayerState->GetPlayerName();
 	FBHTravelPlayerProgress* Existing = TravelPlayerProgress.FindByPredicate([&](const FBHTravelPlayerProgress& Progress)
 	{
-		return (!StableId.IsEmpty() && Progress.StableId == StableId)
-			|| (!PlayerName.IsEmpty() && Progress.PlayerName == PlayerName);
+		return TravelEntryMatches(Progress, StableId, PlayerName);
 	});
 
 	if (Existing)
 	{
-		Existing->LeftServerWorldTime = ServerTimeSeconds;
+		Existing->LeftServerWorldTime = FPlatformTime::Seconds();
 	}
 }
 
@@ -894,16 +1035,19 @@ bool UBHGameInstance::TryGetReconnectProgress(const ABHPlayerState* PlayerState,
 	const FString PlayerName = PlayerState->GetPlayerName();
 	const FBHTravelPlayerProgress* Existing = TravelPlayerProgress.FindByPredicate([&](const FBHTravelPlayerProgress& Progress)
 	{
-		return (!StableId.IsEmpty() && Progress.StableId == StableId)
-			|| (!PlayerName.IsEmpty() && Progress.PlayerName == PlayerName);
+		return TravelEntryMatches(Progress, StableId, PlayerName);
 	});
 
-	if (!Existing || Existing->LeftServerWorldTime < 0.0f)
+	if (!Existing || Existing->LeftServerWorldTime < 0.0)
 	{
 		return false;
 	}
 
-	if (NowServerTimeSeconds - Existing->LeftServerWorldTime > GraceSeconds)
+	// Compare against the same process-wide monotonic clock the leave time was stamped with, so the
+	// grace window survives ServerTravel. The caller's world time is ignored on purpose.
+	(void)NowServerTimeSeconds;
+	const double ElapsedSinceLeft = FPlatformTime::Seconds() - Existing->LeftServerWorldTime;
+	if (ElapsedSinceLeft < 0.0 || ElapsedSinceLeft > static_cast<double>(GraceSeconds))
 	{
 		return false;
 	}
@@ -923,8 +1067,7 @@ void UBHGameInstance::ClearReconnectMark(const ABHPlayerState* PlayerState)
 	const FString PlayerName = PlayerState->GetPlayerName();
 	FBHTravelPlayerProgress* Existing = TravelPlayerProgress.FindByPredicate([&](const FBHTravelPlayerProgress& Progress)
 	{
-		return (!StableId.IsEmpty() && Progress.StableId == StableId)
-			|| (!PlayerName.IsEmpty() && Progress.PlayerName == PlayerName);
+		return TravelEntryMatches(Progress, StableId, PlayerName);
 	});
 
 	if (Existing)
@@ -1422,7 +1565,7 @@ void UBHGameInstance::SetLastNetworkMessage(const FString& Message)
 void UBHGameInstance::OpenListenLevel(const FString& LevelName)
 {
 	ShowTravelLoadingScreen(GetWorld(), FString::Printf(TEXT("LOADING %s"), *NormalizeRuntimeLevelName(LevelName).ToUpper()), TEXT("Opening online lobby."));
-	UGameplayStatics::OpenLevel(this, FName(TEXT("/Engine/Maps/Entry")), true, MakeListenOptions(LevelName));
+	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(LevelName)), true, MakeListenOptions(LevelName));
 }
 
 void UBHGameInstance::RebuildOnlineSessionSummaries()

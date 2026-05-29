@@ -175,6 +175,9 @@ private:
 
 	FBHAccountProfile Profile;
 	FBHAccountProgress Progress;
+	// Set when the on-disk progress file declares a profile_version newer than this build supports.
+	// While locked we refuse to overwrite it, so a newer build's data is not clobbered by an older one.
+	bool bProgressSaveLocked = false;
 	FString LastAccountMessage;
 	FString PendingProvider;
 	bool bLoginPending = false;

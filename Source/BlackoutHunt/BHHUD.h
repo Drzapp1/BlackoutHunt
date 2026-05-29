@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "BHTypes.h"
+#include "BHHudTheme.h"
 #include "GameFramework/HUD.h"
 #include "BHHUD.generated.h"
 
@@ -47,8 +48,32 @@ protected:
 	class UTexture2D* ResolveDiagramTexture(const FString& ObjectPath);
 	void DrawPhaseBanner(const class ABHGameState* GameState, const ABHCharacter* Character);
 
+	// Refresh cached per-frame UI preferences (palette, scale, opacity, element toggles)
+	// from the owning player controller. Called once at the top of DrawHUD().
+	void RefreshHudPreferences(const class ABHPlayerController* PlayerController, const class ABHGameState* GameState);
+
+	// Semantic colour accessors backed by the resolved ActivePalette. MainText/MutedText
+	// keep their historical names so existing call sites need no edits.
+	FLinearColor MainText() const;
+	FLinearColor MutedText() const;
+
 	// Object-path -> loaded diagram texture, populated lazily by ResolveDiagramTexture.
 	TMap<FString, TWeakObjectPtr<class UTexture2D>> DiagramTextureCache;
+
+	// Per-frame cached UI preferences (refreshed in RefreshHudPreferences).
+	BHHudTheme::FBHHudPalette ActivePalette = BHHudTheme::MakeStandardPalette();
+	// Readability scale applied to the centered, self-contained panels (question/checkpoint
+	// and phase/announcement banners). Scoped to centered panels because they recompute their
+	// X from width and stay on-screen at any scale; edge-anchored telemetry is left at 1.0.
+	float HudScale = 1.0f;
+	float HudPanelOpacity = 1.0f;
+	bool bColorblindPalette = false;
+	bool bShowMinimap = true;
+	bool bShowNameplates = true;
+	bool bShowVitals = true;
+	bool bShowObjectiveBeats = true;
+	bool bShowThreatArrow = true;
+	bool bShowCrosshairDanger = true;
 
 	EBHRoundPhase LastSeenPhase;
 	bool bHasSeenPhase;

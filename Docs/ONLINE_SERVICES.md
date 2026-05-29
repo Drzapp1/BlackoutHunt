@@ -21,6 +21,16 @@ In classroom mode, tunnel helpers are host-machine-only. Remote student clients 
 
 The packaged classroom join list is local configuration, not a public matchmaking browser. It can contain stable owned endpoints such as `blackouthunt.playit.plus:24761`; it does not discover arbitrary active lobbies or replace EOS/Steam.
 
+## Player Feedback & Telemetry
+
+The account backend also ingests in-game feedback (bug reports, feature ideas, end-of-round
+surveys) and optional performance/log diagnostics, and serves an owner-only dashboard at
+`/admin?key=TOKEN`. This is how player submissions reach your machine instead of only their
+local disk. Run the backend with `BIND_HOST=0.0.0.0` for LAN/classroom, or front the loopback
+port with the Playit tunnel for internet, and point the game's `BackendBaseUrl` at it. See
+[`FEEDBACK_AND_TELEMETRY.md`](FEEDBACK_AND_TELEMETRY.md) for the full setup, routes, and
+privacy/consent settings.
+
 ## No-Account Guest Path
 
 Use this when clients should not need Steam, Epic, Google, Microsoft, or any other account:

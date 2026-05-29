@@ -176,6 +176,7 @@ UBHGameSettings::UBHGameSettings()
 	HuntSeconds = 900;
 	RequiredBreakers = 6;
 	bAllowHostForceStart = false;
+	bUseAuthoredLevels = false;
 	ReconnectGraceSeconds = 120.0f;
 	bClassroomMode = true;
 	bAllowStudentTeacherAdminControls = false;

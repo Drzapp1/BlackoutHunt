@@ -455,7 +455,10 @@ void ABHObjectiveStation::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	DOREPLIFETIME(ABHObjectiveStation, QuestionTopic);
 	DOREPLIFETIME(ABHObjectiveStation, QuestionPrompt);
 	DOREPLIFETIME(ABHObjectiveStation, QuestionChoices);
-	DOREPLIFETIME(ABHObjectiveStation, CorrectAnswerIndex);
+	// Answer-bearing fields are kept server-only (COND_Never): replicating them let a modified
+	// client read the correct answer off the wire and farm the economy. Bots read these directly
+	// on the server via GetCorrectAnswerIndexForBot()/GetQuestionNumericAnswer(), so no client needs them.
+	DOREPLIFETIME_CONDITION(ABHObjectiveStation, CorrectAnswerIndex, COND_Never);
 	DOREPLIFETIME(ABHObjectiveStation, bQuestionSolved);
 	DOREPLIFETIME(ABHObjectiveStation, QuestionHint);
 	DOREPLIFETIME(ABHObjectiveStation, QuestionFeedback);
@@ -467,7 +470,7 @@ void ABHObjectiveStation::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	DOREPLIFETIME(ABHObjectiveStation, QuestionDiagram);
 	DOREPLIFETIME(ABHObjectiveStation, QuestionSubtopic);
 	DOREPLIFETIME(ABHObjectiveStation, QuestionFormula);
-	DOREPLIFETIME(ABHObjectiveStation, QuestionNumericAnswer);
+	DOREPLIFETIME_CONDITION(ABHObjectiveStation, QuestionNumericAnswer, COND_Never);
 	DOREPLIFETIME(ABHObjectiveStation, QuestionNumericTolerance);
 	DOREPLIFETIME(ABHObjectiveStation, QuestionExplanation);
 	DOREPLIFETIME(ABHObjectiveStation, RevisionTeamSummary);
@@ -1505,15 +1508,22 @@ void ABHObjectiveStation::ConfigureQuestion()
 				QuestionDiagram = Selected.Diagram;
 				QuestionPrompt = Selected.Prompt;
 				QuestionChoices.Reset();
-				const int32 ChoiceRotation = LocationSeed % Selected.Answer.Choices.Num();
 				CorrectAnswerIndex = 0;
-				for (int32 Index = 0; Index < Selected.Answer.Choices.Num(); ++Index)
+				// Guard the modulo: the data model permits choice-less (numeric-only) questions, and only
+				// the strict question-bank validator currently keeps Choices at 4 here. A future content
+				// or validator change must not turn this into a modulo-by-zero host crash.
+				const int32 ChoiceCount = Selected.Answer.Choices.Num();
+				if (ChoiceCount > 0)
 				{
-					const int32 SourceIndex = (Index + Selected.Answer.Choices.Num() - ChoiceRotation) % Selected.Answer.Choices.Num();
-					QuestionChoices.Add(Selected.Answer.Choices[SourceIndex]);
-					if (SourceIndex == Selected.Answer.CorrectChoiceIndex)
+					const int32 ChoiceRotation = LocationSeed % ChoiceCount;
+					for (int32 Index = 0; Index < ChoiceCount; ++Index)
 					{
-						CorrectAnswerIndex = Index;
+						const int32 SourceIndex = (Index + ChoiceCount - ChoiceRotation) % ChoiceCount;
+						QuestionChoices.Add(Selected.Answer.Choices[SourceIndex]);
+						if (SourceIndex == Selected.Answer.CorrectChoiceIndex)
+						{
+							CorrectAnswerIndex = Index;
+						}
 					}
 				}
 				bQuestionSolved = false;

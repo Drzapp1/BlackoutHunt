@@ -1,6 +1,7 @@
 #include "SBHMainMenu.h"
 #include "Animation/AnimSequence.h"
 #include "BHAccountSubsystem.h"
+#include "BHFeedbackSubsystem.h"
 #include "BHGameSettings.h"
 #include "BHGameInstance.h"
 #include "BHGameState.h"
@@ -32,8 +33,11 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Misc/Paths.h"
 #include "Styling/CoreStyle.h"
+#include "Types/SlateEnums.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Input/SSlider.h"
 #include "Layout/Visibility.h"
 #include "Widgets/Layout/SBorder.h"
@@ -2650,6 +2654,19 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 		}
 	}
 
+	// Feedback form defaults. If a round just ended, open straight to the survey.
+	PendingFeedbackKind = EBHFeedbackKind::Bug;
+	SurveyDifficulty = TEXT("just_right");
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		bIncludeDiagnostics = PC->ShouldIncludeFeedbackDiagnosticsByDefaultForMenu();
+		if (PC->IsEndOfRoundSurveyPendingForMenu())
+		{
+			ActiveMenuTab = EBHMainMenuTab::Feedback;
+			bShowingStartScreen = false;
+		}
+	}
+
 	StartBackgroundFallbackBrush = FSlateBrush();
 	StartBackgroundFallbackBrush.DrawAs = ESlateBrushDrawType::NoDrawType;
 	StartBackgroundBrush = FSlateBrush();
@@ -2834,8 +2851,14 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 					]
 					+ SHorizontalBox::Slot()
 					.AutoWidth()
+					.Padding(0.0f, 0.0f, 8.0f, 0.0f)
 					[
 						BuildMenuTabButton(EBHMainMenuTab::Settings, FText::FromString(TEXT("Settings")))
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					[
+						BuildMenuTabButton(EBHMainMenuTab::Feedback, FText::FromString(TEXT("Feedback")))
 					]
 				]
 				+ SVerticalBox::Slot()
@@ -3143,6 +3166,20 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 								[
 									BuildStatusPanel()
 								]
+							]
+						]
+					]
+					+ SWidgetSwitcher::Slot()
+					[
+						SNew(SBorder)
+						.BorderImage(WhiteBrush())
+						.BorderBackgroundColor(FLinearColor(0.026f, 0.032f, 0.038f, 0.94f))
+						.Padding(16.0f)
+						[
+							SNew(SScrollBox)
+							+ SScrollBox::Slot()
+							[
+								BuildFeedbackPanel()
 							]
 						]
 					]
@@ -3489,9 +3526,541 @@ int32 SBHMainMenu::MenuTabToWidgetIndex(EBHMainMenuTab Tab)
 	case EBHMainMenuTab::Account:
 		return 7;
 	case EBHMainMenuTab::Settings:
+		return 8;
+	case EBHMainMenuTab::Feedback:
+		return 9;
 	default:
 		return 8;
 	}
+}
+
+namespace
+{
+	const FLinearColor BHFeedbackSelectedColor(0.10f, 0.34f, 0.31f, 1.0f);
+	const FLinearColor BHFeedbackRatingColor(0.42f, 0.34f, 0.10f, 1.0f);
+	const FLinearColor BHFeedbackUnselectedColor(0.045f, 0.052f, 0.060f, 0.96f);
+}
+
+FSlateColor SBHMainMenu::GetFeedbackKindButtonColor(EBHFeedbackKind Kind) const
+{
+	return FSlateColor(PendingFeedbackKind == Kind ? BHFeedbackSelectedColor : BHFeedbackUnselectedColor);
+}
+
+FSlateColor SBHMainMenu::GetFeedbackRatingButtonColor(int32 Rating) const
+{
+	return FSlateColor((PendingFeedbackRating > 0 && Rating <= PendingFeedbackRating) ? BHFeedbackRatingColor : BHFeedbackUnselectedColor);
+}
+
+FSlateColor SBHMainMenu::GetSurveyOverallButtonColor(int32 Overall) const
+{
+	return FSlateColor((SurveyOverallRating > 0 && Overall <= SurveyOverallRating) ? BHFeedbackRatingColor : BHFeedbackUnselectedColor);
+}
+
+FSlateColor SBHMainMenu::GetSurveyDifficultyButtonColor(FString Difficulty) const
+{
+	return FSlateColor(SurveyDifficulty.Equals(Difficulty) ? BHFeedbackSelectedColor : BHFeedbackUnselectedColor);
+}
+
+FSlateColor SBHMainMenu::GetSurveyRecommendButtonColor(bool bRecommend) const
+{
+	return FSlateColor(bSurveyWouldRecommend == bRecommend ? BHFeedbackSelectedColor : BHFeedbackUnselectedColor);
+}
+
+FText SBHMainMenu::GetFeedbackStatusText() const
+{
+	return StatusText;
+}
+
+ECheckBoxState SBHMainMenu::GetIncludeDiagnosticsState() const
+{
+	return bIncludeDiagnostics ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+void SBHMainMenu::OnIncludeDiagnosticsChanged(ECheckBoxState NewState)
+{
+	bIncludeDiagnostics = (NewState == ECheckBoxState::Checked);
+}
+
+FReply SBHMainMenu::OnFeedbackKindClicked(EBHFeedbackKind Kind)
+{
+	PendingFeedbackKind = Kind;
+	PlayMenuSelectionSound();
+	return FReply::Handled();
+}
+
+FReply SBHMainMenu::OnFeedbackRatingClicked(int32 Rating)
+{
+	// Click the active rating again to clear it.
+	PendingFeedbackRating = (PendingFeedbackRating == Rating) ? 0 : Rating;
+	PlayMenuSelectionSound();
+	return FReply::Handled();
+}
+
+FReply SBHMainMenu::OnSubmitFeedbackClicked()
+{
+	const FString Message = FeedbackMessageTextBox.IsValid() ? FeedbackMessageTextBox->GetText().ToString() : FString();
+	const FString Contact = FeedbackContactTextBox.IsValid() ? FeedbackContactTextBox->GetText().ToString() : FString();
+
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		FString OutMessage;
+		const bool bSubmitted = PC->SubmitFeedbackForMenu(PendingFeedbackKind, Message, PendingFeedbackRating, Contact, bIncludeDiagnostics, OutMessage);
+		StatusText = FText::FromString(OutMessage);
+		if (bSubmitted)
+		{
+			if (FeedbackMessageTextBox.IsValid())
+			{
+				FeedbackMessageTextBox->SetText(FText::GetEmpty());
+			}
+			PendingFeedbackRating = 0;
+		}
+	}
+	else
+	{
+		StatusText = FText::FromString(TEXT("No local player controller was available."));
+	}
+
+	PlayMenuSelectionSound();
+	return FReply::Handled();
+}
+
+FReply SBHMainMenu::OnSurveyOverallClicked(int32 Overall)
+{
+	SurveyOverallRating = Overall;
+	PlayMenuSelectionSound();
+	return FReply::Handled();
+}
+
+FReply SBHMainMenu::OnSurveyDifficultyClicked(FString Difficulty)
+{
+	SurveyDifficulty = Difficulty;
+	PlayMenuSelectionSound();
+	return FReply::Handled();
+}
+
+FReply SBHMainMenu::OnSurveyRecommendClicked(bool bRecommend)
+{
+	bSurveyWouldRecommend = bRecommend;
+	PlayMenuSelectionSound();
+	return FReply::Handled();
+}
+
+FReply SBHMainMenu::OnSubmitSurveyClicked()
+{
+	const FString Comment = SurveyCommentTextBox.IsValid() ? SurveyCommentTextBox->GetText().ToString() : FString();
+
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		FString OutMessage;
+		PC->SubmitRoundSurveyForMenu(SurveyOverallRating, SurveyDifficulty, bSurveyWouldRecommend, Comment, OutMessage);
+		StatusText = FText::FromString(OutMessage);
+		if (SurveyCommentTextBox.IsValid())
+		{
+			SurveyCommentTextBox->SetText(FText::GetEmpty());
+		}
+	}
+	else
+	{
+		StatusText = FText::FromString(TEXT("No local player controller was available."));
+	}
+
+	PlayMenuSelectionSound();
+	return FReply::Handled();
+}
+
+FReply SBHMainMenu::OnDismissSurveyClicked()
+{
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		PC->ClearEndOfRoundSurveyPendingForMenu();
+	}
+	StatusText = FText::FromString(TEXT("Survey dismissed. You can still send feedback any time from this tab."));
+	PlayMenuSelectionSound();
+	return FReply::Handled();
+}
+
+TSharedRef<SWidget> SBHMainMenu::BuildEndOfRoundSurveyPanel()
+{
+	auto OverallButton = [this](int32 Overall) -> TSharedRef<SWidget>
+	{
+		return SNew(SBHMenuButton)
+			.ButtonColorAndOpacity(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateSP(this, &SBHMainMenu::GetSurveyOverallButtonColor, Overall)))
+			.ContentPadding(FMargin(10.0f, 6.0f))
+			.OnClicked(this, &SBHMainMenu::OnSurveyOverallClicked, Overall)
+			[
+				SNew(STextBlock)
+				.Font(MenuFont(12, FName(TEXT("Bold"))))
+				.ColorAndOpacity(FLinearColor(0.96f, 0.92f, 0.70f, 1.0f))
+				.Text(FText::AsNumber(Overall))
+			];
+	};
+
+	auto DifficultyButton = [this](const FString& Value, const FText& Label) -> TSharedRef<SWidget>
+	{
+		return SNew(SBHMenuButton)
+			.ButtonColorAndOpacity(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateSP(this, &SBHMainMenu::GetSurveyDifficultyButtonColor, Value)))
+			.ContentPadding(FMargin(10.0f, 6.0f))
+			.OnClicked(this, &SBHMainMenu::OnSurveyDifficultyClicked, Value)
+			[
+				SNew(STextBlock)
+				.Font(MenuFont(11, FName(TEXT("Bold"))))
+				.ColorAndOpacity(FLinearColor(0.92f, 0.95f, 0.95f, 1.0f))
+				.Text(Label)
+			];
+	};
+
+	auto RecommendButton = [this](bool bRecommend, const FText& Label) -> TSharedRef<SWidget>
+	{
+		return SNew(SBHMenuButton)
+			.ButtonColorAndOpacity(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateSP(this, &SBHMainMenu::GetSurveyRecommendButtonColor, bRecommend)))
+			.ContentPadding(FMargin(10.0f, 6.0f))
+			.OnClicked(this, &SBHMainMenu::OnSurveyRecommendClicked, bRecommend)
+			[
+				SNew(STextBlock)
+				.Font(MenuFont(11, FName(TEXT("Bold"))))
+				.ColorAndOpacity(FLinearColor(0.92f, 0.95f, 0.95f, 1.0f))
+				.Text(Label)
+			];
+	};
+
+	TSharedRef<SHorizontalBox> OverallRow = SNew(SHorizontalBox);
+	for (int32 Score = 1; Score <= 5; ++Score)
+	{
+		OverallRow->AddSlot().AutoWidth().Padding(0.0f, 0.0f, 4.0f, 0.0f)[ OverallButton(Score) ];
+	}
+
+	return SNew(SBorder)
+		.BorderImage(WhiteBrush())
+		.BorderBackgroundColor(FLinearColor(0.05f, 0.10f, 0.14f, 0.96f))
+		.Padding(14.0f)
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(STextBlock)
+				.Font(MenuFont(16, FName(TEXT("Bold"))))
+				.ColorAndOpacity(FLinearColor(0.80f, 0.92f, 1.0f, 1.0f))
+				.Text(FText::FromString(TEXT("Quick survey - how was that round?")))
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 2.0f, 0.0f, 10.0f)
+			[
+				SNew(STextBlock)
+				.AutoWrapText(true)
+				.Font(MenuFont(11))
+				.ColorAndOpacity(FLinearColor(0.62f, 0.74f, 0.80f, 1.0f))
+				.Text(FText::FromString(TEXT("Takes about 20 seconds. It helps tune difficulty and fix problems.")))
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 0.0f, 0.0f, 4.0f)
+			[
+				SNew(STextBlock)
+				.Font(MenuFont(10, FName(TEXT("Bold"))))
+				.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.72f, 1.0f))
+				.Text(FText::FromString(TEXT("OVERALL (1-5)")))
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 0.0f, 0.0f, 10.0f)
+			[
+				OverallRow
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 0.0f, 0.0f, 4.0f)
+			[
+				SNew(STextBlock)
+				.Font(MenuFont(10, FName(TEXT("Bold"))))
+				.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.72f, 1.0f))
+				.Text(FText::FromString(TEXT("DIFFICULTY")))
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 0.0f, 0.0f, 10.0f)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 6.0f, 0.0f)[ DifficultyButton(TEXT("too_easy"), FText::FromString(TEXT("Too easy"))) ]
+				+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 6.0f, 0.0f)[ DifficultyButton(TEXT("just_right"), FText::FromString(TEXT("Just right"))) ]
+				+ SHorizontalBox::Slot().AutoWidth()[ DifficultyButton(TEXT("too_hard"), FText::FromString(TEXT("Too hard"))) ]
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 0.0f, 0.0f, 4.0f)
+			[
+				SNew(STextBlock)
+				.Font(MenuFont(10, FName(TEXT("Bold"))))
+				.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.72f, 1.0f))
+				.Text(FText::FromString(TEXT("WOULD YOU PLAY AGAIN?")))
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 0.0f, 0.0f, 10.0f)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 6.0f, 0.0f)[ RecommendButton(true, FText::FromString(TEXT("Yes"))) ]
+				+ SHorizontalBox::Slot().AutoWidth()[ RecommendButton(false, FText::FromString(TEXT("Not really"))) ]
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 0.0f, 0.0f, 8.0f)
+			[
+				SNew(SBox)
+				.HeightOverride(70.0f)
+				[
+					SAssignNew(SurveyCommentTextBox, SMultiLineEditableTextBox)
+					.HintText(FText::FromString(TEXT("Anything confusing, buggy, or fun? (optional)")))
+				]
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+				[
+					SNew(SBHMenuButton)
+					.ButtonColorAndOpacity(FSlateColor(FLinearColor(0.12f, 0.40f, 0.32f, 1.0f)))
+					.ContentPadding(FMargin(16.0f, 8.0f))
+					.OnClicked(this, &SBHMainMenu::OnSubmitSurveyClicked)
+					[
+						SNew(STextBlock)
+						.Font(MenuFont(12, FName(TEXT("Bold"))))
+						.ColorAndOpacity(FLinearColor(0.95f, 1.0f, 0.97f, 1.0f))
+						.Text(FText::FromString(TEXT("SEND SURVEY")))
+					]
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				[
+					SNew(SBHMenuButton)
+					.ButtonColorAndOpacity(FSlateColor(FLinearColor(0.10f, 0.11f, 0.13f, 0.96f)))
+					.ContentPadding(FMargin(16.0f, 8.0f))
+					.OnClicked(this, &SBHMainMenu::OnDismissSurveyClicked)
+					[
+						SNew(STextBlock)
+						.Font(MenuFont(12, FName(TEXT("Bold"))))
+						.ColorAndOpacity(FLinearColor(0.70f, 0.74f, 0.76f, 1.0f))
+						.Text(FText::FromString(TEXT("NO THANKS")))
+					]
+				]
+			]
+		];
+}
+
+TSharedRef<SWidget> SBHMainMenu::BuildFeedbackPanel()
+{
+	auto KindButton = [this](EBHFeedbackKind Kind, const FText& Label) -> TSharedRef<SWidget>
+	{
+		return SNew(SBHMenuButton)
+			.ButtonColorAndOpacity(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateSP(this, &SBHMainMenu::GetFeedbackKindButtonColor, Kind)))
+			.ContentPadding(FMargin(12.0f, 6.0f))
+			.OnClicked(this, &SBHMainMenu::OnFeedbackKindClicked, Kind)
+			[
+				SNew(STextBlock)
+				.Font(MenuFont(11, FName(TEXT("Bold"))))
+				.ColorAndOpacity(FLinearColor(0.92f, 0.95f, 0.95f, 1.0f))
+				.Text(Label)
+			];
+	};
+
+	auto RatingButton = [this](int32 Rating) -> TSharedRef<SWidget>
+	{
+		return SNew(SBHMenuButton)
+			.ButtonColorAndOpacity(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateSP(this, &SBHMainMenu::GetFeedbackRatingButtonColor, Rating)))
+			.ContentPadding(FMargin(10.0f, 6.0f))
+			.OnClicked(this, &SBHMainMenu::OnFeedbackRatingClicked, Rating)
+			[
+				SNew(STextBlock)
+				.Font(MenuFont(12, FName(TEXT("Bold"))))
+				.ColorAndOpacity(FLinearColor(0.96f, 0.92f, 0.70f, 1.0f))
+				.Text(FText::AsNumber(Rating))
+			];
+	};
+
+	TSharedRef<SHorizontalBox> KindRow = SNew(SHorizontalBox);
+	KindRow->AddSlot().AutoWidth().Padding(0.0f, 0.0f, 8.0f, 0.0f)[ KindButton(EBHFeedbackKind::Bug, FText::FromString(TEXT("Bug"))) ];
+	KindRow->AddSlot().AutoWidth().Padding(0.0f, 0.0f, 8.0f, 0.0f)[ KindButton(EBHFeedbackKind::Idea, FText::FromString(TEXT("Feature idea"))) ];
+	KindRow->AddSlot().AutoWidth().Padding(0.0f, 0.0f, 8.0f, 0.0f)[ KindButton(EBHFeedbackKind::Praise, FText::FromString(TEXT("Liked it"))) ];
+	KindRow->AddSlot().AutoWidth()[ KindButton(EBHFeedbackKind::Other, FText::FromString(TEXT("Other"))) ];
+
+	TSharedRef<SHorizontalBox> RatingRow = SNew(SHorizontalBox);
+	for (int32 Score = 1; Score <= 5; ++Score)
+	{
+		RatingRow->AddSlot().AutoWidth().Padding(0.0f, 0.0f, 4.0f, 0.0f)[ RatingButton(Score) ];
+	}
+
+	return SNew(SVerticalBox)
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		[
+			SNew(STextBlock)
+			.Font(MenuFont(18, FName(TEXT("Bold"))))
+			.ColorAndOpacity(FLinearColor(0.96f, 0.92f, 0.82f, 1.0f))
+			.Text(FText::FromString(TEXT("Feedback")))
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 4.0f, 0.0f, 12.0f)
+		[
+			SNew(STextBlock)
+			.AutoWrapText(true)
+			.Font(MenuFont(12))
+			.ColorAndOpacity(FLinearColor(0.58f, 0.66f, 0.66f, 1.0f))
+			.Text(FText::FromString(TEXT("Report a bug, suggest an idea, or tell us what you liked. It goes straight to the developer.")))
+		]
+		// End-of-round survey: shown after a round, hidden once sent or dismissed.
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 0.0f, 0.0f, 14.0f)
+		[
+			SNew(SBox)
+			.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateLambda([this]()
+			{
+				const bool bPending = PlayerController.IsValid() && PlayerController->IsEndOfRoundSurveyPendingForMenu();
+				return bPending ? EVisibility::Visible : EVisibility::Collapsed;
+			})))
+			[
+				BuildEndOfRoundSurveyPanel()
+			]
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 0.0f, 0.0f, 4.0f)
+		[
+			SNew(STextBlock)
+			.Font(MenuFont(10, FName(TEXT("Bold"))))
+			.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.72f, 1.0f))
+			.Text(FText::FromString(TEXT("WHAT'S THIS ABOUT?")))
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 0.0f, 0.0f, 10.0f)
+		[
+			KindRow
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 0.0f, 0.0f, 4.0f)
+		[
+			SNew(STextBlock)
+			.Font(MenuFont(10, FName(TEXT("Bold"))))
+			.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.72f, 1.0f))
+			.Text(FText::FromString(TEXT("YOUR MESSAGE")))
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 0.0f, 0.0f, 10.0f)
+		[
+			SNew(SBox)
+			.HeightOverride(120.0f)
+			[
+				SAssignNew(FeedbackMessageTextBox, SMultiLineEditableTextBox)
+				.HintText(FText::FromString(TEXT("Describe the bug, the idea, or what happened...")))
+			]
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 0.0f, 0.0f, 10.0f)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(0.0f, 0.0f, 10.0f, 0.0f)
+			[
+				SNew(STextBlock)
+				.Font(MenuFont(10, FName(TEXT("Bold"))))
+				.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.72f, 1.0f))
+				.Text(FText::FromString(TEXT("RATING (OPTIONAL)")))
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			[
+				RatingRow
+			]
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 0.0f, 0.0f, 4.0f)
+		[
+			SNew(STextBlock)
+			.Font(MenuFont(10, FName(TEXT("Bold"))))
+			.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.72f, 1.0f))
+			.Text(FText::FromString(TEXT("CONTACT (OPTIONAL, IF YOU WANT A REPLY)")))
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 0.0f, 0.0f, 10.0f)
+		[
+			SAssignNew(FeedbackContactTextBox, SEditableTextBox)
+			.HintText(FText::FromString(TEXT("Email or username (optional)")))
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 0.0f, 0.0f, 6.0f)
+		[
+			SNew(SCheckBox)
+			.IsChecked(this, &SBHMainMenu::GetIncludeDiagnosticsState)
+			.OnCheckStateChanged(this, &SBHMainMenu::OnIncludeDiagnosticsChanged)
+			[
+				SNew(STextBlock)
+				.Font(MenuFont(11))
+				.ColorAndOpacity(FLinearColor(0.80f, 0.86f, 0.86f, 1.0f))
+				.Text(FText::FromString(TEXT("Include diagnostics (frame-rate stats, recent log lines, PC specs)")))
+			]
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 0.0f, 0.0f, 12.0f)
+		[
+			SNew(STextBlock)
+			.AutoWrapText(true)
+			.Font(MenuFont(10))
+			.ColorAndOpacity(FLinearColor(0.52f, 0.58f, 0.60f, 1.0f))
+			.Text(TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateLambda([this]()
+			{
+				if (const ABHPlayerController* PC = PlayerController.Get())
+				{
+					return FText::FromString(PC->GetFeedbackPrivacySummaryForMenu());
+				}
+				return FText::GetEmpty();
+			})))
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 0.0f, 0.0f, 12.0f)
+		[
+			SNew(SBHMenuButton)
+			.ButtonColorAndOpacity(FSlateColor(FLinearColor(0.12f, 0.40f, 0.32f, 1.0f)))
+			.ContentPadding(FMargin(18.0f, 9.0f))
+			.HAlign(HAlign_Center)
+			.OnClicked(this, &SBHMainMenu::OnSubmitFeedbackClicked)
+			[
+				SNew(STextBlock)
+				.Font(MenuFont(13, FName(TEXT("Bold"))))
+				.ColorAndOpacity(FLinearColor(0.95f, 1.0f, 0.97f, 1.0f))
+				.Text(FText::FromString(TEXT("SEND FEEDBACK")))
+			]
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		[
+			SNew(SBorder)
+			.BorderImage(WhiteBrush())
+			.BorderBackgroundColor(FLinearColor(0.030f, 0.038f, 0.044f, 0.95f))
+			.Padding(12.0f)
+			[
+				SNew(STextBlock)
+				.AutoWrapText(true)
+				.Font(MenuFont(11))
+				.ColorAndOpacity(FLinearColor(0.74f, 0.82f, 0.78f, 1.0f))
+				.Text(this, &SBHMainMenu::GetFeedbackStatusText)
+			]
+		];
 }
 
 float SBHMainMenu::GetMasterVolumeValue() const
@@ -5691,6 +6260,63 @@ void SBHMainMenu::OnUiVolumeChanged(float Volume)
 	if (ABHPlayerController* PC = PlayerController.Get())
 	{
 		PC->SetUiVolumeForMenu(Volume);
+	}
+}
+
+namespace
+{
+	// HUD slider clamp ranges, kept in sync with ABHPlayerController::SetHudScalarOptionForMenu.
+	constexpr float BHHudScaleMin = 0.75f;
+	constexpr float BHHudScaleMax = 1.5f;
+	constexpr float BHHudPanelOpacityMin = 0.35f;
+	constexpr float BHHudPanelOpacityMax = 1.0f;
+}
+
+float SBHMainMenu::GetHudScaleValue() const
+{
+	const ABHPlayerController* PC = PlayerController.Get();
+	const float Scale = PC ? PC->GetHudScalarOptionForMenu(FName(TEXT("HudScale"))) : 1.0f;
+	return FMath::Clamp((Scale - BHHudScaleMin) / (BHHudScaleMax - BHHudScaleMin), 0.0f, 1.0f);
+}
+
+FText SBHMainMenu::GetHudScaleText() const
+{
+	const ABHPlayerController* PC = PlayerController.Get();
+	const float Scale = PC ? PC->GetHudScalarOptionForMenu(FName(TEXT("HudScale"))) : 1.0f;
+	return FText::FromString(FString::Printf(TEXT("HUD Size %d%%"), FMath::RoundToInt(Scale * 100.0f)));
+}
+
+void SBHMainMenu::OnHudScaleChanged(float SliderValue)
+{
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		const float Scale = FMath::Lerp(BHHudScaleMin, BHHudScaleMax, FMath::Clamp(SliderValue, 0.0f, 1.0f));
+		FString Message;
+		PC->SetHudScalarOptionForMenu(FName(TEXT("HudScale")), Scale, Message);
+	}
+}
+
+float SBHMainMenu::GetHudPanelOpacityValue() const
+{
+	const ABHPlayerController* PC = PlayerController.Get();
+	const float Opacity = PC ? PC->GetHudScalarOptionForMenu(FName(TEXT("HudPanelOpacity"))) : 1.0f;
+	return FMath::Clamp((Opacity - BHHudPanelOpacityMin) / (BHHudPanelOpacityMax - BHHudPanelOpacityMin), 0.0f, 1.0f);
+}
+
+FText SBHMainMenu::GetHudPanelOpacityText() const
+{
+	const ABHPlayerController* PC = PlayerController.Get();
+	const float Opacity = PC ? PC->GetHudScalarOptionForMenu(FName(TEXT("HudPanelOpacity"))) : 1.0f;
+	return FText::FromString(FString::Printf(TEXT("Panel Opacity %d%%"), FMath::RoundToInt(Opacity * 100.0f)));
+}
+
+void SBHMainMenu::OnHudPanelOpacityChanged(float SliderValue)
+{
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		const float Opacity = FMath::Lerp(BHHudPanelOpacityMin, BHHudPanelOpacityMax, FMath::Clamp(SliderValue, 0.0f, 1.0f));
+		FString Message;
+		PC->SetHudScalarOptionForMenu(FName(TEXT("HudPanelOpacity")), Opacity, Message);
 	}
 }
 
@@ -9994,6 +10620,44 @@ TSharedRef<SWidget> SBHMainMenu::BuildGraphicsPanel()
 	TSharedRef<SHorizontalBox> ContrastRow = AddButtonRow(TEXT("HUD"));
 	AddButton(ContrastRow, TEXT("High Contrast"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("HighContrastHud")), true), ComfortBoolColor(TEXT("HighContrastHud"), true));
 	AddButton(ContrastRow, TEXT("Standard"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("HighContrastHud")), false), ComfortBoolColor(TEXT("HighContrastHud"), false));
+
+	AddTitle(TEXT("HUD"));
+	AddSliderRow(
+		TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &SBHMainMenu::GetHudScaleText)),
+		TAttribute<float>::Create(TAttribute<float>::FGetter::CreateSP(this, &SBHMainMenu::GetHudScaleValue)),
+		FOnFloatValueChanged::CreateSP(this, &SBHMainMenu::OnHudScaleChanged));
+	AddSliderRow(
+		TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &SBHMainMenu::GetHudPanelOpacityText)),
+		TAttribute<float>::Create(TAttribute<float>::FGetter::CreateSP(this, &SBHMainMenu::GetHudPanelOpacityValue)),
+		FOnFloatValueChanged::CreateSP(this, &SBHMainMenu::OnHudPanelOpacityChanged));
+
+	TSharedRef<SHorizontalBox> ColorblindRow = AddButtonRow(TEXT("Colorblind"));
+	AddButton(ColorblindRow, TEXT("On"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("ColorblindHud")), true), ComfortBoolColor(TEXT("ColorblindHud"), true));
+	AddButton(ColorblindRow, TEXT("Off"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("ColorblindHud")), false), ComfortBoolColor(TEXT("ColorblindHud"), false));
+
+	TSharedRef<SHorizontalBox> MinimapRow = AddButtonRow(TEXT("Minimap"));
+	AddButton(MinimapRow, TEXT("Show"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("ShowMinimap")), true), ComfortBoolColor(TEXT("ShowMinimap"), true));
+	AddButton(MinimapRow, TEXT("Hide"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("ShowMinimap")), false), ComfortBoolColor(TEXT("ShowMinimap"), false));
+
+	TSharedRef<SHorizontalBox> NameplateRow = AddButtonRow(TEXT("Nameplates"));
+	AddButton(NameplateRow, TEXT("Show"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("ShowNameplates")), true), ComfortBoolColor(TEXT("ShowNameplates"), true));
+	AddButton(NameplateRow, TEXT("Hide"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("ShowNameplates")), false), ComfortBoolColor(TEXT("ShowNameplates"), false));
+
+	TSharedRef<SHorizontalBox> VitalsRow = AddButtonRow(TEXT("Vitals"));
+	AddButton(VitalsRow, TEXT("Show"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("ShowVitals")), true), ComfortBoolColor(TEXT("ShowVitals"), true));
+	AddButton(VitalsRow, TEXT("Hide"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("ShowVitals")), false), ComfortBoolColor(TEXT("ShowVitals"), false));
+
+	TSharedRef<SHorizontalBox> ObjectivesRow = AddButtonRow(TEXT("Objectives"));
+	AddButton(ObjectivesRow, TEXT("Show"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("ShowObjectiveBeats")), true), ComfortBoolColor(TEXT("ShowObjectiveBeats"), true));
+	AddButton(ObjectivesRow, TEXT("Hide"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("ShowObjectiveBeats")), false), ComfortBoolColor(TEXT("ShowObjectiveBeats"), false));
+
+	TSharedRef<SHorizontalBox> ThreatArrowRow = AddButtonRow(TEXT("Threat Arrow"));
+	AddButton(ThreatArrowRow, TEXT("Show"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("ShowThreatArrow")), true), ComfortBoolColor(TEXT("ShowThreatArrow"), true));
+	AddButton(ThreatArrowRow, TEXT("Hide"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("ShowThreatArrow")), false), ComfortBoolColor(TEXT("ShowThreatArrow"), false));
+
+	TSharedRef<SHorizontalBox> CrosshairAlertRow = AddButtonRow(TEXT("Crosshair Alert"));
+	AddButton(CrosshairAlertRow, TEXT("Show"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("ShowCrosshairDanger")), true), ComfortBoolColor(TEXT("ShowCrosshairDanger"), true));
+	AddButton(CrosshairAlertRow, TEXT("Hide"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("ShowCrosshairDanger")), false), ComfortBoolColor(TEXT("ShowCrosshairDanger"), false));
 
 	AddTitle(TEXT("Local Display"));
 	Panel->AddSlot()

@@ -74,6 +74,10 @@ The `Generate 12Q` button writes a teacher-local Markdown question set from the 
 Saved\ClassroomPresets\QuestionSets
 ```
 
+## Editing the Question Bank
+
+The 368 built-in physics questions can be replaced with your own by dropping a `QuestionBank.json` file (no rebuild needed). The fastest start is the `bh.ExportQuestionBank` console command, which writes the full built-in bank to `Saved\ClassroomPresets\QuestionBank.json` as an editable starting point. See `Docs/QUESTION_BANK_EDITING.md` for the format and rules, and `Docs/QuestionBank.example.json` for a worked example.
+
 ## Classroom Reports
 
 At the end of a Physics Classroom round, the host writes a local classroom report automatically. The host can also use `Export Report` from the Classroom tab, or the `ExportRevisionReport` console command, to write the current report on demand.

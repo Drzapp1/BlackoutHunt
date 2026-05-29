@@ -158,7 +158,7 @@ bool ABHTrainBonusQuestionTerminal::SubmitAnswer(ABHCharacter* Character, int32 
 		return false;
 	}
 
-	if (!Question.Answer.Choices.IsValidIndex(Question.Answer.CorrectChoiceIndex))
+	if (!ServerQuestion.Answer.Choices.IsValidIndex(ServerQuestion.Answer.CorrectChoiceIndex))
 	{
 		FeedbackText = TEXT("Bonus question data was incomplete. Reloading terminal.");
 		bFeedbackCorrect = false;
@@ -171,9 +171,9 @@ bool ABHTrainBonusQuestionTerminal::SubmitAnswer(ABHCharacter* Character, int32 
 		return false;
 	}
 
-	const FString CorrectChoice = Question.Answer.Choices[Question.Answer.CorrectChoiceIndex];
-	const bool bCorrect = AnswerIndex == Question.Answer.CorrectChoiceIndex;
-	const FString SelectedAnswer = Question.Answer.Choices.IsValidIndex(AnswerIndex) ? Question.Answer.Choices[AnswerIndex] : FString();
+	const FString CorrectChoice = ServerQuestion.Answer.Choices[ServerQuestion.Answer.CorrectChoiceIndex];
+	const bool bCorrect = AnswerIndex == ServerQuestion.Answer.CorrectChoiceIndex;
+	const FString SelectedAnswer = ServerQuestion.Answer.Choices.IsValidIndex(AnswerIndex) ? ServerQuestion.Answer.Choices[AnswerIndex] : FString();
 
 	// Route the answer through the unified classroom authority so bonus answers BUILD topic
 	// mastery (and therefore count toward the class escape) just like station answers — but pass
@@ -182,10 +182,10 @@ bool ABHTrainBonusQuestionTerminal::SubmitAnswer(ABHCharacter* Character, int32 
 	// mode and returns the bonus shop points it awarded.
 	ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr;
 	int32 Awarded = 0;
-	EBHPhysicsTopic NextTopic = Question.Topic;
+	EBHPhysicsTopic NextTopic = ServerQuestion.Topic;
 	if (BHGM && BHGM->IsRevisionMode())
 	{
-		Awarded = BHGM->RecordRevisionAnswer(Character, Question, bCorrect, bCurrentQuestionIsReview, SelectedAnswer, FString(), /*bCountsAsContribution=*/false, /*bBonusPoints=*/true);
+		Awarded = BHGM->RecordRevisionAnswer(Character, ServerQuestion, bCorrect, bCurrentQuestionIsReview, SelectedAnswer, FString(), /*bCountsAsContribution=*/false, /*bBonusPoints=*/true);
 		EBHQuestionDifficulty NextDifficulty = EBHQuestionDifficulty::Easy;
 		FString NextReason;
 		BHGM->GetAdaptiveRevisionPlan(BHPS, bCorrect, NextTopic, NextDifficulty, NextReason);
@@ -268,7 +268,13 @@ void ABHTrainBonusQuestionTerminal::LoadQuestion(EBHPhysicsTopic PreferredTopic,
 
 	if (bSelected)
 	{
+		ServerQuestion = NewQuestion;
 		Question = NewQuestion;
+		// Scrub the answer from the replicated copy so it never travels to clients. A fixed 0 keeps
+		// the existing IsValidIndex() readiness checks true while revealing nothing (grading uses
+		// ServerQuestion). Defeats reading the correct answer off the wire to farm the economy.
+		Question.Answer.CorrectChoiceIndex = 0;
+		Question.Answer.NumericAnswer = 0.0f;
 		bCurrentQuestionIsReview = bReviewSelected;
 	}
 	RefreshDisplay();

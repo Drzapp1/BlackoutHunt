@@ -48,6 +48,8 @@ This roadmap turns the current beta polish review into executable chunks. The go
 - Prioritize landmarks, route readability, objective silhouettes, lighting composition, locker/escape loops, and sound occlusion.
 - Use the current runtime map as a blockout only; migrate stable layouts into authored or data-driven assets when practical.
 - Status: runtime route-readability scaffold added; authored production criteria are tracked in `Docs/FACILITY_VERTICAL_SLICE.md`.
+- Status: authored-map foundation landed — `ABHLevelMarker` + `ABHGameMode::DiscoverAuthoredLevel()` let the game mode run on a hand-authored `.umap` (placed actors discovered instead of generated), gated so the procedural levels are unchanged. `bUseAuthoredLevels` (default off) + `ResolveTravelMapForLevel()` route GameMode travel to `/Game/BlackoutHunt/Maps/<Level>` when present.
+- Status: export pipeline landed — `BuildFacilityLevel()` extracted so all three maps are uniform standalone builders; public `ABHGameMode::BuildLevelForExport()` + `UBHExportLevelCommandlet` + `Tools/Export-AuthoredMaps.ps1` seed `/Game/BlackoutHunt/Maps/<Level>.umap` from the tuned blockout. Travel routing completed across every gameplay-level launch site via the shared `BHResolveLevelMapPackage()` helper (behavior-identical while the flag is off). **Not built/validated on Linux** — needs a Windows editor build + commandlet run; the cook-dir change is deferred until the first authored map exists. Remaining: run the export on Windows, then the art/lighting/nav pass per map. See the "Authored Map Pipeline" section in `Docs/FACILITY_VERTICAL_SLICE.md`.
 
 ## Chunk 7 - Maintainability
 

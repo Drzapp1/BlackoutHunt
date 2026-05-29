@@ -2,7 +2,7 @@
 
 Goal: make students **actually revise and learn** in BlackoutHunt instead of guessing or
 messing around. This document is the design of record for the change set on branch
-`feature/train-intermission-final-station`.
+`feature/authored-map-pipeline`.
 
 The four failure modes the teacher reported, and the levers chosen (all "recommended" options):
 
@@ -100,12 +100,15 @@ New model (single writer, no new replicated fields):
 - JSON schema: explicit `id`, `topic`, `topicName`, `subtopic`, `difficulty`, `type`,
   `diagramType`, `prompt`, `choices[4]`, `correctChoiceIndex`, `hint`, `correctionPrompt`,
   `explanation`, `formula`, `numericAnswer`, `numericTolerance`, optional `masteryWeight`
-  (derived from difficulty if absent). Enums round-trip as strings.
+  (derived from difficulty if absent), and a nested `diagram{valueA..D, labelA..D, xAxis,
+  yAxis, angleOrShape, imageSoftPath}` object carrying the data-driven visual givens. Enums
+  round-trip as strings.
 - `Validate()` is relaxed to **structural** validation (well-formed, unique ids, 4 choices, ≥1
   question per enabled topic) so teacher content of any size is accepted. The strict built-in
-  distribution check (320 / 80-per-topic / 24-32-24 / fixed type counts) moves to a test-only
+  distribution check (368 / 92-per-topic / 28-36-28 difficulty / type counts
+  {mc:80, tf:40, calc:56, skill:48, graph:80, match:32, order:32}) moves to a test-only
   `ValidateBuiltInDistribution()` that guards the shipped content.
-- New host command **`ExportQuestionBankTemplate`** writes the full current bank (all 320
+- New host command **`bh.ExportQuestionBank`** writes the full current bank (all 368
   questions) to the override path as an editable starting point.
 - A new automation test serializes the built-in bank → JSON string → parses back and asserts
   every field + the count match, proving "migrate all" fidelity without hand-transcribing.
@@ -153,7 +156,7 @@ field of the built-in bank. The recipe below documents the shape that was applie
   climbs; topic is review-gated to ≤80% while a miss is queued; `MasteryPercent` = mean of
   enabled topics.
 - JSON round-trip fidelity (serialize built-in → parse → equal).
-- Relaxed `Validate` accepts a small hand-built bank; `ValidateBuiltInDistribution` still 320.
+- Relaxed `Validate` accepts a small hand-built bank; `ValidateBuiltInDistribution` still 368.
 - Existing review-queue + tuning tests updated for the relaxed `Validate`.
 
 ## Out of scope / non-goals

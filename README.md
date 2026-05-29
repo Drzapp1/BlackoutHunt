@@ -129,6 +129,7 @@ For live classroom packaging and operation, see `Docs\CLASSROOM_DEPLOYMENT.md`. 
 ## Local Helpers
 
 - Build editor target: `.\Tools\Build-Editor.ps1`
+- Export authored map seeds from the runtime generator: `.\Tools\Export-AuthoredMaps.ps1 -BuildFirst` (see `Docs\AUTHORED_MAP_CONVERSION.md`)
 - Package Windows build: `.\Tools\Package-Windows.ps1`
 - Package classroom Windows build: `.\Tools\Package-Windows-Classroom.ps1`
 - Package no-account guest online Windows build: `.\Tools\Package-Windows-NoAccount.ps1`

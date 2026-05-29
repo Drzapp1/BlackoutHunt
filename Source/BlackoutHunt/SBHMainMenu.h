@@ -12,10 +12,13 @@
 class AActor;
 class APlayerState;
 class ABHPlayerController;
+class SCheckBox;
 class SEditableTextBox;
+class SMultiLineEditableTextBox;
 class SVerticalBox;
 class SWidgetSwitcher;
 class SWidget;
+enum class EBHFeedbackKind : uint8;
 class USceneCaptureComponent2D;
 class USkeletalMeshComponent;
 class UStaticMeshComponent;
@@ -47,7 +50,8 @@ private:
 		Network,
 		Account,
 		Controls,
-		Settings
+		Settings,
+		Feedback
 	};
 
 	enum class EBHClassroomRunbookStep : uint8
@@ -99,6 +103,14 @@ private:
 	FReply OnLoginLocalCredentialClicked(bool bFromStartScreen);
 	FReply OnForgetLocalCredentialClicked();
 	FReply OnResetLocalClassroomDataClicked();
+	FReply OnFeedbackKindClicked(EBHFeedbackKind Kind);
+	FReply OnFeedbackRatingClicked(int32 Rating);
+	FReply OnSubmitFeedbackClicked();
+	FReply OnSurveyOverallClicked(int32 Overall);
+	FReply OnSurveyDifficultyClicked(FString Difficulty);
+	FReply OnSurveyRecommendClicked(bool bRecommend);
+	FReply OnSubmitSurveyClicked();
+	FReply OnDismissSurveyClicked();
 	FReply OnCreateHotspotClicked();
 	FReply OnStopHotspotClicked();
 	FReply OnStartInternetTunnelClicked();
@@ -179,6 +191,13 @@ private:
 	void OnMasterVolumeChanged(float Volume);
 	void OnMusicVolumeChanged(float Volume);
 	void OnUiVolumeChanged(float Volume);
+	// HUD customization sliders (0..1 slider value mapped to the option's clamp range).
+	float GetHudScaleValue() const;
+	FText GetHudScaleText() const;
+	void OnHudScaleChanged(float SliderValue);
+	float GetHudPanelOpacityValue() const;
+	FText GetHudPanelOpacityText() const;
+	void OnHudPanelOpacityChanged(float SliderValue);
 	FReply OnAssignRoleClicked(TWeakObjectPtr<APlayerState> TargetPlayerState, EBHPlayerRole DesiredRole);
 	FReply OnKickPlayerClicked(TWeakObjectPtr<APlayerState> TargetPlayerState);
 	FReply OnTargetScareClicked(TWeakObjectPtr<APlayerState> TargetPlayerState);
@@ -272,6 +291,16 @@ private:
 	TSharedRef<SWidget> BuildClassroomJoinListPanel();
 	TSharedRef<SWidget> BuildAccountPanel();
 	TSharedRef<SWidget> BuildLocalCredentialPanel(bool bForStartScreen);
+	TSharedRef<SWidget> BuildFeedbackPanel();
+	TSharedRef<SWidget> BuildEndOfRoundSurveyPanel();
+	FSlateColor GetFeedbackKindButtonColor(EBHFeedbackKind Kind) const;
+	FSlateColor GetFeedbackRatingButtonColor(int32 Rating) const;
+	FSlateColor GetSurveyOverallButtonColor(int32 Overall) const;
+	FSlateColor GetSurveyDifficultyButtonColor(FString Difficulty) const;
+	FSlateColor GetSurveyRecommendButtonColor(bool bRecommend) const;
+	FText GetFeedbackStatusText() const;
+	ECheckBoxState GetIncludeDiagnosticsState() const;
+	void OnIncludeDiagnosticsChanged(ECheckBoxState NewState);
 	TSharedRef<SWidget> BuildNetworkPanel();
 	TSharedRef<SWidget> BuildStatusPanel();
 	TSharedRef<SWidget> BuildCharacterCustomizationPanel();
@@ -330,4 +359,15 @@ private:
 	EBHMainMenuTab ActiveMenuTab = EBHMainMenuTab::Play;
 	bool bShowingStartScreen = false;
 	bool bShowStartCredentials = false;
+
+	// Feedback / bug report / survey form state.
+	TSharedPtr<SMultiLineEditableTextBox> FeedbackMessageTextBox;
+	TSharedPtr<SEditableTextBox> FeedbackContactTextBox;
+	TSharedPtr<SMultiLineEditableTextBox> SurveyCommentTextBox;
+	EBHFeedbackKind PendingFeedbackKind;
+	int32 PendingFeedbackRating = 0;
+	bool bIncludeDiagnostics = true;
+	int32 SurveyOverallRating = 0;
+	FString SurveyDifficulty;
+	bool bSurveyWouldRecommend = true;
 };

@@ -2,6 +2,18 @@
 #include "BHCosmeticUnlocks.h"
 #include "Net/UnrealNetwork.h"
 
+namespace
+{
+	// Add two non-negative point totals, saturating at INT32_MAX instead of wrapping to a negative
+	// value (which the surrounding FMath::Max(0, ...) would then clamp to 0, silently resetting the
+	// lifetime counter on a very long-running server).
+	int32 BHSaturatingAddPoints(int32 Current, int32 ToAdd)
+	{
+		const int64 Sum = static_cast<int64>(Current) + static_cast<int64>(ToAdd);
+		return static_cast<int32>(FMath::Clamp<int64>(Sum, 0, MAX_int32));
+	}
+}
+
 ABHPlayerState::ABHPlayerState()
 {
 	bReady = false;
@@ -212,8 +224,8 @@ FString ABHPlayerState::PeekRevisionReview() const
 void ABHPlayerState::AddQuestionPoints(int32 Points)
 {
 	const int32 ClampedPoints = FMath::Max(0, Points);
-	QuestionPoints = FMath::Max(0, QuestionPoints + ClampedPoints);
-	LifetimeQuestionPoints = FMath::Max(0, LifetimeQuestionPoints + ClampedPoints);
+	QuestionPoints = BHSaturatingAddPoints(QuestionPoints, ClampedPoints);
+	LifetimeQuestionPoints = BHSaturatingAddPoints(LifetimeQuestionPoints, ClampedPoints);
 }
 
 bool ABHPlayerState::SpendQuestionPoints(int32 Points)
@@ -239,8 +251,8 @@ int32 ABHPlayerState::ApplyCaughtQuestionPointPenalty(float PenaltyFraction)
 void ABHPlayerState::AddHunterPoints(int32 Points)
 {
 	const int32 ClampedPoints = FMath::Max(0, Points);
-	HunterPoints = FMath::Max(0, HunterPoints + ClampedPoints);
-	LifetimeHunterPoints = FMath::Max(0, LifetimeHunterPoints + ClampedPoints);
+	HunterPoints = BHSaturatingAddPoints(HunterPoints, ClampedPoints);
+	LifetimeHunterPoints = BHSaturatingAddPoints(LifetimeHunterPoints, ClampedPoints);
 }
 
 bool ABHPlayerState::SpendHunterPoints(int32 Points)

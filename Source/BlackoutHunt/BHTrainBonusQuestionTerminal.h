@@ -49,8 +49,14 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UTextRenderComponent> ChoicesText;
 
+	// Replicated to clients for DISPLAY ONLY. Its answer fields (CorrectChoiceIndex / NumericAnswer)
+	// are scrubbed before replication so a modified client cannot read the answer off the wire.
 	UPROPERTY(ReplicatedUsing = OnRep_Question, BlueprintReadOnly, Category = "Question")
 	FBHRevisionQuestion Question;
+
+	// Server-only authoritative question (full answer). Used for grading; never replicated.
+	UPROPERTY()
+	FBHRevisionQuestion ServerQuestion;
 
 	UPROPERTY(ReplicatedUsing = OnRep_Question, BlueprintReadOnly, Category = "Question")
 	FString FeedbackText;
