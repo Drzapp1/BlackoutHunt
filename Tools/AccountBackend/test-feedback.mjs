@@ -54,6 +54,10 @@ const child = spawn(process.execPath, [serverPath], {
     // Pin a low cap so the rate-limit test trips within its 34-request loop, independent
     // of the higher production default in server.mjs.
     FEEDBACK_RATE_LIMIT: "30",
+    // Hard-disable the email backup during tests so the suite never sends real mail, even
+    // when the developer's shell has SMTP_PASS / FEEDBACK_EMAIL_TO set (inherited via ...process.env).
+    SMTP_PASS: "",
+    FEEDBACK_EMAIL_TO: "",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });

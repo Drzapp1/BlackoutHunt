@@ -4,6 +4,7 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, URL, URLSearchParams } from "node:url";
+import { queueFeedbackEmail, emailConfigured } from "./email-notify.mjs";
 
 const backendDir = dirname(fileURLToPath(import.meta.url));
 const dotEnvPath = join(backendDir, ".env");
@@ -825,6 +826,9 @@ async function handleFeedback(req, res) {
 
   await appendJsonLine(feedbackPath, record);
   json(res, 200, { ok: true, id: record.id });
+  // Direct email backup (fire-and-forget): a durable copy of each submission reaches your
+  // inbox even if the dashboard host later goes down. No-op unless SMTP is configured.
+  queueFeedbackEmail(record);
 }
 
 async function handleTelemetrySession(req, res) {
@@ -1144,4 +1148,5 @@ createServer((req, res) => {
   console.log(`Blackout Hunt account backend listening on http://${bindHost}:${port}`);
   console.log(`Public base URL: ${publicBaseUrl}`);
   console.log(`Feedback dashboard: ${publicBaseUrl}/admin?key=${adminToken}`);
+  console.log(`Feedback email backup: ${emailConfigured() ? `enabled -> ${process.env.FEEDBACK_EMAIL_TO}` : "disabled (set SMTP_PASS + FEEDBACK_EMAIL_TO in .env)"}`);
 });
