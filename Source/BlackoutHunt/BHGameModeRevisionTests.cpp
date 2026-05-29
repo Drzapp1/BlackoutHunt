@@ -231,4 +231,74 @@ bool FBHRevisionQuestionBankJsonTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// Answer-safety invariant: a diagram shows the question's GIVENS, never the answer. If any diagram
+// label (or axis caption) contains the full correct-choice string, the picture reveals the answer.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHRevisionDiagramAnswerSafetyTest,
+	"BlackoutHunt.GameMode.RevisionDiagramAnswerSafety",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHRevisionDiagramAnswerSafetyTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const TArray<FBHRevisionQuestion>& Bank = FBHRevisionQuestionBank::GetBuiltInQuestions();
+	int32 Leaks = 0;
+	for (const FBHRevisionQuestion& Q : Bank)
+	{
+		if (Q.DiagramType == EBHDiagramType::None) { continue; }
+		if (!Q.Answer.Choices.IsValidIndex(Q.Answer.CorrectChoiceIndex)) { continue; }
+		const FString Correct = Q.Answer.Choices[Q.Answer.CorrectChoiceIndex].TrimStartAndEnd().ToLower();
+		// Skip trivial/boolean choices that could coincidentally appear; physics givens won't
+		// contain them anyway and they carry no numeric answer to leak.
+		if (Correct.Len() < 3 || Correct == TEXT("true") || Correct == TEXT("false")) { continue; }
+		const FString Labels[] = {Q.Diagram.LabelA, Q.Diagram.LabelB, Q.Diagram.LabelC, Q.Diagram.LabelD, Q.Diagram.XAxis, Q.Diagram.YAxis};
+		for (const FString& Label : Labels)
+		{
+			if (Label.IsEmpty()) { continue; }
+			if (Label.TrimStartAndEnd().ToLower().Contains(Correct))
+			{
+				AddError(FString::Printf(TEXT("Diagram for '%s' leaks the answer: label '%s' contains the correct choice '%s'."),
+					*Q.Id, *Label, *Q.Answer.Choices[Q.Answer.CorrectChoiceIndex]));
+				++Leaks;
+			}
+		}
+	}
+	TestEqual(TEXT("No built-in diagram label reveals the correct answer."), Leaks, 0);
+	return true;
+}
+
+// Coverage dashboard: reports how many diagram questions carry per-question data. The soft floor
+// guards against regressing below the authored baseline; it is tightened toward full coverage as
+// the authoring phase lands.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHRevisionDiagramCoverageTest,
+	"BlackoutHunt.GameMode.RevisionDiagramCoverage",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHRevisionDiagramCoverageTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const TArray<FBHRevisionQuestion>& Bank = FBHRevisionQuestionBank::GetBuiltInQuestions();
+	int32 WithDiagram = 0;
+	int32 Authored = 0;
+	int32 DataExpected = 0;
+	int32 DataExpectedAuthored = 0;
+	for (const FBHRevisionQuestion& Q : Bank)
+	{
+		if (Q.DiagramType == EBHDiagramType::None) { continue; }
+		++WithDiagram;
+		const bool bAuthored = Q.Diagram.HasValues() || Q.Diagram.ShapeVariant != 0 || Q.Diagram.AngleOrShape != 0.0f || Q.Diagram.HasImage();
+		if (bAuthored) { ++Authored; }
+		const bool bExpected = (Q.Type == EBHQuestionType::Calculation || Q.Type == EBHQuestionType::GraphReading);
+		if (bExpected)
+		{
+			++DataExpected;
+			if (bAuthored) { ++DataExpectedAuthored; }
+		}
+	}
+	AddInfo(FString::Printf(TEXT("Diagram coverage: %d with diagram, %d authored (%.0f%%); data-expected %d, authored %d (%.0f%%)."),
+		WithDiagram, Authored, WithDiagram ? 100.0f * Authored / WithDiagram : 0.0f,
+		DataExpected, DataExpectedAuthored, DataExpected ? 100.0f * DataExpectedAuthored / DataExpected : 0.0f));
+	TestTrue(TEXT("Diagram data coverage does not regress below the authored baseline."), Authored >= 40);
+	return true;
+}
+
 #endif
