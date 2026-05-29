@@ -110,6 +110,46 @@ New model (single writer, no new replicated fields):
 - A new automation test serializes the built-in bank → JSON string → parses back and asserts
   every field + the count match, proving "migrate all" fidelity without hand-transcribing.
 
+### Pillar 5 implementation status & drop-in recipe (DEFERRED — bank file contended)
+
+Pillars 1–4 (the core anti-"messing-around" work) shipped in commit `a52f76a`. Pillar 5 is the
+only deferred item. It is deliberately **not yet applied** because `BHRevisionQuestionBank.cpp`
+is under heavy concurrent edit by another agent (the bank has grown to **368 questions**, each
+`FBHRevisionQuestion`/`FRevisionSpec` gained a `Diagram` (`FBHDiagramParams`) field, and
+`Validate()` was rewritten to 368 / 92-per-topic / 28-36-28 / types `{80,40,56,48,80,32,32}`).
+Pillar 5's two shared edits (the `BuildQuestionBank` hook and the `Validate` relaxation) land
+inside functions that agent is actively rewriting, so applying it now would clobber their work
+and risk the shared build. Apply the steps below once the bank file is committed and stable.
+
+1. **Serializer/parser** (best as a new file `BHRevisionQuestionBankJson.{h,cpp}` to minimise
+   future collisions — the BlackoutHunt module auto-compiles new .cpp and already links Json via
+   `BHLessonPreset.cpp`). Mirror `BHLessonPreset.cpp`'s `FJsonSerializer` /
+   `TJsonReaderFactory` / `FFileHelper` patterns. Serialize **every** `FBHRevisionQuestion`
+   field, enums as strings: `id, topic, topicName, subtopic, difficulty, type, diagramType,
+   prompt, answer{choices[], correctChoiceIndex, formula, numericAnswer, numericTolerance},
+   diagram{valueA..D, labelA..D, xAxis, yAxis, angleOrShape, imageSoftPath}, hint,
+   correctionPrompt, explanation, masteryWeight`. Add string⇄enum helpers for
+   `EBHPhysicsTopic / EBHQuestionType / EBHQuestionDifficulty / EBHDiagramType`.
+2. **Override path:** `FPaths::ProjectSavedDir() / "ClassroomPresets" / "QuestionBank.json"`
+   (same dir as `LessonPresets.json`). Back up an unreadable file to `.invalid-<UtcNow>` and fall
+   back, exactly like `FBHLessonPresetStore::SaveCustomPreset`.
+3. **Hook (the only edit to the contended file):** in `BuildQuestionBank()`, before the C++
+   builders, try the override file; if it parses and passes the relaxed `Validate`, return it;
+   otherwise fall through to the existing `Build*` builders (unchanged — they remain the
+   fallback). ~6 lines.
+4. **Relax `Validate()`** to structural only (non-empty id/prompt/hint/explanation, unique ids,
+   exactly 4 choices, valid correct index, ≥1 question per enabled topic) so teacher content of
+   any size is accepted. Move the strict built-in distribution check (368 / 92 / 28-36-28 / the
+   type-count vector) into a new test-only `ValidateBuiltInDistribution(FString&)`.
+5. **Export command:** an `FAutoConsoleCommand` `bh.ExportQuestionBank` (self-contained in the
+   new .cpp, so no GameMode edit) that writes `GetQuestions()` to the override path — gives
+   teachers the full editable file in one click.
+6. **Tests** (`BHGameModeRevisionTests.cpp`): round-trip fidelity (serialize `GetQuestions()` →
+   parse → assert per-field equality incl. `Diagram`, and equal count); a relaxed-`Validate`
+   accepts a small hand-built bank; `ValidateBuiltInDistribution` still passes on the built-in.
+7. **Build + run** `Automation RunTests BlackoutHunt.GameMode` once the tree is free of other
+   builds.
+
 ## Tests (`BHGameModeRevisionTests.cpp`)
 - Mastery model: a 1-correct-of-4 guesser ends net-negative/flat; a consistent correct-answerer
   climbs; topic is review-gated to ≤80% while a miss is queued; `MasteryPercent` = mean of

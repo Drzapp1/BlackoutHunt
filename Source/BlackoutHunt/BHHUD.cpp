@@ -14,6 +14,7 @@
 #include "BHTrainBonusQuestionTerminal.h"
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
+#include "Engine/Texture2D.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/PlayerController.h"
@@ -2418,7 +2419,10 @@ void ABHHUD::DrawQuestionPanel(const ABHObjectiveStation* Station)
 	const float PanelW = FMath::Clamp(Canvas->ClipX * 0.60f, 560.0f, 920.0f);
 	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
 	const bool bRevisionQuestion = BHGS && BHGS->bRevisionMode;
-	const float DiagramH = bRevisionQuestion ? 118.0f : 0.0f;
+	// Draw a diagram whenever the question carries one, in any mode -- so visual tasks
+	// also appear at nodes during standard play, not only in the classroom.
+	const bool bShowDiagram = Station->GetQuestionDiagramType() != EBHDiagramType::None;
+	const float DiagramH = bShowDiagram ? 118.0f : 0.0f;
 	const float PanelH = 194.0f + DiagramH + ChoiceCount * 32.0f + (Station->GetQuestionFeedback().IsEmpty() ? 0.0f : 42.0f);
 	const float PanelX = (Canvas->ClipX - PanelW) * 0.5f;
 	const float MaxPanelY = FMath::Max(120.0f, Canvas->ClipY - PanelH - 92.0f);
@@ -2461,11 +2465,12 @@ void ABHHUD::DrawQuestionPanel(const ABHObjectiveStation* Station)
 	DrawWrappedHudText(Station->GetQuestionPrompt(), PanelX + 22.0f, PanelY + 62.0f, PanelW - 44.0f, MainText(), GEngine->GetSmallFont(), 0.92f, 17.0f, 2);
 
 	float ChoiceStartY = PanelY + 112.0f;
-	if (bRevisionQuestion)
+	if (bShowDiagram)
 	{
 		DrawRevisionDiagram(Station, PanelX + 24.0f, PanelY + 108.0f, PanelW - 48.0f, DiagramH - 10.0f);
 		ChoiceStartY = PanelY + 112.0f + DiagramH;
-		if (!Station->GetRevisionTeamSummary().IsEmpty())
+		// The collaborative "answer team" line is a classroom-mode concept only.
+		if (bRevisionQuestion && !Station->GetRevisionTeamSummary().IsEmpty())
 		{
 			DrawWrappedHudText(FString::Printf(TEXT("Answer team: %s"), *Station->GetRevisionTeamSummary()), PanelX + 28.0f, ChoiceStartY - 17.0f, PanelW - 56.0f, FLinearColor(0.76f, 0.92f, 0.98f, 1.0f), GEngine->GetSmallFont(), 0.72f, 12.0f, 1);
 		}
@@ -2507,11 +2512,64 @@ void ABHHUD::DrawQuestionPanel(const ABHObjectiveStation* Station)
 	}
 }
 
+UTexture2D* ABHHUD::ResolveDiagramTexture(const FString& ObjectPath)
+{
+	if (ObjectPath.IsEmpty())
+	{
+		return nullptr;
+	}
+	if (const TWeakObjectPtr<UTexture2D>* Cached = DiagramTextureCache.Find(ObjectPath))
+	{
+		if (Cached->IsValid())
+		{
+			return Cached->Get();
+		}
+	}
+	// Cook-safe: load the imported .uasset by object path. Missing/uncooked assets return
+	// null and the caller falls back to the procedural diagram. Cache the result either
+	// way so a missing asset is not re-searched every frame.
+	UTexture2D* Texture = LoadObject<UTexture2D>(nullptr, *ObjectPath);
+	DiagramTextureCache.Add(ObjectPath, Texture);
+	return Texture;
+}
+
 void ABHHUD::DrawRevisionDiagram(const ABHObjectiveStation* Station, float X, float Y, float W, float H)
 {
 	if (!Canvas || !GEngine || !Station)
 	{
 		return;
+	}
+
+	const FBHDiagramParams& P = Station->GetQuestionDiagram();
+
+	// Optional illustrated image diagram: if the question references one and it loads,
+	// draw it letterboxed into the panel and skip the procedural schematic.
+	if (P.HasImage())
+	{
+		if (UTexture2D* Tex = ResolveDiagramTexture(P.ImageSoftPath))
+		{
+			DrawRect(FLinearColor(0.02f, 0.025f, 0.028f, 0.92f), X, Y, W, H);
+			const float TexW = FMath::Max(1.0f, static_cast<float>(Tex->GetSizeX()));
+			const float TexH = FMath::Max(1.0f, static_cast<float>(Tex->GetSizeY()));
+			const float Scale = FMath::Min((W - 12.0f) / TexW, (H - 12.0f) / TexH);
+			const float DrawW = TexW * Scale;
+			const float DrawH = TexH * Scale;
+			const float DrawX = X + (W - DrawW) * 0.5f;
+			const float DrawY = Y + (H - DrawH) * 0.5f;
+			DrawTextureSimple(Tex, DrawX, DrawY, Scale, false);
+
+			const FString ImageSubtopic = Station->GetQuestionSubtopic();
+			if (!ImageSubtopic.IsEmpty())
+			{
+				DrawHudText(ImageSubtopic.ToUpper(), X + 10.0f, Y + 4.0f, FLinearColor(0.66f, 0.82f, 0.94f, 0.92f), GEngine->GetSmallFont(), 0.62f);
+			}
+			if (!Station->GetQuestionFormula().IsEmpty())
+			{
+				DrawRightAlignedText(FString::Printf(TEXT("Key idea: %s"), *Station->GetQuestionFormula()), X + W - 10.0f, Y + H - 18.0f, FLinearColor(0.95f, 0.84f, 0.45f, 1.0f), GEngine->GetSmallFont(), 0.66f);
+			}
+			return;
+		}
+		// Fall through to the procedural diagram when the texture is unavailable.
 	}
 
 	DrawRect(FLinearColor(0.025f, 0.032f, 0.036f, 0.88f), X, Y, W, H);
@@ -2552,6 +2610,10 @@ void ABHHUD::DrawRevisionDiagram(const ABHObjectiveStation* Station, float X, fl
 		DrawLine(Left + 10.0f, MidY, X + W * 0.52f, MidY, LineColor, 3.0f);
 		DrawLine(X + W * 0.52f, MidY, Right, Top + 8.0f, LineColor, 3.0f);
 		DrawHudText(TEXT("area = distance"), Left + 18.0f, Bottom - 34.0f, WarmColor, GEngine->GetSmallFont(), 0.72f);
+		// Data-driven: axis captions and any value note for this question.
+		if (!P.XAxis.IsEmpty()) { DrawRightAlignedText(P.XAxis, Right - 6.0f, Bottom - 14.0f, FLinearColor(0.70f, 0.78f, 0.82f, 0.90f), GEngine->GetSmallFont(), 0.60f); }
+		if (!P.YAxis.IsEmpty()) { DrawHudText(P.YAxis, Left + 4.0f, Top - 4.0f, FLinearColor(0.70f, 0.78f, 0.82f, 0.90f), GEngine->GetSmallFont(), 0.60f); }
+		if (P.HasValues() && !P.LabelA.IsEmpty()) { DrawHudText(P.LabelA, Left + 18.0f, Top + 6.0f, MainText(), GEngine->GetSmallFont(), 0.60f); }
 		break;
 	case EBHDiagramType::ForceArrows:
 		DrawLine(X + W * 0.50f, MidY, X + W * 0.26f, MidY, WarmColor, 4.0f);
@@ -2559,6 +2621,12 @@ void ABHHUD::DrawRevisionDiagram(const ABHObjectiveStation* Station, float X, fl
 		DrawLine(X + W * 0.74f, MidY, X + W * 0.70f, MidY - 10.0f, LineColor, 3.0f);
 		DrawLine(X + W * 0.74f, MidY, X + W * 0.70f, MidY + 10.0f, LineColor, 3.0f);
 		DrawHudText(TEXT("resultant force"), X + W * 0.39f, Top + 8.0f, MainText(), GEngine->GetSmallFont(), 0.78f);
+		// Data-driven: label the two force magnitudes shown by the arrows.
+		if (P.HasValues())
+		{
+			if (!P.LabelA.IsEmpty()) { DrawHudText(P.LabelA, X + W * 0.16f, MidY - 18.0f, WarmColor, GEngine->GetSmallFont(), 0.66f); }
+			if (!P.LabelB.IsEmpty()) { DrawHudText(P.LabelB, X + W * 0.66f, MidY - 18.0f, LineColor, GEngine->GetSmallFont(), 0.66f); }
+		}
 		break;
 	case EBHDiagramType::SpringGraph:
 		DrawLine(Left, Bottom, Right, Bottom, FLinearColor(0.50f, 0.56f, 0.58f, 1.0f), 1.5f);
@@ -2572,6 +2640,14 @@ void ABHHUD::DrawRevisionDiagram(const ABHObjectiveStation* Station, float X, fl
 		DrawLine(X + W * 0.48f, MidY + 8.0f, X + W * 0.48f + 14.0f, Bottom, WarmColor, 3.0f);
 		DrawLine(X + W * 0.78f, MidY - 30.0f, X + W * 0.78f, MidY, LineColor, 4.0f);
 		DrawHudText(TEXT("moment = Fd"), Left + 14.0f, Top + 8.0f, MainText(), GEngine->GetSmallFont(), 0.78f);
+		// Data-driven: label the distances/forces either side of the pivot.
+		if (P.HasValues())
+		{
+			if (!P.LabelA.IsEmpty()) { DrawHudText(P.LabelA, Left + 14.0f, MidY - 18.0f, WarmColor, GEngine->GetSmallFont(), 0.64f); }
+			if (!P.LabelC.IsEmpty()) { DrawRightAlignedText(P.LabelC, Right - 6.0f, MidY - 18.0f, LineColor, GEngine->GetSmallFont(), 0.64f); }
+			if (!P.LabelB.IsEmpty()) { DrawHudText(P.LabelB, Left + 14.0f, Bottom - 12.0f, MainText(), GEngine->GetSmallFont(), 0.60f); }
+			if (!P.LabelD.IsEmpty()) { DrawRightAlignedText(P.LabelD, Right - 6.0f, Bottom - 12.0f, MainText(), GEngine->GetSmallFont(), 0.60f); }
+		}
 		break;
 	case EBHDiagramType::Circuit:
 		DrawLine(Left, Top + 16.0f, Right, Top + 16.0f, LineColor, 2.0f);
@@ -2580,12 +2656,37 @@ void ABHHUD::DrawRevisionDiagram(const ABHObjectiveStation* Station, float X, fl
 		DrawLine(Left, Bottom - 10.0f, Left, Top + 16.0f, LineColor, 2.0f);
 		DrawRect(WarmColor, Left + W * 0.36f, Top + 8.0f, 34.0f, 16.0f);
 		DrawHudText(TEXT("A series | V parallel"), Left + 18.0f, MidY - 8.0f, MainText(), GEngine->GetSmallFont(), 0.74f);
+		// Data-driven: label the resistor(s) and supply with their actual values.
+		if (P.HasValues())
+		{
+			if (!P.LabelA.IsEmpty()) { DrawHudText(P.LabelA, Left + W * 0.30f, Top + 26.0f, WarmColor, GEngine->GetSmallFont(), 0.62f); }
+			if (!P.LabelC.IsEmpty()) { DrawRightAlignedText(P.LabelC, Right - 8.0f, Top + 26.0f, WarmColor, GEngine->GetSmallFont(), 0.62f); }
+			if (!P.LabelB.IsEmpty()) { DrawHudText(P.LabelB, Left + 18.0f, Bottom - 8.0f, LineColor, GEngine->GetSmallFont(), 0.62f); }
+		}
 		break;
 	case EBHDiagramType::IVGraph:
 		DrawLine(Left, Bottom, Right, Bottom, FLinearColor(0.50f, 0.56f, 0.58f, 1.0f), 1.5f);
 		DrawLine(Left, Bottom, Left, Top, FLinearColor(0.50f, 0.56f, 0.58f, 1.0f), 1.5f);
 		DrawLine(Left, Bottom, Right - 24.0f, Top + 12.0f, LineColor, 3.0f);
-		DrawHudText(TEXT("straight: ohmic"), Left + 16.0f, Top + 8.0f, WarmColor, GEngine->GetSmallFont(), 0.74f);
+		// Data-driven: mark the (V, I) reading using ValueC/ValueD as the axis maxima.
+		if (P.HasValues() && P.ValueC > 0.0f && P.ValueD > 0.0f)
+		{
+			const float PtX = Left + (Right - Left) * FMath::Clamp(P.ValueA / P.ValueC, 0.0f, 1.0f);
+			const float PtY = Bottom - (Bottom - Top) * FMath::Clamp(P.ValueB / P.ValueD, 0.0f, 1.0f);
+			DrawRect(WarmColor, PtX - 3.0f, PtY - 3.0f, 6.0f, 6.0f);
+		}
+		{
+			const FString IVLabel = !P.LabelA.IsEmpty() ? P.LabelA : FString(TEXT("straight: ohmic"));
+			DrawHudText(IVLabel, Left + 16.0f, Top + 8.0f, WarmColor, GEngine->GetSmallFont(), 0.74f);
+		}
+		if (!P.XAxis.IsEmpty())
+		{
+			DrawRightAlignedText(P.XAxis, Right - 6.0f, Bottom - 14.0f, FLinearColor(0.70f, 0.78f, 0.82f, 0.90f), GEngine->GetSmallFont(), 0.60f);
+		}
+		if (!P.YAxis.IsEmpty())
+		{
+			DrawHudText(P.YAxis, Left + 4.0f, Top - 4.0f, FLinearColor(0.70f, 0.78f, 0.82f, 0.90f), GEngine->GetSmallFont(), 0.60f);
+		}
 		break;
 	case EBHDiagramType::StaticCharge:
 		DrawHudText(TEXT("+ + +"), Left + 24.0f, MidY - 8.0f, WarmColor, GEngine->GetSmallFont(), 1.0f);
@@ -2596,16 +2697,23 @@ void ABHHUD::DrawRevisionDiagram(const ABHObjectiveStation* Station, float X, fl
 	case EBHDiagramType::Wave:
 	{
 		const int32 Segments = 36;
+		// Data-driven: amplitude fraction (ValueA) and cycle count (ValueB) shape the wave.
+		// Defaults reproduce the original 2-cycle schematic.
+		const float AmpFrac = P.ValueA > 0.0f ? FMath::Clamp(P.ValueA, 0.05f, 0.45f) : 0.22f;
+		const float Cycles = P.ValueB > 0.0f ? FMath::Clamp(P.ValueB, 1.0f, 6.0f) : 2.0f;
 		FVector2D Prev(Left, MidY);
 		for (int32 Index = 1; Index <= Segments; ++Index)
 		{
 			const float T = static_cast<float>(Index) / Segments;
 			const float PX = FMath::Lerp(Left, Right, T);
-			const float PY = MidY + FMath::Sin(T * PI * 4.0f + Now * 2.0f) * H * 0.22f;
+			const float PY = MidY + FMath::Sin(T * PI * 2.0f * Cycles + Now * 2.0f) * H * AmpFrac;
 			DrawLine(Prev.X, Prev.Y, PX, PY, LineColor, 2.5f);
 			Prev = FVector2D(PX, PY);
 		}
-		DrawHudText(TEXT("amplitude | wavelength"), Left + 14.0f, Top + 6.0f, WarmColor, GEngine->GetSmallFont(), 0.74f);
+		const FString WaveLabel = P.HasValues()
+			? FString::Printf(TEXT("%s | %s"), *P.LabelA, *P.LabelB)
+			: FString(TEXT("amplitude | wavelength"));
+		DrawHudText(WaveLabel, Left + 14.0f, Top + 6.0f, WarmColor, GEngine->GetSmallFont(), 0.74f);
 		break;
 	}
 	case EBHDiagramType::EMSpectrum:
@@ -2622,16 +2730,35 @@ void ABHHUD::DrawRevisionDiagram(const ABHObjectiveStation* Station, float X, fl
 		break;
 	}
 	case EBHDiagramType::RayDiagram:
-		DrawLine(X + W * 0.50f, Top, X + W * 0.50f, Bottom, FLinearColor(0.50f, 0.56f, 0.58f, 1.0f), 1.5f);
-		DrawLine(Left, MidY - 34.0f, X + W * 0.50f, MidY, WarmColor, 3.0f);
-		DrawLine(X + W * 0.50f, MidY, Right, MidY + 22.0f, LineColor, 3.0f);
-		DrawHudText(TEXT("normal | i = r / refraction"), Left + 8.0f, Top + 6.0f, MainText(), GEngine->GetSmallFont(), 0.72f);
+	{
+		const float CX = X + W * 0.50f;
+		DrawLine(CX, Top, CX, Bottom, FLinearColor(0.50f, 0.56f, 0.58f, 1.0f), 1.5f);
+		// Surface line through the strike point.
+		DrawLine(Left, MidY, Right, MidY, FLinearColor(0.45f, 0.50f, 0.52f, 0.8f), 1.0f);
+		// Data-driven: incident/reflected rays drawn at the question's angle from the normal.
+		const float AngleDeg = P.AngleOrShape > 0.0f ? FMath::Clamp(P.AngleOrShape, 5.0f, 80.0f) : 35.0f;
+		const float Rad = FMath::DegreesToRadians(AngleDeg);
+		const float RayLen = (MidY - Top) * 0.92f;
+		const float Dx = FMath::Sin(Rad) * RayLen;
+		const float Dy = FMath::Cos(Rad) * RayLen;
+		DrawLine(CX - Dx, MidY - Dy, CX, MidY, WarmColor, 3.0f);
+		DrawLine(CX, MidY, CX + Dx, MidY - Dy, LineColor, 3.0f);
+		const FString RayLabel = !P.LabelA.IsEmpty() ? P.LabelA : FString(TEXT("normal | i = r"));
+		DrawHudText(RayLabel, Left + 8.0f, Top + 6.0f, MainText(), GEngine->GetSmallFont(), 0.72f);
 		break;
+	}
 	case EBHDiagramType::Sankey:
 		DrawRect(LineColor, Left, MidY - 12.0f, W * 0.42f, 24.0f);
 		DrawRect(FLinearColor(0.52f, 0.90f, 0.54f, 1.0f), X + W * 0.50f, MidY - 10.0f, W * 0.28f, 20.0f);
 		DrawRect(WarmColor, X + W * 0.50f, MidY + 18.0f, W * 0.20f, 14.0f);
 		DrawHudText(TEXT("input -> useful + wasted"), Left + 12.0f, Top + 6.0f, MainText(), GEngine->GetSmallFont(), 0.74f);
+		// Data-driven: label the input / useful / wasted arrows with their values.
+		if (P.HasValues())
+		{
+			if (!P.LabelA.IsEmpty()) { DrawHudText(P.LabelA, Left + 6.0f, MidY - 26.0f, MainText(), GEngine->GetSmallFont(), 0.60f); }
+			if (!P.LabelB.IsEmpty()) { DrawHudText(P.LabelB, X + W * 0.50f, MidY - 24.0f, FLinearColor(0.52f, 0.90f, 0.54f, 1.0f), GEngine->GetSmallFont(), 0.58f); }
+			if (!P.LabelC.IsEmpty()) { DrawHudText(P.LabelC, X + W * 0.50f, MidY + 34.0f, WarmColor, GEngine->GetSmallFont(), 0.58f); }
+		}
 		break;
 	case EBHDiagramType::EnergyChain:
 	default:
@@ -2641,6 +2768,13 @@ void ABHHUD::DrawRevisionDiagram(const ABHObjectiveStation* Station, float X, fl
 		DrawLine(Left + 258.0f, MidY, Left + 312.0f, MidY, LineColor, 3.0f);
 		DrawRect(FLinearColor(0.46f, 0.31f, 0.28f, 1.0f), Left + 318.0f, MidY - 14.0f, 96.0f, 28.0f);
 		DrawHudText(TEXT("store -> pathway -> store"), Left + 12.0f, Top + 6.0f, MainText(), GEngine->GetSmallFont(), 0.74f);
+		// Data-driven: label the three boxes of this question's energy chain.
+		if (P.HasValues())
+		{
+			if (!P.LabelA.IsEmpty()) { DrawHudText(P.LabelA, Left + 6.0f, MidY + 18.0f, MainText(), GEngine->GetSmallFont(), 0.56f); }
+			if (!P.LabelB.IsEmpty()) { DrawHudText(P.LabelB, Left + 160.0f, MidY + 18.0f, MainText(), GEngine->GetSmallFont(), 0.56f); }
+			if (!P.LabelC.IsEmpty()) { DrawHudText(P.LabelC, Left + 322.0f, MidY + 18.0f, MainText(), GEngine->GetSmallFont(), 0.56f); }
+		}
 		break;
 	}
 

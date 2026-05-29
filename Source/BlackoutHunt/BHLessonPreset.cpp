@@ -298,6 +298,49 @@ FString BHLessonPresetChoiceLabel(int32 ChoiceIndex)
 	return Label;
 }
 
+// Short human-readable name for a diagram type, used on printable question sets so the
+// teacher knows which visual accompanies the on-screen question.
+FString BHLessonPresetDiagramName(EBHDiagramType DiagramType)
+{
+	switch (DiagramType)
+	{
+	case EBHDiagramType::MotionGraph: return TEXT("distance-time graph");
+	case EBHDiagramType::VelocityGraph: return TEXT("velocity-time graph");
+	case EBHDiagramType::ForceArrows: return TEXT("force arrows");
+	case EBHDiagramType::SpringGraph: return TEXT("force-extension graph");
+	case EBHDiagramType::MomentBeam: return TEXT("balanced beam / lever");
+	case EBHDiagramType::Circuit: return TEXT("circuit diagram");
+	case EBHDiagramType::IVGraph: return TEXT("I-V graph");
+	case EBHDiagramType::StaticCharge: return TEXT("static charges");
+	case EBHDiagramType::Wave: return TEXT("wave");
+	case EBHDiagramType::EMSpectrum: return TEXT("EM spectrum");
+	case EBHDiagramType::RayDiagram: return TEXT("ray diagram");
+	case EBHDiagramType::Sankey: return TEXT("Sankey diagram");
+	case EBHDiagramType::EnergyChain: return TEXT("energy chain");
+	default: return FString();
+	}
+}
+
+// Build a compact "givens" string from a question's diagram parameter labels (the values
+// shown on screen), for the printable sheet. Empty when the question has no visual givens.
+FString BHLessonPresetDiagramGivens(const FBHDiagramParams& Diagram)
+{
+	TArray<FString> Parts;
+	const FString Labels[] = {Diagram.LabelA, Diagram.LabelB, Diagram.LabelC, Diagram.LabelD};
+	for (const FString& Label : Labels)
+	{
+		if (!Label.IsEmpty())
+		{
+			Parts.Add(BHLessonPresetInlineText(Label));
+		}
+	}
+	if (Diagram.AngleOrShape > 0.0f && Parts.Num() == 0)
+	{
+		Parts.Add(FString::Printf(TEXT("angle %s deg"), *FString::SanitizeFloat(Diagram.AngleOrShape)));
+	}
+	return FString::Join(Parts, TEXT(", "));
+}
+
 FString BHLessonPresetCorrectAnswerText(const FBHRevisionQuestion& Question)
 {
 	const int32 CorrectChoiceIndex = Question.Answer.CorrectChoiceIndex;
@@ -742,6 +785,17 @@ FString FBHLessonPresetStore::FormatManualQuestionSetMarkdown(const FBHManualQue
 		if (!Question.Answer.Formula.IsEmpty())
 		{
 			Output += FString::Printf(TEXT("   Formula: %s\n"), *BHLessonPresetInlineText(Question.Answer.Formula));
+		}
+		if (Question.DiagramType != EBHDiagramType::None)
+		{
+			const FString DiagramName = BHLessonPresetDiagramName(Question.DiagramType);
+			const FString Givens = BHLessonPresetDiagramGivens(Question.Diagram);
+			if (!DiagramName.IsEmpty())
+			{
+				Output += Givens.IsEmpty()
+					? FString::Printf(TEXT("   Diagram: %s\n"), *DiagramName)
+					: FString::Printf(TEXT("   Diagram: %s [%s]\n"), *DiagramName, *Givens);
+			}
 		}
 		Output += TEXT("\n");
 	}

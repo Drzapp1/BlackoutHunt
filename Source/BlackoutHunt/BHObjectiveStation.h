@@ -200,6 +200,11 @@ protected:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Question")
 	EBHDiagramType QuestionDiagramType;
 
+	// Optional per-question diagram parameters so the HUD can render the question's actual
+	// values (answer-safe: givens only). Empty => generic schematic.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Question")
+	FBHDiagramParams QuestionDiagram;
+
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Question")
 	FString QuestionSubtopic;
 

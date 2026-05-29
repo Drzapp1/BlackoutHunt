@@ -290,9 +290,27 @@ void ABHTrainBonusQuestionTerminal::RefreshDisplay()
 		const FString TopicName = Question.TopicName.IsEmpty()
 			? (BHGS ? FBHRevisionQuestionBank::TopicToString(BHGS->RevisionWeakTopic) : FString(TEXT("WEAK TOPIC")))
 			: Question.TopicName.ToUpper();
+		// This terminal is text-only (no diagram), so fold any on-screen diagram givens
+		// into the prompt text to keep visual questions answerable here.
+		FString Givens;
+		{
+			const FString DiagramLabels[] = {Question.Diagram.LabelA, Question.Diagram.LabelB, Question.Diagram.LabelC, Question.Diagram.LabelD};
+			TArray<FString> Parts;
+			for (const FString& DiagramLabel : DiagramLabels)
+			{
+				if (!DiagramLabel.IsEmpty())
+				{
+					Parts.Add(DiagramLabel);
+				}
+			}
+			if (Parts.Num() > 0)
+			{
+				Givens = FString::Printf(TEXT("\nGiven: %s"), *FString::Join(Parts, TEXT(", ")));
+			}
+		}
 		const FString Header = bBonusLive
 			? (bQuestionReady
-				? FString::Printf(TEXT("BONUS LIVE %02d:%02d  +%d PTS\n%s\n%s"), RemainingSeconds / 60, RemainingSeconds % 60, Reward, *TopicName, *Question.Prompt.Left(160))
+				? FString::Printf(TEXT("BONUS LIVE %02d:%02d  +%d PTS\n%s\n%s%s"), RemainingSeconds / 60, RemainingSeconds % 60, Reward, *TopicName, *Question.Prompt.Left(160), *Givens)
 				: FString::Printf(TEXT("BONUS SYNCING %02d:%02d\n%s\nQuestion loading. Watch this terminal."), RemainingSeconds / 60, RemainingSeconds % 60, *TopicName))
 			: FString::Printf(TEXT("BONUS LOCKED\n%s\nOpens after recap. Watch train displays."), *TopicName);
 		PromptText->SetText(FText::FromString(Header));

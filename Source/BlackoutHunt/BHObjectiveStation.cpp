@@ -357,6 +357,7 @@ ABHObjectiveStation::ABHObjectiveStation()
 	QuestionType = EBHQuestionType::MultipleChoice;
 	QuestionDifficulty = EBHQuestionDifficulty::Easy;
 	QuestionDiagramType = EBHDiagramType::None;
+	QuestionDiagram = FBHDiagramParams();
 	QuestionNumericAnswer = 0.0f;
 	QuestionNumericTolerance = 0.0f;
 	RevisionQuestionsSolved = 0;
@@ -463,6 +464,7 @@ void ABHObjectiveStation::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	DOREPLIFETIME(ABHObjectiveStation, QuestionType);
 	DOREPLIFETIME(ABHObjectiveStation, QuestionDifficulty);
 	DOREPLIFETIME(ABHObjectiveStation, QuestionDiagramType);
+	DOREPLIFETIME(ABHObjectiveStation, QuestionDiagram);
 	DOREPLIFETIME(ABHObjectiveStation, QuestionSubtopic);
 	DOREPLIFETIME(ABHObjectiveStation, QuestionFormula);
 	DOREPLIFETIME(ABHObjectiveStation, QuestionNumericAnswer);
@@ -1500,6 +1502,7 @@ void ABHObjectiveStation::ConfigureQuestion()
 				QuestionType = Selected.Type;
 				QuestionDifficulty = Selected.Difficulty;
 				QuestionDiagramType = Selected.DiagramType;
+				QuestionDiagram = Selected.Diagram;
 				QuestionPrompt = Selected.Prompt;
 				QuestionChoices.Reset();
 				const int32 ChoiceRotation = LocationSeed % Selected.Answer.Choices.Num();
@@ -1543,6 +1546,7 @@ void ABHObjectiveStation::ConfigureQuestion()
 		QuestionType = EBHQuestionType::MultipleChoice;
 		QuestionDifficulty = EBHQuestionDifficulty::Easy;
 		QuestionDiagramType = EBHDiagramType::None;
+		QuestionDiagram = FBHDiagramParams();
 		QuestionPrompt = TEXT("");
 		QuestionChoices.Reset();
 		CorrectAnswerIndex = 0;
@@ -1568,7 +1572,26 @@ void ABHObjectiveStation::ConfigureQuestion()
 	QuestionSubtopic = TEXT("");
 	QuestionType = EBHQuestionType::MultipleChoice;
 	QuestionDifficulty = EBHQuestionDifficulty::Easy;
-	QuestionDiagramType = EBHDiagramType::None;
+	// Standard-play questions carry no numeric diagram params, but we still pick a
+	// topic-appropriate diagram type so a relevant (generic) schematic renders at the
+	// node. The data-driven labels are reserved for revision-mode questions above.
+	switch (StationType)
+	{
+	case EBHObjectiveStationType::Terminal:
+		QuestionDiagramType = EBHDiagramType::Circuit;
+		break;
+	case EBHObjectiveStationType::Antenna:
+		QuestionDiagramType = EBHDiagramType::Wave;
+		break;
+	case EBHObjectiveStationType::Evidence:
+		QuestionDiagramType = EBHDiagramType::EnergyChain;
+		break;
+	case EBHObjectiveStationType::Valve:
+	default:
+		QuestionDiagramType = EBHDiagramType::ForceArrows;
+		break;
+	}
+	QuestionDiagram = FBHDiagramParams();
 	QuestionPrompt = Selected.Prompt;
 	QuestionChoices.Reset();
 	const int32 ChoiceRotation = LocationSeed % UE_ARRAY_COUNT(Selected.Choices);
