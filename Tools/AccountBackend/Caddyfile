@@ -1,0 +1,19 @@
+# Blackout Hunt — TLS terminator for the Playit HTTPS tunnel.
+#
+# The Playit HTTPS tunnel forwards the public domain's :80 and :443 to this Caddy.
+# Caddy obtains and renews a publicly-trusted Let's Encrypt certificate automatically
+# (ACME HTTP-01 over the tunnel's :80) and reverse-proxies decrypted requests to the
+# Node feedback backend on 127.0.0.1:8787 (which binds loopback only).
+#
+# If your Playit HTTPS tunnel uses a different domain than below, change it in THREE
+# places: here, .env (PUBLIC_BASE_URL), and Config/DefaultGame.ini (FeedbackBackendBaseUrl).
+blackouthunt-feedback.playit.plus {
+	reverse_proxy 127.0.0.1:8787
+
+	# Force an RSA leaf so the chain terminates at ISRG Root X1 (Let's Encrypt R10/R11 -> X1),
+	# the root present in UE 5.7's bundled cacert.pem. The default ECDSA chain currently runs
+	# leaf -> YE1 -> Root YE -> ISRG Root X2, and the packaged game's CA bundle lacks X2.
+	tls {
+		key_type rsa2048
+	}
+}

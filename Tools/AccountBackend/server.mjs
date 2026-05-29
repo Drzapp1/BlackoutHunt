@@ -136,6 +136,14 @@ const maxLogLineChars = 1000;
 const maxStoredEntries = 5000; // newest-N kept in memory for the dashboard; the .jsonl file keeps everything.
 const feedbackKinds = new Set(["bug", "idea", "praise", "other", "survey"]);
 
+// Per-IP ingest rate limits (fixed window). Behind a tunnel/reverse proxy the whole
+// audience can share one apparent IP (a classroom NAT, or Caddy->loopback when Playit
+// does not pass the real client IP through), so the feedback cap is set high enough for
+// a full class submitting end-of-round surveys at once. Tune via env. clampInt is hoisted.
+const feedbackRateLimit = clampInt(process.env.FEEDBACK_RATE_LIMIT, 1, 100000, 300);
+const telemetryRateLimit = clampInt(process.env.TELEMETRY_RATE_LIMIT, 1, 100000, 600);
+const rateLimitWindowMs = clampInt(process.env.RATE_LIMIT_WINDOW_MS, 1000, 24 * 60 * 60 * 1000, 5 * 60 * 1000);
+
 const pendingStates = new Map();
 const deviceAuth = new Map();
 const sessions = new Map();
@@ -762,7 +770,7 @@ async function handleAuthCallback(provider, url, res) {
 }
 
 async function handleFeedback(req, res) {
-  if (rateLimited(req, "feedback", 30, 5 * 60 * 1000)) {
+  if (rateLimited(req, "feedback", feedbackRateLimit, rateLimitWindowMs)) {
     json(res, 429, { ok: false, error: "too many submissions, try again in a few minutes" });
     return;
   }
@@ -820,7 +828,7 @@ async function handleFeedback(req, res) {
 }
 
 async function handleTelemetrySession(req, res) {
-  if (rateLimited(req, "telemetry", 120, 5 * 60 * 1000)) {
+  if (rateLimited(req, "telemetry", telemetryRateLimit, rateLimitWindowMs)) {
     json(res, 429, { ok: false, error: "too many telemetry posts" });
     return;
   }

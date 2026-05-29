@@ -31,3 +31,6 @@ Saved/
 Tools/AccountBackend/data/
 Config/Steam/SteamValues.local.ini
 Config/EOS/EOSValues.local.ini
+
+# Caddy binary (large; fetch per ThirdParty/Caddy/README.md)
+ThirdParty/Caddy/caddy.exe

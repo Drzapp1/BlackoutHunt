@@ -51,6 +51,9 @@ const child = spawn(process.execPath, [serverPath], {
     PUBLIC_BASE_URL: base,
     ADMIN_TOKEN: adminToken,
     DATA_DIR: dataDir,
+    // Pin a low cap so the rate-limit test trips within its 34-request loop, independent
+    // of the higher production default in server.mjs.
+    FEEDBACK_RATE_LIMIT: "30",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
