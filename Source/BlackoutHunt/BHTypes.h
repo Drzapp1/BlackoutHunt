@@ -849,7 +849,15 @@ enum class EBHDiagramType : uint8
 	EMSpectrum UMETA(DisplayName = "EM Spectrum"),
 	RayDiagram UMETA(DisplayName = "Ray Diagram"),
 	Sankey UMETA(DisplayName = "Sankey"),
-	EnergyChain UMETA(DisplayName = "Energy Chain")
+	EnergyChain UMETA(DisplayName = "Energy Chain"),
+	// Added types (serialize by name via reflection, so order only needs to be append-only).
+	Lens UMETA(DisplayName = "Lens"),                 // converging lens ray diagram (Waves)
+	Transformer UMETA(DisplayName = "Transformer"),   // primary/secondary coils, Np:Ns (Electricity)
+	MagneticField UMETA(DisplayName = "Magnetic Field"), // bar magnet field lines (Electricity)
+	InclinedPlane UMETA(DisplayName = "Inclined Plane"), // ramp with weight/normal/friction (Forces)
+	PressureColumn UMETA(DisplayName = "Pressure Column"), // liquid column P = rho g h (Forces)
+	EnergyBars UMETA(DisplayName = "Energy Bars"),    // before/after energy bar chart (Energy)
+	ParticleModel UMETA(DisplayName = "Particle Model") // solid/liquid/gas particles (Energy/thermal)
 };
 
 UENUM(BlueprintType)

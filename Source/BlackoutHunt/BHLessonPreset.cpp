@@ -317,6 +317,13 @@ FString BHLessonPresetDiagramName(EBHDiagramType DiagramType)
 	case EBHDiagramType::RayDiagram: return TEXT("ray diagram");
 	case EBHDiagramType::Sankey: return TEXT("Sankey diagram");
 	case EBHDiagramType::EnergyChain: return TEXT("energy chain");
+	case EBHDiagramType::Lens: return TEXT("converging lens ray diagram");
+	case EBHDiagramType::Transformer: return TEXT("transformer");
+	case EBHDiagramType::MagneticField: return TEXT("magnetic field lines");
+	case EBHDiagramType::InclinedPlane: return TEXT("inclined plane");
+	case EBHDiagramType::PressureColumn: return TEXT("liquid pressure column");
+	case EBHDiagramType::EnergyBars: return TEXT("energy bar chart");
+	case EBHDiagramType::ParticleModel: return TEXT("particle model");
 	default: return FString();
 	}
 }

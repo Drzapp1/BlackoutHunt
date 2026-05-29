@@ -99,6 +99,23 @@ namespace
 		RLine(C, X1, Y1, X1 + FMath::Cos(Ang - Spread) * HeadSize, Y1 + FMath::Sin(Ang - Spread) * HeadSize, Color, Thickness);
 	}
 
+	void RCircle(UCanvas* C, float CX, float CY, float Radius, const FLinearColor& Color, float Thickness, int32 Segments = 16)
+	{
+		if (!C || Radius <= 0.0f)
+		{
+			return;
+		}
+		const int32 N = FMath::Clamp(Segments, 6, 48);
+		FVector2D Prev(CX + Radius, CY);
+		for (int32 i = 1; i <= N; ++i)
+		{
+			const float A = (static_cast<float>(i) / N) * 2.0f * PI;
+			const FVector2D Cur(CX + FMath::Cos(A) * Radius, CY + FMath::Sin(A) * Radius);
+			RLine(C, Prev.X, Prev.Y, Cur.X, Cur.Y, Color, Thickness);
+			Prev = Cur;
+		}
+	}
+
 	void RCornerBrackets(UCanvas* C, float X, float Y, float W, float H, const FLinearColor& Color, float Length, float Thickness)
 	{
 		if (W <= 1.0f || H <= 1.0f)
@@ -130,7 +147,15 @@ float FBHDiagramRenderer::BandHeightFor(EBHDiagramType Type)
 	case EBHDiagramType::Circuit:
 		return 128.0f;
 	case EBHDiagramType::RayDiagram:
+	case EBHDiagramType::Lens:
+	case EBHDiagramType::Transformer:
+	case EBHDiagramType::InclinedPlane:
+	case EBHDiagramType::PressureColumn:
+	case EBHDiagramType::EnergyBars:
 		return 124.0f;
+	case EBHDiagramType::MagneticField:
+	case EBHDiagramType::ParticleModel:
+		return 110.0f;
 	case EBHDiagramType::MomentBeam:
 		return 114.0f;
 	case EBHDiagramType::Wave:
@@ -538,6 +563,204 @@ void FBHDiagramRenderer::Draw(
 			if (!P.LabelC.IsEmpty()) { RText(Canvas, Font, P.LabelC, X + W * 0.50f, MidY + 34.0f * S, Warm, 0.58f * S); }
 		}
 		break;
+	case EBHDiagramType::Lens:
+	{
+		// Converging-lens ray diagram: optical axis, lens symbol, focal points, object + image.
+		const float CX = X + W * 0.50f;
+		RLine(Canvas, Left, MidY, Right, MidY, AxisCol, 1.0f * S);
+		const float LensTop = Top + 8.0f * S;
+		const float LensBot = Bottom - 8.0f * S;
+		RLine(Canvas, CX, LensTop, CX, LensBot, Line, 2.0f * S);
+		RLine(Canvas, CX, LensTop, CX - 6.0f * S, LensTop + 8.0f * S, Line, 2.0f * S);
+		RLine(Canvas, CX, LensTop, CX + 6.0f * S, LensTop + 8.0f * S, Line, 2.0f * S);
+		RLine(Canvas, CX, LensBot, CX - 6.0f * S, LensBot - 8.0f * S, Line, 2.0f * S);
+		RLine(Canvas, CX, LensBot, CX + 6.0f * S, LensBot - 8.0f * S, Line, 2.0f * S);
+		const float FOff = W * 0.18f;
+		RRect(Canvas, Warm, CX - FOff - 2.0f * S, MidY - 2.0f * S, 4.0f * S, 4.0f * S);
+		RRect(Canvas, Warm, CX + FOff - 2.0f * S, MidY - 2.0f * S, 4.0f * S, 4.0f * S);
+		RText(Canvas, Font, TEXT("F"), CX - FOff - 3.0f * S, MidY + 4.0f * S, Warm, 0.54f * S);
+		RText(Canvas, Font, TEXT("F"), CX + FOff - 3.0f * S, MidY + 4.0f * S, Warm, 0.54f * S);
+		const float ObjX = CX - W * 0.34f;
+		const float ImgX = CX + FOff * 1.6f;
+		const float ObjTop = MidY - (MidY - Top) * 0.7f;
+		const float ImgBot = MidY + (Bottom - MidY) * 0.5f;
+		RArrow(Canvas, ObjX, MidY, ObjX, ObjTop, Main, 2.5f * S, 7.0f * S);
+		RArrow(Canvas, ImgX, MidY, ImgX, ImgBot, Main, 2.5f * S, 7.0f * S);
+		RLine(Canvas, ObjX, ObjTop, CX, ObjTop, Warm, 1.5f * S);
+		RLine(Canvas, CX, ObjTop, ImgX, ImgBot, Warm, 1.5f * S);
+		RLine(Canvas, ObjX, ObjTop, ImgX, ImgBot, Line, 1.0f * S);
+		RText(Canvas, Font, (Ctx.bEnhanced && !P.LabelA.IsEmpty()) ? P.LabelA : FString(TEXT("converging lens")), Left + 8.0f * S, Top + 4.0f * S, Warm, 0.70f * S);
+		break;
+	}
+	case EBHDiagramType::Transformer:
+	{
+		// Laminated core with primary (left) and secondary (right) coils; Vp/Vs = Np/Ns.
+		const float CoreL = X + W * 0.44f;
+		const float CoreR = X + W * 0.56f;
+		const float CoreTop = Top + 6.0f * S;
+		const float CoreBot = Bottom - 6.0f * S;
+		RRect(Canvas, FLinearColor(0.45f, 0.45f, 0.50f, 0.9f), CoreL, CoreTop, 3.0f * S, CoreBot - CoreTop);
+		RRect(Canvas, FLinearColor(0.45f, 0.45f, 0.50f, 0.9f), CoreR, CoreTop, 3.0f * S, CoreBot - CoreTop);
+		const int32 PrimaryLoops = 4;
+		const int32 SecondaryLoops = 6;
+		const float CoilY0 = CoreTop + 10.0f * S;
+		const float CoilY1 = CoreBot - 10.0f * S;
+		for (int32 i = 0; i < PrimaryLoops; ++i)
+		{
+			const float ly = FMath::Lerp(CoilY0, CoilY1, PrimaryLoops > 1 ? static_cast<float>(i) / (PrimaryLoops - 1) : 0.5f);
+			RCircle(Canvas, CoreL - 6.0f * S, ly, 5.0f * S, Warm, 1.5f * S, 10);
+		}
+		for (int32 i = 0; i < SecondaryLoops; ++i)
+		{
+			const float ly = FMath::Lerp(CoilY0, CoilY1, SecondaryLoops > 1 ? static_cast<float>(i) / (SecondaryLoops - 1) : 0.5f);
+			RCircle(Canvas, CoreR + 9.0f * S, ly, 5.0f * S, Line, 1.5f * S, 10);
+		}
+		RText(Canvas, Font, (Ctx.bEnhanced && !P.LabelA.IsEmpty()) ? P.LabelA : FString(TEXT("primary Np")), Left + 8.0f * S, Top + 4.0f * S, Warm, 0.62f * S);
+		RTextRight(Canvas, Font, (Ctx.bEnhanced && !P.LabelB.IsEmpty()) ? P.LabelB : FString(TEXT("secondary Ns")), Right - 6.0f * S, Top + 4.0f * S, Line, 0.62f * S);
+		RTextCentered(Canvas, Font, TEXT("Vp/Vs = Np/Ns"), X + W * 0.50f, Bottom - 14.0f * S, Main, 0.62f * S);
+		break;
+	}
+	case EBHDiagramType::MagneticField:
+	{
+		// Bar magnet (N warm / S cool) with field-line arcs N -> S above and below.
+		const float MagW = W * 0.44f;
+		const float MagH = 22.0f * S;
+		const float MagL = X + W * 0.5f - MagW * 0.5f;
+		const float MagTop = MidY - MagH * 0.5f;
+		RRect(Canvas, Warm, MagL, MagTop, MagW * 0.5f, MagH);
+		RRect(Canvas, Ctx.Good, MagL + MagW * 0.5f, MagTop, MagW * 0.5f, MagH);
+		RTextCentered(Canvas, Font, TEXT("N"), MagL + MagW * 0.25f, MidY - 5.0f * S, FLinearColor(0.05f, 0.05f, 0.06f, 1.0f), 0.70f * S);
+		RTextCentered(Canvas, Font, TEXT("S"), MagL + MagW * 0.75f, MidY - 5.0f * S, FLinearColor(0.05f, 0.05f, 0.06f, 1.0f), 0.70f * S);
+		const float NX = MagL;
+		const float SX = MagL + MagW;
+		for (int32 k = 1; k <= 2; ++k)
+		{
+			const float Bulge = (8.0f + k * 13.0f) * S;
+			FVector2D PrevU(NX, MidY);
+			FVector2D PrevL(NX, MidY);
+			for (int32 s2 = 1; s2 <= 16; ++s2)
+			{
+				const float T = static_cast<float>(s2) / 16;
+				const float PX = FMath::Lerp(NX, SX, T);
+				const float UY = MidY - FMath::Sin(T * PI) * Bulge - MagH * 0.5f;
+				const float LY = MidY + FMath::Sin(T * PI) * Bulge + MagH * 0.5f;
+				RLine(Canvas, PrevU.X, PrevU.Y, PX, UY, Line, 1.2f * S);
+				RLine(Canvas, PrevL.X, PrevL.Y, PX, LY, Line, 1.2f * S);
+				PrevU = FVector2D(PX, UY);
+				PrevL = FVector2D(PX, LY);
+			}
+		}
+		RText(Canvas, Font, (Ctx.bEnhanced && !P.LabelA.IsEmpty()) ? P.LabelA : FString(TEXT("field: N -> S")), Left + 8.0f * S, Top + 4.0f * S, Main, 0.66f * S);
+		break;
+	}
+	case EBHDiagramType::InclinedPlane:
+	{
+		// Ramp with a block: weight (down) and normal (perpendicular to slope).
+		const float AngleDeg = (Ctx.bEnhanced && P.AngleOrShape > 0.0f) ? FMath::Clamp(P.AngleOrShape, 10.0f, 55.0f) : 30.0f;
+		const float Rad = FMath::DegreesToRadians(AngleDeg);
+		const float BaseY = Bottom - 6.0f * S;
+		const float BX0 = Left + 10.0f * S;
+		const float Run = (Right - Left) * 0.80f;
+		const float Rise = FMath::Min(Run * FMath::Tan(Rad), (BaseY - Top) * 0.80f);
+		const float BX1 = BX0 + Run;
+		const float TopY = BaseY - Rise;
+		RLine(Canvas, BX0, BaseY, BX1, BaseY, AxisCol, 1.5f * S);
+		RLine(Canvas, BX1, BaseY, BX1, TopY, AxisCol, 1.5f * S);
+		RLine(Canvas, BX0, BaseY, BX1, TopY, Line, 2.5f * S);
+		const float BkX = FMath::Lerp(BX0, BX1, 0.55f);
+		const float BkY = FMath::Lerp(BaseY, TopY, 0.55f);
+		RRect(Canvas, Warm, BkX - 7.0f * S, BkY - 7.0f * S, 14.0f * S, 14.0f * S);
+		RArrow(Canvas, BkX, BkY, BkX, BkY + 22.0f * S, Main, 2.0f * S, 6.0f * S);
+		RArrow(Canvas, BkX, BkY, BkX - FMath::Sin(Rad) * 20.0f * S, BkY - FMath::Cos(Rad) * 20.0f * S, Line, 2.0f * S, 6.0f * S);
+		RText(Canvas, Font, (Ctx.bEnhanced && !P.LabelA.IsEmpty()) ? P.LabelA : FString::Printf(TEXT("ramp %d deg"), FMath::RoundToInt(AngleDeg)), Left + 8.0f * S, Top + 4.0f * S, Warm, 0.66f * S);
+		break;
+	}
+	case EBHDiagramType::PressureColumn:
+	{
+		// Liquid column: container, fill, depth h, pressure relation.
+		const float ConL = X + W * 0.30f;
+		const float ConR = X + W * 0.70f;
+		const float ConTop = Top + 8.0f * S;
+		const float ConBot = Bottom - 8.0f * S;
+		RLine(Canvas, ConL, ConTop, ConL, ConBot, AxisCol, 2.0f * S);
+		RLine(Canvas, ConR, ConTop, ConR, ConBot, AxisCol, 2.0f * S);
+		RLine(Canvas, ConL, ConBot, ConR, ConBot, AxisCol, 2.0f * S);
+		const float LiqTop = ConTop + 6.0f * S;
+		RRect(Canvas, FLinearColor(0.20f, 0.50f, 0.78f, 0.40f), ConL + 2.0f * S, LiqTop, ConR - ConL - 4.0f * S, ConBot - LiqTop);
+		RArrow(Canvas, ConL + 12.0f * S, LiqTop, ConL + 12.0f * S, ConBot, Warm, 1.5f * S, 5.0f * S);
+		RArrow(Canvas, ConL + 12.0f * S, ConBot, ConL + 12.0f * S, LiqTop, Warm, 1.5f * S, 5.0f * S);
+		RText(Canvas, Font, (Ctx.bEnhanced && !P.LabelA.IsEmpty()) ? P.LabelA : FString(TEXT("h")), ConL + 16.0f * S, (LiqTop + ConBot) * 0.5f - 6.0f * S, Warm, 0.62f * S);
+		RTextCentered(Canvas, Font, TEXT("P = rho g h"), X + W * 0.5f, ConBot - 16.0f * S, Main, 0.62f * S);
+		break;
+	}
+	case EBHDiagramType::EnergyBars:
+	{
+		// Up to four labelled bars sized by ValueA..D, e.g. before/after energy stores.
+		const float Vals[4] = {P.ValueA, P.ValueB, P.ValueC, P.ValueD};
+		const FString* Labs[4] = {&P.LabelA, &P.LabelB, &P.LabelC, &P.LabelD};
+		float MaxV = 1.0f;
+		int32 Count = 0;
+		for (int32 i = 0; i < 4; ++i)
+		{
+			if (Vals[i] > 0.0f || !Labs[i]->IsEmpty()) { Count = i + 1; }
+			MaxV = FMath::Max(MaxV, Vals[i]);
+		}
+		if (Count == 0) { Count = 2; }
+		const float BaseY = Bottom - 16.0f * S;
+		const float AreaW = Right - Left;
+		const float Slot = AreaW / Count;
+		const float BarW = Slot * 0.5f;
+		const FLinearColor Cols[4] = {Warm, Line, Ctx.Good, FLinearColor(0.70f, 0.60f, 0.90f, 1.0f)};
+		for (int32 i = 0; i < Count; ++i)
+		{
+			const float Frac = (Ctx.bEnhanced && Vals[i] > 0.0f) ? FMath::Clamp(Vals[i] / MaxV, 0.05f, 1.0f) : 0.5f;
+			const float BarH = (BaseY - Top - 8.0f * S) * Frac;
+			const float BarX = Left + Slot * i + (Slot - BarW) * 0.5f;
+			RRect(Canvas, Cols[i % 4], BarX, BaseY - BarH, BarW, BarH);
+			if (Ctx.bEnhanced && !Labs[i]->IsEmpty()) { RTextCentered(Canvas, Font, *Labs[i], BarX + BarW * 0.5f, BaseY + 2.0f * S, Main, 0.52f * S); }
+		}
+		RLine(Canvas, Left, BaseY, Right, BaseY, AxisCol, 1.5f * S);
+		RText(Canvas, Font, TEXT("energy is conserved"), Left + 8.0f * S, Top + 4.0f * S, Warm, 0.64f * S);
+		break;
+	}
+	case EBHDiagramType::ParticleModel:
+	{
+		// Solid (regular grid), liquid (loose), gas (sparse) particle arrangements.
+		const float CellW = (Right - Left) / 3.0f;
+		const float CellTop = MidY - 18.0f * S;
+		const float CellH = 36.0f * S;
+		const TCHAR* Names[3] = {TEXT("solid"), TEXT("liquid"), TEXT("gas")};
+		const float R = 3.0f * S;
+		for (int32 c = 0; c < 3; ++c)
+		{
+			const float CellX = Left + CellW * c + 4.0f * S;
+			const float CW = CellW - 8.0f * S;
+			RCornerBrackets(Canvas, CellX, CellTop, CW, CellH, FLinearColor(0.40f, 0.55f, 0.60f, 0.40f), 6.0f * S, 1.0f * S);
+			if (c == 0)
+			{
+				for (int32 gy = 0; gy < 3; ++gy)
+				{
+					for (int32 gx = 0; gx < 4; ++gx)
+					{
+						RCircle(Canvas, CellX + 8.0f * S + gx * (CW - 16.0f * S) / 3.0f, CellTop + 8.0f * S + gy * (CellH - 16.0f * S) / 2.0f, R, Line, 1.2f * S, 8);
+					}
+				}
+			}
+			else if (c == 1)
+			{
+				const float Jit[6][2] = {{0.14f, 0.22f}, {0.42f, 0.5f}, {0.7f, 0.26f}, {0.26f, 0.72f}, {0.55f, 0.8f}, {0.82f, 0.6f}};
+				for (int32 p2 = 0; p2 < 6; ++p2) { RCircle(Canvas, CellX + Jit[p2][0] * CW, CellTop + Jit[p2][1] * CellH, R, Line, 1.2f * S, 8); }
+			}
+			else
+			{
+				const float Sp[4][2] = {{0.22f, 0.26f}, {0.7f, 0.4f}, {0.4f, 0.76f}, {0.85f, 0.78f}};
+				for (int32 p2 = 0; p2 < 4; ++p2) { RCircle(Canvas, CellX + Sp[p2][0] * CW, CellTop + Sp[p2][1] * CellH, R, Line, 1.2f * S, 8); }
+			}
+			RTextCentered(Canvas, Font, Names[c], CellX + CW * 0.5f, CellTop + CellH + 2.0f * S, Main, 0.56f * S);
+		}
+		RText(Canvas, Font, TEXT("particle arrangement"), Left + 8.0f * S, Top + 4.0f * S, Warm, 0.64f * S);
+		break;
+	}
 	case EBHDiagramType::EnergyChain:
 	default:
 	{
