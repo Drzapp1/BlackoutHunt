@@ -1073,6 +1073,17 @@ struct FBHDiagramParams
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
 	float AngleOrShape = 0.0f;
 
+	// Per-type shape selector so one diagram type renders the specific case the question asks
+	// about. 0 = the historical default shape. Conventions:
+	//   IVGraph:        0 ohmic (straight), 1 filament lamp (S-curve), 2 diode (threshold)
+	//   Circuit:        0 single, 1 series-2, 2 parallel-2, 3 series-3
+	//   MotionGraph:    0 accelerating, 1 constant velocity, 2 decelerating, 3 accel-then-constant
+	//   VelocityGraph:  0 accelerating, 1 constant, 2 decelerating, 3 accel-then-constant
+	//   ForceArrows:    0 horizontal pair, 1 adds a vertical weight/normal pair (free body)
+	//   EMSpectrum:     0 none, 1..7 highlights band radio..gamma
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	int32 ShapeVariant = 0;
+
 	// Optional illustrated diagram texture (object path). Empty => procedural rendering.
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")
 	FString ImageSoftPath;

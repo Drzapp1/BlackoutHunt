@@ -229,35 +229,120 @@ void FBHDiagramRenderer::Draw(
 	switch (Type)
 	{
 	case EBHDiagramType::MotionGraph:
+	{
 		RLine(Canvas, Left, Bottom, Right, Bottom, AxisCol, 1.5f * S);
 		RLine(Canvas, Left, Bottom, Left, Top, AxisCol, 1.5f * S);
-		RLine(Canvas, Left, Bottom - 8.0f * S, X + W * 0.42f, Y + H * 0.38f, Line, 3.0f * S);
-		RLine(Canvas, X + W * 0.42f, Y + H * 0.38f, Right, Y + H * 0.26f, Line, 3.0f * S);
+		// Displacement-time shape: 0 generic increasing line, 1 constant velocity (straight),
+		// 2 accelerating (concave up), 3 decelerating (concave down), 4 accel-then-constant.
+		const int32 Variant = Ctx.bEnhanced ? P.ShapeVariant : 0;
+		if (Variant == 0)
+		{
+			RLine(Canvas, Left, Bottom - 8.0f * S, X + W * 0.42f, Y + H * 0.38f, Line, 3.0f * S);
+			RLine(Canvas, X + W * 0.42f, Y + H * 0.38f, Right, Y + H * 0.26f, Line, 3.0f * S);
+		}
+		else
+		{
+			const int32 Steps = 40;
+			const float GraphW = Right - Left;
+			const float GraphH = (Bottom - Top) * 0.90f;
+			FVector2D Prev(Left, Bottom);
+			for (int32 Step = 1; Step <= Steps; ++Step)
+			{
+				const float T = static_cast<float>(Step) / Steps;
+				float F;
+				switch (Variant)
+				{
+				case 2: F = T * T; break;
+				case 3: F = 2.0f * T - T * T; break;
+				case 4: F = T < 0.6f ? FMath::Square(T / 0.6f) * 0.5f : 0.5f + (T - 0.6f) / 0.4f * 0.5f; break;
+				default: F = T; break;
+				}
+				const float PX = Left + GraphW * T;
+				const float PY = Bottom - GraphH * FMath::Clamp(F, 0.0f, 1.0f);
+				RLine(Canvas, Prev.X, Prev.Y, PX, PY, Line, 3.0f * S);
+				Prev = FVector2D(PX, PY);
+			}
+		}
 		RText(Canvas, Font, TEXT("gradient = velocity"), Left + 8.0f * S, Top + 4.0f * S, Warm, 0.72f * S);
 		if (Ctx.bEnhanced && !P.XAxis.IsEmpty()) { RTextRight(Canvas, Font, P.XAxis, Right - 6.0f * S, Bottom - 14.0f * S, Ctx.TextDim, 0.60f * S); }
 		if (Ctx.bEnhanced && !P.YAxis.IsEmpty()) { RText(Canvas, Font, P.YAxis, Left + 4.0f * S, Top - 4.0f * S, Ctx.TextDim, 0.60f * S); }
 		break;
+	}
 	case EBHDiagramType::VelocityGraph:
+	{
 		RLine(Canvas, Left, Bottom, Right, Bottom, AxisCol, 1.5f * S);
 		RLine(Canvas, Left, Bottom, Left, Top, AxisCol, 1.5f * S);
-		RRect(Canvas, FLinearColor(0.30f, 0.60f, 0.78f, 0.24f), Left + 10.0f * S, MidY, W * 0.38f, Bottom - MidY);
-		RLine(Canvas, Left + 10.0f * S, MidY, X + W * 0.52f, MidY, Line, 3.0f * S);
-		RLine(Canvas, X + W * 0.52f, MidY, Right, Top + 8.0f * S, Line, 3.0f * S);
+		// Velocity-time shape: 0 generic (flat then rising), 1 constant, 2 accelerating,
+		// 3 decelerating, 4 accel-then-constant. The shaded area under the line shows distance.
+		const int32 Variant = Ctx.bEnhanced ? P.ShapeVariant : 0;
+		if (Variant == 0)
+		{
+			RRect(Canvas, FLinearColor(0.30f, 0.60f, 0.78f, 0.24f), Left + 10.0f * S, MidY, W * 0.38f, Bottom - MidY);
+			RLine(Canvas, Left + 10.0f * S, MidY, X + W * 0.52f, MidY, Line, 3.0f * S);
+			RLine(Canvas, X + W * 0.52f, MidY, Right, Top + 8.0f * S, Line, 3.0f * S);
+		}
+		else
+		{
+			const int32 Steps = 40;
+			const float GraphW = Right - Left;
+			const float GraphH = (Bottom - Top) * 0.86f;
+			const float ColW = GraphW / Steps + 1.0f;
+			FVector2D Prev(Left, Bottom);
+			for (int32 Step = 0; Step <= Steps; ++Step)
+			{
+				const float T = static_cast<float>(Step) / Steps;
+				float VF;
+				switch (Variant)
+				{
+				case 1: VF = 0.60f; break;
+				case 3: VF = 0.90f - 0.70f * T; break;
+				case 4: VF = T < 0.5f ? T * 1.2f : 0.60f; break;
+				default: VF = T; break;
+				}
+				VF = FMath::Clamp(VF, 0.0f, 1.0f);
+				const float PX = Left + GraphW * T;
+				const float PY = Bottom - GraphH * VF;
+				RRect(Canvas, FLinearColor(0.30f, 0.60f, 0.78f, 0.22f), PX, PY, ColW, Bottom - PY);
+				if (Step > 0) { RLine(Canvas, Prev.X, Prev.Y, PX, PY, Line, 3.0f * S); }
+				Prev = FVector2D(PX, PY);
+			}
+		}
 		RText(Canvas, Font, TEXT("area = distance"), Left + 18.0f * S, Bottom - 34.0f * S, Warm, 0.72f * S);
 		if (Ctx.bEnhanced && !P.XAxis.IsEmpty()) { RTextRight(Canvas, Font, P.XAxis, Right - 6.0f * S, Bottom - 14.0f * S, Ctx.TextDim, 0.60f * S); }
 		if (Ctx.bEnhanced && !P.YAxis.IsEmpty()) { RText(Canvas, Font, P.YAxis, Left + 4.0f * S, Top - 4.0f * S, Ctx.TextDim, 0.60f * S); }
 		if (bData && !P.LabelA.IsEmpty()) { RText(Canvas, Font, P.LabelA, Left + 18.0f * S, Top + 6.0f * S, Main, 0.60f * S); }
 		break;
+	}
 	case EBHDiagramType::ForceArrows:
-		RArrow(Canvas, X + W * 0.50f, MidY, X + W * 0.26f, MidY, Warm, 4.0f * S, 9.0f * S);
-		RArrow(Canvas, X + W * 0.50f, MidY, X + W * 0.74f, MidY, Line, 4.0f * S, 9.0f * S);
-		RText(Canvas, Font, TEXT("resultant force"), X + W * 0.39f, Top + 8.0f * S, Main, 0.78f * S);
+	{
+		// Arrow lengths scale with the labelled force magnitudes (ValueA left / ValueB right) so the
+		// picture is quantitative; falls back to fixed lengths when no magnitudes are authored.
+		// ShapeVariant 1 adds a vertical weight/normal pair for free-body questions.
+		const int32 Variant = Ctx.bEnhanced ? P.ShapeVariant : 0;
+		const float CX = X + W * 0.50f;
+		const float MagA = (Ctx.bEnhanced && P.ValueA > 0.0f) ? P.ValueA : 0.0f;
+		const float MagB = (Ctx.bEnhanced && P.ValueB > 0.0f) ? P.ValueB : 0.0f;
+		const float MaxMag = FMath::Max3(MagA, MagB, 1.0f);
+		const float MaxLen = W * 0.30f;
+		const float LenA = MagA > 0.0f ? FMath::Clamp(MagA / MaxMag, 0.30f, 1.0f) * MaxLen : W * 0.24f;
+		const float LenB = MagB > 0.0f ? FMath::Clamp(MagB / MaxMag, 0.30f, 1.0f) * MaxLen : W * 0.24f;
+		RArrow(Canvas, CX, MidY, CX - LenA, MidY, Warm, 4.0f * S, 9.0f * S);
+		RArrow(Canvas, CX, MidY, CX + LenB, MidY, Line, 4.0f * S, 9.0f * S);
+		if (Variant == 1)
+		{
+			RArrow(Canvas, CX, MidY, CX, MidY + (Bottom - MidY) * 0.82f, Warm, 3.0f * S, 8.0f * S);
+			RArrow(Canvas, CX, MidY, CX, Top + 8.0f * S, Line, 3.0f * S, 8.0f * S);
+		}
+		RText(Canvas, Font, Variant == 1 ? TEXT("free-body forces") : TEXT("resultant force"), X + W * 0.39f, Top + 8.0f * S, Main, 0.78f * S);
 		if (bData)
 		{
 			if (!P.LabelA.IsEmpty()) { RText(Canvas, Font, P.LabelA, X + W * 0.16f, MidY - 18.0f * S, Warm, 0.66f * S); }
 			if (!P.LabelB.IsEmpty()) { RText(Canvas, Font, P.LabelB, X + W * 0.66f, MidY - 18.0f * S, Line, 0.66f * S); }
+			if (Variant == 1 && !P.LabelC.IsEmpty()) { RText(Canvas, Font, P.LabelC, CX + 8.0f * S, Bottom - 14.0f * S, Warm, 0.62f * S); }
+			if (Variant == 1 && !P.LabelD.IsEmpty()) { RText(Canvas, Font, P.LabelD, CX + 8.0f * S, Top + 16.0f * S, Line, 0.62f * S); }
 		}
 		break;
+	}
 	case EBHDiagramType::SpringGraph:
 		RLine(Canvas, Left, Bottom, Right, Bottom, AxisCol, 1.5f * S);
 		RLine(Canvas, Left, Bottom, Left, Top, AxisCol, 1.5f * S);
@@ -281,36 +366,96 @@ void FBHDiagramRenderer::Draw(
 		}
 		break;
 	case EBHDiagramType::Circuit:
-		RLine(Canvas, Left, Top + 16.0f * S, Right, Top + 16.0f * S, Line, 2.0f * S);
-		RLine(Canvas, Right, Top + 16.0f * S, Right, Bottom - 10.0f * S, Line, 2.0f * S);
-		RLine(Canvas, Right, Bottom - 10.0f * S, Left, Bottom - 10.0f * S, Line, 2.0f * S);
-		RLine(Canvas, Left, Bottom - 10.0f * S, Left, Top + 16.0f * S, Line, 2.0f * S);
-		RRect(Canvas, Warm, Left + W * 0.36f, Top + 8.0f * S, 34.0f * S, 16.0f * S);
-		RText(Canvas, Font, TEXT("A series | V parallel"), Left + 18.0f * S, MidY - 8.0f * S, Main, 0.74f * S);
-		if (bData)
+	{
+		// ShapeVariant: 0 single resistor, 1 series-2, 2 parallel-2, 3 series-3.
+		const int32 Variant = Ctx.bEnhanced ? P.ShapeVariant : 0;
+		const float RailT = Top + 16.0f * S;
+		const float RailB = Bottom - 10.0f * S;
+		const float CX = X + W * 0.50f;
+		const float BoxW = 30.0f * S;
+		const float BoxH = 16.0f * S;
+		// Outer loop.
+		RLine(Canvas, Left, RailT, Right, RailT, Line, 2.0f * S);
+		RLine(Canvas, Right, RailT, Right, RailB, Line, 2.0f * S);
+		RLine(Canvas, Right, RailB, Left, RailB, Line, 2.0f * S);
+		RLine(Canvas, Left, RailB, Left, RailT, Line, 2.0f * S);
+		// Cell on the bottom rail: long thin plate (+) and short thick plate (-).
+		RRect(Canvas, Line, CX - 6.0f * S, RailB - 9.0f * S, 2.0f * S, 18.0f * S);
+		RRect(Canvas, Line, CX + 2.0f * S, RailB - 5.0f * S, 4.0f * S, 10.0f * S);
+		if (Variant == 2)
 		{
-			if (!P.LabelA.IsEmpty()) { RText(Canvas, Font, P.LabelA, Left + W * 0.30f, Top + 26.0f * S, Warm, 0.62f * S); }
-			if (!P.LabelC.IsEmpty()) { RTextRight(Canvas, Font, P.LabelC, Right - 8.0f * S, Top + 26.0f * S, Warm, 0.62f * S); }
-			if (!P.LabelB.IsEmpty()) { RText(Canvas, Font, P.LabelB, Left + 18.0f * S, Bottom - 8.0f * S, Line, 0.62f * S); }
+			const float B1 = Y + H * 0.40f;
+			const float B2 = Y + H * 0.66f;
+			RLine(Canvas, Left, B1, Right, B1, Line, 2.0f * S);
+			RLine(Canvas, Left, B2, Right, B2, Line, 2.0f * S);
+			RRect(Canvas, Warm, CX - BoxW * 0.5f, B1 - BoxH * 0.5f, BoxW, BoxH);
+			RRect(Canvas, Warm, CX - BoxW * 0.5f, B2 - BoxH * 0.5f, BoxW, BoxH);
+			if (bData)
+			{
+				if (!P.LabelA.IsEmpty()) { RText(Canvas, Font, P.LabelA, CX + BoxW * 0.6f, B1 - 6.0f * S, Warm, 0.60f * S); }
+				if (!P.LabelC.IsEmpty()) { RText(Canvas, Font, P.LabelC, CX + BoxW * 0.6f, B2 - 6.0f * S, Warm, 0.60f * S); }
+			}
 		}
+		else
+		{
+			const int32 NumR = Variant == 1 ? 2 : (Variant == 3 ? 3 : 1);
+			for (int32 i = 0; i < NumR; ++i)
+			{
+				const float Frac = static_cast<float>(i + 1) / static_cast<float>(NumR + 1);
+				RRect(Canvas, Warm, Left + (Right - Left) * Frac - BoxW * 0.5f, RailT - BoxH * 0.5f, BoxW, BoxH);
+			}
+			if (bData)
+			{
+				if (!P.LabelA.IsEmpty()) { RText(Canvas, Font, P.LabelA, Left + (Right - Left) * (1.0f / (NumR + 1)) - 8.0f * S, RailT + 12.0f * S, Warm, 0.60f * S); }
+				if (NumR >= 2 && !P.LabelC.IsEmpty()) { RText(Canvas, Font, P.LabelC, Left + (Right - Left) * (2.0f / (NumR + 1)) - 8.0f * S, RailT + 12.0f * S, Warm, 0.60f * S); }
+			}
+		}
+		const FString CircuitLabel = (Variant == 2) ? FString(TEXT("parallel: same p.d.")) : (Variant >= 1 ? FString(TEXT("series: same current")) : FString(TEXT("A series | V parallel")));
+		RTextCentered(Canvas, Font, CircuitLabel, CX, RailB - 24.0f * S, Main, 0.66f * S);
+		if (bData && !P.LabelB.IsEmpty()) { RText(Canvas, Font, P.LabelB, Left + 14.0f * S, RailB - 24.0f * S, Line, 0.60f * S); }
 		break;
+	}
 	case EBHDiagramType::IVGraph:
+	{
 		RLine(Canvas, Left, Bottom, Right, Bottom, AxisCol, 1.5f * S);
 		RLine(Canvas, Left, Bottom, Left, Top, AxisCol, 1.5f * S);
-		RLine(Canvas, Left, Bottom, Right - 24.0f * S, Top + 12.0f * S, Line, 3.0f * S);
+		// Curve shape per ShapeVariant: 0 ohmic (straight through origin), 1 filament lamp
+		// (concave-down as the hot filament's resistance climbs), 2 diode (almost no current until
+		// a threshold p.d., then a steep rise).
+		const int32 Variant = Ctx.bEnhanced ? P.ShapeVariant : 0;
+		const int32 Steps = 40;
+		const float GraphW = Right - Left;
+		const float GraphH = (Bottom - Top) * 0.92f;
+		FVector2D Prev(Left, Bottom);
+		for (int32 Step = 1; Step <= Steps; ++Step)
+		{
+			const float T = static_cast<float>(Step) / Steps;
+			float IFrac;
+			switch (Variant)
+			{
+			case 1: IFrac = FMath::Pow(T, 0.55f); break;
+			case 2: IFrac = T < 0.45f ? 0.02f : (T - 0.45f) / 0.55f; break;
+			default: IFrac = T; break;
+			}
+			const float PX = Left + GraphW * T;
+			const float PY = Bottom - GraphH * FMath::Clamp(IFrac, 0.0f, 1.0f);
+			RLine(Canvas, Prev.X, Prev.Y, PX, PY, Line, 3.0f * S);
+			Prev = FVector2D(PX, PY);
+		}
 		if (Ctx.bEnhanced && P.ValueC > 0.0f && P.ValueD > 0.0f)
 		{
 			const float PtX = Left + (Right - Left) * FMath::Clamp(P.ValueA / P.ValueC, 0.0f, 1.0f);
 			const float PtY = Bottom - (Bottom - Top) * FMath::Clamp(P.ValueB / P.ValueD, 0.0f, 1.0f);
 			RRect(Canvas, Warm, PtX - 3.0f * S, PtY - 3.0f * S, 6.0f * S, 6.0f * S);
 		}
-		{
-			const FString IVLabel = (Ctx.bEnhanced && !P.LabelA.IsEmpty()) ? P.LabelA : FString(TEXT("straight: ohmic"));
-			RText(Canvas, Font, IVLabel, Left + 16.0f * S, Top + 8.0f * S, Warm, 0.74f * S);
-		}
+		const FString IVLabel = (Ctx.bEnhanced && !P.LabelA.IsEmpty())
+			? P.LabelA
+			: (Variant == 1 ? FString(TEXT("filament: R rises")) : (Variant == 2 ? FString(TEXT("diode: one-way")) : FString(TEXT("straight: ohmic"))));
+		RText(Canvas, Font, IVLabel, Left + 16.0f * S, Top + 8.0f * S, Warm, 0.74f * S);
 		if (Ctx.bEnhanced && !P.XAxis.IsEmpty()) { RTextRight(Canvas, Font, P.XAxis, Right - 6.0f * S, Bottom - 14.0f * S, Ctx.TextDim, 0.60f * S); }
 		if (Ctx.bEnhanced && !P.YAxis.IsEmpty()) { RText(Canvas, Font, P.YAxis, Left + 4.0f * S, Top - 4.0f * S, Ctx.TextDim, 0.60f * S); }
 		break;
+	}
 	case EBHDiagramType::StaticCharge:
 		RText(Canvas, Font, TEXT("+ + +"), Left + 24.0f * S, MidY - 8.0f * S, Warm, 1.0f * S);
 		RText(Canvas, Font, TEXT("- - -"), Right - 92.0f * S, MidY - 8.0f * S, Line, 1.0f * S);
@@ -355,6 +500,12 @@ void FBHDiagramRenderer::Draw(
 			const float SX = Left + SegmentW * Index;
 			RRect(Canvas, BandCols[Index], SX, MidY - 16.0f * S, SegmentW - 3.0f * S, 32.0f * S);
 			RTextCentered(Canvas, Font, Labels[Index], SX + (SegmentW - 3.0f * S) * 0.5f, MidY - 5.0f * S, FLinearColor(0.05f, 0.06f, 0.07f, 1.0f), 0.72f * S);
+		}
+		// ShapeVariant 1..7 brackets the band the question is about (radio..gamma).
+		if (Ctx.bEnhanced && P.ShapeVariant >= 1 && P.ShapeVariant <= 7)
+		{
+			const float HX = Left + SegmentW * (P.ShapeVariant - 1);
+			RCornerBrackets(Canvas, HX - 1.0f * S, MidY - 20.0f * S, SegmentW - 1.0f * S, 40.0f * S, Ctx.TextMain, 7.0f * S, 2.0f * S);
 		}
 		RText(Canvas, Font, TEXT("long wavelength -> high frequency"), Left + 10.0f * S, Top + 4.0f * S, Warm, 0.68f * S);
 		break;

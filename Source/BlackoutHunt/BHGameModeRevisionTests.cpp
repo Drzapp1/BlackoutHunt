@@ -187,7 +187,8 @@ bool FBHRevisionQuestionBankJsonTest::RunTest(const FString& Parameters)
 				&& FMath::IsNearlyEqual(A.Diagram.ValueB, B.Diagram.ValueB, 0.01f)
 				&& FMath::IsNearlyEqual(A.Diagram.ValueC, B.Diagram.ValueC, 0.01f)
 				&& FMath::IsNearlyEqual(A.Diagram.ValueD, B.Diagram.ValueD, 0.01f)
-				&& FMath::IsNearlyEqual(A.Diagram.AngleOrShape, B.Diagram.AngleOrShape, 0.01f);
+				&& FMath::IsNearlyEqual(A.Diagram.AngleOrShape, B.Diagram.AngleOrShape, 0.01f)
+				&& A.Diagram.ShapeVariant == B.Diagram.ShapeVariant;
 			if (!bAllFieldsMatch)
 			{
 				AddError(FString::Printf(TEXT("Round-trip mismatch at question index %d (id '%s')."), Index, *A.Id));

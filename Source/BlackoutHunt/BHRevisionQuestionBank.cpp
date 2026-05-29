@@ -34,6 +34,7 @@ struct FRevisionDiagram
 	const TCHAR* XAxis = nullptr;
 	const TCHAR* YAxis = nullptr;
 	float AngleOrShape = 0.0f;
+	int32 ShapeVariant = 0;
 	const TCHAR* ImageSoftPath = nullptr;
 };
 
@@ -158,6 +159,7 @@ void AddSpecs(TArray<FBHRevisionQuestion>& Bank, EBHPhysicsTopic Topic, const TC
 		Question.Diagram.XAxis = Spec.Diagram.XAxis ? FString(Spec.Diagram.XAxis) : FString();
 		Question.Diagram.YAxis = Spec.Diagram.YAxis ? FString(Spec.Diagram.YAxis) : FString();
 		Question.Diagram.AngleOrShape = Spec.Diagram.AngleOrShape;
+		Question.Diagram.ShapeVariant = Spec.Diagram.ShapeVariant;
 		Question.Diagram.ImageSoftPath = Spec.Diagram.ImageSoftPath ? FString(Spec.Diagram.ImageSoftPath) : FString();
 		Question.Hint = Spec.Hint;
 		Question.CorrectionPrompt = Spec.CorrectionPrompt;
@@ -1154,6 +1156,7 @@ FString FBHRevisionQuestionBank::SerializeQuestionsToJson(const TArray<FBHRevisi
 		Diagram->SetStringField(TEXT("xAxis"), Question.Diagram.XAxis);
 		Diagram->SetStringField(TEXT("yAxis"), Question.Diagram.YAxis);
 		Diagram->SetNumberField(TEXT("angleOrShape"), Question.Diagram.AngleOrShape);
+		Diagram->SetNumberField(TEXT("shapeVariant"), Question.Diagram.ShapeVariant);
 		Diagram->SetStringField(TEXT("imageSoftPath"), Question.Diagram.ImageSoftPath);
 		Obj->SetObjectField(TEXT("diagram"), Diagram);
 
@@ -1256,6 +1259,7 @@ bool FBHRevisionQuestionBank::ParseQuestionsFromJson(const FString& JsonText, TA
 			Question.Diagram.XAxis = JsonStr(Diagram, TEXT("xAxis"));
 			Question.Diagram.YAxis = JsonStr(Diagram, TEXT("yAxis"));
 			Question.Diagram.AngleOrShape = static_cast<float>(JsonNum(Diagram, TEXT("angleOrShape"), 0.0));
+			Question.Diagram.ShapeVariant = static_cast<int32>(JsonNum(Diagram, TEXT("shapeVariant"), 0.0));
 			Question.Diagram.ImageSoftPath = JsonStr(Diagram, TEXT("imageSoftPath"));
 		}
 
