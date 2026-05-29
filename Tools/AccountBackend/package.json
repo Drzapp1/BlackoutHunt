@@ -1,0 +1,14 @@
+{
+  "name": "blackouthunt-feedback",
+  "version": "1.0.0",
+  "description": "Blackout Hunt feedback + telemetry ingest backend with owner dashboard and direct email backup. Dependency-free Node.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node test-feedback.mjs"
+  }
+}

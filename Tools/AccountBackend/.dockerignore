@@ -1,0 +1,12 @@
+# Never ship secrets, local runtime data, or host-only tooling into the image/build context.
+.env
+*.env
+!*.env.example
+data/
+*.log
+node_modules/
+Caddyfile
+Start-FeedbackStack.ps1
+Configure-GoogleOAuth.ps1
+DEPLOY.md
+README.md
