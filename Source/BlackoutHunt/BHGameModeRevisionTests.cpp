@@ -47,6 +47,9 @@ bool FBHGameModeRevisionTuningTest::RunTest(const FString& Parameters)
 	FString BankSummary;
 	TestTrue(TEXT("Revision question bank remains valid for classroom reports and adaptive selection."),
 		FBHRevisionQuestionBank::Validate(BankSummary));
+	FString BuiltInSummary;
+	TestTrue(TEXT("Built-in compiled bank keeps its exact shipped distribution (368/92/28-36-28)."),
+		FBHRevisionQuestionBank::ValidateBuiltInDistribution(BuiltInSummary));
 	for (int32 TopicIndex = 0; TopicIndex < 4; ++TopicIndex)
 	{
 		for (int32 DifficultyIndex = 0; DifficultyIndex < 3; ++DifficultyIndex)
@@ -124,6 +127,105 @@ bool FBHRevisionReviewQueueTest::RunTest(const FString& Parameters)
 	}
 	TestTrue(TEXT("Review queue stays bounded across many misses."), PlayerState->RevisionReviewQueue.Num() <= 8);
 	TestEqual(TEXT("Capped queue keeps the most recent miss reachable."), PlayerState->RevisionReviewQueue.Last(), FString(TEXT("q_19")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHRevisionQuestionBankJsonTest,
+	"BlackoutHunt.GameMode.RevisionQuestionBankJson",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHRevisionQuestionBankJsonTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	// "Migrate all" fidelity: serializing the built-in bank to JSON and parsing it back must
+	// reproduce every question field exactly, so a teacher can export, edit, and reload safely.
+	const TArray<FBHRevisionQuestion>& BuiltIn = FBHRevisionQuestionBank::GetBuiltInQuestions();
+	const FString Json = FBHRevisionQuestionBank::SerializeQuestionsToJson(BuiltIn);
+	TestTrue(TEXT("Serialized question bank JSON is non-empty."), Json.Len() > 0);
+
+	TArray<FBHRevisionQuestion> RoundTripped;
+	FString ParseError;
+	const bool bParsed = FBHRevisionQuestionBank::ParseQuestionsFromJson(Json, RoundTripped, ParseError);
+	TestTrue(FString::Printf(TEXT("Built-in bank JSON parses back (%s)."), *ParseError), bParsed);
+	TestEqual(TEXT("Round-trip preserves the question count."), RoundTripped.Num(), BuiltIn.Num());
+
+	if (bParsed && RoundTripped.Num() == BuiltIn.Num())
+	{
+		bool bAllFieldsMatch = true;
+		for (int32 Index = 0; Index < BuiltIn.Num(); ++Index)
+		{
+			const FBHRevisionQuestion& A = BuiltIn[Index];
+			const FBHRevisionQuestion& B = RoundTripped[Index];
+			bAllFieldsMatch = bAllFieldsMatch
+				&& A.Id == B.Id
+				&& A.Topic == B.Topic
+				&& A.TopicName == B.TopicName
+				&& A.Subtopic == B.Subtopic
+				&& A.Difficulty == B.Difficulty
+				&& A.Type == B.Type
+				&& A.DiagramType == B.DiagramType
+				&& A.Prompt == B.Prompt
+				&& A.Answer.Choices == B.Answer.Choices
+				&& A.Answer.CorrectChoiceIndex == B.Answer.CorrectChoiceIndex
+				&& A.Answer.Formula == B.Answer.Formula
+				&& FMath::IsNearlyEqual(A.Answer.NumericAnswer, B.Answer.NumericAnswer, 0.01f)
+				&& FMath::IsNearlyEqual(A.Answer.NumericTolerance, B.Answer.NumericTolerance, 0.01f)
+				&& A.Hint == B.Hint
+				&& A.CorrectionPrompt == B.CorrectionPrompt
+				&& A.Explanation == B.Explanation
+				&& FMath::IsNearlyEqual(A.MasteryWeight, B.MasteryWeight, 0.01f)
+				&& A.Diagram.LabelA == B.Diagram.LabelA
+				&& A.Diagram.LabelB == B.Diagram.LabelB
+				&& A.Diagram.LabelC == B.Diagram.LabelC
+				&& A.Diagram.LabelD == B.Diagram.LabelD
+				&& A.Diagram.XAxis == B.Diagram.XAxis
+				&& A.Diagram.YAxis == B.Diagram.YAxis
+				&& A.Diagram.ImageSoftPath == B.Diagram.ImageSoftPath
+				&& FMath::IsNearlyEqual(A.Diagram.ValueA, B.Diagram.ValueA, 0.01f)
+				&& FMath::IsNearlyEqual(A.Diagram.ValueB, B.Diagram.ValueB, 0.01f)
+				&& FMath::IsNearlyEqual(A.Diagram.ValueC, B.Diagram.ValueC, 0.01f)
+				&& FMath::IsNearlyEqual(A.Diagram.ValueD, B.Diagram.ValueD, 0.01f)
+				&& FMath::IsNearlyEqual(A.Diagram.AngleOrShape, B.Diagram.AngleOrShape, 0.01f);
+			if (!bAllFieldsMatch)
+			{
+				AddError(FString::Printf(TEXT("Round-trip mismatch at question index %d (id '%s')."), Index, *A.Id));
+				break;
+			}
+		}
+		TestTrue(TEXT("Every built-in question round-trips through JSON with all fields intact."), bAllFieldsMatch);
+	}
+
+	// The relaxed validator accepts well-formed teacher content of any size, provided every
+	// physics topic is represented and each question is structurally sound.
+	TArray<FBHRevisionQuestion> SmallBank;
+	for (int32 TopicIndex = 0; TopicIndex < 4; ++TopicIndex)
+	{
+		FBHRevisionQuestion Q;
+		Q.Id = FString::Printf(TEXT("custom_%d"), TopicIndex);
+		Q.Topic = static_cast<EBHPhysicsTopic>(TopicIndex);
+		Q.Prompt = TEXT("Custom prompt?");
+		Q.Hint = TEXT("Custom hint.");
+		Q.Explanation = TEXT("Custom explanation.");
+		Q.Answer.Choices = {TEXT("A"), TEXT("B"), TEXT("C"), TEXT("D")};
+		Q.Answer.CorrectChoiceIndex = 1;
+		SmallBank.Add(Q);
+	}
+	FString CustomJson = FBHRevisionQuestionBank::SerializeQuestionsToJson(SmallBank);
+	TArray<FBHRevisionQuestion> CustomParsed;
+	FString CustomError;
+	TestTrue(TEXT("A small hand-built bank serializes and parses."),
+		FBHRevisionQuestionBank::ParseQuestionsFromJson(CustomJson, CustomParsed, CustomError));
+	TestEqual(TEXT("Small custom bank preserves its four questions."), CustomParsed.Num(), 4);
+
+	// Malformed content is rejected rather than silently accepted.
+	TArray<FBHRevisionQuestion> Garbage;
+	FString GarbageError;
+	TestFalse(TEXT("Non-JSON content is rejected."),
+		FBHRevisionQuestionBank::ParseQuestionsFromJson(TEXT("not json at all"), Garbage, GarbageError));
+	TestFalse(TEXT("JSON without a questions array is rejected."),
+		FBHRevisionQuestionBank::ParseQuestionsFromJson(TEXT("{\"version\":1}"), Garbage, GarbageError));
 
 	return true;
 }

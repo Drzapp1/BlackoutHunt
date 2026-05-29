@@ -110,16 +110,14 @@ New model (single writer, no new replicated fields):
 - A new automation test serializes the built-in bank → JSON string → parses back and asserts
   every field + the count match, proving "migrate all" fidelity without hand-transcribing.
 
-### Pillar 5 implementation status & drop-in recipe (DEFERRED — bank file contended)
+### Pillar 5 implementation status
 
-Pillars 1–4 (the core anti-"messing-around" work) shipped in commit `a52f76a`. Pillar 5 is the
-only deferred item. It is deliberately **not yet applied** because `BHRevisionQuestionBank.cpp`
-is under heavy concurrent edit by another agent (the bank has grown to **368 questions**, each
-`FBHRevisionQuestion`/`FRevisionSpec` gained a `Diagram` (`FBHDiagramParams`) field, and
-`Validate()` was rewritten to 368 / 92-per-topic / 28-36-28 / types `{80,40,56,48,80,32,32}`).
-Pillar 5's two shared edits (the `BuildQuestionBank` hook and the `Validate` relaxation) land
-inside functions that agent is actively rewriting, so applying it now would clobber their work
-and risk the shared build. Apply the steps below once the bank file is committed and stable.
+**Implemented** once the other agent's bank rewrite landed (368 questions, `Diagram` field).
+`GetQuestions()` now prefers an editable JSON override and falls back to the compiled bank;
+`Validate()` is structural; `ValidateBuiltInDistribution()` keeps the strict built-in guard; the
+`bh.ExportQuestionBank` console command writes the full editable file; and a round-trip fidelity
+test (`BlackoutHunt.GameMode.RevisionQuestionBankJson`) proves the JSON path reproduces every
+field of the built-in bank. The recipe below documents the shape that was applied.
 
 1. **Serializer/parser** (best as a new file `BHRevisionQuestionBankJson.{h,cpp}` to minimise
    future collisions — the BlackoutHunt module auto-compiles new .cpp and already links Json via

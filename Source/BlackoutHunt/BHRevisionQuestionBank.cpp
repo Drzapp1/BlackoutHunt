@@ -1,6 +1,18 @@
 #include "BHRevisionQuestionBank.h"
 
 #include "Containers/Set.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
+#include "HAL/FileManager.h"
+#include "HAL/IConsoleManager.h"
+#include "Misc/DateTime.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
+#include "UObject/Class.h"
+#include "UObject/UnrealType.h"
 
 #include <initializer_list>
 
@@ -731,7 +743,7 @@ void BuildEnergyExtension(TArray<FBHRevisionQuestion>& Bank)
 	AddSpecs(Bank, EBHPhysicsTopic::Energy, TEXT("energy_ext"), TEXT("Energy"), EBHQuestionType::Ordering, Order, UE_ARRAY_COUNT(Order));
 }
 
-TArray<FBHRevisionQuestion> BuildQuestionBank()
+TArray<FBHRevisionQuestion> BuildBuiltInQuestionBank()
 {
 	TArray<FBHRevisionQuestion> Bank;
 	Bank.Reserve(368);
@@ -760,17 +772,133 @@ int32 TypeIndex(EBHQuestionType Type)
 {
 	return FMath::Clamp(static_cast<int32>(Type), 0, 6);
 }
+
+// --- JSON support (Pillar 5: editable question content) ---------------------------------------
+
+// Enums round-trip as their reflected names (e.g. "ForcesAndMotion", "MultipleChoice") so the
+// JSON stays readable and stable across enum reorders.
+template <typename TEnum>
+FString EnumToKey(TEnum Value)
+{
+	if (const UEnum* EnumPtr = StaticEnum<TEnum>())
+	{
+		return EnumPtr->GetNameStringByValue(static_cast<int64>(Value));
+	}
+	return FString::FromInt(static_cast<int64>(Value));
+}
+
+template <typename TEnum>
+TEnum KeyToEnum(const FString& Key, TEnum Default)
+{
+	if (const UEnum* EnumPtr = StaticEnum<TEnum>())
+	{
+		const int64 Value = EnumPtr->GetValueByNameString(Key);
+		if (Value != INDEX_NONE)
+		{
+			return static_cast<TEnum>(Value);
+		}
+	}
+	return Default;
+}
+
+FString JsonStr(const TSharedPtr<FJsonObject>& Obj, const TCHAR* Field, const FString& Default = FString())
+{
+	FString Value;
+	return (Obj.IsValid() && Obj->TryGetStringField(Field, Value)) ? Value : Default;
+}
+
+double JsonNum(const TSharedPtr<FJsonObject>& Obj, const TCHAR* Field, double Default = 0.0)
+{
+	double Value = Default;
+	return (Obj.IsValid() && Obj->TryGetNumberField(Field, Value)) ? Value : Default;
+}
+
+int32 JsonInt(const TSharedPtr<FJsonObject>& Obj, const TCHAR* Field, int32 Default = 0)
+{
+	return Obj.IsValid() ? static_cast<int32>(FMath::RoundToInt(JsonNum(Obj, Field, Default))) : Default;
+}
+
+// Structural validation shared by the active-bank Validate() and the override loader: well-formed
+// questions, unique ids, and every physics topic represented (so each station type can pull one).
+bool ValidateQuestionSet(const TArray<FBHRevisionQuestion>& Bank, FString& OutSummary)
+{
+	int32 TopicCounts[4] = {0, 0, 0, 0};
+	TSet<FString> Ids;
+	bool bValid = Bank.Num() > 0;
+	for (const FBHRevisionQuestion& Question : Bank)
+	{
+		if (Question.Id.IsEmpty() || Ids.Contains(Question.Id) || Question.Prompt.IsEmpty() || Question.Hint.IsEmpty() || Question.Explanation.IsEmpty() || Question.Answer.Choices.Num() != 4 || !Question.Answer.Choices.IsValidIndex(Question.Answer.CorrectChoiceIndex))
+		{
+			bValid = false;
+		}
+		Ids.Add(Question.Id);
+		++TopicCounts[TopicIndex(Question.Topic)];
+	}
+	for (int32 Index = 0; Index < 4; ++Index)
+	{
+		bValid = bValid && TopicCounts[Index] > 0;
+	}
+	OutSummary = FString::Printf(TEXT("Physics revision bank %s: total=%d topics=[%d,%d,%d,%d]"),
+		bValid ? TEXT("valid") : TEXT("INVALID"),
+		Bank.Num(),
+		TopicCounts[0], TopicCounts[1], TopicCounts[2], TopicCounts[3]);
+	return bValid;
+}
+}
+
+const TArray<FBHRevisionQuestion>& FBHRevisionQuestionBank::GetBuiltInQuestions()
+{
+	static const TArray<FBHRevisionQuestion> Bank = BuildBuiltInQuestionBank();
+	return Bank;
 }
 
 const TArray<FBHRevisionQuestion>& FBHRevisionQuestionBank::GetQuestions()
 {
-	static const TArray<FBHRevisionQuestion> Bank = BuildQuestionBank();
+	// Prefer an editable JSON override when present and structurally valid; otherwise fall back
+	// to the compiled built-in bank. Resolved once and cached for the process.
+	static const TArray<FBHRevisionQuestion> Bank = []() -> TArray<FBHRevisionQuestion>
+	{
+		const FString Path = GetOverrideFilePath();
+		FString JsonText;
+		if (FFileHelper::LoadFileToString(JsonText, *Path))
+		{
+			TArray<FBHRevisionQuestion> Loaded;
+			FString Error;
+			if (ParseQuestionsFromJson(JsonText, Loaded, Error))
+			{
+				FString ValidateSummary;
+				if (ValidateQuestionSet(Loaded, ValidateSummary))
+				{
+					UE_LOG(LogTemp, Log, TEXT("[BHRevision] Loaded %d question(s) from override %s"), Loaded.Num(), *Path);
+					return Loaded;
+				}
+				UE_LOG(LogTemp, Warning, TEXT("[BHRevision] Override question bank failed validation (%s) - using built-in bank. %s"), *Path, *ValidateSummary);
+			}
+			else
+			{
+				// Back up the unreadable file (mirrors FBHLessonPresetStore) and fall back.
+				const FString Backup = Path + TEXT(".invalid-") + FDateTime::UtcNow().ToString(TEXT("%Y%m%d_%H%M%S"));
+				IFileManager::Get().Copy(*Backup, *Path);
+				UE_LOG(LogTemp, Warning, TEXT("[BHRevision] Could not parse override question bank %s (%s). Backed up to %s; using built-in bank."), *Path, *Error, *Backup);
+			}
+		}
+		return GetBuiltInQuestions();
+	}();
 	return Bank;
 }
 
 bool FBHRevisionQuestionBank::Validate(FString& OutSummary)
 {
-	const TArray<FBHRevisionQuestion>& Bank = GetQuestions();
+	// Structural validation of whatever bank is active (built-in or JSON override), so teacher
+	// content of any size is accepted as long as each question is well-formed.
+	return ValidateQuestionSet(GetQuestions(), OutSummary);
+}
+
+bool FBHRevisionQuestionBank::ValidateBuiltInDistribution(FString& OutSummary)
+{
+	// Strict guard for the shipped compiled bank: exact totals/distribution. Tests assert this so
+	// the built-in content cannot silently drift; teacher JSON overrides are not held to it.
+	const TArray<FBHRevisionQuestion>& Bank = GetBuiltInQuestions();
 	int32 TopicCounts[4] = {0, 0, 0, 0};
 	int32 DifficultyCounts[4][3] = {};
 	int32 TypeCounts[7] = {0, 0, 0, 0, 0, 0, 0};
@@ -979,3 +1107,195 @@ int32 FBHRevisionQuestionBank::TopicMaskBit(EBHPhysicsTopic Topic)
 {
 	return 1 << TopicIndex(Topic);
 }
+
+FString FBHRevisionQuestionBank::GetOverrideFilePath()
+{
+	return FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("ClassroomPresets") / TEXT("QuestionBank.json"));
+}
+
+FString FBHRevisionQuestionBank::SerializeQuestionsToJson(const TArray<FBHRevisionQuestion>& Questions)
+{
+	TArray<TSharedPtr<FJsonValue>> QuestionValues;
+	QuestionValues.Reserve(Questions.Num());
+	for (const FBHRevisionQuestion& Question : Questions)
+	{
+		TSharedRef<FJsonObject> Obj = MakeShared<FJsonObject>();
+		Obj->SetStringField(TEXT("id"), Question.Id);
+		Obj->SetStringField(TEXT("topic"), EnumToKey(Question.Topic));
+		Obj->SetStringField(TEXT("topicName"), Question.TopicName);
+		Obj->SetStringField(TEXT("subtopic"), Question.Subtopic);
+		Obj->SetStringField(TEXT("difficulty"), EnumToKey(Question.Difficulty));
+		Obj->SetStringField(TEXT("type"), EnumToKey(Question.Type));
+		Obj->SetStringField(TEXT("diagramType"), EnumToKey(Question.DiagramType));
+		Obj->SetStringField(TEXT("prompt"), Question.Prompt);
+
+		TSharedRef<FJsonObject> Answer = MakeShared<FJsonObject>();
+		TArray<TSharedPtr<FJsonValue>> ChoiceValues;
+		for (const FString& Choice : Question.Answer.Choices)
+		{
+			ChoiceValues.Add(MakeShared<FJsonValueString>(Choice));
+		}
+		Answer->SetArrayField(TEXT("choices"), ChoiceValues);
+		Answer->SetNumberField(TEXT("correctChoiceIndex"), Question.Answer.CorrectChoiceIndex);
+		Answer->SetStringField(TEXT("formula"), Question.Answer.Formula);
+		Answer->SetNumberField(TEXT("numericAnswer"), Question.Answer.NumericAnswer);
+		Answer->SetNumberField(TEXT("numericTolerance"), Question.Answer.NumericTolerance);
+		Obj->SetObjectField(TEXT("answer"), Answer);
+
+		TSharedRef<FJsonObject> Diagram = MakeShared<FJsonObject>();
+		Diagram->SetNumberField(TEXT("valueA"), Question.Diagram.ValueA);
+		Diagram->SetNumberField(TEXT("valueB"), Question.Diagram.ValueB);
+		Diagram->SetNumberField(TEXT("valueC"), Question.Diagram.ValueC);
+		Diagram->SetNumberField(TEXT("valueD"), Question.Diagram.ValueD);
+		Diagram->SetStringField(TEXT("labelA"), Question.Diagram.LabelA);
+		Diagram->SetStringField(TEXT("labelB"), Question.Diagram.LabelB);
+		Diagram->SetStringField(TEXT("labelC"), Question.Diagram.LabelC);
+		Diagram->SetStringField(TEXT("labelD"), Question.Diagram.LabelD);
+		Diagram->SetStringField(TEXT("xAxis"), Question.Diagram.XAxis);
+		Diagram->SetStringField(TEXT("yAxis"), Question.Diagram.YAxis);
+		Diagram->SetNumberField(TEXT("angleOrShape"), Question.Diagram.AngleOrShape);
+		Diagram->SetStringField(TEXT("imageSoftPath"), Question.Diagram.ImageSoftPath);
+		Obj->SetObjectField(TEXT("diagram"), Diagram);
+
+		Obj->SetStringField(TEXT("hint"), Question.Hint);
+		Obj->SetStringField(TEXT("correctionPrompt"), Question.CorrectionPrompt);
+		Obj->SetStringField(TEXT("explanation"), Question.Explanation);
+		Obj->SetNumberField(TEXT("masteryWeight"), Question.MasteryWeight);
+
+		QuestionValues.Add(MakeShared<FJsonValueObject>(Obj));
+	}
+
+	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetNumberField(TEXT("version"), 1);
+	Root->SetArrayField(TEXT("questions"), QuestionValues);
+
+	FString Output;
+	const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Output);
+	FJsonSerializer::Serialize(Root, Writer);
+	return Output;
+}
+
+bool FBHRevisionQuestionBank::ParseQuestionsFromJson(const FString& JsonText, TArray<FBHRevisionQuestion>& OutQuestions, FString& OutError)
+{
+	OutQuestions.Reset();
+	TSharedPtr<FJsonObject> Root;
+	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonText);
+	if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
+	{
+		OutError = TEXT("file is not valid JSON");
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* QuestionValues = nullptr;
+	if (!Root->TryGetArrayField(TEXT("questions"), QuestionValues) || QuestionValues == nullptr)
+	{
+		OutError = TEXT("missing 'questions' array");
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& Value : *QuestionValues)
+	{
+		const TSharedPtr<FJsonObject>* ObjPtr = nullptr;
+		if (!Value.IsValid() || !Value->TryGetObject(ObjPtr) || ObjPtr == nullptr || !ObjPtr->IsValid())
+		{
+			continue;
+		}
+		const TSharedPtr<FJsonObject>& Obj = *ObjPtr;
+
+		FBHRevisionQuestion Question;
+		Question.Id = JsonStr(Obj, TEXT("id"));
+		Question.Topic = KeyToEnum(JsonStr(Obj, TEXT("topic")), EBHPhysicsTopic::ForcesAndMotion);
+		Question.TopicName = JsonStr(Obj, TEXT("topicName"));
+		if (Question.TopicName.IsEmpty())
+		{
+			Question.TopicName = TopicToString(Question.Topic);
+		}
+		Question.Subtopic = JsonStr(Obj, TEXT("subtopic"));
+		Question.Difficulty = KeyToEnum(JsonStr(Obj, TEXT("difficulty")), EBHQuestionDifficulty::Easy);
+		Question.Type = KeyToEnum(JsonStr(Obj, TEXT("type")), EBHQuestionType::MultipleChoice);
+		Question.DiagramType = KeyToEnum(JsonStr(Obj, TEXT("diagramType")), EBHDiagramType::None);
+		Question.Prompt = JsonStr(Obj, TEXT("prompt"));
+		Question.Hint = JsonStr(Obj, TEXT("hint"));
+		Question.CorrectionPrompt = JsonStr(Obj, TEXT("correctionPrompt"));
+		Question.Explanation = JsonStr(Obj, TEXT("explanation"));
+
+		const TSharedPtr<FJsonObject>* AnswerPtr = nullptr;
+		if (Obj->TryGetObjectField(TEXT("answer"), AnswerPtr) && AnswerPtr && AnswerPtr->IsValid())
+		{
+			const TSharedPtr<FJsonObject>& Answer = *AnswerPtr;
+			const TArray<TSharedPtr<FJsonValue>>* ChoiceValues = nullptr;
+			if (Answer->TryGetArrayField(TEXT("choices"), ChoiceValues) && ChoiceValues)
+			{
+				for (const TSharedPtr<FJsonValue>& ChoiceValue : *ChoiceValues)
+				{
+					FString Choice;
+					if (ChoiceValue.IsValid() && ChoiceValue->TryGetString(Choice))
+					{
+						Question.Answer.Choices.Add(Choice);
+					}
+				}
+			}
+			Question.Answer.CorrectChoiceIndex = JsonInt(Answer, TEXT("correctChoiceIndex"), 0);
+			Question.Answer.Formula = JsonStr(Answer, TEXT("formula"));
+			Question.Answer.NumericAnswer = static_cast<float>(JsonNum(Answer, TEXT("numericAnswer"), 0.0));
+			Question.Answer.NumericTolerance = static_cast<float>(JsonNum(Answer, TEXT("numericTolerance"), 0.0));
+		}
+
+		const TSharedPtr<FJsonObject>* DiagramPtr = nullptr;
+		if (Obj->TryGetObjectField(TEXT("diagram"), DiagramPtr) && DiagramPtr && DiagramPtr->IsValid())
+		{
+			const TSharedPtr<FJsonObject>& Diagram = *DiagramPtr;
+			Question.Diagram.ValueA = static_cast<float>(JsonNum(Diagram, TEXT("valueA"), 0.0));
+			Question.Diagram.ValueB = static_cast<float>(JsonNum(Diagram, TEXT("valueB"), 0.0));
+			Question.Diagram.ValueC = static_cast<float>(JsonNum(Diagram, TEXT("valueC"), 0.0));
+			Question.Diagram.ValueD = static_cast<float>(JsonNum(Diagram, TEXT("valueD"), 0.0));
+			Question.Diagram.LabelA = JsonStr(Diagram, TEXT("labelA"));
+			Question.Diagram.LabelB = JsonStr(Diagram, TEXT("labelB"));
+			Question.Diagram.LabelC = JsonStr(Diagram, TEXT("labelC"));
+			Question.Diagram.LabelD = JsonStr(Diagram, TEXT("labelD"));
+			Question.Diagram.XAxis = JsonStr(Diagram, TEXT("xAxis"));
+			Question.Diagram.YAxis = JsonStr(Diagram, TEXT("yAxis"));
+			Question.Diagram.AngleOrShape = static_cast<float>(JsonNum(Diagram, TEXT("angleOrShape"), 0.0));
+			Question.Diagram.ImageSoftPath = JsonStr(Diagram, TEXT("imageSoftPath"));
+		}
+
+		// masteryWeight is optional; derive it from difficulty when absent.
+		Question.MasteryWeight = static_cast<float>(JsonNum(Obj, TEXT("masteryWeight"), MasteryWeightFor(Question.Difficulty)));
+
+		OutQuestions.Add(Question);
+	}
+
+	if (OutQuestions.Num() == 0)
+	{
+		OutError = TEXT("no questions parsed from file");
+		return false;
+	}
+	return true;
+}
+
+bool FBHRevisionQuestionBank::ExportQuestionBankToOverrideFile(FString& OutMessage)
+{
+	const FString Path = GetOverrideFilePath();
+	const TArray<FBHRevisionQuestion>& BuiltIn = GetBuiltInQuestions();
+	const FString Json = SerializeQuestionsToJson(BuiltIn);
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(Path), true);
+	if (!FFileHelper::SaveStringToFile(Json, *Path, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+	{
+		OutMessage = FString::Printf(TEXT("Could not write question bank to %s."), *Path);
+		return false;
+	}
+	OutMessage = FString::Printf(TEXT("Exported %d question(s) to %s. Edit it and restart to use the custom bank; delete it to restore the built-in set."), BuiltIn.Num(), *Path);
+	return true;
+}
+
+// Host console command: `bh.ExportQuestionBank` writes the built-in bank to the editable
+// override path so a teacher can edit questions without recompiling.
+static FAutoConsoleCommand GBHExportQuestionBankCommand(
+	TEXT("bh.ExportQuestionBank"),
+	TEXT("Writes the built-in physics question bank to Saved/ClassroomPresets/QuestionBank.json for editing."),
+	FConsoleCommandDelegate::CreateLambda([]()
+	{
+		FString Message;
+		FBHRevisionQuestionBank::ExportQuestionBankToOverrideFile(Message);
+		UE_LOG(LogTemp, Display, TEXT("[bh.ExportQuestionBank] %s"), *Message);
+	}));
