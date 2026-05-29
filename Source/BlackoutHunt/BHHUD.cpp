@@ -2,6 +2,7 @@
 #include "BHBreakableGlassPane.h"
 #include "BHCharacter.h"
 #include "BHBreaker.h"
+#include "BHDiagramRenderer.h"
 #include "BHExitGate.h"
 #include "BHGameState.h"
 #include "BHInteractableInterface.h"
@@ -2503,7 +2504,9 @@ void ABHHUD::DrawQuestionPanel(const ABHObjectiveStation* Station)
 	// Draw a diagram whenever the question carries one, in any mode -- so visual tasks
 	// also appear at nodes during standard play, not only in the classroom.
 	const bool bShowDiagram = Station->GetQuestionDiagramType() != EBHDiagramType::None;
-	const float DiagramH = (bShowDiagram ? 118.0f : 0.0f) * S;
+	// Adaptive band height per diagram type (graphs/circuits get more room, spectra less) instead
+	// of a one-size 118px; PanelH and ChoiceStartY below derive from DiagramH so layout follows.
+	const float DiagramH = (bShowDiagram ? FBHDiagramRenderer::BandHeightFor(Station->GetQuestionDiagramType()) : 0.0f) * S;
 	const float PanelH = (194.0f + ChoiceCount * 32.0f + (Station->GetQuestionFeedback().IsEmpty() ? 0.0f : 42.0f)) * S + DiagramH;
 	const float PanelX = (Canvas->ClipX - PanelW) * 0.5f;
 	const float MaxPanelY = FMath::Max(120.0f, Canvas->ClipY - PanelH - 92.0f);
@@ -2548,7 +2551,7 @@ void ABHHUD::DrawQuestionPanel(const ABHObjectiveStation* Station)
 	float ChoiceStartY = PanelY + 112.0f * S;
 	if (bShowDiagram)
 	{
-		DrawRevisionDiagram(Station, PanelX + 24.0f * S, PanelY + 108.0f * S, PanelW - 48.0f * S, DiagramH - 10.0f * S);
+		DrawRevisionDiagram(Station, PanelX + 24.0f * S, PanelY + 108.0f * S, PanelW - 48.0f * S, DiagramH - 10.0f * S, S);
 		ChoiceStartY = PanelY + 112.0f * S + DiagramH;
 		// The collaborative "answer team" line is a classroom-mode concept only.
 		if (bRevisionQuestion && !Station->GetRevisionTeamSummary().IsEmpty())
@@ -2616,7 +2619,7 @@ UTexture2D* ABHHUD::ResolveDiagramTexture(const FString& ObjectPath)
 	return Texture;
 }
 
-void ABHHUD::DrawRevisionDiagram(const ABHObjectiveStation* Station, float X, float Y, float W, float H)
+void ABHHUD::DrawRevisionDiagram(const ABHObjectiveStation* Station, float X, float Y, float W, float H, float S)
 {
 	if (!Canvas || !GEngine || !Station)
 	{
@@ -2624,255 +2627,33 @@ void ABHHUD::DrawRevisionDiagram(const ABHObjectiveStation* Station, float X, fl
 	}
 
 	const FBHDiagramParams& P = Station->GetQuestionDiagram();
+	UTexture2D* Image = P.HasImage() ? ResolveDiagramTexture(P.ImageSoftPath) : nullptr;
 
-	// Optional illustrated image diagram: if the question references one and it loads,
-	// draw it letterboxed into the panel and skip the procedural schematic.
-	if (P.HasImage())
-	{
-		if (UTexture2D* Tex = ResolveDiagramTexture(P.ImageSoftPath))
-		{
-			DrawRect(FLinearColor(0.02f, 0.025f, 0.028f, 0.92f), X, Y, W, H);
-			const float TexW = FMath::Max(1.0f, static_cast<float>(Tex->GetSizeX()));
-			const float TexH = FMath::Max(1.0f, static_cast<float>(Tex->GetSizeY()));
-			const float Scale = FMath::Min((W - 12.0f) / TexW, (H - 12.0f) / TexH);
-			const float DrawW = TexW * Scale;
-			const float DrawH = TexH * Scale;
-			const float DrawX = X + (W - DrawW) * 0.5f;
-			const float DrawY = Y + (H - DrawH) * 0.5f;
-			DrawTextureSimple(Tex, DrawX, DrawY, Scale, false);
+	// Route the HUD's resolved palette (colorblind / high-contrast aware) and panel scale into
+	// the shared renderer so diagrams match the rest of the HUD and stay legible at any HudScale.
+	// The actual drawing lives in FBHDiagramRenderer so the train terminal and the PNG-bake
+	// commandlet produce the identical picture.
+	FBHDiagramDrawContext Ctx;
+	Ctx.Scale = S;
+	Ctx.Accent = ActivePalette.AccentPrimary;
+	Ctx.Warm = ActivePalette.WarnHot;
+	Ctx.Good = ActivePalette.Good;
+	Ctx.Bad = ActivePalette.Bad;
+	Ctx.TextMain = MainText();
+	Ctx.TextDim = FLinearColor(0.70f, 0.78f, 0.82f, 0.90f);
+	Ctx.Font = GEngine->GetSmallFont();
+	Ctx.TimeSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	Ctx.bEnhanced = FBHDiagramRenderer::IsEnhanced();
 
-			const FString ImageSubtopic = Station->GetQuestionSubtopic();
-			if (!ImageSubtopic.IsEmpty())
-			{
-				DrawHudText(ImageSubtopic.ToUpper(), X + 10.0f, Y + 4.0f, FLinearColor(0.66f, 0.82f, 0.94f, 0.92f), GEngine->GetSmallFont(), 0.62f);
-			}
-			if (!Station->GetQuestionFormula().IsEmpty())
-			{
-				DrawRightAlignedText(FString::Printf(TEXT("Key idea: %s"), *Station->GetQuestionFormula()), X + W - 10.0f, Y + H - 18.0f, FLinearColor(0.95f, 0.84f, 0.45f, 1.0f), GEngine->GetSmallFont(), 0.66f);
-			}
-			return;
-		}
-		// Fall through to the procedural diagram when the texture is unavailable.
-	}
-
-	DrawRect(FLinearColor(0.025f, 0.032f, 0.036f, 0.88f), X, Y, W, H);
-	DrawRect(FLinearColor(0.18f, 0.28f, 0.30f, 0.82f), X, Y, W, 1.0f);
-	DrawRect(FLinearColor(0.18f, 0.28f, 0.30f, 0.58f), X, Y + H - 1.0f, W, 1.0f);
-	for (float GridX = X + 42.0f; GridX < X + W - 12.0f; GridX += 48.0f)
-	{
-		DrawRect(FLinearColor(0.42f, 0.58f, 0.58f, 0.055f), GridX, Y + 6.0f, 1.0f, H - 12.0f);
-	}
-	for (float GridY = Y + 30.0f; GridY < Y + H - 8.0f; GridY += 28.0f)
-	{
-		DrawRect(FLinearColor(0.42f, 0.58f, 0.58f, 0.055f), X + 8.0f, GridY, W - 16.0f, 1.0f);
-	}
-	DrawCornerBrackets(X + 6.0f, Y + 6.0f, W - 12.0f, H - 12.0f, FLinearColor(0.48f, 0.92f, 0.86f, 0.28f), 10.0f, 1.0f);
-
-	const FLinearColor LineColor(0.48f, 0.92f, 0.86f, 1.0f);
-	const FLinearColor WarmColor(0.95f, 0.62f, 0.28f, 1.0f);
-	const float MidY = Y + H * 0.52f;
-	const float Left = X + 26.0f;
-	const float Right = X + W - 26.0f;
-	const float Top = Y + 16.0f;
-	const float Bottom = Y + H - 18.0f;
-	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
-
-	switch (Station->GetQuestionDiagramType())
-	{
-	case EBHDiagramType::MotionGraph:
-		DrawLine(Left, Bottom, Right, Bottom, FLinearColor(0.50f, 0.56f, 0.58f, 1.0f), 1.5f);
-		DrawLine(Left, Bottom, Left, Top, FLinearColor(0.50f, 0.56f, 0.58f, 1.0f), 1.5f);
-		DrawLine(Left, Bottom - 8.0f, X + W * 0.42f, Y + H * 0.38f, LineColor, 3.0f);
-		DrawLine(X + W * 0.42f, Y + H * 0.38f, Right, Y + H * 0.26f, LineColor, 3.0f);
-		DrawHudText(TEXT("gradient = velocity"), Left + 8.0f, Top + 4.0f, WarmColor, GEngine->GetSmallFont(), 0.72f);
-		break;
-	case EBHDiagramType::VelocityGraph:
-		DrawLine(Left, Bottom, Right, Bottom, FLinearColor(0.50f, 0.56f, 0.58f, 1.0f), 1.5f);
-		DrawLine(Left, Bottom, Left, Top, FLinearColor(0.50f, 0.56f, 0.58f, 1.0f), 1.5f);
-		DrawRect(FLinearColor(0.30f, 0.60f, 0.78f, 0.24f), Left + 10.0f, MidY, W * 0.38f, Bottom - MidY);
-		DrawLine(Left + 10.0f, MidY, X + W * 0.52f, MidY, LineColor, 3.0f);
-		DrawLine(X + W * 0.52f, MidY, Right, Top + 8.0f, LineColor, 3.0f);
-		DrawHudText(TEXT("area = distance"), Left + 18.0f, Bottom - 34.0f, WarmColor, GEngine->GetSmallFont(), 0.72f);
-		// Data-driven: axis captions and any value note for this question.
-		if (!P.XAxis.IsEmpty()) { DrawRightAlignedText(P.XAxis, Right - 6.0f, Bottom - 14.0f, FLinearColor(0.70f, 0.78f, 0.82f, 0.90f), GEngine->GetSmallFont(), 0.60f); }
-		if (!P.YAxis.IsEmpty()) { DrawHudText(P.YAxis, Left + 4.0f, Top - 4.0f, FLinearColor(0.70f, 0.78f, 0.82f, 0.90f), GEngine->GetSmallFont(), 0.60f); }
-		if (P.HasValues() && !P.LabelA.IsEmpty()) { DrawHudText(P.LabelA, Left + 18.0f, Top + 6.0f, MainText(), GEngine->GetSmallFont(), 0.60f); }
-		break;
-	case EBHDiagramType::ForceArrows:
-		DrawLine(X + W * 0.50f, MidY, X + W * 0.26f, MidY, WarmColor, 4.0f);
-		DrawLine(X + W * 0.50f, MidY, X + W * 0.74f, MidY, LineColor, 4.0f);
-		DrawLine(X + W * 0.74f, MidY, X + W * 0.70f, MidY - 10.0f, LineColor, 3.0f);
-		DrawLine(X + W * 0.74f, MidY, X + W * 0.70f, MidY + 10.0f, LineColor, 3.0f);
-		DrawHudText(TEXT("resultant force"), X + W * 0.39f, Top + 8.0f, MainText(), GEngine->GetSmallFont(), 0.78f);
-		// Data-driven: label the two force magnitudes shown by the arrows.
-		if (P.HasValues())
-		{
-			if (!P.LabelA.IsEmpty()) { DrawHudText(P.LabelA, X + W * 0.16f, MidY - 18.0f, WarmColor, GEngine->GetSmallFont(), 0.66f); }
-			if (!P.LabelB.IsEmpty()) { DrawHudText(P.LabelB, X + W * 0.66f, MidY - 18.0f, LineColor, GEngine->GetSmallFont(), 0.66f); }
-		}
-		break;
-	case EBHDiagramType::SpringGraph:
-		DrawLine(Left, Bottom, Right, Bottom, FLinearColor(0.50f, 0.56f, 0.58f, 1.0f), 1.5f);
-		DrawLine(Left, Bottom, Left, Top, FLinearColor(0.50f, 0.56f, 0.58f, 1.0f), 1.5f);
-		DrawLine(Left, Bottom, Right - 32.0f, Top + 18.0f, LineColor, 3.0f);
-		DrawHudText(TEXT("gradient = k"), Left + 18.0f, Top + 6.0f, WarmColor, GEngine->GetSmallFont(), 0.76f);
-		break;
-	case EBHDiagramType::MomentBeam:
-		DrawRect(FLinearColor(0.55f, 0.50f, 0.38f, 1.0f), Left, MidY, Right - Left, 8.0f);
-		DrawLine(X + W * 0.48f, MidY + 8.0f, X + W * 0.48f - 14.0f, Bottom, WarmColor, 3.0f);
-		DrawLine(X + W * 0.48f, MidY + 8.0f, X + W * 0.48f + 14.0f, Bottom, WarmColor, 3.0f);
-		DrawLine(X + W * 0.78f, MidY - 30.0f, X + W * 0.78f, MidY, LineColor, 4.0f);
-		DrawHudText(TEXT("moment = Fd"), Left + 14.0f, Top + 8.0f, MainText(), GEngine->GetSmallFont(), 0.78f);
-		// Data-driven: label the distances/forces either side of the pivot.
-		if (P.HasValues())
-		{
-			if (!P.LabelA.IsEmpty()) { DrawHudText(P.LabelA, Left + 14.0f, MidY - 18.0f, WarmColor, GEngine->GetSmallFont(), 0.64f); }
-			if (!P.LabelC.IsEmpty()) { DrawRightAlignedText(P.LabelC, Right - 6.0f, MidY - 18.0f, LineColor, GEngine->GetSmallFont(), 0.64f); }
-			if (!P.LabelB.IsEmpty()) { DrawHudText(P.LabelB, Left + 14.0f, Bottom - 12.0f, MainText(), GEngine->GetSmallFont(), 0.60f); }
-			if (!P.LabelD.IsEmpty()) { DrawRightAlignedText(P.LabelD, Right - 6.0f, Bottom - 12.0f, MainText(), GEngine->GetSmallFont(), 0.60f); }
-		}
-		break;
-	case EBHDiagramType::Circuit:
-		DrawLine(Left, Top + 16.0f, Right, Top + 16.0f, LineColor, 2.0f);
-		DrawLine(Right, Top + 16.0f, Right, Bottom - 10.0f, LineColor, 2.0f);
-		DrawLine(Right, Bottom - 10.0f, Left, Bottom - 10.0f, LineColor, 2.0f);
-		DrawLine(Left, Bottom - 10.0f, Left, Top + 16.0f, LineColor, 2.0f);
-		DrawRect(WarmColor, Left + W * 0.36f, Top + 8.0f, 34.0f, 16.0f);
-		DrawHudText(TEXT("A series | V parallel"), Left + 18.0f, MidY - 8.0f, MainText(), GEngine->GetSmallFont(), 0.74f);
-		// Data-driven: label the resistor(s) and supply with their actual values.
-		if (P.HasValues())
-		{
-			if (!P.LabelA.IsEmpty()) { DrawHudText(P.LabelA, Left + W * 0.30f, Top + 26.0f, WarmColor, GEngine->GetSmallFont(), 0.62f); }
-			if (!P.LabelC.IsEmpty()) { DrawRightAlignedText(P.LabelC, Right - 8.0f, Top + 26.0f, WarmColor, GEngine->GetSmallFont(), 0.62f); }
-			if (!P.LabelB.IsEmpty()) { DrawHudText(P.LabelB, Left + 18.0f, Bottom - 8.0f, LineColor, GEngine->GetSmallFont(), 0.62f); }
-		}
-		break;
-	case EBHDiagramType::IVGraph:
-		DrawLine(Left, Bottom, Right, Bottom, FLinearColor(0.50f, 0.56f, 0.58f, 1.0f), 1.5f);
-		DrawLine(Left, Bottom, Left, Top, FLinearColor(0.50f, 0.56f, 0.58f, 1.0f), 1.5f);
-		DrawLine(Left, Bottom, Right - 24.0f, Top + 12.0f, LineColor, 3.0f);
-		// Data-driven: mark the (V, I) reading using ValueC/ValueD as the axis maxima.
-		if (P.HasValues() && P.ValueC > 0.0f && P.ValueD > 0.0f)
-		{
-			const float PtX = Left + (Right - Left) * FMath::Clamp(P.ValueA / P.ValueC, 0.0f, 1.0f);
-			const float PtY = Bottom - (Bottom - Top) * FMath::Clamp(P.ValueB / P.ValueD, 0.0f, 1.0f);
-			DrawRect(WarmColor, PtX - 3.0f, PtY - 3.0f, 6.0f, 6.0f);
-		}
-		{
-			const FString IVLabel = !P.LabelA.IsEmpty() ? P.LabelA : FString(TEXT("straight: ohmic"));
-			DrawHudText(IVLabel, Left + 16.0f, Top + 8.0f, WarmColor, GEngine->GetSmallFont(), 0.74f);
-		}
-		if (!P.XAxis.IsEmpty())
-		{
-			DrawRightAlignedText(P.XAxis, Right - 6.0f, Bottom - 14.0f, FLinearColor(0.70f, 0.78f, 0.82f, 0.90f), GEngine->GetSmallFont(), 0.60f);
-		}
-		if (!P.YAxis.IsEmpty())
-		{
-			DrawHudText(P.YAxis, Left + 4.0f, Top - 4.0f, FLinearColor(0.70f, 0.78f, 0.82f, 0.90f), GEngine->GetSmallFont(), 0.60f);
-		}
-		break;
-	case EBHDiagramType::StaticCharge:
-		DrawHudText(TEXT("+ + +"), Left + 24.0f, MidY - 8.0f, WarmColor, GEngine->GetSmallFont(), 1.0f);
-		DrawHudText(TEXT("- - -"), Right - 92.0f, MidY - 8.0f, LineColor, GEngine->GetSmallFont(), 1.0f);
-		DrawLine(X + W * 0.42f, MidY, X + W * 0.58f, MidY, MainText(), 3.0f);
-		DrawHudText(TEXT("opposites attract"), X + W * 0.38f, Top + 8.0f, MainText(), GEngine->GetSmallFont(), 0.74f);
-		break;
-	case EBHDiagramType::Wave:
-	{
-		const int32 Segments = 36;
-		// Data-driven: amplitude fraction (ValueA) and cycle count (ValueB) shape the wave.
-		// Defaults reproduce the original 2-cycle schematic.
-		const float AmpFrac = P.ValueA > 0.0f ? FMath::Clamp(P.ValueA, 0.05f, 0.45f) : 0.22f;
-		const float Cycles = P.ValueB > 0.0f ? FMath::Clamp(P.ValueB, 1.0f, 6.0f) : 2.0f;
-		FVector2D Prev(Left, MidY);
-		for (int32 Index = 1; Index <= Segments; ++Index)
-		{
-			const float T = static_cast<float>(Index) / Segments;
-			const float PX = FMath::Lerp(Left, Right, T);
-			const float PY = MidY + FMath::Sin(T * PI * 2.0f * Cycles + Now * 2.0f) * H * AmpFrac;
-			DrawLine(Prev.X, Prev.Y, PX, PY, LineColor, 2.5f);
-			Prev = FVector2D(PX, PY);
-		}
-		const FString WaveLabel = P.HasValues()
-			? FString::Printf(TEXT("%s | %s"), *P.LabelA, *P.LabelB)
-			: FString(TEXT("amplitude | wavelength"));
-		DrawHudText(WaveLabel, Left + 14.0f, Top + 6.0f, WarmColor, GEngine->GetSmallFont(), 0.74f);
-		break;
-	}
-	case EBHDiagramType::EMSpectrum:
-	{
-		const TCHAR* Labels[] = {TEXT("R"), TEXT("M"), TEXT("IR"), TEXT("VIS"), TEXT("UV"), TEXT("X"), TEXT("G")};
-		const float SegmentW = (Right - Left) / 7.0f;
-		for (int32 Index = 0; Index < 7; ++Index)
-		{
-			const float SX = Left + SegmentW * Index;
-			DrawRect(Index % 2 == 0 ? FLinearColor(0.22f, 0.32f, 0.42f, 1.0f) : FLinearColor(0.34f, 0.26f, 0.42f, 1.0f), SX, MidY - 16.0f, SegmentW - 3.0f, 32.0f);
-			DrawHudText(Labels[Index], SX + 8.0f, MidY - 5.0f, MainText(), GEngine->GetSmallFont(), 0.72f);
-		}
-		DrawHudText(TEXT("long wavelength -> high frequency"), Left + 10.0f, Top + 4.0f, WarmColor, GEngine->GetSmallFont(), 0.68f);
-		break;
-	}
-	case EBHDiagramType::RayDiagram:
-	{
-		const float CX = X + W * 0.50f;
-		DrawLine(CX, Top, CX, Bottom, FLinearColor(0.50f, 0.56f, 0.58f, 1.0f), 1.5f);
-		// Surface line through the strike point.
-		DrawLine(Left, MidY, Right, MidY, FLinearColor(0.45f, 0.50f, 0.52f, 0.8f), 1.0f);
-		// Data-driven: incident/reflected rays drawn at the question's angle from the normal.
-		const float AngleDeg = P.AngleOrShape > 0.0f ? FMath::Clamp(P.AngleOrShape, 5.0f, 80.0f) : 35.0f;
-		const float Rad = FMath::DegreesToRadians(AngleDeg);
-		const float RayLen = (MidY - Top) * 0.92f;
-		const float Dx = FMath::Sin(Rad) * RayLen;
-		const float Dy = FMath::Cos(Rad) * RayLen;
-		DrawLine(CX - Dx, MidY - Dy, CX, MidY, WarmColor, 3.0f);
-		DrawLine(CX, MidY, CX + Dx, MidY - Dy, LineColor, 3.0f);
-		const FString RayLabel = !P.LabelA.IsEmpty() ? P.LabelA : FString(TEXT("normal | i = r"));
-		DrawHudText(RayLabel, Left + 8.0f, Top + 6.0f, MainText(), GEngine->GetSmallFont(), 0.72f);
-		break;
-	}
-	case EBHDiagramType::Sankey:
-		DrawRect(LineColor, Left, MidY - 12.0f, W * 0.42f, 24.0f);
-		DrawRect(FLinearColor(0.52f, 0.90f, 0.54f, 1.0f), X + W * 0.50f, MidY - 10.0f, W * 0.28f, 20.0f);
-		DrawRect(WarmColor, X + W * 0.50f, MidY + 18.0f, W * 0.20f, 14.0f);
-		DrawHudText(TEXT("input -> useful + wasted"), Left + 12.0f, Top + 6.0f, MainText(), GEngine->GetSmallFont(), 0.74f);
-		// Data-driven: label the input / useful / wasted arrows with their values.
-		if (P.HasValues())
-		{
-			if (!P.LabelA.IsEmpty()) { DrawHudText(P.LabelA, Left + 6.0f, MidY - 26.0f, MainText(), GEngine->GetSmallFont(), 0.60f); }
-			if (!P.LabelB.IsEmpty()) { DrawHudText(P.LabelB, X + W * 0.50f, MidY - 24.0f, FLinearColor(0.52f, 0.90f, 0.54f, 1.0f), GEngine->GetSmallFont(), 0.58f); }
-			if (!P.LabelC.IsEmpty()) { DrawHudText(P.LabelC, X + W * 0.50f, MidY + 34.0f, WarmColor, GEngine->GetSmallFont(), 0.58f); }
-		}
-		break;
-	case EBHDiagramType::EnergyChain:
-	default:
-		DrawRect(FLinearColor(0.26f, 0.42f, 0.34f, 1.0f), Left, MidY - 14.0f, 90.0f, 28.0f);
-		DrawLine(Left + 95.0f, MidY, Left + 150.0f, MidY, LineColor, 3.0f);
-		DrawRect(FLinearColor(0.35f, 0.34f, 0.52f, 1.0f), Left + 156.0f, MidY - 14.0f, 96.0f, 28.0f);
-		DrawLine(Left + 258.0f, MidY, Left + 312.0f, MidY, LineColor, 3.0f);
-		DrawRect(FLinearColor(0.46f, 0.31f, 0.28f, 1.0f), Left + 318.0f, MidY - 14.0f, 96.0f, 28.0f);
-		DrawHudText(TEXT("store -> pathway -> store"), Left + 12.0f, Top + 6.0f, MainText(), GEngine->GetSmallFont(), 0.74f);
-		// Data-driven: label the three boxes of this question's energy chain.
-		if (P.HasValues())
-		{
-			if (!P.LabelA.IsEmpty()) { DrawHudText(P.LabelA, Left + 6.0f, MidY + 18.0f, MainText(), GEngine->GetSmallFont(), 0.56f); }
-			if (!P.LabelB.IsEmpty()) { DrawHudText(P.LabelB, Left + 160.0f, MidY + 18.0f, MainText(), GEngine->GetSmallFont(), 0.56f); }
-			if (!P.LabelC.IsEmpty()) { DrawHudText(P.LabelC, Left + 322.0f, MidY + 18.0f, MainText(), GEngine->GetSmallFont(), 0.56f); }
-		}
-		break;
-	}
-
-	// Caption the diagram with this question's specific subtopic so it reads as the
-	// concept under test, not a generic schematic. (Answer-safe: never reveals the value.)
-	const FString Subtopic = Station->GetQuestionSubtopic();
-	if (!Subtopic.IsEmpty())
-	{
-		DrawHudText(Subtopic.ToUpper(), X + 10.0f, Y + 4.0f, FLinearColor(0.66f, 0.82f, 0.94f, 0.92f), GEngine->GetSmallFont(), 0.62f);
-	}
-
-	if (!Station->GetQuestionFormula().IsEmpty())
-	{
-		DrawRightAlignedText(FString::Printf(TEXT("Key idea: %s"), *Station->GetQuestionFormula()), X + W - 10.0f, Y + H - 18.0f, FLinearColor(0.95f, 0.84f, 0.45f, 1.0f), GEngine->GetSmallFont(), 0.66f);
-	}
+	FBHDiagramRenderer::Draw(
+		Canvas,
+		Station->GetQuestionDiagramType(),
+		P,
+		Station->GetQuestionSubtopic(),
+		Station->GetQuestionFormula(),
+		Image,
+		X, Y, W, H,
+		Ctx);
 }
 
 void ABHHUD::DrawPhaseBanner(const ABHGameState* GameState, const ABHCharacter* Character)

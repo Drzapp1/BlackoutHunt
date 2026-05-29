@@ -41,7 +41,7 @@ protected:
 	void DrawEquipmentStrip(const class ABHGameState* GameState);
 	void DrawSpectatorSupportPanel(const class ABHGameState* GameState, const class ABHPlayerState* PlayerState);
 	void DrawQuestionPanel(const class ABHObjectiveStation* Station);
-	void DrawRevisionDiagram(const class ABHObjectiveStation* Station, float X, float Y, float W, float H);
+	void DrawRevisionDiagram(const class ABHObjectiveStation* Station, float X, float Y, float W, float H, float S = 1.0f);
 	// Resolve (and cache) an optional illustrated diagram texture by object path. Returns
 	// null when the path is empty or the asset is missing/uncooked, so the caller falls
 	// back to the procedural diagram.
