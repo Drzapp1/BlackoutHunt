@@ -22,6 +22,56 @@ bool FBHDiagramRenderer::IsEnhanced()
 	return CVarBHDiagramsEnhanced.GetValueOnAnyThread() != 0;
 }
 
+void FBHDiagramRenderer::SampleFor(EBHDiagramType Type, int32 Variant, FBHDiagramParams& P, FString& OutName)
+{
+	P = FBHDiagramParams();
+	switch (Type)
+	{
+	case EBHDiagramType::MotionGraph:
+		P.ShapeVariant = Variant > 0 ? Variant : 2; P.XAxis = TEXT("t / s"); P.YAxis = TEXT("d / m"); OutName = TEXT("Motion graph"); break;
+	case EBHDiagramType::VelocityGraph:
+		P.ShapeVariant = Variant > 0 ? Variant : 2; P.XAxis = TEXT("t / s"); P.YAxis = TEXT("v / m/s"); OutName = TEXT("Velocity graph"); break;
+	case EBHDiagramType::ForceArrows:
+		P.ValueA = 30.0f; P.ValueB = 20.0f; P.LabelA = TEXT("30 N"); P.LabelB = TEXT("20 N"); P.ShapeVariant = Variant; if (Variant == 1) { P.LabelC = TEXT("weight"); P.LabelD = TEXT("normal"); } OutName = TEXT("Force arrows"); break;
+	case EBHDiagramType::SpringGraph:
+		P.XAxis = TEXT("x / m"); P.YAxis = TEXT("F / N"); OutName = TEXT("Spring graph"); break;
+	case EBHDiagramType::MomentBeam:
+		P.LabelA = TEXT("0.5 m"); P.LabelC = TEXT("1.5 m"); P.LabelB = TEXT("12 N"); P.LabelD = TEXT("4 N"); OutName = TEXT("Moment beam"); break;
+	case EBHDiagramType::Circuit:
+		P.ShapeVariant = Variant > 0 ? Variant : 3; P.LabelA = TEXT("2 ohm"); P.LabelC = TEXT("8 ohm"); P.LabelB = TEXT("6 V"); OutName = TEXT("Circuit"); break;
+	case EBHDiagramType::IVGraph:
+		P.ShapeVariant = Variant > 0 ? Variant : 1; P.XAxis = TEXT("V / V"); P.YAxis = TEXT("I / A"); OutName = TEXT("I-V graph"); break;
+	case EBHDiagramType::StaticCharge:
+		OutName = TEXT("Static charge"); break;
+	case EBHDiagramType::Wave:
+		P.ValueA = 0.30f; P.ValueB = 3.0f; P.LabelA = TEXT("amplitude"); P.LabelB = TEXT("wavelength"); OutName = TEXT("Wave"); break;
+	case EBHDiagramType::EMSpectrum:
+		P.ShapeVariant = Variant > 0 ? Variant : 4; OutName = TEXT("EM spectrum"); break;
+	case EBHDiagramType::RayDiagram:
+		P.AngleOrShape = Variant > 0 ? static_cast<float>(Variant) : 40.0f; P.LabelA = TEXT("normal"); OutName = TEXT("Ray diagram"); break;
+	case EBHDiagramType::Sankey:
+		P.LabelA = TEXT("in 500 J"); P.LabelB = TEXT("useful"); P.LabelC = TEXT("wasted"); OutName = TEXT("Sankey"); break;
+	case EBHDiagramType::EnergyChain:
+		P.LabelA = TEXT("chemical"); P.LabelB = TEXT("electrical"); P.LabelC = TEXT("light+heat"); OutName = TEXT("Energy chain"); break;
+	case EBHDiagramType::Lens:
+		P.LabelA = TEXT("object > 2F"); OutName = TEXT("Lens"); break;
+	case EBHDiagramType::Transformer:
+		P.LabelA = TEXT("Np 200"); P.LabelB = TEXT("Ns 50"); OutName = TEXT("Transformer"); break;
+	case EBHDiagramType::MagneticField:
+		OutName = TEXT("Magnetic field"); break;
+	case EBHDiagramType::InclinedPlane:
+		P.AngleOrShape = 30.0f; P.LabelA = TEXT("30 deg"); OutName = TEXT("Inclined plane"); break;
+	case EBHDiagramType::PressureColumn:
+		P.LabelA = TEXT("h"); OutName = TEXT("Pressure column"); break;
+	case EBHDiagramType::EnergyBars:
+		P.ValueA = 0.9f; P.ValueB = 0.1f; P.ValueC = 0.1f; P.ValueD = 0.9f; P.LabelA = TEXT("GPE"); P.LabelB = TEXT("KE"); P.LabelC = TEXT("GPE"); P.LabelD = TEXT("KE"); OutName = TEXT("Energy bars"); break;
+	case EBHDiagramType::ParticleModel:
+		OutName = TEXT("Particle model"); break;
+	default:
+		OutName = TEXT("None"); break;
+	}
+}
+
 // All drawing goes through these tiny UCanvas primitives so the renderer works on the player
 // HUD's canvas, a UCanvasRenderTarget2D canvas (train terminal), or a commandlet's bake target
 // without depending on ABHHUD. They mirror ABHHUD's own helpers (drop-shadowed text, tile rects,

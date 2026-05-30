@@ -1350,3 +1350,39 @@ static FAutoConsoleCommand GBHExportQuestionBankCommand(
 		FBHRevisionQuestionBank::ExportQuestionBankToOverrideFile(Message);
 		UE_LOG(LogTemp, Display, TEXT("[bh.ExportQuestionBank] %s"), *Message);
 	}));
+
+// Console command: `bh.DiagramCoverage` logs per-type diagram data coverage of the built-in bank
+// (how many questions of each diagram type carry per-question data), for QA / authoring progress.
+static FAutoConsoleCommand GBHDiagramCoverageCommand(
+	TEXT("bh.DiagramCoverage"),
+	TEXT("Logs per-diagram-type data coverage of the built-in physics question bank."),
+	FConsoleCommandDelegate::CreateLambda([]()
+	{
+		const TArray<FBHRevisionQuestion>& Bank = FBHRevisionQuestionBank::GetBuiltInQuestions();
+		const UEnum* Enum = StaticEnum<EBHDiagramType>();
+		int32 Total = 0;
+		int32 Authored = 0;
+		TMap<EBHDiagramType, int32> PerType;
+		TMap<EBHDiagramType, int32> PerTypeAuthored;
+		for (const FBHRevisionQuestion& Question : Bank)
+		{
+			if (Question.DiagramType == EBHDiagramType::None)
+			{
+				continue;
+			}
+			++Total;
+			++PerType.FindOrAdd(Question.DiagramType);
+			const bool bAuthored = Question.Diagram.HasValues() || Question.Diagram.ShapeVariant != 0 || Question.Diagram.AngleOrShape != 0.0f || Question.Diagram.HasImage() || !Question.Diagram.XAxis.IsEmpty() || !Question.Diagram.YAxis.IsEmpty();
+			if (bAuthored)
+			{
+				++Authored;
+				++PerTypeAuthored.FindOrAdd(Question.DiagramType);
+			}
+		}
+		UE_LOG(LogTemp, Display, TEXT("[bh.DiagramCoverage] %d/%d diagram questions carry per-question data."), Authored, Total);
+		for (const TPair<EBHDiagramType, int32>& Pair : PerType)
+		{
+			const FString TypeName = Enum ? Enum->GetNameStringByValue(static_cast<int64>(Pair.Key)) : FString(TEXT("?"));
+			UE_LOG(LogTemp, Display, TEXT("  %-18s %d/%d"), *TypeName, PerTypeAuthored.FindRef(Pair.Key), Pair.Value);
+		}
+	}));

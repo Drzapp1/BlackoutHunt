@@ -1196,6 +1196,7 @@ void ABHHUD::DrawHUD()
 	}
 
 	DrawPhaseBanner(BHGS, Character);
+	DrawDiagramPreview();
 }
 
 FLinearColor ABHHUD::MainText() const
@@ -2654,6 +2655,56 @@ void ABHHUD::DrawRevisionDiagram(const ABHObjectiveStation* Station, float X, fl
 		Image,
 		X, Y, W, H,
 		Ctx);
+}
+
+// Dev/QA: overlay a sample diagram so any type/variant can be checked in-game.
+//   bh.Diagrams.PreviewType 7   (EBHDiagramType index; -1/0 = off)
+//   bh.Diagrams.PreviewVariant 1
+static TAutoConsoleVariable<int32> CVarBHDiagramPreviewType(
+	TEXT("bh.Diagrams.PreviewType"), -1,
+	TEXT("Overlay a sample diagram of this EBHDiagramType index on the HUD (-1/0 = off)."), ECVF_Cheat);
+static TAutoConsoleVariable<int32> CVarBHDiagramPreviewVariant(
+	TEXT("bh.Diagrams.PreviewVariant"), 0,
+	TEXT("Shape variant used by bh.Diagrams.PreviewType."), ECVF_Cheat);
+
+void ABHHUD::DrawDiagramPreview()
+{
+	if (!Canvas || !GEngine)
+	{
+		return;
+	}
+	const int32 TypeIndex = CVarBHDiagramPreviewType.GetValueOnGameThread();
+	const UEnum* Enum = StaticEnum<EBHDiagramType>();
+	if (TypeIndex <= 0 || !Enum || TypeIndex >= Enum->NumEnums())
+	{
+		return;
+	}
+	const EBHDiagramType Type = static_cast<EBHDiagramType>(TypeIndex);
+	const int32 Variant = CVarBHDiagramPreviewVariant.GetValueOnGameThread();
+	FBHDiagramParams P;
+	FString Name;
+	FBHDiagramRenderer::SampleFor(Type, Variant, P, Name);
+
+	const float S = HudScale;
+	const float W = 420.0f * S;
+	const float H = FBHDiagramRenderer::BandHeightFor(Type) * S;
+	const float X = Canvas->ClipX - W - 24.0f * S;
+	const float Y = Canvas->ClipY - H - 64.0f * S;
+
+	FBHDiagramDrawContext Ctx;
+	Ctx.Scale = S;
+	Ctx.Accent = ActivePalette.AccentPrimary;
+	Ctx.Warm = ActivePalette.WarnHot;
+	Ctx.Good = ActivePalette.Good;
+	Ctx.Bad = ActivePalette.Bad;
+	Ctx.TextMain = MainText();
+	Ctx.Font = GEngine->GetSmallFont();
+	Ctx.TimeSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	Ctx.bEnhanced = FBHDiagramRenderer::IsEnhanced();
+
+	DrawHudText(FString::Printf(TEXT("DIAGRAM PREVIEW: %s  (type %d, variant %d)"), *Name, TypeIndex, Variant),
+		X, Y - 16.0f * S, FLinearColor(0.95f, 0.85f, 0.45f, 1.0f), GEngine->GetSmallFont(), 0.70f * S);
+	FBHDiagramRenderer::Draw(Canvas, Type, P, Name, FString(), nullptr, X, Y, W, H, Ctx);
 }
 
 void ABHHUD::DrawPhaseBanner(const ABHGameState* GameState, const ABHCharacter* Character)

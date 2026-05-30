@@ -82,6 +82,12 @@ public:
 	// simple ones (spectrum) less.
 	static float BandHeightFor(EBHDiagramType Type);
 
+	// Representative sample data for a diagram type, for previews / QA (the bh.Diagrams.Preview
+	// console command and the PNG-export commandlet). Variant selects a shape variant where the
+	// type supports one. Fills OutParams with answer-safe placeholder givens and OutName with a
+	// short human-readable label.
+	static void SampleFor(EBHDiagramType Type, int32 Variant, FBHDiagramParams& OutParams, FString& OutName);
+
 	// Reads the bh.Diagrams.Enhanced console var. When false, callers should build a context with
 	// bEnhanced = false so data-driven labels / shape variants are suppressed (generic schematic) --
 	// a runtime fallback that makes the data-driven behaviour reversible without a rebuild.
