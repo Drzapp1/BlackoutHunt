@@ -1,6 +1,6 @@
 # Editing the Physics Question Bank
 
-BlackoutHunt ships with a built-in bank of 368 IGCSE physics questions compiled into the game.
+BlackoutHunt ships with a built-in bank of 376 IGCSE physics questions compiled into the game.
 Teachers can **replace** that bank with their own questions by dropping a JSON file into the
 project's `Saved` folder. No rebuild is required — the game reads the file at runtime.
 
@@ -25,7 +25,7 @@ you run the game (and is not part of the source tree).
    bh.ExportQuestionBank
    ```
 
-   This writes all 368 built-in questions to `Saved/ClassroomPresets/QuestionBank.json` in the
+   This writes all 376 built-in questions to `Saved/ClassroomPresets/QuestionBank.json` in the
    exact format below. Edit that file, then restart the round (or the game) to load your changes.
 
 2. **Start from the worked example.** Copy [QuestionBank.example.json](QuestionBank.example.json)
@@ -50,7 +50,7 @@ A file passes validation when:
 - there is **at least one question in each of the four topics** (`ForcesAndMotion`, `Electricity`,
   `Waves`, `Energy`).
 
-Note the strict shipped-bank distribution (368 total, 92 per topic, fixed difficulty and type
+Note the strict shipped-bank distribution (376 total, 94 per topic, fixed difficulty and type
 counts) is **not** applied to teacher content — banks of any size are accepted as long as they are
 structurally well-formed.
 
@@ -91,29 +91,59 @@ labelled from the `diagram` object, so the picture shows *this* question's numbe
 "diagram": {
     "valueA": 0.0, "valueB": 0.0, "valueC": 0.0, "valueD": 0.0,
     "labelA": "", "labelB": "", "labelC": "", "labelD": "",
-    "xAxis": "", "yAxis": "", "angleOrShape": 0.0, "imageSoftPath": ""
+    "xAxis": "", "yAxis": "", "angleOrShape": 0.0, "shapeVariant": 0, "imageSoftPath": ""
 }
 ```
+
+> **Answer-safety rule:** a diagram shows the question's **givens**, never the answer. Do not put a
+> derived/answer value in any label. (The shipped bank is checked for this automatically.)
 
 How the fields are used depends on the diagram type — examples (see the worked example file for
 full questions):
 
-- **VelocityGraph / IVGraph** — `xAxis` / `yAxis` caption the axes; `labelA` adds a note. IVGraph
-  also marks a reading point using `valueA`/`valueB` against axis maxima `valueC`/`valueD`.
-- **ForceArrows / Circuit / MomentBeam / Sankey / EnergyChain** — `labelA`–`labelD` label the
-  arrows / components / boxes with their values (e.g. `"4 N"`, `"2 Ω"`, `"useful 350 J"`).
-- **Wave** — `valueA` sets amplitude fraction (0.05–0.45), `valueB` sets the number of cycles
-  (1–6); `labelA`/`labelB` caption the wave.
-- **RayDiagram** — `angleOrShape` is the incident angle from the normal (5–80 degrees); `labelA`
-  captions it.
+- **MotionGraph / VelocityGraph** — `xAxis` / `yAxis` caption the axes. `shapeVariant` picks the
+  line shape: `1` constant, `2` accelerating, `3` decelerating, `4` accelerate-then-constant (`0`
+  draws a generic increasing line). `labelA`/`labelB` may show given values.
+- **IVGraph** — `shapeVariant` `0` ohmic (straight), `1` filament lamp (curve), `2` diode
+  (threshold). `xAxis`/`yAxis` caption the axes; `valueA`/`valueB` mark a reading point against
+  axis maxima `valueC`/`valueD`.
+- **Circuit** — `shapeVariant` `0` single resistor, `1` series-2, `2` parallel-2, `3` series-3.
+  `valueA`/`valueC` are resistances, `valueB` the supply; `labelA`/`labelC` label resistors,
+  `labelB` the supply (e.g. `"2 ohm"`, `"6 V"`).
+- **ForceArrows** — `valueA`/`valueB` are the two force magnitudes (the arrows scale to them);
+  `labelA`/`labelB` label them. `shapeVariant` `1` adds a vertical weight/normal pair for free-body
+  questions, captioned by `labelC` (down) / `labelD` (up).
+- **MomentBeam / Sankey / EnergyChain / EnergyBars** — `labelA`–`labelD` label the distances,
+  forces, flows or boxes with their values. EnergyBars also sizes its bars from `valueA`–`valueD`.
+- **Wave** — `valueA` sets amplitude fraction (0.05–0.45), `valueB` the number of cycles (1–6);
+  `labelA`/`labelB` caption the wave.
+- **EMSpectrum** — `shapeVariant` `1`–`7` highlights the band in question (radio … gamma).
+- **RayDiagram / InclinedPlane** — `angleOrShape` is the angle in degrees (incidence / ramp);
+  `labelA` captions it.
+- **Transformer** — `labelA`/`labelB` label the primary / secondary coils (e.g. `"Np 200"`).
+- **SpringGraph / StaticCharge / MagneticField / ParticleModel / Lens / PressureColumn** — mostly
+  schematic; caption with `labelA` (and `xAxis`/`yAxis` for the spring graph) as needed.
 
-`imageSoftPath` is optional: set it to a texture object path to draw an illustrated diagram
-instead of the procedural schematic (the procedural one is used if the texture cannot be loaded).
-All diagram fields are optional — leaving them blank/zero just draws the generic schematic.
+`imageSoftPath` is optional: set it to a texture object path (e.g. `"/Game/.../T_MyDiagram"`) to
+draw an illustrated diagram instead of the procedural schematic (the procedural one is used if the
+texture cannot be loaded). All diagram fields are optional — leaving them blank/zero just draws the
+generic schematic.
 
 Diagram type values: `None`, `MotionGraph`, `VelocityGraph`, `ForceArrows`, `SpringGraph`,
 `MomentBeam`, `Circuit`, `IVGraph`, `StaticCharge`, `Wave`, `EMSpectrum`, `RayDiagram`, `Sankey`,
-`EnergyChain`.
+`EnergyChain`, `Lens`, `Transformer`, `MagneticField`, `InclinedPlane`, `PressureColumn`,
+`EnergyBars`, `ParticleModel`.
+
+## Previewing diagrams in-game
+
+To eyeball any diagram type without building a quiz node, open the console and run:
+
+```text
+bh.Diagrams.PreviewType 7      ; overlay a sample of EBHDiagramType index 7 (0 = off)
+bh.Diagrams.PreviewVariant 1   ; choose a shape variant
+bh.DiagramCoverage             ; log per-type data coverage of the built-in bank
+bh.Diagrams.Enhanced 0         ; temporarily fall back to plain schematics
+```
 
 ## Tips
 
