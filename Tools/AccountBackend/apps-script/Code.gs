@@ -85,15 +85,28 @@ function tab_(name, headers) {
     sh = ss.insertSheet(name);
     sh.appendRow(headers);
     sh.setFrozenRows(1);
+    return sh;
+  }
+  // Keep the header in sync if the schema grew (e.g. the PC-spec columns added later),
+  // so an already-created sheet gets the new column labels on the next write.
+  var firstRow = sh.getRange(1, 1, 1, Math.max(sh.getLastColumn(), headers.length)).getValues()[0];
+  if (String(firstRow[headers.length - 1] || '') === '') {
+    sh.getRange(1, 1, 1, headers.length).setValues([headers]);
+    sh.setFrozenRows(1);
   }
   return sh;
 }
 
 function logFeedback_(b) {
   var c = b.context || {};
-  tab_('feedback', ['received_at', 'kind', 'rating', 'message', 'contact', 'player', 'level', 'role', 'app_version', 'platform'])
+  var d = b.diagnostics || {};
+  var dev = d.device || {};
+  var perf = d.perf || {};
+  var perfStr = perf.avg_fps ? ('avg ' + perf.avg_fps + ' / min ' + perf.min_fps + ' / 1%low ' + (perf.p1_low_fps || '') + ' / ' + (perf.hitches || 0) + ' hitches') : '';
+  tab_('feedback', ['received_at', 'kind', 'rating', 'message', 'contact', 'player', 'level', 'role', 'app_version', 'platform', 'cpu', 'gpu', 'ram_gb', 'os', 'perf'])
     .appendRow([new Date(), b.kind || '', b.rating || '', b.message || '', b.contact || '',
-                c.player_name || '', c.level || '', c.role || '', c.app_version || '', c.platform || '']);
+                c.player_name || '', c.level || '', c.role || '', c.app_version || '', c.platform || '',
+                dev.cpu || '', dev.gpu || '', dev.ram_gb || '', dev.os || '', perfStr]);
 }
 
 function logTelemetry_(b) {
@@ -109,17 +122,21 @@ function emailFeedback_(kind, b) {
   var to = Session.getEffectiveUser().getEmail(); // you — the account running this script
   if (!to) return;
   var c = b.context || {};
+  var d = b.diagnostics || {};
+  var dev = d.device || {};
+  var perf = d.perf || {};
   var snippet = String(b.message || 'feedback').replace(/\s+/g, ' ').slice(0, 80);
   var subject = '[Blackout Hunt] ' + kind + (b.rating ? ' ' + b.rating + '★' : '') + ' — ' + snippet;
   var lines = [
     'Kind:    ' + kind,
     'Rating:  ' + (b.rating || '-') + '/5',
     'From:    ' + (c.player_name || 'anonymous') + (b.contact ? ' (' + b.contact + ')' : ''),
-    'Context: ' + [c.app_version && ('v' + c.app_version), c.platform, c.level, c.role].filter(Boolean).join(' · '),
-    '',
-    b.message || '',
-    '',
-    '— Blackout Hunt (Apps Script)'
+    'Context: ' + [c.app_version && ('v' + c.app_version), c.platform, c.level, c.role].filter(Boolean).join(' · ')
   ];
+  // PC specs + performance — present only when the player left "Include diagnostics" ticked (default on).
+  var pc = [dev.cpu, dev.gpu, (dev.ram_gb ? dev.ram_gb + 'GB' : ''), dev.os].filter(Boolean).join(' · ');
+  if (pc) lines.push('PC:      ' + pc);
+  if (perf.avg_fps) lines.push('Perf:    FPS avg ' + perf.avg_fps + ' / min ' + perf.min_fps + ' / 1%low ' + (perf.p1_low_fps || '-') + ' · ' + (perf.hitches || 0) + ' hitches');
+  lines.push('', b.message || '', '', '— Blackout Hunt (Apps Script)');
   MailApp.sendEmail(to, subject, lines.join('\n'));
 }
