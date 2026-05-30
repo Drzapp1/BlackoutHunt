@@ -745,10 +745,54 @@ void BuildEnergyExtension(TArray<FBHRevisionQuestion>& Bank)
 	AddSpecs(Bank, EBHPhysicsTopic::Energy, TEXT("energy_ext"), TEXT("Energy"), EBHQuestionType::Ordering, Order, UE_ARRAY_COUNT(Order));
 }
 
+// Eight extra GraphReading questions (two per topic, all Medium difficulty) that showcase the
+// added diagram types (inclined plane, liquid pressure column, transformer, magnetic field,
+// converging lens x2, energy bar chart, particle model). Difficulty/type are set explicitly so the
+// strict distribution guard stays exact. Diagrams show GIVENS only -- answers are descriptions.
+void BuildNewTypeShowcase(TArray<FBHRevisionQuestion>& Bank)
+{
+	auto MakeQ = [](EBHPhysicsTopic Topic, const TCHAR* TopicName, const TCHAR* Id, const TCHAR* Subtopic,
+		EBHDiagramType DType, const TCHAR* Prompt, const TCHAR* C0, const TCHAR* C1, const TCHAR* C2, const TCHAR* C3,
+		int32 Correct, const TCHAR* Formula, const TCHAR* Hint, const TCHAR* Corr, const TCHAR* Expl,
+		const FBHDiagramParams& Diagram) -> FBHRevisionQuestion
+	{
+		FBHRevisionQuestion Q;
+		Q.Id = Id;
+		Q.Topic = Topic;
+		Q.TopicName = TopicName;
+		Q.Subtopic = Subtopic;
+		Q.Difficulty = EBHQuestionDifficulty::Medium;
+		Q.Type = EBHQuestionType::GraphReading;
+		Q.DiagramType = DType;
+		Q.Prompt = Prompt;
+		Q.Answer.Choices = MakeChoices({C0, C1, C2, C3});
+		Q.Answer.CorrectChoiceIndex = Correct;
+		Q.Answer.Formula = Formula;
+		Q.Diagram = Diagram;
+		Q.Hint = Hint;
+		Q.CorrectionPrompt = Corr;
+		Q.Explanation = Expl;
+		Q.MasteryWeight = 1.2f;
+		return Q;
+	};
+
+	{ FBHDiagramParams D; D.AngleOrShape = 30.0f; D.LabelA = TEXT("30 deg"); Bank.Add(MakeQ(EBHPhysicsTopic::ForcesAndMotion, TEXT("Forces and Motion"), TEXT("forces_new_incline"), TEXT("Inclined plane"), EBHDiagramType::InclinedPlane, TEXT("A box on the 30 deg ramp shown stays still. Which two forces balance along the slope?"), TEXT("Friction and the weight component down the slope"), TEXT("Normal force and the whole weight"), TEXT("Friction and the normal force"), TEXT("Weight and air resistance"), 0, TEXT("along-slope balance"), TEXT("Resolve the weight into components along and across the slope."), TEXT("Look only at the forces acting parallel to the ramp surface."), TEXT("On a still slope, friction acting up the slope balances the component of weight acting down the slope."), D)); }
+	{ FBHDiagramParams D; D.LabelA = TEXT("h"); Bank.Add(MakeQ(EBHPhysicsTopic::ForcesAndMotion, TEXT("Forces and Motion"), TEXT("forces_new_pressure"), TEXT("Liquid pressure"), EBHDiagramType::PressureColumn, TEXT("The sealed water tank diagram is shown. Where is the pressure on the walls greatest?"), TEXT("At the bottom"), TEXT("At the surface"), TEXT("Halfway up"), TEXT("The same at every depth"), 0, TEXT("P = rho g h"), TEXT("Pressure in a liquid increases with depth."), TEXT("Think about how the depth of water above each point changes."), TEXT("Pressure increases with depth, so it is greatest at the bottom of the tank."), D)); }
+
+	{ FBHDiagramParams D; D.LabelA = TEXT("Np 200"); D.LabelB = TEXT("Ns 50"); Bank.Add(MakeQ(EBHPhysicsTopic::Electricity, TEXT("Electricity"), TEXT("elec_new_transformer"), TEXT("Transformers"), EBHDiagramType::Transformer, TEXT("The transformer diagram has 200 primary turns and 50 secondary turns. What type of transformer is it?"), TEXT("Step-down transformer"), TEXT("Step-up transformer"), TEXT("A fuse"), TEXT("A diode"), 0, TEXT("Vp/Vs = Np/Ns"), TEXT("Compare the number of turns on each coil."), TEXT("Fewer turns on the secondary than the primary lowers the voltage."), TEXT("With more primary than secondary turns the secondary voltage is lower, so it is a step-down transformer."), D)); }
+	{ FBHDiagramParams D; Bank.Add(MakeQ(EBHPhysicsTopic::Electricity, TEXT("Electricity"), TEXT("elec_new_magnet"), TEXT("Magnetic fields"), EBHDiagramType::MagneticField, TEXT("The bar-magnet field-line diagram is shown. Where is the magnetic field strongest?"), TEXT("Near the poles"), TEXT("At the centre of the bar"), TEXT("Far away from the magnet"), TEXT("The field is the same everywhere"), 0, TEXT("close lines = strong field"), TEXT("Field strength is shown by how close together the field lines are."), TEXT("Find where the field lines are most crowded."), TEXT("Field lines are closest together at the poles, so the field is strongest there."), D)); }
+
+	{ FBHDiagramParams D; D.LabelA = TEXT("object > 2F"); Bank.Add(MakeQ(EBHPhysicsTopic::Waves, TEXT("Waves"), TEXT("waves_new_lens"), TEXT("Converging lens"), EBHDiagramType::Lens, TEXT("The ray diagram shows an object placed beyond 2F of a converging lens. What is the image like?"), TEXT("Real, inverted and smaller"), TEXT("Virtual, upright and larger"), TEXT("Real, upright and the same size"), TEXT("No image forms at all"), 0, TEXT("converging lens image"), TEXT("Trace a parallel ray and a central ray through the lens."), TEXT("For an object beyond 2F the image forms between F and 2F on the far side."), TEXT("An object beyond 2F of a converging lens gives a real, inverted, diminished image."), D)); }
+	{ FBHDiagramParams D; D.LabelA = TEXT("parallel rays"); Bank.Add(MakeQ(EBHPhysicsTopic::Waves, TEXT("Waves"), TEXT("waves_new_focal"), TEXT("Focal length"), EBHDiagramType::Lens, TEXT("On the converging-lens diagram, parallel light is brought to a focus. What name is given to the lens-to-focus distance?"), TEXT("Focal length"), TEXT("Wavelength"), TEXT("Amplitude"), TEXT("Aperture"), 0, TEXT("focal length f"), TEXT("It is the distance from the lens to the principal focus."), TEXT("Name the distance from the lens to where parallel rays meet."), TEXT("Parallel rays converge at the principal focus; the lens-to-focus distance is the focal length."), D)); }
+
+	{ FBHDiagramParams D; D.ValueA = 0.9f; D.ValueB = 0.1f; D.ValueC = 0.1f; D.ValueD = 0.9f; D.LabelA = TEXT("GPE"); D.LabelB = TEXT("KE"); D.LabelC = TEXT("GPE"); D.LabelD = TEXT("KE"); Bank.Add(MakeQ(EBHPhysicsTopic::Energy, TEXT("Energy"), TEXT("energy_new_bars"), TEXT("Energy conservation"), EBHDiagramType::EnergyBars, TEXT("The energy bar chart shows a falling ball before and after. With no air resistance, which statement matches the bars?"), TEXT("GPE decreases as KE increases"), TEXT("Both GPE and KE increase"), TEXT("Both stores stay at zero"), TEXT("KE decreases as GPE increases"), 0, TEXT("GPE -> KE (conserved)"), TEXT("Total energy is conserved as the ball falls."), TEXT("Compare the before and after bars for each store."), TEXT("As the ball falls, the gravitational store falls and the kinetic store rises by the same amount."), D)); }
+	{ FBHDiagramParams D; Bank.Add(MakeQ(EBHPhysicsTopic::Energy, TEXT("Energy"), TEXT("energy_new_particles"), TEXT("Particle model"), EBHDiagramType::ParticleModel, TEXT("The particle model diagram compares the three states of matter. As a substance changes solid -> liquid -> gas, the particles..."), TEXT("Gain energy and move more freely"), TEXT("Lose energy and pack closer"), TEXT("Stay in exactly the same arrangement"), TEXT("Are destroyed and recreated"), 0, TEXT("heating spreads particles"), TEXT("Heating gives particles more energy to move apart."), TEXT("Track how the spacing and motion change from solid to gas."), TEXT("Going solid to liquid to gas, particles gain energy and move more freely and further apart."), D)); }
+}
+
 TArray<FBHRevisionQuestion> BuildBuiltInQuestionBank()
 {
 	TArray<FBHRevisionQuestion> Bank;
-	Bank.Reserve(368);
+	Bank.Reserve(376);
 	BuildForces(Bank);
 	BuildElectricity(Bank);
 	BuildWaves(Bank);
@@ -757,6 +801,7 @@ TArray<FBHRevisionQuestion> BuildBuiltInQuestionBank()
 	BuildElectricityExtension(Bank);
 	BuildWavesExtension(Bank);
 	BuildEnergyExtension(Bank);
+	BuildNewTypeShowcase(Bank);
 	return Bank;
 }
 
@@ -905,7 +950,7 @@ bool FBHRevisionQuestionBank::ValidateBuiltInDistribution(FString& OutSummary)
 	int32 DifficultyCounts[4][3] = {};
 	int32 TypeCounts[7] = {0, 0, 0, 0, 0, 0, 0};
 	TSet<FString> Ids;
-	bool bValid = Bank.Num() == 368;
+	bool bValid = Bank.Num() == 376;
 	for (const FBHRevisionQuestion& Question : Bank)
 	{
 		if (Question.Id.IsEmpty() || Ids.Contains(Question.Id) || Question.Prompt.IsEmpty() || Question.Hint.IsEmpty() || Question.Explanation.IsEmpty() || Question.Answer.Choices.Num() != 4 || !Question.Answer.Choices.IsValidIndex(Question.Answer.CorrectChoiceIndex))
@@ -920,15 +965,17 @@ bool FBHRevisionQuestionBank::ValidateBuiltInDistribution(FString& OutSummary)
 		++TypeCounts[TypeIndex(Question.Type)];
 	}
 
+	// 92 base + 2 showcase questions per topic = 94; the two extras per topic are Medium GraphReading
+	// (BuildNewTypeShowcase), so Medium rises 36 -> 38 and graph rises 80 -> 88.
 	for (int32 Index = 0; Index < 4; ++Index)
 	{
-		bValid = bValid && TopicCounts[Index] == 92;
+		bValid = bValid && TopicCounts[Index] == 94;
 		bValid = bValid && DifficultyCounts[Index][0] == 28;
-		bValid = bValid && DifficultyCounts[Index][1] == 36;
+		bValid = bValid && DifficultyCounts[Index][1] == 38;
 		bValid = bValid && DifficultyCounts[Index][2] == 28;
 	}
 
-	const int32 ExpectedTypeCounts[7] = {80, 40, 56, 48, 80, 32, 32};
+	const int32 ExpectedTypeCounts[7] = {80, 40, 56, 48, 88, 32, 32};
 	for (int32 Index = 0; Index < 7; ++Index)
 	{
 		bValid = bValid && TypeCounts[Index] == ExpectedTypeCounts[Index];
