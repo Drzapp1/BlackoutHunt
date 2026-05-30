@@ -1,5 +1,6 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "BHDiagramRenderer.h"
 #include "BHGameMode.h"
 #include "BHPlayerState.h"
 #include "BHRevisionQuestionBank.h"
@@ -281,23 +282,90 @@ bool FBHRevisionDiagramCoverageTest::RunTest(const FString& Parameters)
 	int32 Authored = 0;
 	int32 DataExpected = 0;
 	int32 DataExpectedAuthored = 0;
+	TArray<FString> UnauthoredExpected;
 	for (const FBHRevisionQuestion& Q : Bank)
 	{
 		if (Q.DiagramType == EBHDiagramType::None) { continue; }
 		++WithDiagram;
-		const bool bAuthored = Q.Diagram.HasValues() || Q.Diagram.ShapeVariant != 0 || Q.Diagram.AngleOrShape != 0.0f || Q.Diagram.HasImage();
+		const bool bAuthored = Q.Diagram.HasValues() || Q.Diagram.ShapeVariant != 0 || Q.Diagram.AngleOrShape != 0.0f || Q.Diagram.HasImage() || !Q.Diagram.XAxis.IsEmpty() || !Q.Diagram.YAxis.IsEmpty();
 		if (bAuthored) { ++Authored; }
-		const bool bExpected = (Q.Type == EBHQuestionType::Calculation || Q.Type == EBHQuestionType::GraphReading);
+		// "Data-expected" = a calculation/graph question whose diagram type actually consumes
+		// per-question values. Purely schematic types (static charge, magnetic field lines, the
+		// particle model) convey their meaning structurally, so they need no per-question data.
+		const bool bSchematicType = (Q.DiagramType == EBHDiagramType::StaticCharge
+			|| Q.DiagramType == EBHDiagramType::MagneticField
+			|| Q.DiagramType == EBHDiagramType::ParticleModel);
+		const bool bExpected = (Q.Type == EBHQuestionType::Calculation || Q.Type == EBHQuestionType::GraphReading) && !bSchematicType;
 		if (bExpected)
 		{
 			++DataExpected;
 			if (bAuthored) { ++DataExpectedAuthored; }
+			else { UnauthoredExpected.Add(Q.Id); }
 		}
 	}
 	AddInfo(FString::Printf(TEXT("Diagram coverage: %d with diagram, %d authored (%.0f%%); data-expected %d, authored %d (%.0f%%)."),
 		WithDiagram, Authored, WithDiagram ? 100.0f * Authored / WithDiagram : 0.0f,
 		DataExpected, DataExpectedAuthored, DataExpected ? 100.0f * DataExpectedAuthored / DataExpected : 0.0f));
-	TestTrue(TEXT("Diagram data coverage does not regress below the authored baseline."), Authored >= 40);
+	if (UnauthoredExpected.Num() > 0)
+	{
+		AddInfo(FString::Printf(TEXT("Data-expected questions still missing diagram data: %s"), *FString::Join(UnauthoredExpected, TEXT(", "))));
+	}
+	// Every Calculation / GraphReading diagram question must carry per-question data so the picture
+	// shows the question's own values, not a generic schematic.
+	TestEqual(TEXT("Every data-expected diagram question carries per-question data."), DataExpectedAuthored, DataExpected);
+	return true;
+}
+
+// Any illustrated-diagram texture path (teacher JSON or future built-in art) must be a well-formed
+// object path so ResolveDiagramTexture can load it; a malformed path silently falls back forever.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHRevisionDiagramImagePathsTest,
+	"BlackoutHunt.GameMode.RevisionDiagramImagePaths",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHRevisionDiagramImagePathsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const TArray<FBHRevisionQuestion>& Bank = FBHRevisionQuestionBank::GetBuiltInQuestions();
+	for (const FBHRevisionQuestion& Q : Bank)
+	{
+		if (Q.Diagram.ImageSoftPath.IsEmpty()) { continue; }
+		TestTrue(FString::Printf(TEXT("ImageSoftPath for '%s' is a well-formed object path (starts with '/')."), *Q.Id),
+			Q.Diagram.ImageSoftPath.StartsWith(TEXT("/")) && !Q.Diagram.ImageSoftPath.Contains(TEXT(" ")));
+	}
+	return true;
+}
+
+// Every diagram type (including the newly added ones) must report a sane band height so the HUD
+// reserves enough room without overflowing the question panel; unlisted types fall back to a safe
+// default, which this also confirms stays in range.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHRevisionDiagramBandHeightsTest,
+	"BlackoutHunt.GameMode.RevisionDiagramBandHeights",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHRevisionDiagramBandHeightsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const UEnum* Enum = StaticEnum<EBHDiagramType>();
+	if (!Enum)
+	{
+		AddError(TEXT("EBHDiagramType enum reflection not found."));
+		return false;
+	}
+	for (int32 Index = 0; Index < Enum->NumEnums(); ++Index)
+	{
+		const FString Name = Enum->GetNameStringByIndex(Index);
+		if (Name.Contains(TEXT("MAX")))
+		{
+			continue;
+		}
+		const EBHDiagramType Type = static_cast<EBHDiagramType>(Enum->GetValueByIndex(Index));
+		if (Type == EBHDiagramType::None)
+		{
+			continue;
+		}
+		const float Height = FBHDiagramRenderer::BandHeightFor(Type);
+		TestTrue(FString::Printf(TEXT("BandHeightFor(%s) is sane (90..200)."), *Name), Height >= 90.0f && Height <= 200.0f);
+	}
 	return true;
 }
 
