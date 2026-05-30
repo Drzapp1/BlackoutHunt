@@ -225,7 +225,7 @@ void FBHDiagramRenderer::Draw(
 	// ---- Chrome: background, frame lines, faint grid, corner brackets. ----
 	if (Ctx.bDrawChrome)
 	{
-		RRect(Canvas, FLinearColor(0.025f, 0.032f, 0.036f, 0.88f), X, Y, W, H);
+		RRect(Canvas, Ctx.Background, X, Y, W, H);
 		RRect(Canvas, FLinearColor(0.18f, 0.28f, 0.30f, 0.82f), X, Y, W, 1.0f);
 		RRect(Canvas, FLinearColor(0.18f, 0.28f, 0.30f, 0.58f), X, Y + H - 1.0f, W, 1.0f);
 		for (float GridX = X + 42.0f * S; GridX < X + W - 12.0f * S; GridX += 48.0f * S)

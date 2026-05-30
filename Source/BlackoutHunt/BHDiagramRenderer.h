@@ -38,6 +38,9 @@ struct FBHDiagramDrawContext
 	FLinearColor TextDim = FLinearColor(0.70f, 0.78f, 0.82f, 0.90f);
 	FLinearColor Axis = FLinearColor(0.50f, 0.56f, 0.58f, 1.0f);
 	FLinearColor Grid = FLinearColor(0.42f, 0.58f, 0.58f, 0.055f);
+	// Panel background fill. Default is the dark "scanner" look; the PNG-bake commandlet overrides
+	// it with a light fill for a clean textbook style.
+	FLinearColor Background = FLinearColor(0.025f, 0.032f, 0.036f, 0.88f);
 
 	// Font for diagram labels. Null falls back to GEngine->GetSmallFont().
 	const UFont* Font = nullptr;
