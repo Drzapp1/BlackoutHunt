@@ -29,6 +29,8 @@
 // Default skips bulk end-of-round surveys.
 var EMAIL_KINDS = ['bug', 'idea', 'praise', 'other'];
 var SPREADSHEET_NAME = 'BlackoutHunt Feedback';
+// Bump this on each change. GET the /exec URL to read it back and confirm which code is live.
+var SCRIPT_VERSION = '2026-05-30-specs';
 
 function doPost(e) {
   try {
@@ -60,7 +62,7 @@ function doPost(e) {
 }
 
 function doGet(e) {
-  return jsonOut_({ ok: true, service: 'blackouthunt-feedback', hint: 'POST /feedback or /telemetry/session' });
+  return jsonOut_({ ok: true, service: 'blackouthunt-feedback', version: SCRIPT_VERSION, hint: 'POST /feedback or /telemetry/session' });
 }
 
 function jsonOut_(obj) {
