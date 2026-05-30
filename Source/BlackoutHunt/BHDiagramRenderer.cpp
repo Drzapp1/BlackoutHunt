@@ -265,7 +265,7 @@ void FBHDiagramRenderer::Draw(
 		{
 			RText(Canvas, Font, Subtopic.ToUpper(), X + 10.0f * S, Y + 4.0f * S, FLinearColor(0.66f, 0.82f, 0.94f, 0.92f), 0.62f * S);
 		}
-		if (Ctx.bDrawCaptions && !Formula.IsEmpty())
+		if (Ctx.bDrawCaptions && Ctx.bShowConceptCaptions && !Formula.IsEmpty())
 		{
 			RTextRight(Canvas, Font, FString::Printf(TEXT("Key idea: %s"), *Formula), X + W - 10.0f * S, Y + H - 18.0f * S, FLinearColor(0.95f, 0.84f, 0.45f, 1.0f), 0.66f * S);
 		}
@@ -300,6 +300,18 @@ void FBHDiagramRenderer::Draw(
 	const float Bottom = Y + H - 18.0f * S;
 	const float Now = Ctx.TimeSeconds;
 	const bool bData = Ctx.bEnhanced && P.HasValues();
+
+	// Editorial concept captions (e.g. "gradient = velocity") reveal the answer on identify/recall
+	// questions, so they are gated by bShowConceptCaptions. Data labels (givens) and structural
+	// marks are always drawn; only these baked concept statements are suppressed.
+	auto CCap = [&](const FString& Text, float CapX, float CapY, const FLinearColor& Col, float Sc)
+	{
+		if (Ctx.bShowConceptCaptions) { RText(Canvas, Font, Text, CapX, CapY, Col, Sc); }
+	};
+	auto CCapC = [&](const FString& Text, float CapCX, float CapY, const FLinearColor& Col, float Sc)
+	{
+		if (Ctx.bShowConceptCaptions) { RTextCentered(Canvas, Font, Text, CapCX, CapY, Col, Sc); }
+	};
 
 	switch (Type)
 	{
@@ -338,7 +350,7 @@ void FBHDiagramRenderer::Draw(
 				Prev = FVector2D(PX, PY);
 			}
 		}
-		RText(Canvas, Font, TEXT("gradient = velocity"), Left + 8.0f * S, Top + 4.0f * S, Warm, 0.72f * S);
+		CCap(TEXT("gradient = velocity"), Left + 8.0f * S, Top + 4.0f * S, Warm, 0.72f * S);
 		if (Ctx.bEnhanced && !P.XAxis.IsEmpty()) { RTextRight(Canvas, Font, P.XAxis, Right - 6.0f * S, Bottom - 14.0f * S, Ctx.TextDim, 0.60f * S); }
 		if (Ctx.bEnhanced && !P.YAxis.IsEmpty()) { RText(Canvas, Font, P.YAxis, Left + 4.0f * S, Top - 4.0f * S, Ctx.TextDim, 0.60f * S); }
 		break;
@@ -382,7 +394,7 @@ void FBHDiagramRenderer::Draw(
 				Prev = FVector2D(PX, PY);
 			}
 		}
-		RText(Canvas, Font, TEXT("area = distance"), Left + 18.0f * S, Bottom - 34.0f * S, Warm, 0.72f * S);
+		CCap(TEXT("area = distance"), Left + 18.0f * S, Bottom - 34.0f * S, Warm, 0.72f * S);
 		if (Ctx.bEnhanced && !P.XAxis.IsEmpty()) { RTextRight(Canvas, Font, P.XAxis, Right - 6.0f * S, Bottom - 14.0f * S, Ctx.TextDim, 0.60f * S); }
 		if (Ctx.bEnhanced && !P.YAxis.IsEmpty()) { RText(Canvas, Font, P.YAxis, Left + 4.0f * S, Top - 4.0f * S, Ctx.TextDim, 0.60f * S); }
 		if (bData && !P.LabelA.IsEmpty()) { RText(Canvas, Font, P.LabelA, Left + 18.0f * S, Top + 6.0f * S, Main, 0.60f * S); }
@@ -408,7 +420,7 @@ void FBHDiagramRenderer::Draw(
 			RArrow(Canvas, CX, MidY, CX, MidY + (Bottom - MidY) * 0.82f, Warm, 3.0f * S, 8.0f * S);
 			RArrow(Canvas, CX, MidY, CX, Top + 8.0f * S, Line, 3.0f * S, 8.0f * S);
 		}
-		RText(Canvas, Font, Variant == 1 ? TEXT("free-body forces") : TEXT("resultant force"), X + W * 0.39f, Top + 8.0f * S, Main, 0.78f * S);
+		CCap(Variant == 1 ? FString(TEXT("free-body forces")) : FString(TEXT("resultant force")), X + W * 0.39f, Top + 8.0f * S, Main, 0.78f * S);
 		if (bData)
 		{
 			if (!P.LabelA.IsEmpty()) { RText(Canvas, Font, P.LabelA, X + W * 0.16f, MidY - 18.0f * S, Warm, 0.66f * S); }
@@ -422,7 +434,7 @@ void FBHDiagramRenderer::Draw(
 		RLine(Canvas, Left, Bottom, Right, Bottom, AxisCol, 1.5f * S);
 		RLine(Canvas, Left, Bottom, Left, Top, AxisCol, 1.5f * S);
 		RLine(Canvas, Left, Bottom, Right - 32.0f * S, Top + 18.0f * S, Line, 3.0f * S);
-		RText(Canvas, Font, TEXT("gradient = k"), Left + 18.0f * S, Top + 6.0f * S, Warm, 0.76f * S);
+		CCap(TEXT("gradient = k"), Left + 18.0f * S, Top + 6.0f * S, Warm, 0.76f * S);
 		if (Ctx.bEnhanced && !P.XAxis.IsEmpty()) { RTextRight(Canvas, Font, P.XAxis, Right - 6.0f * S, Bottom - 14.0f * S, Ctx.TextDim, 0.60f * S); }
 		if (Ctx.bEnhanced && !P.YAxis.IsEmpty()) { RText(Canvas, Font, P.YAxis, Left + 4.0f * S, Top - 4.0f * S, Ctx.TextDim, 0.60f * S); }
 		break;
@@ -431,7 +443,7 @@ void FBHDiagramRenderer::Draw(
 		RLine(Canvas, X + W * 0.48f, MidY + 8.0f * S, X + W * 0.48f - 14.0f * S, Bottom, Warm, 3.0f * S);
 		RLine(Canvas, X + W * 0.48f, MidY + 8.0f * S, X + W * 0.48f + 14.0f * S, Bottom, Warm, 3.0f * S);
 		RArrow(Canvas, X + W * 0.78f, MidY - 30.0f * S, X + W * 0.78f, MidY, Line, 4.0f * S, 8.0f * S);
-		RText(Canvas, Font, TEXT("moment = Fd"), Left + 14.0f * S, Top + 8.0f * S, Main, 0.78f * S);
+		CCap(TEXT("moment = Fd"), Left + 14.0f * S, Top + 8.0f * S, Main, 0.78f * S);
 		if (bData)
 		{
 			if (!P.LabelA.IsEmpty()) { RText(Canvas, Font, P.LabelA, Left + 14.0f * S, MidY - 18.0f * S, Warm, 0.64f * S); }
@@ -486,7 +498,7 @@ void FBHDiagramRenderer::Draw(
 			}
 		}
 		const FString CircuitLabel = (Variant == 2) ? FString(TEXT("parallel: same p.d.")) : (Variant >= 1 ? FString(TEXT("series: same current")) : FString(TEXT("A series | V parallel")));
-		RTextCentered(Canvas, Font, CircuitLabel, CX, RailB - 24.0f * S, Main, 0.66f * S);
+		CCapC(CircuitLabel, CX, RailB - 24.0f * S, Main, 0.66f * S);
 		if (bData && !P.LabelB.IsEmpty()) { RText(Canvas, Font, P.LabelB, Left + 14.0f * S, RailB - 24.0f * S, Line, 0.60f * S); }
 		break;
 	}
@@ -523,10 +535,14 @@ void FBHDiagramRenderer::Draw(
 			const float PtY = Bottom - (Bottom - Top) * FMath::Clamp(P.ValueB / P.ValueD, 0.0f, 1.0f);
 			RRect(Canvas, Warm, PtX - 3.0f * S, PtY - 3.0f * S, 6.0f * S, 6.0f * S);
 		}
-		const FString IVLabel = (Ctx.bEnhanced && !P.LabelA.IsEmpty())
-			? P.LabelA
-			: (Variant == 1 ? FString(TEXT("filament: R rises")) : (Variant == 2 ? FString(TEXT("diode: one-way")) : FString(TEXT("straight: ohmic"))));
-		RText(Canvas, Font, IVLabel, Left + 16.0f * S, Top + 8.0f * S, Warm, 0.74f * S);
+		if (Ctx.bEnhanced && !P.LabelA.IsEmpty())
+		{
+			RText(Canvas, Font, P.LabelA, Left + 16.0f * S, Top + 8.0f * S, Warm, 0.74f * S);
+		}
+		else
+		{
+			CCap(Variant == 1 ? FString(TEXT("filament: R rises")) : (Variant == 2 ? FString(TEXT("diode: one-way")) : FString(TEXT("straight: ohmic"))), Left + 16.0f * S, Top + 8.0f * S, Warm, 0.74f * S);
+		}
 		if (Ctx.bEnhanced && !P.XAxis.IsEmpty()) { RTextRight(Canvas, Font, P.XAxis, Right - 6.0f * S, Bottom - 14.0f * S, Ctx.TextDim, 0.60f * S); }
 		if (Ctx.bEnhanced && !P.YAxis.IsEmpty()) { RText(Canvas, Font, P.YAxis, Left + 4.0f * S, Top - 4.0f * S, Ctx.TextDim, 0.60f * S); }
 		break;
@@ -535,7 +551,7 @@ void FBHDiagramRenderer::Draw(
 		RText(Canvas, Font, TEXT("+ + +"), Left + 24.0f * S, MidY - 8.0f * S, Warm, 1.0f * S);
 		RTextRight(Canvas, Font, TEXT("- - -"), Right - 8.0f * S, MidY - 8.0f * S, Line, 1.0f * S);
 		RArrow(Canvas, X + W * 0.42f, MidY, X + W * 0.58f, MidY, Main, 3.0f * S, 7.0f * S);
-		RText(Canvas, Font, TEXT("opposites attract"), X + W * 0.38f, Top + 8.0f * S, Main, 0.74f * S);
+		CCap(TEXT("opposites attract"), X + W * 0.38f, Top + 8.0f * S, Main, 0.74f * S);
 		break;
 	case EBHDiagramType::Wave:
 	{
@@ -551,8 +567,14 @@ void FBHDiagramRenderer::Draw(
 			RLine(Canvas, Prev.X, Prev.Y, PX, PY, Line, 2.5f * S);
 			Prev = FVector2D(PX, PY);
 		}
-		const FString WaveLabel = bData ? FString::Printf(TEXT("%s | %s"), *P.LabelA, *P.LabelB) : FString(TEXT("amplitude | wavelength"));
-		RText(Canvas, Font, WaveLabel, Left + 14.0f * S, Top + 6.0f * S, Warm, 0.74f * S);
+		if (bData)
+		{
+			RText(Canvas, Font, FString::Printf(TEXT("%s | %s"), *P.LabelA, *P.LabelB), Left + 14.0f * S, Top + 6.0f * S, Warm, 0.74f * S);
+		}
+		else
+		{
+			CCap(TEXT("amplitude | wavelength"), Left + 14.0f * S, Top + 6.0f * S, Warm, 0.74f * S);
+		}
 		break;
 	}
 	case EBHDiagramType::EMSpectrum:
@@ -582,7 +604,7 @@ void FBHDiagramRenderer::Draw(
 			const float HX = Left + SegmentW * (P.ShapeVariant - 1);
 			RCornerBrackets(Canvas, HX - 1.0f * S, MidY - 20.0f * S, SegmentW - 1.0f * S, 40.0f * S, Ctx.TextMain, 7.0f * S, 2.0f * S);
 		}
-		RText(Canvas, Font, TEXT("long wavelength -> high frequency"), Left + 10.0f * S, Top + 4.0f * S, Warm, 0.68f * S);
+		CCap(TEXT("long wavelength -> high frequency"), Left + 10.0f * S, Top + 4.0f * S, Warm, 0.68f * S);
 		break;
 	}
 	case EBHDiagramType::RayDiagram:
@@ -597,15 +619,21 @@ void FBHDiagramRenderer::Draw(
 		const float Dy = FMath::Cos(Rad) * RayLen;
 		RArrow(Canvas, CX - Dx, MidY - Dy, CX, MidY, Warm, 3.0f * S, 8.0f * S);
 		RArrow(Canvas, CX, MidY, CX + Dx, MidY - Dy, Line, 3.0f * S, 8.0f * S);
-		const FString RayLabel = (Ctx.bEnhanced && !P.LabelA.IsEmpty()) ? P.LabelA : FString(TEXT("normal | i = r"));
-		RText(Canvas, Font, RayLabel, Left + 8.0f * S, Top + 6.0f * S, Main, 0.72f * S);
+		if (Ctx.bEnhanced && !P.LabelA.IsEmpty())
+		{
+			RText(Canvas, Font, P.LabelA, Left + 8.0f * S, Top + 6.0f * S, Main, 0.72f * S);
+		}
+		else
+		{
+			CCap(TEXT("normal | i = r"), Left + 8.0f * S, Top + 6.0f * S, Main, 0.72f * S);
+		}
 		break;
 	}
 	case EBHDiagramType::Sankey:
 		RRect(Canvas, Line, Left, MidY - 12.0f * S, W * 0.42f, 24.0f * S);
 		RRect(Canvas, Ctx.Good, X + W * 0.50f, MidY - 10.0f * S, W * 0.28f, 20.0f * S);
 		RRect(Canvas, Warm, X + W * 0.50f, MidY + 18.0f * S, W * 0.20f, 14.0f * S);
-		RText(Canvas, Font, TEXT("input -> useful + wasted"), Left + 12.0f * S, Top + 6.0f * S, Main, 0.74f * S);
+		CCap(TEXT("input -> useful + wasted"), Left + 12.0f * S, Top + 6.0f * S, Main, 0.74f * S);
 		if (bData)
 		{
 			if (!P.LabelA.IsEmpty()) { RText(Canvas, Font, P.LabelA, Left + 6.0f * S, MidY - 26.0f * S, Main, 0.60f * S); }
@@ -639,7 +667,8 @@ void FBHDiagramRenderer::Draw(
 		RLine(Canvas, ObjX, ObjTop, CX, ObjTop, Warm, 1.5f * S);
 		RLine(Canvas, CX, ObjTop, ImgX, ImgBot, Warm, 1.5f * S);
 		RLine(Canvas, ObjX, ObjTop, ImgX, ImgBot, Line, 1.0f * S);
-		RText(Canvas, Font, (Ctx.bEnhanced && !P.LabelA.IsEmpty()) ? P.LabelA : FString(TEXT("converging lens")), Left + 8.0f * S, Top + 4.0f * S, Warm, 0.70f * S);
+		if (Ctx.bEnhanced && !P.LabelA.IsEmpty()) { RText(Canvas, Font, P.LabelA, Left + 8.0f * S, Top + 4.0f * S, Warm, 0.70f * S); }
+		else { CCap(TEXT("converging lens"), Left + 8.0f * S, Top + 4.0f * S, Warm, 0.70f * S); }
 		break;
 	}
 	case EBHDiagramType::Transformer:
@@ -676,7 +705,7 @@ void FBHDiagramRenderer::Draw(
 		}
 		RText(Canvas, Font, (Ctx.bEnhanced && !P.LabelA.IsEmpty()) ? P.LabelA : FString(TEXT("primary Np")), Left + 8.0f * S, Top + 4.0f * S, Warm, 0.62f * S);
 		RTextRight(Canvas, Font, (Ctx.bEnhanced && !P.LabelB.IsEmpty()) ? P.LabelB : FString(TEXT("secondary Ns")), Right - 6.0f * S, Top + 4.0f * S, Line, 0.62f * S);
-		RTextCentered(Canvas, Font, TEXT("Vp/Vs = Np/Ns"), X + W * 0.50f, Bottom - 14.0f * S, Main, 0.62f * S);
+		CCapC(TEXT("Vp/Vs = Np/Ns"), X + W * 0.50f, Bottom - 14.0f * S, Main, 0.62f * S);
 		break;
 	}
 	case EBHDiagramType::MagneticField:
@@ -709,7 +738,8 @@ void FBHDiagramRenderer::Draw(
 				PrevL = FVector2D(PX, LY);
 			}
 		}
-		RText(Canvas, Font, (Ctx.bEnhanced && !P.LabelA.IsEmpty()) ? P.LabelA : FString(TEXT("field: N -> S")), Left + 8.0f * S, Top + 4.0f * S, Main, 0.66f * S);
+		if (Ctx.bEnhanced && !P.LabelA.IsEmpty()) { RText(Canvas, Font, P.LabelA, Left + 8.0f * S, Top + 4.0f * S, Main, 0.66f * S); }
+		else { CCap(TEXT("field: N -> S"), Left + 8.0f * S, Top + 4.0f * S, Main, 0.66f * S); }
 		break;
 	}
 	case EBHDiagramType::InclinedPlane:
@@ -731,7 +761,8 @@ void FBHDiagramRenderer::Draw(
 		RRect(Canvas, Warm, BkX - 7.0f * S, BkY - 7.0f * S, 14.0f * S, 14.0f * S);
 		RArrow(Canvas, BkX, BkY, BkX, BkY + 22.0f * S, Main, 2.0f * S, 6.0f * S);
 		RArrow(Canvas, BkX, BkY, BkX - FMath::Sin(Rad) * 20.0f * S, BkY - FMath::Cos(Rad) * 20.0f * S, Line, 2.0f * S, 6.0f * S);
-		RText(Canvas, Font, (Ctx.bEnhanced && !P.LabelA.IsEmpty()) ? P.LabelA : FString::Printf(TEXT("ramp %d deg"), FMath::RoundToInt(AngleDeg)), Left + 8.0f * S, Top + 4.0f * S, Warm, 0.66f * S);
+		if (Ctx.bEnhanced && !P.LabelA.IsEmpty()) { RText(Canvas, Font, P.LabelA, Left + 8.0f * S, Top + 4.0f * S, Warm, 0.66f * S); }
+		else { CCap(FString::Printf(TEXT("ramp %d deg"), FMath::RoundToInt(AngleDeg)), Left + 8.0f * S, Top + 4.0f * S, Warm, 0.66f * S); }
 		break;
 	}
 	case EBHDiagramType::PressureColumn:
@@ -749,7 +780,7 @@ void FBHDiagramRenderer::Draw(
 		RArrow(Canvas, ConL + 12.0f * S, LiqTop, ConL + 12.0f * S, ConBot, Warm, 1.5f * S, 5.0f * S);
 		RArrow(Canvas, ConL + 12.0f * S, ConBot, ConL + 12.0f * S, LiqTop, Warm, 1.5f * S, 5.0f * S);
 		RText(Canvas, Font, (Ctx.bEnhanced && !P.LabelA.IsEmpty()) ? P.LabelA : FString(TEXT("h")), ConL + 16.0f * S, (LiqTop + ConBot) * 0.5f - 6.0f * S, Warm, 0.62f * S);
-		RTextCentered(Canvas, Font, TEXT("P = rho g h"), X + W * 0.5f, ConBot - 16.0f * S, Main, 0.62f * S);
+		CCapC(TEXT("P = rho g h"), X + W * 0.5f, ConBot - 16.0f * S, Main, 0.62f * S);
 		break;
 	}
 	case EBHDiagramType::EnergyBars:
@@ -779,7 +810,7 @@ void FBHDiagramRenderer::Draw(
 			if (Ctx.bEnhanced && !Labs[i]->IsEmpty()) { RTextCentered(Canvas, Font, *Labs[i], BarX + BarW * 0.5f, BaseY + 2.0f * S, Main, 0.52f * S); }
 		}
 		RLine(Canvas, Left, BaseY, Right, BaseY, AxisCol, 1.5f * S);
-		RText(Canvas, Font, TEXT("energy is conserved"), Left + 8.0f * S, Top + 4.0f * S, Warm, 0.64f * S);
+		CCap(TEXT("energy is conserved"), Left + 8.0f * S, Top + 4.0f * S, Warm, 0.64f * S);
 		break;
 	}
 	case EBHDiagramType::ParticleModel:
@@ -817,7 +848,7 @@ void FBHDiagramRenderer::Draw(
 			}
 			RTextCentered(Canvas, Font, Names[c], CellX + CW * 0.5f, CellTop + CellH + 2.0f * S, Main, 0.56f * S);
 		}
-		RText(Canvas, Font, TEXT("particle arrangement"), Left + 8.0f * S, Top + 4.0f * S, Warm, 0.64f * S);
+		CCap(TEXT("particle arrangement"), Left + 8.0f * S, Top + 4.0f * S, Warm, 0.64f * S);
 		break;
 	}
 	case EBHDiagramType::EnergyChain:
@@ -845,7 +876,7 @@ void FBHDiagramRenderer::Draw(
 		{
 			RArrow(Canvas, BoxLeft[Index] + BoxW, MidY, BoxLeft[Index + 1], MidY, Line, 3.0f * S, 7.0f * S);
 		}
-		RText(Canvas, Font, TEXT("store -> pathway -> store"), Left + 12.0f * S, Top + 6.0f * S, Main, 0.74f * S);
+		CCap(TEXT("store -> pathway -> store"), Left + 12.0f * S, Top + 6.0f * S, Main, 0.74f * S);
 		if (bData)
 		{
 			const FString* Labels[3] = {&P.LabelA, &P.LabelB, &P.LabelC};
@@ -866,7 +897,7 @@ void FBHDiagramRenderer::Draw(
 	{
 		RText(Canvas, Font, Subtopic.ToUpper(), X + 10.0f * S, Y + 4.0f * S, FLinearColor(0.66f, 0.82f, 0.94f, 0.92f), 0.62f * S);
 	}
-	if (Ctx.bDrawCaptions && !Formula.IsEmpty())
+	if (Ctx.bDrawCaptions && Ctx.bShowConceptCaptions && !Formula.IsEmpty())
 	{
 		RTextRight(Canvas, Font, FString::Printf(TEXT("Key idea: %s"), *Formula), X + W - 10.0f * S, Y + H - 18.0f * S, FLinearColor(0.95f, 0.84f, 0.45f, 1.0f), 0.66f * S);
 	}

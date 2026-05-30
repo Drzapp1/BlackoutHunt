@@ -2645,6 +2645,11 @@ void ABHHUD::DrawRevisionDiagram(const ABHObjectiveStation* Station, float X, fl
 	Ctx.Font = GEngine->GetSmallFont();
 	Ctx.TimeSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	Ctx.bEnhanced = FBHDiagramRenderer::IsEnhanced();
+	// Hide the editorial concept captions ("gradient = velocity", "Key idea: ...") on recall/
+	// identify questions where they would reveal the answer; keep them as hints on calculation and
+	// matching/ordering questions (whose answers a concept statement can't give away).
+	const EBHQuestionType QType = Station->GetQuestionType();
+	Ctx.bShowConceptCaptions = (QType == EBHQuestionType::Calculation || QType == EBHQuestionType::DragDropMatching || QType == EBHQuestionType::Ordering);
 
 	FBHDiagramRenderer::Draw(
 		Canvas,

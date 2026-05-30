@@ -110,6 +110,8 @@ void ABHTrainBonusQuestionTerminal::RefreshDiagramTexture()
 		Ctx.Font = GEngine ? GEngine->GetSmallFont() : nullptr;
 		Ctx.TimeSeconds = 0.0f;
 		Ctx.bEnhanced = FBHDiagramRenderer::IsEnhanced();
+		// Match the HUD: hide editorial concept captions on recall/identify questions.
+		Ctx.bShowConceptCaptions = (Question.Type == EBHQuestionType::Calculation || Question.Type == EBHQuestionType::DragDropMatching || Question.Type == EBHQuestionType::Ordering);
 		// Draws the same answer-safe picture as the HUD; the answer is never on the diagram.
 		FBHDiagramRenderer::Draw(Canvas, Question.DiagramType, Question.Diagram, Question.Subtopic, Question.Answer.Formula, nullptr, 0.0f, 0.0f, CanvasSize.X, CanvasSize.Y, Ctx);
 	}

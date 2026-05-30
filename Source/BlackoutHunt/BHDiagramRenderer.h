@@ -55,6 +55,13 @@ struct FBHDiagramDrawContext
 	// The subtopic + "Key idea" captions overlaid on the diagram.
 	bool bDrawCaptions = true;
 
+	// Editorial CONCEPT captions baked into each diagram (e.g. "gradient = velocity", "area =
+	// distance", "A series | V parallel", "filament: R rises") and the "Key idea: <formula>" caption.
+	// These help on apply/calculate questions but REVEAL the answer on identify/recall questions
+	// ("what does the gradient represent?"), so callers set this false for those question types.
+	// Structural labels (axes, data givens, EM bands, poles) and the subtopic caption are unaffected.
+	bool bShowConceptCaptions = true;
+
 	// Master switch (CVar bh.Diagrams.Enhanced). When false, per-question data labels and
 	// shape variants are suppressed and the generic schematic is drawn -- a runtime fallback that
 	// makes the data-driven behaviour reversible without a rebuild.
