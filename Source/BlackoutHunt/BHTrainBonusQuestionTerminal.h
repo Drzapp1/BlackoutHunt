@@ -6,6 +6,9 @@
 #include "BHTrainBonusQuestionTerminal.generated.h"
 
 class UTextRenderComponent;
+class UStaticMeshComponent;
+class UCanvasRenderTarget2D;
+class UMaterialInstanceDynamic;
 class ABHPlayerState;
 
 UCLASS()
@@ -16,6 +19,7 @@ class BLACKOUTHUNT_API ABHTrainBonusQuestionTerminal : public ABHInteractableAct
 public:
 	ABHTrainBonusQuestionTerminal();
 
+	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual bool CanInteract_Implementation(ABHCharacter* Character) const override;
@@ -48,6 +52,23 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UTextRenderComponent> ChoicesText;
+
+	// Render-to-texture diagram surface. The plane shows DiagramRT via a dynamic instance of
+	// M_BH_DiagramRT; FBHDiagramRenderer draws the same picture the HUD does. All optional: if the
+	// material/asset is missing the plane stays hidden and the text "Given:" fold is the experience.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UStaticMeshComponent> DiagramPlane;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UCanvasRenderTarget2D> DiagramRT;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> DiagramMID;
+
+	// Avoids re-rendering the target every refresh; only redraws when the shown question changes.
+	FString LastDrawnDiagramKey;
+
+	void RefreshDiagramTexture();
 
 	// Replicated to clients for DISPLAY ONLY. Its answer fields (CorrectChoiceIndex / NumericAnswer)
 	// are scrubbed before replication so a modified client cannot read the answer off the wire.

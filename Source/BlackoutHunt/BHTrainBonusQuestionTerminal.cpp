@@ -8,10 +8,28 @@
 #include "BHPowerupComponent.h"
 #include "BHPowerupLibrary.h"
 #include "BHPropVisuals.h"
+#include "BHDiagramRenderer.h"
 #include "BHRevisionQuestionBank.h"
+#include "Components/StaticMeshComponent.h"
 #include "Components/TextRenderComponent.h"
+#include "Engine/Canvas.h"
+#include "Engine/CanvasRenderTarget2D.h"
+#include "Engine/Engine.h"
+#include "Engine/StaticMesh.h"
 #include "GameFramework/GameStateBase.h"
+#include "Kismet/KismetRenderingLibrary.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
 #include "Net/UnrealNetwork.h"
+#include "UObject/ConstructorHelpers.h"
+
+// Opt-in: draw the live diagram render-target plane on the terminal. Default off so shipped play
+// uses the verified text "Given:" fold; enable to use/tune the 3D diagram surface in-editor without
+// a rebuild. (The plane's exact transform is a quick in-editor tweak.)
+static TAutoConsoleVariable<int32> CVarBHTerminalDiagramRT(
+	TEXT("bh.Diagrams.TerminalRT"), 0,
+	TEXT("1 = draw the diagram render-target plane on the bonus terminal (needs M_BH_DiagramRT); 0 = text-only."),
+	ECVF_Default);
 
 ABHTrainBonusQuestionTerminal::ABHTrainBonusQuestionTerminal()
 {
@@ -29,6 +47,73 @@ ABHTrainBonusQuestionTerminal::ABHTrainBonusQuestionTerminal()
 	ChoicesText = CreateDefaultSubobject<UTextRenderComponent>(TEXT("ChoicesText"));
 	ChoicesText->SetupAttachment(SceneRoot);
 	BHPropVisuals::ConfigureReadableText(ChoicesText, FVector(-58.0f, -61.0f, 34.0f), FRotator(0.0f, 90.0f, 0.0f), 9.5f, FColor(220, 242, 232));
+
+	DiagramPlane = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("DiagramPlane"));
+	DiagramPlane->SetupAttachment(SceneRoot);
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> PlaneMesh(TEXT("/Engine/BasicShapes/Plane.Plane"));
+	if (PlaneMesh.Succeeded())
+	{
+		DiagramPlane->SetStaticMesh(PlaneMesh.Object);
+	}
+	DiagramPlane->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	DiagramPlane->SetCastShadow(false);
+	// Sits above the prompt, facing the player like the text. Transform is a quick in-editor tweak;
+	// the plane is hidden unless bh.Diagrams.TerminalRT is enabled and M_BH_DiagramRT loads.
+	DiagramPlane->SetRelativeLocation(FVector(-57.0f, -30.0f, 150.0f));
+	DiagramPlane->SetRelativeRotation(FRotator(90.0f, 90.0f, 0.0f));
+	DiagramPlane->SetRelativeScale3D(FVector(1.0f, 0.5f, 1.0f));
+	DiagramPlane->SetVisibility(false);
+}
+
+void ABHTrainBonusQuestionTerminal::BeginPlay()
+{
+	Super::BeginPlay();
+	// Display only; a dedicated server never needs the render target.
+	if (IsNetMode(NM_DedicatedServer) || !DiagramPlane)
+	{
+		return;
+	}
+	UMaterialInterface* BaseMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/BlackoutHunt/Art/Diagrams/M_BH_DiagramRT.M_BH_DiagramRT"));
+	if (!BaseMaterial)
+	{
+		// Graceful: no display material -> no plane; the text "Given:" fold is the experience.
+		return;
+	}
+	DiagramRT = UCanvasRenderTarget2D::CreateCanvasRenderTarget2D(this, UCanvasRenderTarget2D::StaticClass(), 512, 256);
+	if (!DiagramRT)
+	{
+		return;
+	}
+	DiagramRT->ClearColor = FLinearColor(0.02f, 0.025f, 0.028f, 1.0f);
+	DiagramMID = UMaterialInstanceDynamic::Create(BaseMaterial, this);
+	if (DiagramMID)
+	{
+		DiagramMID->SetTextureParameterValue(TEXT("RT"), DiagramRT);
+		DiagramPlane->SetMaterial(0, DiagramMID);
+	}
+}
+
+void ABHTrainBonusQuestionTerminal::RefreshDiagramTexture()
+{
+	if (!DiagramRT || !GetWorld() || Question.DiagramType == EBHDiagramType::None)
+	{
+		return;
+	}
+	UCanvas* Canvas = nullptr;
+	FVector2D CanvasSize(0.0f, 0.0f);
+	FDrawToRenderTargetContext DrawContext;
+	UKismetRenderingLibrary::BeginDrawCanvasToRenderTarget(this, DiagramRT, Canvas, CanvasSize, DrawContext);
+	if (Canvas)
+	{
+		FBHDiagramDrawContext Ctx;
+		Ctx.Scale = CanvasSize.Y / 130.0f;
+		Ctx.Font = GEngine ? GEngine->GetSmallFont() : nullptr;
+		Ctx.TimeSeconds = 0.0f;
+		Ctx.bEnhanced = FBHDiagramRenderer::IsEnhanced();
+		// Draws the same answer-safe picture as the HUD; the answer is never on the diagram.
+		FBHDiagramRenderer::Draw(Canvas, Question.DiagramType, Question.Diagram, Question.Subtopic, Question.Answer.Formula, nullptr, 0.0f, 0.0f, CanvasSize.X, CanvasSize.Y, Ctx);
+	}
+	UKismetRenderingLibrary::EndDrawCanvasToRenderTarget(this, DrawContext);
 }
 
 void ABHTrainBonusQuestionTerminal::Tick(float DeltaSeconds)
@@ -363,6 +448,24 @@ void ABHTrainBonusQuestionTerminal::RefreshDisplay()
 		}
 		ChoicesText->SetText(FText::FromString(FString::Join(Lines, TEXT("\n"))));
 		ChoicesText->SetTextRenderColor(bFeedbackCorrect ? FColor(134, 255, 172) : (bBonusLive ? FColor(220, 242, 232) : FColor(170, 184, 178)));
+	}
+
+	// Render-to-texture diagram surface (opt-in via bh.Diagrams.TerminalRT). Redraws only when the
+	// shown question changes; hidden when off, not live, or the question has no diagram.
+	if (DiagramPlane && DiagramMID)
+	{
+		const bool bShowDiagram = CVarBHTerminalDiagramRT.GetValueOnGameThread() != 0
+			&& bBonusLive && bQuestionReady && Question.DiagramType != EBHDiagramType::None;
+		DiagramPlane->SetVisibility(bShowDiagram);
+		if (bShowDiagram)
+		{
+			const FString DiagramKey = FString::Printf(TEXT("%d|%s"), static_cast<int32>(Question.DiagramType), *Question.Subtopic);
+			if (DiagramKey != LastDrawnDiagramKey)
+			{
+				LastDrawnDiagramKey = DiagramKey;
+				RefreshDiagramTexture();
+			}
+		}
 	}
 }
 

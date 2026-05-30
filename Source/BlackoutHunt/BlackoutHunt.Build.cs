@@ -57,7 +57,8 @@ public class BlackoutHunt : ModuleRules
 				"PropertyBindingUtilsEditor",
 				"StructUtilsEditor",
 				"StateTreeEditorModule",
-				"UnrealEd"
+				"UnrealEd",
+				"MaterialEditor"
 			});
 		}
 
