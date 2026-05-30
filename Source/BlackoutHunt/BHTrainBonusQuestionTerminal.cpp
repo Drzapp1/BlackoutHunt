@@ -309,6 +309,14 @@ void ABHTrainBonusQuestionTerminal::RefreshDisplay()
 					Parts.Add(DiagramLabel);
 				}
 			}
+			// Axis captions are answer-safe givens (they name the quantities, never the answer), so
+			// fold them in too -- they are what a graph-reading question relies on when the picture
+			// is not drawn. (The shape variant / ray angle are deliberately NOT folded: for "identify
+			// the shape/angle" questions they would be the answer.)
+			if (!Question.Diagram.XAxis.IsEmpty() && !Question.Diagram.YAxis.IsEmpty())
+			{
+				Parts.Add(FString::Printf(TEXT("graph %s vs %s"), *Question.Diagram.YAxis, *Question.Diagram.XAxis));
+			}
 			if (Parts.Num() > 0)
 			{
 				Givens = FString::Printf(TEXT("\nGiven: %s"), *FString::Join(Parts, TEXT(", ")));
