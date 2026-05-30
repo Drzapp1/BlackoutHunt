@@ -56,7 +56,7 @@ void FBHDiagramRenderer::SampleFor(EBHDiagramType Type, int32 Variant, FBHDiagra
 	case EBHDiagramType::Lens:
 		P.LabelA = TEXT("object > 2F"); OutName = TEXT("Lens"); break;
 	case EBHDiagramType::Transformer:
-		P.LabelA = TEXT("Np 200"); P.LabelB = TEXT("Ns 50"); OutName = TEXT("Transformer"); break;
+		P.ValueA = 200.0f; P.ValueB = 50.0f; P.LabelA = TEXT("Np 200"); P.LabelB = TEXT("Ns 50"); OutName = TEXT("Transformer"); break;
 	case EBHDiagramType::MagneticField:
 		OutName = TEXT("Magnetic field"); break;
 	case EBHDiagramType::InclinedPlane:
@@ -252,7 +252,7 @@ void FBHDiagramRenderer::Draw(
 		RRect(Canvas, FLinearColor(0.02f, 0.025f, 0.028f, 0.92f), X, Y, W, H);
 		const float TexW = FMath::Max(1.0f, static_cast<float>(IllustratedImage->GetSizeX()));
 		const float TexH = FMath::Max(1.0f, static_cast<float>(IllustratedImage->GetSizeY()));
-		const float FitScale = FMath::Min((W - 12.0f * S) / TexW, (H - 12.0f * S) / TexH);
+		const float FitScale = FMath::Max(0.0f, FMath::Min((W - 12.0f * S) / TexW, (H - 12.0f * S) / TexH));
 		const float DrawW = TexW * FitScale;
 		const float DrawH = TexH * FitScale;
 		const float DrawX = X + (W - DrawW) * 0.5f;
@@ -533,7 +533,7 @@ void FBHDiagramRenderer::Draw(
 	}
 	case EBHDiagramType::StaticCharge:
 		RText(Canvas, Font, TEXT("+ + +"), Left + 24.0f * S, MidY - 8.0f * S, Warm, 1.0f * S);
-		RText(Canvas, Font, TEXT("- - -"), Right - 92.0f * S, MidY - 8.0f * S, Line, 1.0f * S);
+		RTextRight(Canvas, Font, TEXT("- - -"), Right - 8.0f * S, MidY - 8.0f * S, Line, 1.0f * S);
 		RArrow(Canvas, X + W * 0.42f, MidY, X + W * 0.58f, MidY, Main, 3.0f * S, 7.0f * S);
 		RText(Canvas, Font, TEXT("opposites attract"), X + W * 0.38f, Top + 8.0f * S, Main, 0.74f * S);
 		break;
@@ -651,8 +651,17 @@ void FBHDiagramRenderer::Draw(
 		const float CoreBot = Bottom - 6.0f * S;
 		RRect(Canvas, FLinearColor(0.45f, 0.45f, 0.50f, 0.9f), CoreL, CoreTop, 3.0f * S, CoreBot - CoreTop);
 		RRect(Canvas, FLinearColor(0.45f, 0.45f, 0.50f, 0.9f), CoreR, CoreTop, 3.0f * S, CoreBot - CoreTop);
-		const int32 PrimaryLoops = 4;
-		const int32 SecondaryLoops = 6;
+		// Coil turn counts reflect the labelled ratio when given (ValueA = Np, ValueB = Ns), so the
+		// picture matches a step-up / step-down question instead of contradicting it. Equal counts
+		// otherwise, so the drawing never implies a ratio that was not specified.
+		int32 PrimaryLoops = 4;
+		int32 SecondaryLoops = 4;
+		if (P.ValueA > 0.0f && P.ValueB > 0.0f)
+		{
+			const float MaxN = FMath::Max(P.ValueA, P.ValueB);
+			PrimaryLoops = FMath::Clamp(FMath::RoundToInt(P.ValueA / MaxN * 6.0f), 2, 8);
+			SecondaryLoops = FMath::Clamp(FMath::RoundToInt(P.ValueB / MaxN * 6.0f), 2, 8);
+		}
 		const float CoilY0 = CoreTop + 10.0f * S;
 		const float CoilY1 = CoreBot - 10.0f * S;
 		for (int32 i = 0; i < PrimaryLoops; ++i)

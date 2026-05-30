@@ -1085,8 +1085,8 @@ struct FBHDiagramParams
 	// about. 0 = the historical default shape. Conventions:
 	//   IVGraph:        0 ohmic (straight), 1 filament lamp (S-curve), 2 diode (threshold)
 	//   Circuit:        0 single, 1 series-2, 2 parallel-2, 3 series-3
-	//   MotionGraph:    0 accelerating, 1 constant velocity, 2 decelerating, 3 accel-then-constant
-	//   VelocityGraph:  0 accelerating, 1 constant, 2 decelerating, 3 accel-then-constant
+	//   MotionGraph:    0 generic, 1 constant velocity, 2 accelerating, 3 decelerating, 4 accel-then-constant
+	//   VelocityGraph:  0 generic, 1 constant, 2 accelerating, 3 decelerating, 4 accel-then-constant
 	//   ForceArrows:    0 horizontal pair, 1 adds a vertical weight/normal pair (free body)
 	//   EMSpectrum:     0 none, 1..7 highlights band radio..gamma
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Revision")

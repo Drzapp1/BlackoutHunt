@@ -2675,7 +2675,8 @@ void ABHHUD::DrawDiagramPreview()
 	}
 	const int32 TypeIndex = CVarBHDiagramPreviewType.GetValueOnGameThread();
 	const UEnum* Enum = StaticEnum<EBHDiagramType>();
-	if (TypeIndex <= 0 || !Enum || TypeIndex >= Enum->NumEnums())
+	// NumEnums() includes the implicit _MAX sentinel, so the last valid type is NumEnums()-2.
+	if (TypeIndex <= 0 || !Enum || TypeIndex >= Enum->NumEnums() - 1)
 	{
 		return;
 	}
