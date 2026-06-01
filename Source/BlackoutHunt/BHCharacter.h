@@ -66,6 +66,28 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt")
 	float GetFlashlightBattery() const;
 
+	// Public read of the flashlight on/off state (the replicated field itself is protected). Used by the
+	// tutorial director to detect when a student has tried the flashlight.
+	UFUNCTION(BlueprintPure, Category = "Blackout Hunt")
+	bool IsFlashlightOn() const { return bFlashlightOn; }
+
+	// Tutorial movement lesson: a bitmask of which of the four move directions the player has actually
+	// driven (forward 0x01 / back 0x02 / right 0x04 / left 0x08). Accumulated in MoveForward/MoveRight on the
+	// listen-server host, so the tutorial director can keep the WASD prompt up until all four are pressed.
+	static constexpr uint8 TutorialMoveForwardBit = 0x01;
+	static constexpr uint8 TutorialMoveBackBit = 0x02;
+	static constexpr uint8 TutorialMoveRightBit = 0x04;
+	static constexpr uint8 TutorialMoveLeftBit = 0x08;
+	static constexpr uint8 TutorialMoveAllMask = 0x0F;
+	uint8 GetTutorialMovementMask() const { return TutorialMovementMask; }
+	void ResetTutorialMovementMask() { TutorialMovementMask = 0; }
+
+	// Last server time (World->GetTimeSeconds) the Hunter/Monitor used each ability. The tutorial director
+	// compares these against the step start time to detect that the student just pressed Q / R / G.
+	float GetLastScanTime() const { return LastScanTime; }
+	float GetLastHunterPowerTime() const { return LastHunterPowerTime; }
+	float GetLastDecoyTime() const { return LastDecoyTime; }
+
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt")
 	float GetStamina() const;
 
@@ -127,6 +149,9 @@ public:
 	float DebugGetAntiCampIdleSecondsForTest() const;
 	float DebugGetAntiCampMoveBurstSecondsForTest() const { return AntiCampMoveBurstSeconds; }
 	FString DebugGetInteractionFailureReasonForTest(AActor* Target) const { return GetInteractionFailureReason(Target); }
+	bool DebugBeginInteractForTest(AActor* Target) { return BeginInteractAuthority(Target, false, false); }
+	AActor* DebugGetServerInteractTargetForTest() const { return CurrentServerInteractTarget; }
+	void DebugEndStaleHeldInteractionForTest() { EndStaleHeldInteractionAuthority(); }
 #endif
 
 protected:
@@ -149,6 +174,7 @@ protected:
 	void ToggleFlashlight();
 	void StartJump();
 	void StopJump();
+	virtual void OnJumped_Implementation() override;
 	void StartSprint();
 	void StopSprint();
 	void StartCrouch();
@@ -159,7 +185,9 @@ protected:
 	void UseScan();
 	void UseHunterPower();
 	void DropDecoy();
-	void SubmitAnswer(int32 AnswerIndex);
+	// bVisual = answered via the interactive visual element (a clicked diagram region); choice rows
+	// and number keys pass false. Visual answers earn extra mastery (server-side).
+	void SubmitAnswer(int32 AnswerIndex, bool bVisual = false);
 	void SubmitAnswerOne();
 	void SubmitAnswerTwo();
 	void SubmitAnswerThree();
@@ -180,9 +208,25 @@ protected:
 	void NumericEntryNine() { NumericEntryDigit(9); }
 	bool IsCalculationEntryActive() const;
 	void SetClientFocusedQuestionStation(class ABHObjectiveStation* Station);
+	// --- Mouse-driven question interaction (client-only) ---
+	// Toggle the "answer with the mouse" cursor over the focused question panel. Number keys 1-4 and
+	// typed numeric entry keep working whether or not this is on, so keyboard/bots are unaffected.
+	void ToggleQuestionCursor();
+	void UseNodeMarker();
+	// LeftMouseButton press/release while the question cursor is active: select a choice, pick up or
+	// drop an arrangement piece, or tap a keypad key, by hit-testing the HUD's question regions.
+	void OnQuestionPointerDown();
+	void OnQuestionPointerUp();
+	// Per-tick upkeep: drops the cursor when no answerable question is focused, and resets the local
+	// drag arrangement when the focused question's piece set changes (e.g. a new question loads).
+	void UpdateQuestionInteractionState();
 public:
 	// Read by the HUD to render the in-progress typed answer for calculation questions.
 	const FString& GetNumericAnswerEntry() const { return NumericAnswerEntry; }
+	// Read by the HUD to render the interactive question overlay (cursor mode, in-progress drag).
+	bool IsQuestionCursorActive() const { return bQuestionCursorActive; }
+	int32 GetQuestionDraggedPiece() const { return QuestionDraggedPiece; }
+	const TArray<int32>& GetQuestionArrangement() const { return QuestionArrangement; }
 protected:
 	void UsePowerupSlotOne();
 	void UsePowerupSlotTwo();
@@ -201,18 +245,24 @@ protected:
 	bool TraceForInteractable(AActor*& OutActor) const;
 	bool FindInteractableFromView(AActor*& OutActor, float ExtraDistance = 0.0f) const;
 	bool IsValidInteractionTarget(AActor* Target) const;
+	bool HasInteractionLineOfSight(AActor* Target) const;
 	FString GetInteractionFailureReason(AActor* Target) const;
 	void SendStatusMessage(const FString& Message) const;
 	void SendFakeHunterHint(bool bRealHint);
 	bool ResolveHallMonitorMarkerLocation(FVector& OutLocation) const;
 	bool BeginInteractAuthority(AActor* Target, bool bUseViewFallback, bool bShowFailureMessages);
 	void EndInteractAuthority(AActor* Target);
+	// Server-side guard for hold-style interactions (objective stations, breakers): the worker is only
+	// dropped on key release (StopInteract), so holding E and walking out of reach used to keep driving
+	// the task to completion. Ends the active interaction once the target leaves interaction range,
+	// reusing the same distance gate BeginInteractAuthority applied to start it.
+	void EndStaleHeldInteractionAuthority();
 	void ExitCurrentLockerAuthority();
 	bool TryCaptureAuthority(bool bShowFailureMessages);
 	bool UseScanAuthority(bool bShowFailureMessages);
 	bool UseHunterPowerAuthority(bool bShowFailureMessages);
 	bool DropDecoyAuthority(bool bShowFailureMessages);
-	bool SubmitAnswerAuthority(ABHObjectiveStation* Station, int32 AnswerIndex, bool bUseViewFallback, bool bShowFailureMessages);
+	bool SubmitAnswerAuthority(ABHObjectiveStation* Station, int32 AnswerIndex, bool bUseViewFallback, bool bShowFailureMessages, bool bVisualAnswer = false);
 	bool SubmitNumericAnswerAuthority(float Value);
 	void EmitFootstepStimulus(float Strength, const FString& Reason, EBHFootstepSurface Surface = EBHFootstepSurface::Default);
 	EBHFootstepSurface ResolveFootstepSurface(const FHitResult* KnownGroundHit = nullptr) const;
@@ -286,6 +336,9 @@ protected:
 	UFUNCTION(Server, Reliable)
 	void ServerSetProne(bool bNewProne);
 
+	UFUNCTION(Server, Reliable)
+	void ServerSetProneInputHeld(bool bHeld);
+
 	UFUNCTION(Client, Reliable)
 	void ClientSpecialMoveRejected(EBHMovementSpecialState RejectedState, const FString& Reason);
 
@@ -302,10 +355,14 @@ protected:
 	void ServerDropDecoy();
 
 	UFUNCTION(Server, Reliable)
-	void ServerSubmitAnswer(int32 AnswerIndex);
+	void ServerSubmitAnswer(int32 AnswerIndex, bool bVisualAnswer);
 
 	UFUNCTION(Server, Reliable)
 	void ServerSubmitNumericAnswer(float Value);
+
+	// Drag/drop answer for matching/ordering questions: SlotToPiece[slot] is the chosen piece index.
+	UFUNCTION(Server, Reliable)
+	void ServerSubmitArrangement(const TArray<int32>& SlotToPiece);
 
 	UFUNCTION(Server, Reliable)
 	void ServerUsePowerup(EBHPowerupType Type);
@@ -547,6 +604,9 @@ protected:
 	UPROPERTY(ReplicatedUsing = OnRep_MovementSpecialState, BlueprintReadOnly, Category = "Movement")
 	EBHMovementSpecialState MovementSpecialState;
 
+	// Server-only scratch (listen-server host) for the tutorial WASD lesson; see GetTutorialMovementMask.
+	uint8 TutorialMovementMask = 0;
+
 	UPROPERTY(ReplicatedUsing = OnRep_TeacherCaptureAttackActive, BlueprintReadOnly, Category = "Counterplay")
 	bool bTeacherCaptureAttackActive;
 
@@ -602,6 +662,16 @@ protected:
 	TWeakObjectPtr<class ABHObjectiveStation> ClientFocusedQuestionStation;
 	FString NumericAnswerEntry;
 
+	// Mouse-driven question interaction (client/owning-only; never replicated). The cursor frees the
+	// mouse over the focused station's question panel; the drag fields build a matching/ordering answer.
+	bool bQuestionCursorActive = false;
+	// Piece index (into the focused station's InteractivePieces) currently held by the cursor, or -1.
+	int32 QuestionDraggedPiece = INDEX_NONE;
+	// slot -> piece index the player has placed (-1 = empty). Sized to the focused station's slots.
+	TArray<int32> QuestionArrangement;
+	// Identity of the arrangement the local QuestionArrangement was built for; a change resets it.
+	FString QuestionArrangementKey;
+
 	float LastScanTime;
 	float LastHunterPowerTime;
 	float LastDecoyTime;
@@ -614,6 +684,7 @@ protected:
 	float LastStaminaWarningTime;
 	float LastHidingPanicMessageTime;
 	float LastLockerNoiseTime;
+	float LockerExitTime;
 	float LastForcedBreathNoiseTime;
 	float LastPanicBreathNoiseTime;
 	float LastDetentionNoiseTime;
@@ -665,6 +736,16 @@ protected:
 	float LastTeacherCounterplayHintTime;
 	float DefaultCapsuleHalfHeight;
 	float DefaultCapsuleRadius;
+	// Auto-squeeze: when walking into a narrow slot (walls close on both sides), the standing capsule smoothly
+	// shrinks so you can thread the gap, and walk speed drops. Restores when the space opens up. Server + owning
+	// client run it identically from world geometry so networked movement stays consistent.
+	void UpdateAutoSqueeze(float DeltaSeconds);
+	bool bAutoSqueezing = false;
+
+	// While the train intermission is active, players pass through each other (and the teacher) so the packed
+	// carriage never jams. Toggles the capsule's Pawn-channel response on the intermission boundary only.
+	void UpdateTrainPawnCollision();
+	bool bTrainPawnCollisionOff = false;
 	float MovementFailurePulse;
 	float LastMovementFailureTime;
 	FString LastMovementFailureReason;
@@ -678,6 +759,10 @@ protected:
 	bool bSpecialMoveEndsProne;
 	bool bSpecialMoveEndProneRequiresInput;
 	bool bProneCollisionApplied;
+	// Server-only: true while we have authoritatively stopped this pawn's movement for an input
+	// freeze (final-escape cutscene / jumpscare). Tracks ownership so the freeze restores movement
+	// only if it was the one that disabled it. Not replicated.
+	bool bMovementFrozenByServer = false;
 	bool bTeacherCaptureAttackResolved;
 	int32 SpecialMoveNoiseEventMask;
 	EBHMovementSpecialState CosmeticMovementSpecialState;

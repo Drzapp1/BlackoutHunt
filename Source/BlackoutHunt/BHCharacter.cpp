@@ -14,6 +14,8 @@
 #include "BHNoiseDecoy.h"
 #include "BHObjectiveStation.h"
 #include "BHPlayerController.h"
+#include "BHHUD.h"
+#include "BHQuestionInteraction.h"
 #include "BHPlayerState.h"
 #include "BHPowerupComponent.h"
 #include "BHPropVisuals.h"
@@ -77,10 +79,14 @@ constexpr float BHHunterDefaultSprintDrainMultiplierMax = 0.85f;
 constexpr float BHHunterDefaultStaminaRecoveryMultiplier = 1.75f;
 constexpr float BHTeacherDefaultCaptureStaminaCost = 5.0f;
 constexpr float BHTeacherDefaultCaptureMinStamina = 2.0f;
+// Stamina charged per jump (before the per-map stamina scaling). Tuned so a bunny-hop is a touch cheaper than
+// the sprint-time it replaces (rewards skill) yet still drains the bar so it can't be spammed for free speed.
+constexpr float BHJumpStaminaCost = 12.0f;
 constexpr float BHTeacherCaptureRangeForgiveness = 28.0f;
 constexpr float BHTeacherCaptureVerticalTolerance = 140.0f;
 constexpr float BHTeacherCaptureArcMinDot = 0.05f;
 constexpr float BHTeacherCaptureEvasionGraceSeconds = 0.64f;
+constexpr float BHLockerExitGraceSeconds = 2.0f;
 constexpr float BHTeacherFlashlightStaggerRange = 980.0f;
 constexpr float BHTeacherFlashlightStaggerDot = 0.74f;
 constexpr float BHTeacherFlashlightStaggerBatteryCost = 22.0f;
@@ -639,7 +645,7 @@ FBHMovementRoleTuning BHMakeDefaultMovementRoleTuning(EBHPlayerRole Role)
 {
 	FBHMovementRoleTuning Tuning;
 	Tuning.Role = Role;
-	Tuning.WalkSpeed = 360.0f;
+	Tuning.WalkSpeed = 530.0f;   // brisk exploration pace (360 -> 470 -> 530)
 	Tuning.SprintSpeed = 900.0f;
 	Tuning.SprintDrainMultiplier = 1.0f;
 	Tuning.ProneSpeed = 120.0f;
@@ -650,7 +656,7 @@ FBHMovementRoleTuning BHMakeDefaultMovementRoleTuning(EBHPlayerRole Role)
 	Tuning.ProneVisibilityMultiplier = 0.55f;
 	if (Role == EBHPlayerRole::Hunter)
 	{
-		Tuning.WalkSpeed = 315.0f;
+		Tuning.WalkSpeed = 460.0f;   // faster hunter walk (315 -> 410 -> 460), keeps the ~same gap to survivors
 		Tuning.SprintSpeed = 1150.0f;
 		Tuning.SprintDrainMultiplier = BHHunterDefaultSprintDrainMultiplierMax;
 		Tuning.ProneSpeed = 95.0f;
@@ -827,16 +833,74 @@ UClass* BHLoadNativeHunterAnimInstanceClass(const ABHPlayerState* BHPS)
 	return BHLoadMovementAnimInstanceClassInternal(BHPS, false);
 }
 
+// Per-map movement feel. The three maps form a deliberate arc: Facility is the hiding map (slowest,
+// most tense), Substation sits in between, Foggrounds is the running-from-the-teacher map (fastest).
+// A single scalar is applied to BOTH walk and sprint for every role, so the survivor<->hunter chase
+// gap (and the walk:sprint ratio) is preserved while each map gets its own distinct walk AND run pace.
+// Reads the replicated ActiveLevelName off the GameState, so it works identically on client and server.
+float BHLevelMovementScale(const ABHPlayerState* BHPS)
+{
+	if (!BHPS)
+	{
+		return 1.0f;
+	}
+	const UWorld* World = BHPS->GetWorld();
+	const ABHGameState* GameState = World ? World->GetGameState<ABHGameState>() : nullptr;
+	if (!GameState)
+	{
+		return 1.0f;
+	}
+	const FString& Level = GameState->ActiveLevelName;
+	if (Level.Equals(TEXT("Foggrounds"), ESearchCase::IgnoreCase))
+	{
+		return 1.13f;   // running map: fastest pace, keep the chase open
+	}
+	if (Level.Equals(TEXT("Facility"), ESearchCase::IgnoreCase))
+	{
+		return 0.90f;   // hiding map: slowest, most deliberate
+	}
+	return 1.0f;        // Substation / Tutorial / default: in between
+}
+
+// Per-map sprint economy. The running-focused maps give considerably more usable stamina: sprint drains
+// slower AND recovers faster, both scaled by this factor. Facility (the hiding map) stays baseline. This runs
+// server-side (drain/recovery are authority-only), which already knows the replicated ActiveLevelName.
+float BHLevelStaminaScale(const ABHPlayerState* BHPS)
+{
+	if (!BHPS)
+	{
+		return 1.0f;
+	}
+	const UWorld* World = BHPS->GetWorld();
+	const ABHGameState* GameState = World ? World->GetGameState<ABHGameState>() : nullptr;
+	if (!GameState)
+	{
+		return 1.0f;
+	}
+	const FString& Level = GameState->ActiveLevelName;
+	if (Level.Equals(TEXT("Foggrounds"), ESearchCase::IgnoreCase))
+	{
+		return 1.70f;   // the run map: sprint lasts much longer and refills fast
+	}
+	if (Level.Equals(TEXT("Substation"), ESearchCase::IgnoreCase))
+	{
+		return 1.30f;   // mid map: a meaningful boost over the hiding map
+	}
+	return 1.0f;        // Facility / Tutorial / default: baseline (hiding, not running)
+}
+
 float BHRoleWalkSpeed(const ABHPlayerState* BHPS, float DefaultWalkSpeed)
 {
 	const FBHMovementRoleTuning Tuning = BHResolveMovementRoleTuning(BHPS);
-	return Tuning.WalkSpeed > 0.0f ? Tuning.WalkSpeed : DefaultWalkSpeed;
+	const float Base = Tuning.WalkSpeed > 0.0f ? Tuning.WalkSpeed : DefaultWalkSpeed;
+	return Base * BHLevelMovementScale(BHPS);
 }
 
 float BHRoleSprintSpeed(const ABHPlayerState* BHPS, float DefaultSprintSpeed)
 {
 	const FBHMovementRoleTuning Tuning = BHResolveMovementRoleTuning(BHPS);
-	return Tuning.SprintSpeed > 0.0f ? Tuning.SprintSpeed : DefaultSprintSpeed;
+	const float Base = Tuning.SprintSpeed > 0.0f ? Tuning.SprintSpeed : DefaultSprintSpeed;
+	return Base * BHLevelMovementScale(BHPS);
 }
 
 float BHRoleSprintDrainMultiplier(const ABHPlayerState* BHPS)
@@ -1209,7 +1273,10 @@ ABHCharacter::ABHCharacter()
 	PrimaryActorTick.bCanEverTick = true;
 	bReplicates = true;
 
-	GetCapsuleComponent()->InitCapsuleSize(42.0f, 96.0f);
+	// Standing radius (was 42 -> 34): a normal human footprint. The auto-squeeze in UpdateAutoSqueeze shrinks
+	// this down to ~14 when threading a narrow slot, so tight crevices are passable without making the player
+	// permanently skinny.
+	GetCapsuleComponent()->InitCapsuleSize(34.0f, 96.0f);
 
 	Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("FirstPersonCamera"));
 	Camera->SetupAttachment(GetCapsuleComponent());
@@ -1383,7 +1450,7 @@ ABHCharacter::ABHCharacter()
 	}
 	BHPrepareFlashlightBeamComponent(FlashlightBeamCore);
 
-	WalkSpeed = 360.0f;
+	WalkSpeed = 530.0f;   // brisk exploration pace (360 -> 470 -> 530); scales per-role so hunter/survivor balance holds
 	SprintSpeed = 900.0f;
 	MaxStamina = 100.0f;
 	InteractDistance = 150.0f;
@@ -1429,6 +1496,7 @@ ABHCharacter::ABHCharacter()
 	LastStaminaWarningTime = -999.0f;
 	LastHidingPanicMessageTime = -999.0f;
 	LastLockerNoiseTime = -999.0f;
+	LockerExitTime = -999.0f;
 	LastForcedBreathNoiseTime = -999.0f;
 	LastPanicBreathNoiseTime = -999.0f;
 	LastDetentionNoiseTime = -999.0f;
@@ -1567,6 +1635,7 @@ void ABHCharacter::Tick(float DeltaSeconds)
 		AActor* FocusActor = nullptr;
 		FindInteractableFromView(FocusActor, 225.0f);
 		SetClientFocusedQuestionStation(Cast<ABHObjectiveStation>(FocusActor));
+		UpdateQuestionInteractionState();
 	}
 
 	if (HasAuthority() && IsSpecialMoveActive())
@@ -1581,6 +1650,51 @@ void ABHCharacter::Tick(float DeltaSeconds)
 	if (HasAuthority())
 	{
 		UpdateTeacherCaptureAttackAuthority(DeltaSeconds);
+		EndStaleHeldInteractionAuthority();
+	}
+
+	if (HasAuthority())
+	{
+		// Enforce the final-escape / jumpscare input lock on the server, not just via CanAct() (which
+		// only gates *local* input). The replicated freeze flags otherwise let a modified client keep
+		// walking through the scripted cutscene and jumpscares; stop its movement component the same
+		// way capture does. Captured/escaped (bOutOfPlay) and locker-hidden pawns own their own
+		// movement state, so leave those alone and only hand movement back to a normal in-play pawn.
+		const ABHPlayerState* FreezePS = GetPlayerState<ABHPlayerState>();
+		const ABHGameState* FreezeGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+		const bool bFrozenByLock = FreezeGS && (FreezeGS->bPlayerInputFrozen || (FreezeGS->bHunterInputFrozen && FreezePS && FreezePS->IsAliveHunter()));
+		if (bFrozenByLock && !bOutOfPlay && !bHiddenInLocker)
+		{
+			bMovementFrozenByServer = true;
+			// Re-assert every tick rather than only on the edge: if anything else hands movement back
+			// while the lock is still on (e.g. an overlapping jumpscare's own restore timer), clamp it
+			// again next frame. Cheap — only touches the component when the mode has drifted off None.
+			if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+			{
+				if (Movement->MovementMode != MOVE_None)
+				{
+					Movement->StopMovementImmediately();
+					Movement->DisableMovement();
+				}
+			}
+		}
+		else if (bMovementFrozenByServer)
+		{
+			bMovementFrozenByServer = false;
+			// Only restore if we're back to a normal, controllable pawn. If capture/locker took over
+			// while frozen, they disabled movement deliberately — don't re-enable underneath them.
+			if (CanAct())
+			{
+				if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+				{
+					if (Movement->MovementMode == MOVE_None)
+					{
+						Movement->SetMovementMode(MOVE_Walking);
+					}
+				}
+				ApplyMovementSpecialState();
+			}
+		}
 	}
 
 	if (HasAuthority() && bFlashlightOn)
@@ -1588,12 +1702,15 @@ void ABHCharacter::Tick(float DeltaSeconds)
 		const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
 		const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
 		const bool bInfiniteFlashlight = (BHPS && BHPS->PlayerRole == EBHPlayerRole::Tester) || (BHGS && BHGS->bTestMode);
+		// The intermission train dims the flashlight to near-uselessness (see UpdateFlashlightFeel); do
+		// not also burn battery while parked on the train so players board the next round with charge.
+		const bool bTrainIntermission = BHGS && (BHGS->RoundPhase == EBHRoundPhase::Intermission || BHGS->ActiveLevelName.Equals(TEXT("TrainIntermission"), ESearchCase::IgnoreCase));
 		if (bInfiniteFlashlight)
 		{
 			FlashlightBattery = 100.0f;
 			bFlashlightEmptyTelemetryReported = false;
 		}
-		else
+		else if (!bTrainIntermission)
 		{
 			const float PreviousBattery = FlashlightBattery;
 			FlashlightBattery = FMath::Max(0.0f, FlashlightBattery - FlashlightDrainPerSecond * DeltaSeconds);
@@ -1863,7 +1980,7 @@ void ABHCharacter::Tick(float DeltaSeconds)
 				const float DrainMultiplier = BHRoleSprintDrainMultiplier(BHPS)
 					* (PowerupComponent ? PowerupComponent->GetStaminaDrainMultiplier() : 1.0f)
 					* BHHorrorStaminaDrainMultiplier(this, BHPS);
-				Stamina = FMath::Max(0.0f, Stamina - StaminaDrainPerSecond * DrainMultiplier * DeltaSeconds);
+				Stamina = FMath::Max(0.0f, Stamina - (StaminaDrainPerSecond / BHLevelStaminaScale(BHPS)) * DrainMultiplier * DeltaSeconds);
 				if (Stamina <= 0.0f)
 				{
 					if (Movement)
@@ -1887,7 +2004,7 @@ void ABHCharacter::Tick(float DeltaSeconds)
 						* BHRoleStaminaRecoveryMultiplier(BHPS)
 						* (PowerupComponent ? PowerupComponent->GetStaminaRecoveryMultiplier() : 1.0f)
 						* (IsProne() ? BHProneStaminaRecoveryMultiplier : 1.0f);
-					Stamina = FMath::Min(MaxStamina, Stamina + StaminaRecoveryPerSecond * RecoveryMultiplier * DeltaSeconds);
+					Stamina = FMath::Min(MaxStamina, Stamina + StaminaRecoveryPerSecond * BHLevelStaminaScale(BHPS) * RecoveryMultiplier * DeltaSeconds);
 				}
 			}
 		}
@@ -1909,6 +2026,90 @@ void ABHCharacter::Tick(float DeltaSeconds)
 		if (bAvatarChanged)
 		{
 			ApplyAvatarStyle();
+		}
+	}
+
+	// Auto-squeeze runs last so its walk-speed penalty isn't overwritten by the speed logic above.
+	UpdateAutoSqueeze(DeltaSeconds);
+
+	UpdateTrainPawnCollision();
+}
+
+void ABHCharacter::UpdateTrainPawnCollision()
+{
+	// Disable player<->player (and player<->teacher) blocking while the train intermission is running, so the
+	// crowded carriage never gets people stuck on each other. Driven by the replicated train phase, so it works
+	// on clients too; only touched on the boundary (entering/leaving the intermission), not every tick.
+	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	const bool bInTrain = BHGS && BHGS->TrainPhase != EBHTrainPhase::Inactive;
+	if (bInTrain == bTrainPawnCollisionOff)
+	{
+		return;
+	}
+	bTrainPawnCollisionOff = bInTrain;
+	if (UCapsuleComponent* Capsule = GetCapsuleComponent())
+	{
+		Capsule->SetCollisionResponseToChannel(ECC_Pawn, bInTrain ? ECR_Ignore : ECR_Block);
+	}
+}
+
+void ABHCharacter::UpdateAutoSqueeze(float DeltaSeconds)
+{
+	UCapsuleComponent* Capsule = GetCapsuleComponent();
+	UWorld* World = GetWorld();
+	if (!Capsule || !World)
+	{
+		return;
+	}
+
+	constexpr float SqueezeRadius = 14.0f;
+	const float StandRadius = DefaultCapsuleRadius;   // 34
+
+	// Only the authority and the owning client simulate this pawn's movement; both must run identically so the
+	// shrink stays networked-consistent. Skip while prone/crouched/special-move (they own the capsule) and for
+	// AI/hunter pawns (only human survivors squeeze). When it can't apply, restore the standing radius.
+	const bool bCanSqueeze = (HasAuthority() || IsLocallyControlled())
+		&& IsPlayerControlled() && !IsProne() && !bIsCrouched && !IsSpecialMoveActive();
+	if (!bCanSqueeze)
+	{
+		bAutoSqueezing = false;
+		const float CurRadius = Capsule->GetUnscaledCapsuleRadius();
+		if (CurRadius < StandRadius - 0.5f)
+		{
+			Capsule->SetCapsuleSize(FMath::FInterpTo(CurRadius, StandRadius, DeltaSeconds, 12.0f), Capsule->GetUnscaledCapsuleHalfHeight(), false);
+		}
+		return;
+	}
+
+	const float Probe = StandRadius + 30.0f;
+	const FVector Loc = GetActorLocation();
+	const FVector Right = GetActorRightVector();
+	const FVector Fwd = GetActorForwardVector();
+	FCollisionQueryParams Params(FName(TEXT("BHAutoSqueeze")), false, this);
+	auto SidesBlocked = [&](const FVector& Origin)
+	{
+		FHitResult H;
+		const bool bR = World->LineTraceSingleByChannel(H, Origin, Origin + Right * Probe, ECC_WorldStatic, Params);
+		const bool bL = World->LineTraceSingleByChannel(H, Origin, Origin - Right * Probe, ECC_WorldStatic, Params);
+		return bR && bL;   // a wall close on BOTH sides => a narrow slot
+	};
+
+	// Sample at the capsule centre and a little ahead, so the slot is detected just before you reach it.
+	const bool bNarrow = SidesBlocked(Loc) || SidesBlocked(Loc + Fwd * (StandRadius + 12.0f));
+	bAutoSqueezing = bNarrow;
+
+	const float TargetRadius = bNarrow ? SqueezeRadius : StandRadius;
+	const float CurRadius = Capsule->GetUnscaledCapsuleRadius();
+	if (!FMath::IsNearlyEqual(CurRadius, TargetRadius, 0.4f))
+	{
+		Capsule->SetCapsuleSize(FMath::FInterpTo(CurRadius, TargetRadius, DeltaSeconds, 12.0f), Capsule->GetUnscaledCapsuleHalfHeight(), false);
+	}
+
+	if (bNarrow)
+	{
+		if (UCharacterMovementComponent* Move = GetCharacterMovement())
+		{
+			Move->MaxWalkSpeed = FMath::Min(Move->MaxWalkSpeed, 170.0f);   // slow, deliberate squeeze
 		}
 	}
 }
@@ -2003,6 +2204,13 @@ void ABHCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCompone
 	PlayerInputComponent->BindKey(EKeys::Hyphen, IE_Pressed, this, &ABHCharacter::NumericEntryMinus);
 	PlayerInputComponent->BindKey(EKeys::Subtract, IE_Pressed, this, &ABHCharacter::NumericEntryMinus);
 	PlayerInputComponent->BindKey(EKeys::BackSpace, IE_Pressed, this, &ABHCharacter::NumericEntryBackspace);
+	// Mouse-driven question answering. Tab toggles the cursor over a focused question panel; the left
+	// mouse button (otherwise the Capture key, gated in TryCapture while the cursor is up) clicks
+	// choices / drags arrangement pieces. Number keys 1-4 still work, so keyboard/bots are unaffected.
+	PlayerInputComponent->BindAction(TEXT("NodeMarker"), IE_Pressed, this, &ABHCharacter::UseNodeMarker);
+	PlayerInputComponent->BindKey(EKeys::Tab, IE_Pressed, this, &ABHCharacter::ToggleQuestionCursor);
+	PlayerInputComponent->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &ABHCharacter::OnQuestionPointerDown);
+	PlayerInputComponent->BindKey(EKeys::LeftMouseButton, IE_Released, this, &ABHCharacter::OnQuestionPointerUp);
 	// Enter is the existing "Ready" action; ToggleReady() submits a typed numeric answer
 	// when a calculation question is focused, otherwise it toggles ready as before.
 }
@@ -2043,11 +2251,51 @@ void ABHCharacter::EnterLocker(ABHLocker* Locker)
 	if (ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>())
 	{
 		BHPS->SetHiddenInLocker(true);
+		BHPS->MarkWarmupStep(EBHWarmupStep::Hide);
 	}
 
 	SetActorLocation(Locker->GetActorLocation());
 	ApplyFlashlightState();
 	ApplyHiddenState();
+}
+
+static FVector ResolveLockerExitLocation(UWorld* World, const FVector& Origin, const FVector& Forward)
+{
+	// Try candidates scattered across the front semicircle at various radii.
+	// Random start index gives a different spread each exit so the teacher can't
+	// predict exactly where the player will appear.
+	struct FLockerCandidate { float AngleDeg; float Radius; };
+	static const FLockerCandidate Candidates[] = {
+		{   0.0f, 180.0f },
+		{  30.0f, 220.0f },
+		{ -30.0f, 220.0f },
+		{  60.0f, 180.0f },
+		{ -60.0f, 180.0f },
+		{   0.0f, 280.0f },
+		{  45.0f, 260.0f },
+		{ -45.0f, 260.0f },
+		{  90.0f, 200.0f },
+		{ -90.0f, 200.0f },
+		{   0.0f, 120.0f },
+	};
+
+	const FCollisionShape Capsule = FCollisionShape::MakeCapsule(42.0f, 98.0f);
+	const FVector Right = FVector::CrossProduct(FVector::UpVector, Forward).GetSafeNormal();
+	const int32 StartIdx = FMath::RandRange(0, UE_ARRAY_COUNT(Candidates) - 1);
+
+	for (int32 i = 0; i < UE_ARRAY_COUNT(Candidates); ++i)
+	{
+		const FLockerCandidate& C = Candidates[(StartIdx + i) % UE_ARRAY_COUNT(Candidates)];
+		const float Rad = FMath::DegreesToRadians(C.AngleDeg);
+		const FVector Dir = Forward * FMath::Cos(Rad) + Right * FMath::Sin(Rad);
+		const FVector Candidate = Origin + Dir * C.Radius;
+		if (World && !World->OverlapBlockingTestByChannel(Candidate, FQuat::Identity, ECC_Pawn, Capsule))
+		{
+			return Candidate;
+		}
+	}
+
+	return Origin + Forward * 120.0f;
 }
 
 void ABHCharacter::ExitLocker()
@@ -2060,11 +2308,15 @@ void ABHCharacter::ExitLocker()
 	if (CurrentLocker)
 	{
 		CurrentLocker->ClearOccupant(this);
-		const FVector ExitLocation = CurrentLocker->GetActorLocation() + CurrentLocker->GetActorForwardVector() * 120.0f;
+		const FVector ExitLocation = ResolveLockerExitLocation(
+			GetWorld(),
+			CurrentLocker->GetActorLocation(),
+			CurrentLocker->GetActorForwardVector());
 		SetActorLocation(ExitLocation);
 		CurrentLocker = nullptr;
 
 		const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+		LockerExitTime = Now;
 		if ((Fear >= 55.0f || Dread >= 55.0f) && Now - LastLockerNoiseTime > 6.0f)
 		{
 			LastLockerNoiseTime = Now;
@@ -2206,6 +2458,7 @@ void ABHCharacter::ResetRoleWarmupStateForRoundStart()
 	LastStaminaWarningTime = -999.0f;
 	LastHidingPanicMessageTime = -999.0f;
 	LastLockerNoiseTime = -999.0f;
+	LockerExitTime = -999.0f;
 	LastForcedBreathNoiseTime = -999.0f;
 	LastPanicBreathNoiseTime = -999.0f;
 	LastDetentionNoiseTime = -999.0f;
@@ -2223,6 +2476,7 @@ void ABHCharacter::ResetRoleWarmupStateForRoundStart()
 	bBHopJumpQueued = false;
 	bSprintInputHeld = false;
 	bProneInputHeld = false;
+	bMovementFrozenByServer = false;
 	bSpecialMoveEndsProne = false;
 	bSpecialMoveEndProneRequiresInput = false;
 	SpecialMoveStartTime = -999.0f;
@@ -2426,6 +2680,8 @@ void ABHCharacter::MoveForward(float Value)
 	if (Value != 0.0f && CanAct() && !IsSpecialMoveActive())
 	{
 		AddMovementInput(GetActorForwardVector(), Value);
+		// Record the direction for the tutorial WASD lesson (negligible cost outside the tutorial).
+		TutorialMovementMask |= (Value > 0.0f) ? TutorialMoveForwardBit : TutorialMoveBackBit;
 	}
 }
 
@@ -2434,16 +2690,28 @@ void ABHCharacter::MoveRight(float Value)
 	if (Value != 0.0f && CanAct() && !IsSpecialMoveActive())
 	{
 		AddMovementInput(GetActorRightVector(), Value);
+		TutorialMovementMask |= (Value > 0.0f) ? TutorialMoveRightBit : TutorialMoveLeftBit;
 	}
 }
 
 void ABHCharacter::Turn(float Value)
 {
+	// While answering a question with the mouse, the cursor owns the mouse: freeze look so moving it
+	// only moves the cursor, never the view. Otherwise the camera swings off the station, the focus
+	// trace loses it, and the question interaction drops out ("disconnects").
+	if (bQuestionCursorActive)
+	{
+		return;
+	}
 	AddControllerYawInput(Value);
 }
 
 void ABHCharacter::LookUp(float Value)
 {
+	if (bQuestionCursorActive)
+	{
+		return;
+	}
 	AddControllerPitchInput(Value);
 }
 
@@ -2489,6 +2757,11 @@ void ABHCharacter::StopKeyboardLookDown()
 
 void ABHCharacter::ApplyKeyboardLook(float DeltaSeconds)
 {
+	// Keyboard look is also frozen while the question cursor is up (see Turn()).
+	if (bQuestionCursorActive)
+	{
+		return;
+	}
 	const float YawValue = (bKeyboardLookRight ? 1.0f : 0.0f) - (bKeyboardLookLeft ? 1.0f : 0.0f);
 	if (YawValue != 0.0f)
 	{
@@ -2631,6 +2904,25 @@ void ABHCharacter::StopJump()
 	StopJumping();
 }
 
+void ABHCharacter::OnJumped_Implementation()
+{
+	Super::OnJumped_Implementation();
+
+	// Jumping costs stamina. Without this, bunny-hopping is a free speed hack: tap sprint to reach sprint speed,
+	// jump, and coast through the air at that speed where the per-second sprint drain (which only bites while
+	// holding sprint on the ground) never applies. Charging each jump makes a skilled hop a little MORE
+	// stamina-efficient than just holding sprint (a small reward), but still a real cost -- chained hops drain
+	// the bar, and once it empties sprint speed is removed so the airborne coast decays. Server-authoritative,
+	// matching the sprint drain; scaled by the per-map stamina economy so the "slightly better than sprint"
+	// margin holds on the running maps too.
+	if (HasAuthority() && IsPlayerControlled() && !IsProne())
+	{
+		const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+		const float Cost = BHJumpStaminaCost / FMath::Max(0.01f, BHLevelStaminaScale(BHPS));
+		Stamina = FMath::Max(0.0f, Stamina - Cost);
+	}
+}
+
 void ABHCharacter::StartSprint()
 {
 	bSprintInputHeld = true;
@@ -2716,6 +3008,7 @@ void ABHCharacter::StopCrouch()
 void ABHCharacter::StartProne()
 {
 	bProneInputHeld = true;
+	ServerSetProneInputHeld(true);
 
 	if (!CanAct() || IsSpecialMoveActive())
 	{
@@ -2735,6 +3028,7 @@ void ABHCharacter::StartProne()
 void ABHCharacter::StopProne()
 {
 	bProneInputHeld = false;
+	ServerSetProneInputHeld(false);
 	if (MovementSpecialState == EBHMovementSpecialState::Sliding && bSpecialMoveEndProneRequiresInput)
 	{
 		bSpecialMoveEndsProne = false;
@@ -3196,6 +3490,12 @@ void ABHCharacter::SetProneCollisionApplied(bool bApplied)
 
 void ABHCharacter::TryCapture()
 {
+	// LeftMouseButton doubles as the capture key; while the question cursor is up a click is meant
+	// for the panel, so swallow the capture attempt (OnQuestionPointerDown handles the click).
+	if (bQuestionCursorActive)
+	{
+		return;
+	}
 	ServerTryCapture();
 }
 
@@ -3214,7 +3514,7 @@ void ABHCharacter::DropDecoy()
 	ServerDropDecoy();
 }
 
-void ABHCharacter::SubmitAnswer(int32 AnswerIndex)
+void ABHCharacter::SubmitAnswer(int32 AnswerIndex, bool bVisual)
 {
 	// When a calculation question is focused, the 1-4 keys type digits 1-4 into the numeric
 	// buffer instead of submitting a multiple-choice answer. All other questions are unchanged.
@@ -3230,7 +3530,7 @@ void ABHCharacter::SubmitAnswer(int32 AnswerIndex)
 		return;
 	}
 
-	ServerSubmitAnswer(AnswerIndex);
+	ServerSubmitAnswer(AnswerIndex, bVisual);
 }
 
 void ABHCharacter::SetClientFocusedQuestionStation(ABHObjectiveStation* Station)
@@ -3241,6 +3541,260 @@ void ABHCharacter::SetClientFocusedQuestionStation(ABHObjectiveStation* Station)
 	{
 		ClientFocusedQuestionStation = Station;
 		NumericAnswerEntry.Reset();
+	}
+}
+
+void ABHCharacter::ToggleQuestionCursor()
+{
+	if (!IsLocallyControlled() || !IsPlayerControlled())
+	{
+		return;
+	}
+	if (!bQuestionCursorActive)
+	{
+		const ABHObjectiveStation* Station = ClientFocusedQuestionStation.Get();
+		const bool bAnswerable = Station && Station->IsDirectorActive() && !Station->IsCompleted()
+			&& !Station->IsQuestionSolved() && Station->GetQuestionChoiceCount() > 0;
+		if (!bAnswerable)
+		{
+			SendStatusMessage(TEXT("Look at a question checkpoint to answer with the mouse."));
+			return;
+		}
+		bQuestionCursorActive = true;
+		QuestionDraggedPiece = INDEX_NONE;
+		if (ABHPlayerController* PC = Cast<ABHPlayerController>(GetController()))
+		{
+			PC->SetQuestionCursorMode(true);
+		}
+	}
+	else
+	{
+		bQuestionCursorActive = false;
+		QuestionDraggedPiece = INDEX_NONE;
+		if (ABHPlayerController* PC = Cast<ABHPlayerController>(GetController()))
+		{
+			PC->SetQuestionCursorMode(false);
+		}
+	}
+}
+
+void ABHCharacter::UseNodeMarker()
+{
+	if (!IsLocallyControlled() || !IsPlayerControlled() || !GetWorld())
+	{
+		return;
+	}
+	ABHPlayerController* PC = Cast<ABHPlayerController>(GetController());
+	if (!PC)
+	{
+		return;
+	}
+	const FVector Origin = GetActorLocation();
+	float BestDistSq = TNumericLimits<float>::Max();
+	const ABHObjectiveStation* BestStation = nullptr;
+	for (TActorIterator<ABHObjectiveStation> It(GetWorld()); It; ++It)
+	{
+		const ABHObjectiveStation* Station = *It;
+		if (!Station || !Station->IsDirectorActive() || Station->IsCompleted() || Station->IsTeacherMirrorTrapNode())
+		{
+			continue;
+		}
+		const float DistSq = FVector::DistSquared2D(Station->GetActorLocation(), Origin);
+		if (DistSq < BestDistSq)
+		{
+			BestDistSq = DistSq;
+			BestStation = Station;
+		}
+	}
+	if (!BestStation)
+	{
+		SendStatusMessage(TEXT("No active question nodes found."));
+		return;
+	}
+	PC->NodeMarkerLocation = BestStation->GetActorLocation();
+	PC->NodeMarkerUntilTime = GetWorld()->GetTimeSeconds() + 8.0f;
+}
+
+void ABHCharacter::UpdateQuestionInteractionState()
+{
+	// Owning-client upkeep only (the Tick caller already gates on IsLocallyControlled/IsPlayerControlled).
+	ABHObjectiveStation* Station = ClientFocusedQuestionStation.Get();
+	const bool bAnswerable = Station && Station->IsDirectorActive() && !Station->IsCompleted()
+		&& !Station->IsQuestionSolved() && Station->GetQuestionChoiceCount() > 0;
+
+	// Auto-exit the cursor when the answerable question goes away (solved, completed, looked away).
+	if (bQuestionCursorActive && !bAnswerable)
+	{
+		bQuestionCursorActive = false;
+		QuestionDraggedPiece = INDEX_NONE;
+		if (ABHPlayerController* PC = Cast<ABHPlayerController>(GetController()))
+		{
+			PC->SetQuestionCursorMode(false);
+		}
+	}
+
+	// Rebuild the local drag arrangement whenever the focused arrangement question's piece set
+	// changes (a reload after a right/wrong answer, or walking to a different station). Keyed on the
+	// station + the shuffled pieces so an identical reload is detected and reset.
+	FString NewKey;
+	if (bAnswerable && Station->HasInteractiveArrangement())
+	{
+		NewKey = FString::Printf(TEXT("%s|%d|"), *Station->GetName(), Station->GetInteractiveSlots().Num());
+		for (const FString& Piece : Station->GetInteractivePieces())
+		{
+			NewKey += Piece;
+			NewKey += TEXT("\x1f");
+		}
+	}
+	if (NewKey != QuestionArrangementKey)
+	{
+		QuestionArrangementKey = NewKey;
+		QuestionArrangement.Reset();
+		if (!NewKey.IsEmpty() && Station)
+		{
+			QuestionArrangement.Init(INDEX_NONE, Station->GetInteractiveSlots().Num());
+		}
+		QuestionDraggedPiece = INDEX_NONE;
+	}
+}
+
+void ABHCharacter::OnQuestionPointerDown()
+{
+	if (!bQuestionCursorActive || !IsLocallyControlled())
+	{
+		return;
+	}
+	ABHPlayerController* PC = Cast<ABHPlayerController>(GetController());
+	ABHHUD* HUD = PC ? Cast<ABHHUD>(PC->GetHUD()) : nullptr;
+	if (!PC || !HUD)
+	{
+		return;
+	}
+	float MX = 0.0f;
+	float MY = 0.0f;
+	if (!PC->GetMousePosition(MX, MY))
+	{
+		return;
+	}
+	FBHQuestionHitRegion Region;
+	const bool bHit = HUD->GetQuestionRegionAtCursor(FVector2D(MX, MY), Region);
+
+	// Click-to-pick / click-to-place (no hold-drag): a single click picks up a piece, the next click
+	// drops it on a slot. A button is never held, so the mouse stays free to move the cursor and the
+	// camera never swings (look is also frozen while the cursor is up; see Turn()).
+	if (QuestionDraggedPiece != INDEX_NONE)
+	{
+		if (bHit && Region.Kind == EBHQuestionRegionKind::Slot && QuestionArrangement.IsValidIndex(Region.IndexA))
+		{
+			// Place into this slot; any piece already there is displaced back to the tray.
+			QuestionArrangement[Region.IndexA] = QuestionDraggedPiece;
+			QuestionDraggedPiece = INDEX_NONE;
+		}
+		else if (bHit && Region.Kind == EBHQuestionRegionKind::Piece)
+		{
+			// Switch the held piece to the one just clicked (the previous one returns to the tray).
+			QuestionDraggedPiece = Region.IndexA;
+			for (int32& Slot : QuestionArrangement)
+			{
+				if (Slot == Region.IndexA)
+				{
+					Slot = INDEX_NONE;
+				}
+			}
+		}
+		else
+		{
+			// Clicked empty space / a choice / submit while carrying a piece: cancel and return it.
+			QuestionDraggedPiece = INDEX_NONE;
+		}
+		return;
+	}
+
+	if (!bHit)
+	{
+		return;
+	}
+	switch (Region.Kind)
+	{
+	case EBHQuestionRegionKind::Piece:
+		// Pick up (from the tray or out of a slot it currently occupies).
+		QuestionDraggedPiece = Region.IndexA;
+		for (int32& Slot : QuestionArrangement)
+		{
+			if (Slot == Region.IndexA)
+			{
+				Slot = INDEX_NONE;
+			}
+		}
+		break;
+	case EBHQuestionRegionKind::Slot:
+		// Clicking a filled slot with nothing held lifts that piece so it can be moved.
+		if (QuestionArrangement.IsValidIndex(Region.IndexA) && QuestionArrangement[Region.IndexA] != INDEX_NONE)
+		{
+			QuestionDraggedPiece = QuestionArrangement[Region.IndexA];
+			QuestionArrangement[Region.IndexA] = INDEX_NONE;
+		}
+		break;
+	case EBHQuestionRegionKind::Choice:
+		// Picking a text choice row is a plain multiple-choice answer (no visual bonus).
+		SubmitAnswer(Region.IndexA, /*bVisual=*/false);
+		break;
+	case EBHQuestionRegionKind::DiagramChoice:
+		// Clicking the answer ON the diagram is a visual answer -> earns the mastery bonus.
+		SubmitAnswer(Region.IndexA, /*bVisual=*/true);
+		break;
+	case EBHQuestionRegionKind::Submit:
+		if (QuestionArrangement.Num() > 0 && !QuestionArrangement.Contains(INDEX_NONE))
+		{
+			ServerSubmitArrangement(QuestionArrangement);
+		}
+		else
+		{
+			SendStatusMessage(TEXT("Place a piece on every slot first."));
+		}
+		break;
+	case EBHQuestionRegionKind::KeypadDigit:
+		NumericEntryDigit(Region.IndexA);
+		break;
+	case EBHQuestionRegionKind::KeypadDecimal:
+		NumericEntryDecimal();
+		break;
+	case EBHQuestionRegionKind::KeypadMinus:
+		NumericEntryMinus();
+		break;
+	case EBHQuestionRegionKind::KeypadBackspace:
+		NumericEntryBackspace();
+		break;
+	case EBHQuestionRegionKind::KeypadEnter:
+		ConfirmNumericAnswer();
+		break;
+	default:
+		break;
+	}
+}
+
+void ABHCharacter::OnQuestionPointerUp()
+{
+	// Intentionally empty: answering uses click-to-pick / click-to-place on press
+	// (OnQuestionPointerDown), so there is no hold-drag to finish on release.
+}
+
+void ABHCharacter::ServerSubmitArrangement_Implementation(const TArray<int32>& SlotToPiece)
+{
+	if (!CanAct())
+	{
+		return;
+	}
+	// Resolve the station the player is looking at on the server (same view fallback as the
+	// multiple-choice / numeric submit paths), then grade the arrangement authoritatively.
+	AActor* Target = nullptr;
+	FindInteractableFromView(Target, 225.0f);
+	if (ABHObjectiveStation* Station = Cast<ABHObjectiveStation>(Target))
+	{
+		if (IsValidInteractionTarget(Station))
+		{
+			Station->SubmitArrangement(this, SlotToPiece);
+		}
 	}
 }
 
@@ -3532,6 +4086,56 @@ bool ABHCharacter::IsValidInteractionTarget(AActor* Target) const
 	}
 
 	return FVector::DistSquared(Target->GetActorLocation(), GetActorLocation()) <= FMath::Square(InteractDistance + 175.0f);
+}
+
+bool ABHCharacter::HasInteractionLineOfSight(AActor* Target) const
+{
+	// Server-side line-of-sight gate: a client-supplied Target only passes the distance
+	// check in IsValidInteractionTarget, which lets a modded client interact through a
+	// thin wall. Reuse the same view point and ECC_Visibility channel as
+	// FindInteractableFromView and reject if a *different* blocking actor sits between the
+	// player's eyes and the target. Self and the target are ignored so legitimate
+	// interactions (looking right at the object, no wall in the way) still pass.
+	if (!Target || !GetWorld())
+	{
+		return false;
+	}
+
+	FVector Start = FVector::ZeroVector;
+	FRotator ViewRotation = FRotator::ZeroRotator;
+	if (Controller)
+	{
+		Controller->GetPlayerViewPoint(Start, ViewRotation);
+	}
+	else if (Camera)
+	{
+		Start = Camera->GetComponentLocation();
+	}
+	else
+	{
+		// No view point available on the server; fall back to permissive so we never
+		// block a legitimate interaction just because the view source is missing.
+		return true;
+	}
+
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BHInteractLoS), false, this);
+	Params.AddIgnoredActor(Target);
+
+	// Trace only against world geometry (static + dynamic), NOT pawns: the gate must reject a WALL
+	// between the player and the object, but a teammate's body standing in front of an objective in a
+	// crowded room must not deny a legitimate interaction.
+	FCollisionObjectQueryParams ObjParams;
+	ObjParams.AddObjectTypesToQuery(ECC_WorldStatic);
+	ObjParams.AddObjectTypesToQuery(ECC_WorldDynamic);
+
+	FHitResult VisibilityHit;
+	if (GetWorld()->LineTraceSingleByObjectType(VisibilityHit, Start, Target->GetActorLocation(), ObjParams, Params))
+	{
+		// A world wall/prop that is neither us nor the target stands in the way.
+		return false;
+	}
+
+	return true;
 }
 
 FString ABHCharacter::GetInteractionFailureReason(AActor* Target) const
@@ -4554,6 +5158,14 @@ void ABHCharacter::UpdateFlashlightFeel(float DeltaSeconds)
 	const bool bFoggroundsActive = BHGS && BHGS->ActiveLevelName.Equals(TEXT("Foggrounds"), ESearchCase::IgnoreCase);
 	const bool bExtremeFog = bFoggroundsActive && ActiveFogPreset == EBHFogPreset::Extreme;
 	const bool bHeavyFog = bFoggroundsActive && ActiveFogPreset == EBHFogPreset::Heavy;
+	// On the intermission train the flashlight has no real use and a full-strength beam blows out the
+	// carriage's own lighting/mood, so dim it hard (intensity, range, and the volumetric beam) while
+	// still letting it toggle. Battery drain is suppressed during the intermission (see Tick) so it is
+	// not wasted here. Detection uses the replicated GameState (GameMode::bTrainIntermissionLevel is
+	// server-only and unreadable on clients).
+	const bool bTrainIntermission = BHGS && (BHGS->RoundPhase == EBHRoundPhase::Intermission || BHGS->ActiveLevelName.Equals(TEXT("TrainIntermission"), ESearchCase::IgnoreCase));
+	const float TrainFlashlightIntensityScale = bTrainIntermission ? 0.18f : 1.0f;
+	const float TrainFlashlightRadiusScale = bTrainIntermission ? 0.55f : 1.0f;
 
 	const EBHMovementSpecialState FlashlightVisualSpecialState = MovementSpecialState != EBHMovementSpecialState::None ? MovementSpecialState : CosmeticMovementSpecialState;
 	const float FlashlightSpecialOffset = FlashlightVisualSpecialState == EBHMovementSpecialState::Prone
@@ -4579,8 +5191,8 @@ void ABHCharacter::UpdateFlashlightFeel(float DeltaSeconds)
 		* FMath::Lerp(1.0f, 0.95f, FearPanicAlpha);
 
 	const float LightBoostMultiplier = PowerupComponent ? PowerupComponent->GetFlashlightMultiplier() : 1.0f;
-	const float EffectiveIntensity = (bExtremeFog ? FMath::Min(NormalIntensity, 10000.0f) : (bHeavyFog ? FMath::Min(NormalIntensity, 10800.0f) : NormalIntensity)) * LightBoostMultiplier * FlashlightTuningIntensityScale;
-	const float EffectiveRadius = (bExtremeFog ? FMath::Min(NormalRadius, 2200.0f) : (bHeavyFog ? FMath::Min(NormalRadius, 2400.0f) : NormalRadius)) * FMath::Lerp(1.0f, 1.16f, LightBoostMultiplier - 1.0f) * FlashlightTuningRadiusScale;
+	const float EffectiveIntensity = (bExtremeFog ? FMath::Min(NormalIntensity, 10000.0f) : (bHeavyFog ? FMath::Min(NormalIntensity, 10800.0f) : NormalIntensity)) * LightBoostMultiplier * FlashlightTuningIntensityScale * TrainFlashlightIntensityScale;
+	const float EffectiveRadius = (bExtremeFog ? FMath::Min(NormalRadius, 2200.0f) : (bHeavyFog ? FMath::Min(NormalRadius, 2400.0f) : NormalRadius)) * FMath::Lerp(1.0f, 1.16f, LightBoostMultiplier - 1.0f) * FlashlightTuningRadiusScale * TrainFlashlightRadiusScale;
 	const float EffectiveInnerConeAngle = (bExtremeFog ? 9.0f : (bHeavyFog ? 10.0f : 18.0f)) * FlashlightTuningConeScale;
 	const float EffectiveOuterConeAngle = (bExtremeFog ? 18.0f : (bHeavyFog ? 20.0f : (34.0f + LowBatteryAlpha * 2.5f + HorrorAlpha * 1.8f))) * FlashlightTuningConeScale;
 	const float RayVisibilityScale = FMath::Clamp(FlashlightTuningRayVisibilityScale, 0.0f, 3.0f);
@@ -4597,7 +5209,7 @@ void ABHCharacter::UpdateFlashlightFeel(float DeltaSeconds)
 	Flashlight->SetAttenuationRadius(EffectiveRadius);
 	Flashlight->SetInnerConeAngle(FMath::Clamp(EffectiveInnerConeAngle, 4.0f, 80.0f));
 	Flashlight->SetOuterConeAngle(FMath::Clamp(EffectiveOuterConeAngle, 6.0f, 88.0f));
-	Flashlight->SetVolumetricScatteringIntensity((bExtremeFog ? 5.6f : (bHeavyFog ? 6.0f : 6.6f)) * FlashlightTuningVolumetricScale * VolumetricRayBoost);
+	Flashlight->SetVolumetricScatteringIntensity((bExtremeFog ? 5.6f : (bHeavyFog ? 6.0f : 6.6f)) * FlashlightTuningVolumetricScale * VolumetricRayBoost * TrainFlashlightIntensityScale);
 
 	const float FogScatterAlpha =
 		ActiveFogPreset == EBHFogPreset::Extreme ? 0.80f :
@@ -4647,8 +5259,8 @@ void ABHCharacter::UpdateFlashlightFeel(float DeltaSeconds)
 		}
 	};
 
-	const float OuterOpacity = FMath::Clamp((0.014f + FogScatterAlpha * 0.028f + LowBatteryAlpha * 0.004f) * BeamPulse * FlashlightTuningBeamOpacityScale * RayVisibilityBoost, 0.0f, bExtremeFog ? 0.145f : (bHeavyFog ? 0.158f : 0.180f));
-	const float CoreOpacity = FMath::Clamp((0.010f + FogScatterAlpha * 0.020f) * BeamPulse * FlashlightTuningBeamOpacityScale * RayVisibilityBoost, 0.0f, bExtremeFog ? 0.110f : (bHeavyFog ? 0.120f : 0.140f));
+	const float OuterOpacity = FMath::Clamp((0.014f + FogScatterAlpha * 0.028f + LowBatteryAlpha * 0.004f) * BeamPulse * FlashlightTuningBeamOpacityScale * RayVisibilityBoost * TrainFlashlightIntensityScale, 0.0f, bExtremeFog ? 0.145f : (bHeavyFog ? 0.158f : 0.180f));
+	const float CoreOpacity = FMath::Clamp((0.010f + FogScatterAlpha * 0.020f) * BeamPulse * FlashlightTuningBeamOpacityScale * RayVisibilityBoost * TrainFlashlightIntensityScale, 0.0f, bExtremeFog ? 0.110f : (bHeavyFog ? 0.120f : 0.140f));
 	ConfigureBeam(FlashlightBeamOuter, FlashlightBeamOuterMaterial, BeamLength, EffectiveOuterConeAngle, 0.92f * RayWidthScale, OuterOpacity, (bExtremeFog ? 0.86f : (bHeavyFog ? 0.92f : 1.00f)) * FlashlightTuningBeamBrightnessScale * FMath::Lerp(0.65f, 1.20f, RayBoostAlpha));
 	ConfigureBeam(FlashlightBeamCore, FlashlightBeamCoreMaterial, BeamLength * 0.82f, EffectiveInnerConeAngle, 0.48f * RayWidthScale, CoreOpacity, (bExtremeFog ? 1.05f : (bHeavyFog ? 1.12f : 1.20f)) * FlashlightTuningBeamBrightnessScale * FMath::Lerp(0.70f, 1.18f, RayBoostAlpha));
 }
@@ -5597,6 +6209,13 @@ void ABHCharacter::ServerSetFlashlight_Implementation(bool bNewOn)
 		{
 			BroadcastFlashlightAudioCue(bFlashlightOn);
 		}
+		if (bFlashlightOn)
+		{
+			if (ABHPlayerState* WarmupPS = GetPlayerState<ABHPlayerState>())
+			{
+				WarmupPS->MarkWarmupStep(EBHWarmupStep::Flashlight);
+			}
+		}
 	}
 }
 
@@ -5632,9 +6251,13 @@ bool ABHCharacter::BeginInteractAuthority(AActor* Target, bool bUseViewFallback,
 	}
 
 	AActor* ResolvedTarget = Target;
+	bool bResolvedFromView = false;
 	if (bUseViewFallback && (!ResolvedTarget || !IsValidInteractionTarget(ResolvedTarget)))
 	{
 		FindInteractableFromView(ResolvedTarget, 175.0f);
+		// A view-resolved target already passed FindInteractableFromView's ECC_Visibility trace, so it
+		// is proven visible; only a directly client-supplied target still needs the LOS gate below.
+		bResolvedFromView = (ResolvedTarget != nullptr);
 	}
 
 	if (!ResolvedTarget)
@@ -5651,6 +6274,19 @@ bool ABHCharacter::BeginInteractAuthority(AActor* Target, bool bUseViewFallback,
 		if (bShowFailureMessages)
 		{
 			SendStatusMessage(TEXT("Interactable is too far away."));
+		}
+		return false;
+	}
+
+	// Server-authoritative line-of-sight gate, applied ONLY to a directly client-supplied target (the
+	// through-wall exploit path). A view-resolved target already proved visibility in
+	// FindInteractableFromView, so re-gating it would false-reject legitimate interactions when a
+	// teammate's body or thin prop sits between the player and the object's pivot in a crowded room.
+	if (!bResolvedFromView && !HasInteractionLineOfSight(ResolvedTarget))
+	{
+		if (bShowFailureMessages)
+		{
+			SendStatusMessage(TEXT("Something is blocking your view of that."));
 		}
 		return false;
 	}
@@ -5688,6 +6324,25 @@ void ABHCharacter::EndInteractAuthority(AActor* Target)
 	}
 }
 
+void ABHCharacter::EndStaleHeldInteractionAuthority()
+{
+	if (!HasAuthority() || bHiddenInLocker)
+	{
+		return;
+	}
+
+	// A hold interaction stays registered until the player releases E. If they keep E held and walk away,
+	// IsValidInteractionTarget (the same distance gate BeginInteractAuthority used) now fails, so end the
+	// interaction here — this drops the player from the station/breaker worker set and stops the task
+	// completing from across the room. Distance-only on purpose: turning to read the question must not
+	// cancel a legitimate hold, so we do not re-apply the line-of-sight gate every tick.
+	AActor* HeldTarget = CurrentServerInteractTarget;
+	if (HeldTarget && !IsValidInteractionTarget(HeldTarget))
+	{
+		EndInteractAuthority(HeldTarget);
+	}
+}
+
 void ABHCharacter::ServerExitCurrentLocker_Implementation()
 {
 	ExitCurrentLockerAuthority();
@@ -5700,6 +6355,14 @@ void ABHCharacter::ExitCurrentLockerAuthority()
 
 void ABHCharacter::ServerSetSprinting_Implementation(bool bNewSprinting)
 {
+	// Every other movement RPC bails when the pawn cannot act; this one must too, or a modified
+	// client can sprint while input-frozen/captured/in the final-escape cutscene (the stamina drain
+	// is CanAct()-gated, so it would cost them nothing). Mirror ServerSetProne's authority guard.
+	if (!CanAct())
+	{
+		return;
+	}
+
 	bSprintInputHeld = bNewSprinting;
 	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
 	const float HunterPenaltyMultiplier = BHFinalEscapeHunterPenaltyActive(GetWorld(), this) ? 0.72f : 1.0f;
@@ -5744,6 +6407,19 @@ void ABHCharacter::ServerStartSpecialMove_Implementation(EBHMovementSpecialState
 void ABHCharacter::ServerSetProne_Implementation(bool bNewProne)
 {
 	SetProneAuthority(bNewProne, true);
+}
+
+void ABHCharacter::ServerSetProneInputHeld_Implementation(bool bHeld)
+{
+	// bProneInputHeld is otherwise only set by local input, so on the server it is permanently false
+	// for every remote client — FinishSpecialMoveAuthority then never honours "hold prone to stay
+	// down after a slide" for anyone but the listen-server host. Replicate the intent here and mirror
+	// StopProne's local rule (releasing mid-slide cancels the settle-into-prone) so it matches.
+	bProneInputHeld = bHeld;
+	if (!bHeld && MovementSpecialState == EBHMovementSpecialState::Sliding && bSpecialMoveEndProneRequiresInput)
+	{
+		bSpecialMoveEndsProne = false;
+	}
 }
 
 void ABHCharacter::ServerTryCapture_Implementation()
@@ -5894,6 +6570,13 @@ bool ABHCharacter::IsTeacherCaptureCandidateAuthority(const ABHCharacter* Target
 
 	const bool bVisible = (Controller && Controller->LineOfSightTo(const_cast<ABHCharacter*>(Target))) || HasDirectVisibilityToCharacter(Target);
 	if (!bVisible)
+	{
+		return false;
+	}
+
+	const UWorld* TargetWorld = Target->GetWorld();
+	const float NowT = TargetWorld ? TargetWorld->GetTimeSeconds() : 0.0f;
+	if (Target->LockerExitTime > -900.0f && NowT - Target->LockerExitTime < BHLockerExitGraceSeconds)
 	{
 		return false;
 	}
@@ -6159,6 +6842,10 @@ bool ABHCharacter::TryCaptureAuthority(bool bShowFailureMessages)
 	{
 		SendStatusMessage(bRoleWarmup ? TEXT("Warmup axe windup. Capture tags do not count.") : TEXT("Axe windup. Survivors can dodge or blind it."));
 	}
+	if (ABHPlayerState* WarmupPS = GetPlayerState<ABHPlayerState>())
+	{
+		WarmupPS->MarkWarmupStep(EBHWarmupStep::Tool);
+	}
 	RefreshMovementSpeedFromState();
 	ForceNetUpdate();
 	return true;
@@ -6214,6 +6901,10 @@ bool ABHCharacter::UseScanAuthority(bool bShowFailureMessages)
 
 		LastScanTime = Now;
 		SendFakeHunterHint(true);
+		if (ABHPlayerState* WarmupPS = GetPlayerState<ABHPlayerState>())
+		{
+			WarmupPS->MarkWarmupStep(EBHWarmupStep::Scan);
+		}
 		if (bRoleWarmup && bShowFailureMessages)
 		{
 			SendStatusMessage(TEXT("Warmup real hint sent. Contribution gates reset for the Hunt."));
@@ -6254,6 +6945,10 @@ bool ABHCharacter::UseScanAuthority(bool bShowFailureMessages)
 	}
 
 	LastScanTime = Now;
+	if (ABHPlayerState* WarmupPS = GetPlayerState<ABHPlayerState>())
+	{
+		WarmupPS->MarkWarmupStep(EBHWarmupStep::Scan);
+	}
 	ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>();
 	if (BHGM && !bRoleWarmup)
 	{
@@ -6353,6 +7048,10 @@ bool ABHCharacter::UseHunterPowerAuthority(bool bShowFailureMessages)
 		}
 
 		LastHunterPowerTime = Now;
+		if (ABHPlayerState* WarmupPS = GetPlayerState<ABHPlayerState>())
+		{
+			WarmupPS->MarkWarmupStep(EBHWarmupStep::Tool);
+		}
 		if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
 		{
 			BHGM->TriggerHunterBlackout(GetActorLocation(), BlackoutSurgeCharges);
@@ -6398,6 +7097,10 @@ bool ABHCharacter::UseHunterPowerAuthority(bool bShowFailureMessages)
 
 		LastHunterPowerTime = Now;
 		SendFakeHunterHint(false);
+		if (ABHPlayerState* WarmupPS = GetPlayerState<ABHPlayerState>())
+		{
+			WarmupPS->MarkWarmupStep(EBHWarmupStep::Tool);
+		}
 		if (bRoleWarmup && bShowFailureMessages)
 		{
 			SendStatusMessage(TEXT("Warmup false hint sent. Hall Monitor cooldowns reset for the Hunt."));
@@ -6490,6 +7193,10 @@ bool ABHCharacter::DropDecoyAuthority(bool bShowFailureMessages)
 	if (BHPS->PlayerRole == EBHPlayerRole::FakeHunter)
 	{
 		GetWorld()->SpawnActor<ABHAlarmTrap>(SpawnLocation, GetActorRotation());
+		if (ABHPlayerState* WarmupPS = GetPlayerState<ABHPlayerState>())
+		{
+			WarmupPS->MarkWarmupStep(EBHWarmupStep::Tool);
+		}
 		if (bShowFailureMessages)
 		{
 			SendStatusMessage(bRoleWarmup ? TEXT("Warmup trap placed. It will be cleared before the Hunt.") : TEXT("Hall monitor trap arming. Survivors can dodge it until it wakes."));
@@ -6500,9 +7207,9 @@ bool ABHCharacter::DropDecoyAuthority(bool bShowFailureMessages)
 	return false;
 }
 
-void ABHCharacter::ServerSubmitAnswer_Implementation(int32 AnswerIndex)
+void ABHCharacter::ServerSubmitAnswer_Implementation(int32 AnswerIndex, bool bVisualAnswer)
 {
-	SubmitAnswerAuthority(nullptr, AnswerIndex, true, true);
+	SubmitAnswerAuthority(nullptr, AnswerIndex, true, true, bVisualAnswer);
 }
 
 void ABHCharacter::ServerUsePowerup_Implementation(EBHPowerupType Type)
@@ -6526,7 +7233,7 @@ void ABHCharacter::ServerUsePowerup_Implementation(EBHPowerupType Type)
 	}
 }
 
-bool ABHCharacter::SubmitAnswerAuthority(ABHObjectiveStation* Station, int32 AnswerIndex, bool bUseViewFallback, bool bShowFailureMessages)
+bool ABHCharacter::SubmitAnswerAuthority(ABHObjectiveStation* Station, int32 AnswerIndex, bool bUseViewFallback, bool bShowFailureMessages, bool bVisualAnswer)
 {
 	if (!CanAct())
 	{
@@ -6579,7 +7286,7 @@ bool ABHCharacter::SubmitAnswerAuthority(ABHObjectiveStation* Station, int32 Ans
 		return false;
 	}
 
-	return Station->SubmitAnswer(this, AnswerIndex);
+	return Station->SubmitAnswer(this, AnswerIndex, bVisualAnswer);
 }
 
 bool ABHCharacter::SubmitNumericAnswerAuthority(float Value)
@@ -6617,9 +7324,19 @@ void ABHCharacter::ClientReceiveScanResult_Implementation(const FVector& TargetL
 		return;
 	}
 
-	const FVector Direction = (TargetLocation - GetActorLocation()).GetSafeNormal2D();
+	const FVector Delta = TargetLocation - GetActorLocation();
+	const float DistanceMeters = Delta.Size2D() / 100.0f;
+	// Compass bearing: north = 0, clockwise through east = 90 (game convention: +X east, +Y north).
+	float BearingDeg = FMath::RadiansToDegrees(FMath::Atan2(Delta.X, Delta.Y));
+	if (BearingDeg < 0.0f)
+	{
+		BearingDeg += 360.0f;
+	}
 	const FString HiddenText = bTargetHidden ? TEXT(" Hidden.") : TEXT("");
-	PC->ShowLocalStatusMessage(FString::Printf(TEXT("Heartbeat detected: direction %.0f, %.0f.%s"), Direction.X, Direction.Y, *HiddenText), 3.0f);
+	PC->ShowLocalStatusMessage(
+		FString::Printf(TEXT("Heartbeat detected: %s, %.0f m, bearing %03.0f.%s"),
+			*BHCompassFromDelta(Delta), DistanceMeters, BearingDeg, *HiddenText),
+		3.0f);
 }
 
 void ABHCharacter::OnRep_FlashlightOn()
