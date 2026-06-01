@@ -106,6 +106,7 @@ private:
 	void GatherContext(const TSharedRef<FJsonObject>& Out) const;
 	TSharedRef<FJsonObject> BuildDeviceJson() const;
 	TSharedRef<FJsonObject> BuildPerfJson() const;
+	TSharedRef<FJsonObject> BuildGraphicsJson() const;
 	TSharedRef<FJsonObject> BuildDiagnosticsJson(bool bIncludeLogs) const;
 	// Posts Body to BaseUrl + PathSuffix, or saves locally when no backend is configured.
 	void PostJson(const FString& PathSuffix, const TSharedRef<FJsonObject>& Body, const FString& SubmittingMessage, const FString& SuccessMessage, const FString& FallbackTag);

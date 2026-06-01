@@ -30,7 +30,7 @@
 var EMAIL_KINDS = ['bug', 'idea', 'praise', 'other'];
 var SPREADSHEET_NAME = 'BlackoutHunt Feedback';
 // Bump this on each change. GET the /exec URL to read it back and confirm which code is live.
-var SCRIPT_VERSION = '2026-05-30-specs';
+var SCRIPT_VERSION = '2026-06-01-graphics';
 
 function doPost(e) {
   try {
@@ -99,16 +99,36 @@ function tab_(name, headers) {
   return sh;
 }
 
+function qualityName_(q) {
+  return (q === -1) ? 'Custom' : (['Low', 'Medium', 'High', 'Epic', 'Cinematic'][q] || String(q));
+}
+
+function graphicsSummary_(gr) {
+  if (!gr || !gr.resolution) return '';
+  var parts = [gr.resolution + ' ' + (gr.window_mode || '')];
+  if (gr.quality_preset !== undefined) parts.push(qualityName_(gr.quality_preset));
+  if (gr.anti_aliasing) parts.push(gr.anti_aliasing);
+  if (gr.screen_pct !== undefined) parts.push(gr.screen_pct + '%');
+  parts.push(gr.vsync ? 'VSync' : 'no VSync');
+  parts.push(gr.fps_limit ? 'cap ' + gr.fps_limit : 'uncapped');
+  var q = [gr.q_texture, gr.q_shadow, gr.q_effects, gr.q_view_dist, gr.q_foliage, gr.q_postprocess, gr.q_shading];
+  if (q.some(function(v) { return v !== undefined; })) {
+    parts.push('Tex/Shad/FX/View/Fol/PP/Shade:' + q.map(function(v) { return v !== undefined ? v : '?'; }).join('/'));
+  }
+  return parts.join(' · ');
+}
+
 function logFeedback_(b) {
   var c = b.context || {};
   var d = b.diagnostics || {};
   var dev = d.device || {};
   var perf = d.perf || {};
+  var gr = d.graphics || {};
   var perfStr = perf.avg_fps ? ('avg ' + perf.avg_fps + ' / min ' + perf.min_fps + ' / 1%low ' + (perf.p1_low_fps || '') + ' / ' + (perf.hitches || 0) + ' hitches') : '';
-  tab_('feedback', ['received_at', 'kind', 'rating', 'message', 'contact', 'player', 'level', 'role', 'app_version', 'platform', 'cpu', 'gpu', 'ram_gb', 'os', 'perf'])
+  tab_('feedback', ['received_at', 'kind', 'rating', 'message', 'contact', 'player', 'level', 'role', 'app_version', 'platform', 'cpu', 'gpu', 'ram_gb', 'os', 'perf', 'graphics'])
     .appendRow([new Date(), b.kind || '', b.rating || '', b.message || '', b.contact || '',
                 c.player_name || '', c.level || '', c.role || '', c.app_version || '', c.platform || '',
-                dev.cpu || '', dev.gpu || '', dev.ram_gb || '', dev.os || '', perfStr]);
+                dev.cpu || '', dev.gpu || '', dev.ram_gb || '', dev.os || '', perfStr, graphicsSummary_(gr)]);
 }
 
 function logTelemetry_(b) {
@@ -139,6 +159,26 @@ function emailFeedback_(kind, b) {
   var pc = [dev.cpu, dev.gpu, (dev.ram_gb ? dev.ram_gb + 'GB' : ''), dev.os].filter(Boolean).join(' · ');
   if (pc) lines.push('PC:      ' + pc);
   if (perf.avg_fps) lines.push('Perf:    FPS avg ' + perf.avg_fps + ' / min ' + perf.min_fps + ' / 1%low ' + (perf.p1_low_fps || '-') + ' · ' + (perf.hitches || 0) + ' hitches');
+  // Graphics settings.
+  var gr = d.graphics || {};
+  if (gr.resolution) {
+    var grLine = [
+      gr.resolution + ' ' + (gr.window_mode || ''),
+      gr.quality_preset !== undefined ? qualityName_(gr.quality_preset) : '',
+      gr.anti_aliasing || '',
+      gr.screen_pct !== undefined ? gr.screen_pct + '% scale' : '',
+      gr.vsync ? 'VSync on' : 'VSync off',
+      gr.fps_limit ? 'cap ' + gr.fps_limit + 'fps' : 'uncapped'
+    ].filter(Boolean).join(' · ');
+    lines.push('Graphics: ' + grLine);
+    var qNames = ['Tex', 'Shad', 'FX', 'View', 'Fol', 'PP', 'Shade'];
+    var qVals  = [gr.q_texture, gr.q_shadow, gr.q_effects, gr.q_view_dist, gr.q_foliage, gr.q_postprocess, gr.q_shading];
+    var qParts = [];
+    for (var i = 0; i < qNames.length; i++) {
+      if (qVals[i] !== undefined) qParts.push(qNames[i] + ' ' + qVals[i]);
+    }
+    if (qParts.length) lines.push('          ' + qParts.join(' · '));
+  }
   lines.push('', b.message || '', '', '— Blackout Hunt (Apps Script)');
   MailApp.sendEmail(to, subject, lines.join('\n'));
 }

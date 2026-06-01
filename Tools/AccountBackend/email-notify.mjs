@@ -210,7 +210,7 @@ if (isCliRun) {
   const sample = {
     kind: "bug", rating: 4, contact: "student@example.com",
     message: "Flashlight flickers near the train station breaker. Also unicode: café señor.",
-    context: { app_version: "0.6.0-beta.1", platform: "Windows", level: "TrainStation", role: "Hider", player_name: "Ada", play_seconds: 312 },
+    context: { app_version: "0.6.0", platform: "Windows", level: "TrainStation", role: "Hider", player_name: "Ada", play_seconds: 312 },
     diagnostics: { perf: { avg_fps: 58, min_fps: 31, p1_low_fps: 34, hitches: 3, session_seconds: 312 }, device: { cpu: "Ryzen 5", gpu: "GTX 1650", ram_gb: 16, os: "Windows 11" } },
     received_at: new Date().toISOString(),
   };

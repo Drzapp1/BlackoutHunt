@@ -3,6 +3,8 @@
 #include "BHAccountSettings.h"
 #include "BHAccountSubsystem.h"
 #include "BHFeedbackSettings.h"
+#include "BHGameInstance.h"
+#include "BHGameSettings.h"
 #include "BHGameState.h"
 #include "BHPlayerState.h"
 #include "Dom/JsonObject.h"
@@ -10,7 +12,9 @@
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/PlayerState.h"
+#include "GameFramework/GameUserSettings.h"
 #include "HAL/FileManager.h"
+#include "HAL/IConsoleManager.h"
 #include "HAL/PlatformMemory.h"
 #include "HAL/PlatformMisc.h"
 #include "HttpModule.h"
@@ -42,7 +46,7 @@ namespace
 		return Output;
 	}
 
-	// Mirror of the account subsystem's normalization: trim trailing slashes and default to http://.
+	// Mirror of the account subsystem's normalization: trim trailing slashes and default to https://.
 	FString BHNormalizeBackendBaseUrl(FString Url)
 	{
 		Url.TrimStartAndEndInline();
@@ -53,7 +57,8 @@ namespace
 
 		if (!Url.Contains(TEXT("://")))
 		{
-			Url = FString(TEXT("http://")) + Url;
+			// Default to HTTPS so telemetry/feedback (which includes player identity) is not sent in cleartext.
+			Url = FString(TEXT("https://")) + Url;
 		}
 
 		while (Url.EndsWith(TEXT("/")))
@@ -324,7 +329,15 @@ FString UBHFeedbackSubsystem::GetPrivacySummary() const
 {
 	if (IsBackendConfigured())
 	{
-		return TEXT("Your message goes to the game's host machine. Diagnostics (when included) add your frame-rate stats, recent log lines, and PC specs. No personal data unless you type it.");
+		const UBHGameSettings* GameSettings = GetDefault<UBHGameSettings>();
+		const bool bClassroom = GameSettings && GameSettings->bClassroomMode;
+		if (bClassroom)
+		{
+			// Classroom builds anonymize identity (see GatherContext): no display name / account id is
+			// attached, so the only personal data sent is whatever the student chooses to type.
+			return TEXT("Your message is sent over the internet to the feedback service your host/teacher set up. Diagnostics (when included) add frame-rate stats, recent log lines, and PC specs. Your name is NOT attached - the only personal data sent is what you type, so please don't include personal details.");
+		}
+		return TEXT("Your message is sent over the internet to the feedback service your host configured (not just this PC). It includes your display name plus, when included, your frame-rate stats, recent log lines, and PC specs. No other personal data unless you type it.");
 	}
 	return TEXT("No feedback server is configured, so submissions are saved to this PC under Saved/Feedback until a server URL is set.");
 }
@@ -360,8 +373,34 @@ void UBHFeedbackSubsystem::GatherContext(const TSharedRef<FJsonObject>& Out) con
 		if (const UBHAccountSubsystem* Account = GI->GetSubsystem<UBHAccountSubsystem>())
 		{
 			const FBHAccountProfile& Profile = Account->GetProfile();
-			Out->SetStringField(TEXT("player_name"), Profile.DisplayName);
-			Out->SetStringField(TEXT("player_id"), Profile.PlayerId);
+			const UBHGameSettings* GameSettings = GetDefault<UBHGameSettings>();
+			const bool bClassroom = GameSettings && GameSettings->bClassroomMode;
+			if (bClassroom)
+			{
+				// Classroom builds host minors: never attach the real lobby display name to a payload that
+				// can leave the machine (the manual feedback/survey form ships this context off-machine).
+				// Use the anonymous, session-scoped tag the auto-telemetry path already uses so the host can
+				// still distinguish reporters without exposing a student's name. This upholds the privacy
+				// promise shown in GetPrivacySummary ("Your name is NOT attached").
+				FString AnonymousPlayerId = SessionId;
+				if (UBHGameInstance* BHGI = Cast<UBHGameInstance>(GetGameInstance()))
+				{
+					const APlayerController* PC = GI->GetFirstLocalPlayerController(GI->GetWorld());
+					const APlayerState* PlayerState = PC ? PC->PlayerState : nullptr;
+					const FString Tag = BHGI->GetAnonymousTelemetryPlayerTag(PlayerState);
+					if (!Tag.IsEmpty())
+					{
+						AnonymousPlayerId = Tag;
+					}
+				}
+				Out->SetStringField(TEXT("player_name"), TEXT(""));
+				Out->SetStringField(TEXT("player_id"), AnonymousPlayerId);
+			}
+			else
+			{
+				Out->SetStringField(TEXT("player_name"), Profile.DisplayName);
+				Out->SetStringField(TEXT("player_id"), Profile.PlayerId);
+			}
 		}
 
 		if (const UWorld* World = GI->GetWorld())
@@ -431,11 +470,71 @@ TSharedRef<FJsonObject> UBHFeedbackSubsystem::BuildPerfJson() const
 	return Perf;
 }
 
+TSharedRef<FJsonObject> UBHFeedbackSubsystem::BuildGraphicsJson() const
+{
+	TSharedRef<FJsonObject> Gr = MakeShared<FJsonObject>();
+
+	if (GEngine)
+	{
+		if (const UGameUserSettings* GUS = GEngine->GetGameUserSettings())
+		{
+			const FIntPoint Res = GUS->GetScreenResolution();
+			Gr->SetStringField(TEXT("resolution"), FString::Printf(TEXT("%dx%d"), Res.X, Res.Y));
+
+			switch (GUS->GetFullscreenMode())
+			{
+			case EWindowMode::Fullscreen:        Gr->SetStringField(TEXT("window_mode"), TEXT("Fullscreen")); break;
+			case EWindowMode::WindowedFullscreen: Gr->SetStringField(TEXT("window_mode"), TEXT("Borderless")); break;
+			default:                             Gr->SetStringField(TEXT("window_mode"), TEXT("Windowed")); break;
+			}
+
+			Gr->SetBoolField(TEXT("vsync"), GUS->IsVSyncEnabled());
+			Gr->SetNumberField(TEXT("fps_limit"), GUS->GetFrameRateLimit());
+			// -1 = custom (individual levels don't match any preset), 0=Low, 1=Med, 2=High, 3=Epic
+			Gr->SetNumberField(TEXT("quality_preset"), GUS->GetOverallScalabilityLevel());
+			Gr->SetNumberField(TEXT("q_texture"),    GUS->GetTextureQuality());
+			Gr->SetNumberField(TEXT("q_shadow"),     GUS->GetShadowQuality());
+			Gr->SetNumberField(TEXT("q_effects"),    GUS->GetVisualEffectQuality());
+			Gr->SetNumberField(TEXT("q_view_dist"),  GUS->GetViewDistanceQuality());
+			Gr->SetNumberField(TEXT("q_foliage"),    GUS->GetFoliageQuality());
+			Gr->SetNumberField(TEXT("q_postprocess"),GUS->GetPostProcessingQuality());
+			Gr->SetNumberField(TEXT("q_shading"),    GUS->GetShadingQuality());
+		}
+	}
+
+	// AA method from the CVar — more precise than the scalability-level version in GameUserSettings.
+	const IConsoleVariable* AAVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.AntiAliasingMethod"));
+	if (AAVar)
+	{
+		FString AAStr;
+		switch (AAVar->GetInt())
+		{
+		case 0: AAStr = TEXT("None"); break;
+		case 1: AAStr = TEXT("FXAA"); break;
+		case 2: AAStr = TEXT("TAA");  break;
+		case 3: AAStr = TEXT("MSAA"); break;
+		case 4: AAStr = TEXT("TSR");  break;
+		default: AAStr = FString::FromInt(AAVar->GetInt()); break;
+		}
+		Gr->SetStringField(TEXT("anti_aliasing"), AAStr);
+	}
+
+	// Actual render resolution percentage (may differ from GameUserSettings when TSR/DLSS adjusts it).
+	const IConsoleVariable* ScrPctVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.ScreenPercentage"));
+	if (ScrPctVar)
+	{
+		Gr->SetNumberField(TEXT("screen_pct"), FMath::RoundToInt(ScrPctVar->GetFloat()));
+	}
+
+	return Gr;
+}
+
 TSharedRef<FJsonObject> UBHFeedbackSubsystem::BuildDiagnosticsJson(bool bIncludeLogs) const
 {
 	TSharedRef<FJsonObject> Diagnostics = MakeShared<FJsonObject>();
 	Diagnostics->SetObjectField(TEXT("device"), BuildDeviceJson());
 	Diagnostics->SetObjectField(TEXT("perf"), BuildPerfJson());
+	Diagnostics->SetObjectField(TEXT("graphics"), BuildGraphicsJson());
 
 	if (bIncludeLogs && LogSink.IsValid())
 	{
@@ -566,6 +665,13 @@ void UBHFeedbackSubsystem::RecordRoundResult(EBHPlayerRole Role, EBHPlayerLifeSt
 	}
 
 	RoundResults.Add(Result);
+	// Bound the history so a long-lived host session of many back-to-back rounds cannot grow this
+	// unbounded (mirrors the caps on QuestionAttemptHistory / PlaytestTelemetryEvents in BHGameInstance).
+	constexpr int32 MaxRetainedRoundResults = 64;
+	if (RoundResults.Num() > MaxRetainedRoundResults)
+	{
+		RoundResults.RemoveAt(0, RoundResults.Num() - MaxRetainedRoundResults);
+	}
 	bEndOfRoundSurveyPending = true;
 
 	// Deliver the session diagnostics now, while the game is still running, so they are not lost
@@ -593,7 +699,11 @@ bool UBHFeedbackSubsystem::SubmitSessionTelemetry(const FString& Reason, FString
 	// The telemetry route reads these identity fields at the top level rather than from a
 	// context object, so promote them from the gathered context (only those that are present).
 	Root->SetStringField(TEXT("session_id"), SessionId);
-	for (const TCHAR* Field : { TEXT("app_version"), TEXT("engine_version"), TEXT("platform"), TEXT("player_name"), TEXT("player_id") })
+	// Privacy: this is the AUTO round-end telemetry path, which has no per-submission consent gate
+	// (unlike the manual feedback form). Never promote the real "player_name" here, and replace the
+	// real "player_id" with an anonymous, session-scoped tag so we don't auto-broadcast student
+	// identities. The manual feedback/survey paths still send the full GatherContext identity.
+	for (const TCHAR* Field : { TEXT("app_version"), TEXT("engine_version"), TEXT("platform") })
 	{
 		FString Value;
 		if (Context->TryGetStringField(Field, Value))
@@ -601,6 +711,24 @@ bool UBHFeedbackSubsystem::SubmitSessionTelemetry(const FString& Reason, FString
 			Root->SetStringField(Field, Value);
 		}
 	}
+
+	// Anonymous player id: prefer the GameInstance's anonymous per-session player tag (e.g. "P001"),
+	// falling back to the anonymous session id when no local player state is available.
+	FString AnonymousPlayerId = SessionId;
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		if (UBHGameInstance* BHGI = Cast<UBHGameInstance>(GI))
+		{
+			const APlayerController* PC = GI->GetFirstLocalPlayerController(GI->GetWorld());
+			const APlayerState* PlayerState = PC ? PC->PlayerState : nullptr;
+			const FString Tag = BHGI->GetAnonymousTelemetryPlayerTag(PlayerState);
+			if (!Tag.IsEmpty())
+			{
+				AnonymousPlayerId = Tag;
+			}
+		}
+	}
+	Root->SetStringField(TEXT("player_id"), AnonymousPlayerId);
 
 	// The telemetry route reads device/perf/recent_logs at the top level rather than nested in a
 	// "diagnostics" object, so build them directly here.
@@ -663,6 +791,7 @@ void UBHFeedbackSubsystem::PostJson(const FString& PathSuffix, const TSharedRef<
 	Request->SetHeader(TEXT("Accept"), TEXT("application/json"));
 	Request->SetContentAsString(JsonString);
 	Request->OnProcessRequestComplete().BindUObject(this, &UBHFeedbackSubsystem::HandlePostComplete, JsonString, FallbackTag, SuccessMessage);
+	Request->SetTimeout(10.0f); // Bound flaky-Wi-Fi hangs; engine default is ~300s.
 	Request->ProcessRequest();
 
 	SetStatus(SubmittingMessage);

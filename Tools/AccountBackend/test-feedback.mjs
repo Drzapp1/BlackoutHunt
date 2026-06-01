@@ -82,7 +82,7 @@ try {
     message: `The flashlight flickers near the${BELL} substation breaker.`,
     rating: 4,
     contact: "tester@example.com",
-    context: { app_version: "0.5.0-beta.1", platform: "Windows", level: "Substation", role: "Survivor", session_id: "sess-abc", player_name: "Ada", play_seconds: 320 },
+    context: { app_version: "0.6.0", platform: "Windows", level: "Substation", role: "Survivor", session_id: "sess-abc", player_name: "Ada", play_seconds: 320 },
     diagnostics: {
       device: { cpu: "Ryzen 5", gpu: "RTX 3060", os: "Windows 11", ram_gb: 16 },
       perf: { samples: 600, session_seconds: 300, avg_fps: 72, min_fps: 41, max_fps: 120, p1_low_fps: 38, hitches: 3 },
@@ -119,7 +119,7 @@ try {
   // 7. Telemetry session.
   const tel = await postJson("/telemetry/session", {
     reason: "session_end",
-    app_version: "0.5.0-beta.1",
+    app_version: "0.6.0",
     platform: "Windows",
     session_id: "sess-abc",
     player_id: "pid-123",
