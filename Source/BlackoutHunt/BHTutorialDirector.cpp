@@ -106,7 +106,7 @@ void ABHTutorialDirector::Activate()
 		break;
 	case EBHTutorialPhase::Monitor:
 		StudentBot = SpawnScriptedBot(EBHPlayerRole::Survivor, TEXT("Student"), FVector(3000.0f, 0.0f, 120.0f));
-		TeacherBot = SpawnScriptedBot(EBHPlayerRole::Hunter, TEXT("Teacher"), GetWorld()->GetAuthGameMode<ABHGameMode>() ? GetWorld()->GetAuthGameMode<ABHGameMode>()->DebugGetHunterSpawnForTest() : FVector(9400.0f, 0.0f, 120.0f));
+		TeacherBot = SpawnScriptedBot(EBHPlayerRole::Hunter, TEXT("Teacher"), GetWorld()->GetAuthGameMode<ABHGameMode>() ? GetWorld()->GetAuthGameMode<ABHGameMode>()->GetHunterSpawnLocation() : FVector(9400.0f, 0.0f, 120.0f));
 		if (ABHObjectiveStation* Station = PracticeStation.Get())
 		{
 			Station->ConfigureTutorialVisualQuestion();
@@ -1037,7 +1037,7 @@ void ABHTutorialDirector::SpawnScriptedTeacher()
 		return;
 	}
 	bTeacherSpawned = true;
-	TeacherBot = SpawnScriptedBot(EBHPlayerRole::Hunter, TEXT("Teacher"), GameMode->DebugGetHunterSpawnForTest());
+	TeacherBot = SpawnScriptedBot(EBHPlayerRole::Hunter, TEXT("Teacher"), GameMode->GetHunterSpawnLocation());
 	// Record the spawn time so DriveTeacherChase holds it still for ~1s (the reveal beat) before it moves.
 	TeacherSpawnServerTime = World->GetTimeSeconds();
 }

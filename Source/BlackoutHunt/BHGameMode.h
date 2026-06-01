@@ -141,6 +141,10 @@ public:
 	// True when the tutorials chain Survivor -> Teacher -> Monitor on reaching each exit (the full course);
 	// false when the player selected a single tutorial, which returns to the menu when its exit is reached.
 	bool IsTutorialChained() const { return bTutorialChain; }
+	// The map's hunter/teacher spawn point. Exposed for the baked ABHTutorialDirector, which spawns the
+	// scripted Teacher there in the Teacher/Monitor lessons. A real runtime accessor (unlike the
+	// test-only DebugGetHunterSpawnForTest), so it stays available in a Shipping build.
+	FVector GetHunterSpawnLocation() const { return HunterSpawn; }
 	// Called by ABHTutorialDirector when the student reaches the exit: ServerTravel-reload the Tutorial map
 	// into the next phase (Survivor -> Teacher -> Monitor), or return to the main menu after Monitor.
 	void AdvanceTutorialPhase();
