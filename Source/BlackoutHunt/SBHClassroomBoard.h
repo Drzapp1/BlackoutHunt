@@ -23,10 +23,9 @@ public:
 private:
 	const ABHGameState* GetBHGameState() const;
 	void RebuildPlayerRows();
+	void RebuildTopicBars();
 	FString BuildRosterSignature() const;
 	TSharedRef<SWidget> BuildMetricCard(const FText& Label, const TAttribute<FText>& Value, const FLinearColor& AccentColor) const;
-	TSharedRef<SWidget> BuildPlayerHeader() const;
-	TSharedRef<SWidget> BuildPlayerRow(const ABHPlayerState* PlayerState, int32 RowIndex) const;
 
 	FText GetSessionText() const;
 	FText GetRosterText() const;
@@ -35,8 +34,18 @@ private:
 	FText GetRevisionText() const;
 	FText GetJoinText() const;
 
+	EVisibility GetHuntStatusVisibility() const;
+	FText GetInPlayText() const;
+	FText GetCaughtText() const;
+	FText GetEscapedText() const;
+
+	EVisibility GetPresenceVisibility() const;
+	TOptional<float> GetPresencePercent() const;
+	FText GetPresenceLabelText() const;
+
 	TWeakObjectPtr<ABHPlayerController> PlayerController;
-	TSharedPtr<SVerticalBox> PlayerRowsBox;
+	TSharedPtr<SVerticalBox> TopicBarsBox;
 	FString LastRosterSignature;
+	float RosterSignatureCheckAccumulator = 0.0f;
 	bool bStandaloneWindow = false;
 };
