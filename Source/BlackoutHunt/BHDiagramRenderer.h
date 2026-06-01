@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Math/Box2D.h"
 #include "BHTypes.h"
 
 class UCanvas;
@@ -68,6 +69,16 @@ struct FBHDiagramDrawContext
 	bool bEnhanced = true;
 };
 
+// A clickable sub-region of a procedural diagram whose meaning maps onto an answer choice. Label is
+// matched (case-insensitive substring) against the question's choice texts by the HUD, so clicking
+// e.g. the infrared band resolves to the choice that says "Infrared". Returned in viewport pixel
+// space for the same (X,Y,W,H,Context) the diagram was drawn with.
+struct FBHDiagramClickRegion
+{
+	FBox2D Rect = FBox2D(ForceInit);
+	FString Label;
+};
+
 class BLACKOUTHUNT_API FBHDiagramRenderer
 {
 public:
@@ -94,6 +105,18 @@ public:
 	// type supports one. Fills OutParams with answer-safe placeholder givens and OutName with a
 	// short human-readable label.
 	static void SampleFor(EBHDiagramType Type, int32 Variant, FBHDiagramParams& OutParams, FString& OutName);
+
+	// Populate OutRegions with the diagram's answerable sub-elements, for the few types whose PARTS
+	// are the answer (currently the EM spectrum's seven bands). Empty for every other type -- those
+	// diagrams stay display-only and the player answers via the choice rows. Answer-safe by
+	// construction: regions come from diagram geometry/labels only, never from the correct answer.
+	// Geometry mirrors Draw() for the same (X,Y,W,H,Context), so hit zones line up with the picture.
+	static void GetClickableRegions(
+		EBHDiagramType Type,
+		const FBHDiagramParams& P,
+		float X, float Y, float W, float H,
+		const FBHDiagramDrawContext& Context,
+		TArray<FBHDiagramClickRegion>& OutRegions);
 
 	// Reads the bh.Diagrams.Enhanced console var. When false, callers should build a context with
 	// bEnhanced = false so data-driven labels / shape variants are suppressed (generic schematic) --

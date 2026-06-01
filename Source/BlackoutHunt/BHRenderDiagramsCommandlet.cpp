@@ -121,6 +121,11 @@ int32 UBHRenderDiagramsCommandlet::Main(const FString& Params)
 	{ FBHDiagramParams P; AddSample(EBHDiagramType::ParticleModel, TEXT("Particle model"), TEXT("solid/liquid/gas"), P); }
 
 	UTextureRenderTarget2D* RT = NewObject<UTextureRenderTarget2D>(GetTransientPackage());
+	if (!RT)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BHRenderDiagrams] Failed to create the render target."));
+		return 1;
+	}
 	RT->RenderTargetFormat = RTF_RGBA8;
 	RT->ClearColor = bLight ? FLinearColor(0.96f, 0.96f, 0.94f, 1.0f) : FLinearColor(0.01f, 0.012f, 0.013f, 1.0f);
 	RT->bAutoGenerateMips = false;

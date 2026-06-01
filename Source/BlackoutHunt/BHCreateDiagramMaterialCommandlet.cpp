@@ -43,6 +43,11 @@ int32 UBHCreateDiagramMaterialCommandlet::Main(const FString& Params)
 	Package->FullyLoad();
 
 	UMaterialFactoryNew* Factory = NewObject<UMaterialFactoryNew>();
+	if (!Factory)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BHCreateDiagramMaterial] Failed to create the material factory."));
+		return 1;
+	}
 	UMaterial* Material = Cast<UMaterial>(Factory->FactoryCreateNew(UMaterial::StaticClass(), Package, TEXT("M_BH_DiagramRT"), RF_Standalone | RF_Public, nullptr, GWarn));
 	if (!Material)
 	{

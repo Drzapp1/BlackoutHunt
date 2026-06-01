@@ -7,6 +7,7 @@
 #include "Engine/Texture2D.h"
 #include "Engine/Engine.h"
 #include "HAL/IConsoleManager.h"
+#include "GlobalRenderResources.h" // GWhiteTexture for filled-triangle canvas items
 
 // Master switch for the data-driven / question-accurate diagram behaviour. 1 (default) draws the
 // enhanced diagrams; 0 falls back to the generic schematic without per-question labels or shape
@@ -138,15 +139,52 @@ namespace
 		RText(C, Font, Text, CenterX - TextW * 0.5f, Y, Color, Scale);
 	}
 
-	// Line with a V arrowhead at (X1,Y1). Head segments sit 150 degrees off the shaft (~30 deg
-	// half-angle). Used for force vectors, energy flows and lever loads.
+	// Solid filled triangle. Used for legible arrowheads that stay visible when the diagram is scaled
+	// down onto the train terminal's small render target (line-only heads collapsed to sub-pixel dots).
+	void RFilledTri(UCanvas* C, const FVector2D& A, const FVector2D& B, const FVector2D& Cc, const FLinearColor& Color)
+	{
+		if (!C)
+		{
+			return;
+		}
+		FCanvasTriangleItem Tri(A, B, Cc, GWhiteTexture);
+		Tri.SetColor(Color);
+		Tri.BlendMode = SE_BLEND_Translucent;
+		C->DrawItem(Tri);
+	}
+
+	// Left-anchored text kept inside [MinX, MaxX]: shifts left if it would overflow the right edge and
+	// never starts before the left edge, so labels stay on-panel at narrow widths / non-1.0 scales.
+	void RTextBounded(UCanvas* C, const UFont* Font, const FString& Text, float X, float Y, const FLinearColor& Color, float Scale, float MinX, float MaxX)
+	{
+		if (!C || Text.IsEmpty() || !Font)
+		{
+			return;
+		}
+		float TextW = 0.0f;
+		float TextH = 0.0f;
+		C->TextSize(Font, Text, TextW, TextH, Scale, Scale);
+		float DrawX = X;
+		if (DrawX + TextW > MaxX) { DrawX = MaxX - TextW; }
+		if (DrawX < MinX) { DrawX = MinX; }
+		RText(C, Font, Text, DrawX, Y, Color, Scale);
+	}
+
+	// Line with a filled triangular arrowhead at (X1,Y1). Head spreads ~152 degrees off the shaft and
+	// has a minimum pixel size so it stays legible on small surfaces; the shaft stops just short of the
+	// tip so it does not poke through the fill. Used for force vectors, energy flows and lever loads.
 	void RArrow(UCanvas* C, float X0, float Y0, float X1, float Y1, const FLinearColor& Color, float Thickness, float HeadSize)
 	{
-		RLine(C, X0, Y0, X1, Y1, Color, Thickness);
 		const float Ang = FMath::Atan2(Y1 - Y0, X1 - X0);
-		const float Spread = FMath::DegreesToRadians(150.0f);
-		RLine(C, X1, Y1, X1 + FMath::Cos(Ang + Spread) * HeadSize, Y1 + FMath::Sin(Ang + Spread) * HeadSize, Color, Thickness);
-		RLine(C, X1, Y1, X1 + FMath::Cos(Ang - Spread) * HeadSize, Y1 + FMath::Sin(Ang - Spread) * HeadSize, Color, Thickness);
+		const float Spread = FMath::DegreesToRadians(152.0f);
+		const float Head = FMath::Max(HeadSize, 4.0f);
+		const FVector2D Dir(FMath::Cos(Ang), FMath::Sin(Ang));
+		const FVector2D Tip(X1, Y1);
+		const FVector2D BackL(X1 + FMath::Cos(Ang + Spread) * Head, Y1 + FMath::Sin(Ang + Spread) * Head);
+		const FVector2D BackR(X1 + FMath::Cos(Ang - Spread) * Head, Y1 + FMath::Sin(Ang - Spread) * Head);
+		const FVector2D ShaftEnd = Tip - Dir * Head * 0.6f;
+		RLine(C, X0, Y0, ShaftEnd.X, ShaftEnd.Y, Color, Thickness);
+		RFilledTri(C, Tip, BackL, BackR, Color);
 	}
 
 	void RCircle(UCanvas* C, float CX, float CY, float Radius, const FLinearColor& Color, float Thickness, int32 Segments = 16)
@@ -220,6 +258,57 @@ float FBHDiagramRenderer::BandHeightFor(EBHDiagramType Type)
 		return 100.0f;
 	default:
 		return 118.0f;
+	}
+}
+
+void FBHDiagramRenderer::GetClickableRegions(
+	EBHDiagramType Type,
+	const FBHDiagramParams& P,
+	float X, float Y, float W, float H,
+	const FBHDiagramDrawContext& Context,
+	TArray<FBHDiagramClickRegion>& OutRegions)
+{
+	OutRegions.Reset();
+	(void)P; // Reserved for future per-question region layouts; current types key off geometry only.
+	if (W <= 2.0f || H <= 2.0f)
+	{
+		return;
+	}
+	const float S = FMath::Max(0.1f, Context.Scale);
+
+	switch (Type)
+	{
+	case EBHDiagramType::EMSpectrum:
+	{
+		// Same layout as Draw's EMSpectrum case: seven equal bands across [Left, Right] at MidY. The
+		// labels are full band names so the HUD can substring-match them against choice text (the
+		// drawn picture only has room for the R/M/IR/... abbreviations).
+		static const TCHAR* BandNames[] = {
+			TEXT("radio"), TEXT("microwave"), TEXT("infrared"), TEXT("visible"),
+			TEXT("ultraviolet"), TEXT("x-ray"), TEXT("gamma")
+		};
+		const float MidY = Y + H * 0.52f;
+		const float Left = X + 26.0f * S;
+		const float Right = X + W - 26.0f * S;
+		const float SegmentW = (Right - Left) / 7.0f;
+		if (SegmentW <= 1.0f)
+		{
+			return;
+		}
+		const float SegInner = SegmentW - 3.0f * S;
+		for (int32 Index = 0; Index < 7; ++Index)
+		{
+			const float SX = Left + SegmentW * Index;
+			FBHDiagramClickRegion Region;
+			// Slightly taller than the 32*S painted band so the band is comfortable to click.
+			Region.Rect = FBox2D(FVector2D(SX, MidY - 20.0f * S), FVector2D(SX + SegInner, MidY + 20.0f * S));
+			Region.Label = BandNames[Index];
+			OutRegions.Add(MoveTemp(Region));
+		}
+		break;
+	}
+	default:
+		break;
 	}
 }
 
@@ -397,7 +486,7 @@ void FBHDiagramRenderer::Draw(
 		CCap(TEXT("area = distance"), Left + 18.0f * S, Bottom - 34.0f * S, Warm, 0.72f * S);
 		if (Ctx.bEnhanced && !P.XAxis.IsEmpty()) { RTextRight(Canvas, Font, P.XAxis, Right - 6.0f * S, Bottom - 14.0f * S, Ctx.TextDim, 0.60f * S); }
 		if (Ctx.bEnhanced && !P.YAxis.IsEmpty()) { RText(Canvas, Font, P.YAxis, Left + 4.0f * S, Top - 4.0f * S, Ctx.TextDim, 0.60f * S); }
-		if (bData && !P.LabelA.IsEmpty()) { RText(Canvas, Font, P.LabelA, Left + 18.0f * S, Top + 6.0f * S, Main, 0.60f * S); }
+		if (bData && !P.LabelA.IsEmpty()) { RTextBounded(Canvas, Font, P.LabelA, Left + 18.0f * S, Top + 6.0f * S, Main, 0.60f * S, X + 6.0f * S, X + W - 6.0f * S); }
 		break;
 	}
 	case EBHDiagramType::ForceArrows:
@@ -423,10 +512,12 @@ void FBHDiagramRenderer::Draw(
 		CCap(Variant == 1 ? FString(TEXT("free-body forces")) : FString(TEXT("resultant force")), X + W * 0.39f, Top + 8.0f * S, Main, 0.78f * S);
 		if (bData)
 		{
-			if (!P.LabelA.IsEmpty()) { RText(Canvas, Font, P.LabelA, X + W * 0.16f, MidY - 18.0f * S, Warm, 0.66f * S); }
-			if (!P.LabelB.IsEmpty()) { RText(Canvas, Font, P.LabelB, X + W * 0.66f, MidY - 18.0f * S, Line, 0.66f * S); }
-			if (Variant == 1 && !P.LabelC.IsEmpty()) { RText(Canvas, Font, P.LabelC, CX + 8.0f * S, Bottom - 14.0f * S, Warm, 0.62f * S); }
-			if (Variant == 1 && !P.LabelD.IsEmpty()) { RText(Canvas, Font, P.LabelD, CX + 8.0f * S, Top + 16.0f * S, Line, 0.62f * S); }
+			const float LblMinX = X + 6.0f * S;
+			const float LblMaxX = X + W - 6.0f * S;
+			if (!P.LabelA.IsEmpty()) { RTextBounded(Canvas, Font, P.LabelA, X + W * 0.16f, MidY - 18.0f * S, Warm, 0.66f * S, LblMinX, LblMaxX); }
+			if (!P.LabelB.IsEmpty()) { RTextBounded(Canvas, Font, P.LabelB, X + W * 0.66f, MidY - 18.0f * S, Line, 0.66f * S, LblMinX, LblMaxX); }
+			if (Variant == 1 && !P.LabelC.IsEmpty()) { RTextBounded(Canvas, Font, P.LabelC, CX + 8.0f * S, Bottom - 14.0f * S, Warm, 0.62f * S, LblMinX, LblMaxX); }
+			if (Variant == 1 && !P.LabelD.IsEmpty()) { RTextBounded(Canvas, Font, P.LabelD, CX + 8.0f * S, Top + 16.0f * S, Line, 0.62f * S, LblMinX, LblMaxX); }
 		}
 		break;
 	}
@@ -479,8 +570,8 @@ void FBHDiagramRenderer::Draw(
 			RRect(Canvas, Warm, CX - BoxW * 0.5f, B2 - BoxH * 0.5f, BoxW, BoxH);
 			if (bData)
 			{
-				if (!P.LabelA.IsEmpty()) { RText(Canvas, Font, P.LabelA, CX + BoxW * 0.6f, B1 - 6.0f * S, Warm, 0.60f * S); }
-				if (!P.LabelC.IsEmpty()) { RText(Canvas, Font, P.LabelC, CX + BoxW * 0.6f, B2 - 6.0f * S, Warm, 0.60f * S); }
+				if (!P.LabelA.IsEmpty()) { RTextBounded(Canvas, Font, P.LabelA, CX + BoxW * 0.6f, B1 - 6.0f * S, Warm, 0.60f * S, X + 6.0f * S, X + W - 6.0f * S); }
+				if (!P.LabelC.IsEmpty()) { RTextBounded(Canvas, Font, P.LabelC, CX + BoxW * 0.6f, B2 - 6.0f * S, Warm, 0.60f * S, X + 6.0f * S, X + W - 6.0f * S); }
 			}
 		}
 		else
@@ -493,13 +584,13 @@ void FBHDiagramRenderer::Draw(
 			}
 			if (bData)
 			{
-				if (!P.LabelA.IsEmpty()) { RText(Canvas, Font, P.LabelA, Left + (Right - Left) * (1.0f / (NumR + 1)) - 8.0f * S, RailT + 12.0f * S, Warm, 0.60f * S); }
-				if (NumR >= 2 && !P.LabelC.IsEmpty()) { RText(Canvas, Font, P.LabelC, Left + (Right - Left) * (2.0f / (NumR + 1)) - 8.0f * S, RailT + 12.0f * S, Warm, 0.60f * S); }
+				if (!P.LabelA.IsEmpty()) { RTextBounded(Canvas, Font, P.LabelA, Left + (Right - Left) * (1.0f / (NumR + 1)) - 8.0f * S, RailT + 12.0f * S, Warm, 0.60f * S, X + 6.0f * S, X + W - 6.0f * S); }
+				if (NumR >= 2 && !P.LabelC.IsEmpty()) { RTextBounded(Canvas, Font, P.LabelC, Left + (Right - Left) * (2.0f / (NumR + 1)) - 8.0f * S, RailT + 12.0f * S, Warm, 0.60f * S, X + 6.0f * S, X + W - 6.0f * S); }
 			}
 		}
 		const FString CircuitLabel = (Variant == 2) ? FString(TEXT("parallel: same p.d.")) : (Variant >= 1 ? FString(TEXT("series: same current")) : FString(TEXT("A series | V parallel")));
 		CCapC(CircuitLabel, CX, RailB - 24.0f * S, Main, 0.66f * S);
-		if (bData && !P.LabelB.IsEmpty()) { RText(Canvas, Font, P.LabelB, Left + 14.0f * S, RailB - 24.0f * S, Line, 0.60f * S); }
+		if (bData && !P.LabelB.IsEmpty()) { RTextBounded(Canvas, Font, P.LabelB, Left + 14.0f * S, RailB - 24.0f * S, Line, 0.60f * S, X + 6.0f * S, X + W - 6.0f * S); }
 		break;
 	}
 	case EBHDiagramType::IVGraph:
@@ -548,11 +639,29 @@ void FBHDiagramRenderer::Draw(
 		break;
 	}
 	case EBHDiagramType::StaticCharge:
-		RText(Canvas, Font, TEXT("+ + +"), Left + 24.0f * S, MidY - 8.0f * S, Warm, 1.0f * S);
-		RTextRight(Canvas, Font, TEXT("- - -"), Right - 8.0f * S, MidY - 8.0f * S, Line, 1.0f * S);
-		RArrow(Canvas, X + W * 0.42f, MidY, X + W * 0.58f, MidY, Main, 3.0f * S, 7.0f * S);
-		CCap(TEXT("opposites attract"), X + W * 0.38f, Top + 8.0f * S, Main, 0.74f * S);
+	{
+		// Honour the authored rod labels. Default is the unlike-charge (attraction) figure, but when both
+		// rods carry the SAME label (like charges, e.g. LabelA==LabelB=="+ + +") draw matching signs with a
+		// diverging "repel" arrow so the diagram matches "like charges repel" prompts instead of
+		// contradicting them with a fixed +/- attraction.
+		const bool bLikeCharges = !P.LabelA.IsEmpty() && P.LabelA.Equals(P.LabelB);
+		if (bLikeCharges)
+		{
+			RText(Canvas, Font, P.LabelA, Left + 24.0f * S, MidY - 8.0f * S, Warm, 1.0f * S);
+			RTextRight(Canvas, Font, P.LabelB, Right - 8.0f * S, MidY - 8.0f * S, Warm, 1.0f * S);
+			RArrow(Canvas, X + W * 0.46f, MidY, X + W * 0.30f, MidY, Main, 3.0f * S, 7.0f * S);
+			RArrow(Canvas, X + W * 0.54f, MidY, X + W * 0.70f, MidY, Main, 3.0f * S, 7.0f * S);
+			CCap(TEXT("like charges repel"), X + W * 0.34f, Top + 8.0f * S, Main, 0.74f * S);
+		}
+		else
+		{
+			RText(Canvas, Font, TEXT("+ + +"), Left + 24.0f * S, MidY - 8.0f * S, Warm, 1.0f * S);
+			RTextRight(Canvas, Font, TEXT("- - -"), Right - 8.0f * S, MidY - 8.0f * S, Line, 1.0f * S);
+			RArrow(Canvas, X + W * 0.42f, MidY, X + W * 0.58f, MidY, Main, 3.0f * S, 7.0f * S);
+			CCap(TEXT("opposites attract"), X + W * 0.38f, Top + 8.0f * S, Main, 0.74f * S);
+		}
 		break;
+	}
 	case EBHDiagramType::Wave:
 	{
 		const int32 Segments = 48;
@@ -595,8 +704,16 @@ void FBHDiagramRenderer::Draw(
 		for (int32 Index = 0; Index < 7; ++Index)
 		{
 			const float SX = Left + SegmentW * Index;
-			RRect(Canvas, BandCols[Index], SX, MidY - 16.0f * S, SegmentW - 3.0f * S, 32.0f * S);
-			RTextCentered(Canvas, Font, Labels[Index], SX + (SegmentW - 3.0f * S) * 0.5f, MidY - 5.0f * S, FLinearColor(0.05f, 0.06f, 0.07f, 1.0f), 0.72f * S);
+			const float SegInner = SegmentW - 3.0f * S;
+			RRect(Canvas, BandCols[Index], SX, MidY - 16.0f * S, SegInner, 32.0f * S);
+			// Fit each band abbreviation to its segment so "VIS"/"IR" never bleed into a neighbour at
+			// narrow widths or on the small terminal render target.
+			const FString BandLabel(Labels[Index]);
+			float LblScale = 0.72f * S;
+			float LblW = 0.0f, LblH = 0.0f;
+			Canvas->TextSize(Font, BandLabel, LblW, LblH, LblScale, LblScale);
+			if (LblW > SegInner * 0.92f && LblW > 0.0f) { LblScale *= (SegInner * 0.92f) / LblW; }
+			RTextCentered(Canvas, Font, BandLabel, SX + SegInner * 0.5f, MidY - 5.0f * S, FLinearColor(0.05f, 0.06f, 0.07f, 1.0f), LblScale);
 		}
 		// ShapeVariant 1..7 brackets the band the question is about (radio..gamma).
 		if (Ctx.bEnhanced && P.ShapeVariant >= 1 && P.ShapeVariant <= 7)
@@ -604,7 +721,7 @@ void FBHDiagramRenderer::Draw(
 			const float HX = Left + SegmentW * (P.ShapeVariant - 1);
 			RCornerBrackets(Canvas, HX - 1.0f * S, MidY - 20.0f * S, SegmentW - 1.0f * S, 40.0f * S, Ctx.TextMain, 7.0f * S, 2.0f * S);
 		}
-		CCap(TEXT("long wavelength -> high frequency"), Left + 10.0f * S, Top + 4.0f * S, Warm, 0.68f * S);
+		CCap(TEXT("short wavelength -> high frequency"), Left + 10.0f * S, Top + 4.0f * S, Warm, 0.68f * S);
 		break;
 	}
 	case EBHDiagramType::RayDiagram:
@@ -636,9 +753,9 @@ void FBHDiagramRenderer::Draw(
 		CCap(TEXT("input -> useful + wasted"), Left + 12.0f * S, Top + 6.0f * S, Main, 0.74f * S);
 		if (bData)
 		{
-			if (!P.LabelA.IsEmpty()) { RText(Canvas, Font, P.LabelA, Left + 6.0f * S, MidY - 26.0f * S, Main, 0.60f * S); }
-			if (!P.LabelB.IsEmpty()) { RText(Canvas, Font, P.LabelB, X + W * 0.50f, MidY - 24.0f * S, Ctx.Good, 0.58f * S); }
-			if (!P.LabelC.IsEmpty()) { RText(Canvas, Font, P.LabelC, X + W * 0.50f, MidY + 34.0f * S, Warm, 0.58f * S); }
+			if (!P.LabelA.IsEmpty()) { RTextBounded(Canvas, Font, P.LabelA, Left + 6.0f * S, MidY - 26.0f * S, Main, 0.60f * S, X + 6.0f * S, X + W - 6.0f * S); }
+			if (!P.LabelB.IsEmpty()) { RTextBounded(Canvas, Font, P.LabelB, X + W * 0.50f, MidY - 24.0f * S, Ctx.Good, 0.58f * S, X + 6.0f * S, X + W - 6.0f * S); }
+			if (!P.LabelC.IsEmpty()) { RTextBounded(Canvas, Font, P.LabelC, X + W * 0.50f, MidY + 34.0f * S, Warm, 0.58f * S, X + 6.0f * S, X + W - 6.0f * S); }
 		}
 		break;
 	case EBHDiagramType::Lens:

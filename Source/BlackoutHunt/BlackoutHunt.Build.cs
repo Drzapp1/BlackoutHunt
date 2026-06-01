@@ -12,6 +12,7 @@ public class BlackoutHunt : ModuleRules
 			"Core",
 			"CoreUObject",
 			"Engine",
+			"RenderCore",
 			"InputCore",
 			"ApplicationCore",
 			"EnhancedInput",
