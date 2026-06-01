@@ -45,4 +45,8 @@ protected:
 
 	bool bHasCachedCircuitState;
 	bool bCachedCircuitWillOpen;
+
+	// Server time of the last accepted toggle. Throttles toggles so a griefing student can't thrash the
+	// shutters or repeatedly blind a whole CCTV circuit for everyone. Negative sentinel = first allowed.
+	float LastToggleServerTime = -100.0f;
 };

@@ -2,10 +2,12 @@
 #include "BHPropVisuals.h"
 #include "BHCharacter.h"
 #include "BHGameMode.h"
+#include "BHGameState.h"
 #include "BHPlayerController.h"
 #include "BHPlayerState.h"
 #include "BHSecurityShutter.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/World.h"
 #include "EngineUtils.h"
 
 ABHSecurityTerminal::ABHSecurityTerminal()
@@ -76,13 +78,26 @@ void ABHSecurityTerminal::Configure(int32 NewCircuitId, const FText& NewLabel)
 bool ABHSecurityTerminal::CanInteract_Implementation(ABHCharacter* Character) const
 {
 	const ABHPlayerState* BHPS = Character ? Character->GetBHPlayerState() : nullptr;
-	return BHPS && BHPS->LifeState == EBHPlayerLifeState::Alive;
+	if (!BHPS || BHPS->LifeState != EBHPlayerLifeState::Alive)
+	{
+		return false;
+	}
+	// In-round control only: no toggling shutters / blinding the CCTV circuit in the lobby or on results.
+	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	return BHGS
+		&& BHGS->RoundPhase != EBHRoundPhase::Lobby
+		&& BHGS->RoundPhase != EBHRoundPhase::SurvivorsWin
+		&& BHGS->RoundPhase != EBHRoundPhase::HunterWin;
 }
 
 void ABHSecurityTerminal::BeginInteract_Implementation(ABHCharacter* Character)
 {
-	if (HasAuthority())
+	// Anti-grief: require alive + in-round (CanInteract) AND throttle to one toggle/sec per terminal, so a
+	// student can't thrash the shutters or repeatedly blind the CCTV circuit for the whole class.
+	const float NowToggleTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	if (HasAuthority() && CanInteract_Implementation(Character) && (NowToggleTime - LastToggleServerTime >= 1.0f))
 	{
+		LastToggleServerTime = NowToggleTime;
 		const bool bOpeningCircuit = CircuitHasClosedShutter();
 		if (ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
 		{

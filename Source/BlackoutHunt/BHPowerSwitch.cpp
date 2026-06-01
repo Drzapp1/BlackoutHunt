@@ -1,6 +1,10 @@
 #include "BHPowerSwitch.h"
 #include "BHPropVisuals.h"
 #include "BHGameMode.h"
+#include "BHGameState.h"
+#include "BHPlayerState.h"
+#include "BHCharacter.h"
+#include "Engine/World.h"
 #include "Components/StaticMeshComponent.h"
 
 ABHPowerSwitch::ABHPowerSwitch()
@@ -37,14 +41,41 @@ void ABHPowerSwitch::Configure(int32 NewCircuitId, const FText& NewLabel)
 	InteractionLabel = SwitchLabel;
 }
 
+bool ABHPowerSwitch::CanInteract_Implementation(ABHCharacter* Character) const
+{
+	const ABHPlayerState* BHPS = Character ? Character->GetBHPlayerState() : nullptr;
+	if (!BHPS || BHPS->LifeState != EBHPlayerLifeState::Alive)
+	{
+		return false;
+	}
+	// Power switches are an in-round environmental control; disallow toggling in the lobby or on the
+	// results screen so a griefing student can't strobe lights while the class is gathering/reviewing.
+	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	return BHGS
+		&& BHGS->RoundPhase != EBHRoundPhase::Lobby
+		&& BHGS->RoundPhase != EBHRoundPhase::SurvivorsWin
+		&& BHGS->RoundPhase != EBHRoundPhase::HunterWin;
+}
+
 void ABHPowerSwitch::BeginInteract_Implementation(ABHCharacter* Character)
 {
-	if (HasAuthority())
+	if (!HasAuthority() || !CanInteract_Implementation(Character))
 	{
-		if (ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
-		{
-			BHGM->ToggleLightCircuit(CircuitId);
-		}
+		return;
+	}
+
+	// Anti-grief throttle: at most one circuit toggle per second per switch, so a student cannot rapidly
+	// strobe a whole area's lights on/off for all 32 players. ToggleLightCircuit itself has no rate limit.
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	if (Now - LastToggleServerTime < 1.0f)
+	{
+		return;
+	}
+	LastToggleServerTime = Now;
+
+	if (ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
+	{
+		BHGM->ToggleLightCircuit(CircuitId);
 	}
 }
 
