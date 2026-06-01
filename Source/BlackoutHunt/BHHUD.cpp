@@ -557,15 +557,41 @@ namespace
 				? FString(TEXT("Ready set. Wait for every player and the host start."))
 				: FString(TEXT("Press Enter to ready up for the classroom round."));
 		case EBHRoundPhase::Prep:
-			if (PlayerState && PlayerState->IsAliveHunter())
+		{
+			// Guided warmup checklist: a short, role-specific "N/M - next step" line computed from
+			// the player's tried-actions mask (EBHWarmupStep). Replaces the old static strings so a
+			// new student always sees the next thing to try, and a clear "you're ready" when done.
+			FString Line;
+			if (!PlayerState)
 			{
-				return TEXT("Warmup: learn routes and practice Q/R. Capture starts in Hunt.");
+				Line = TEXT("Warmup: try your controls. The live Hunt resets everyone.");
 			}
-			if (PlayerState && PlayerState->PlayerRole == EBHPlayerRole::FakeHunter)
+			else
 			{
-				return TEXT("Warmup: try Q real hint, R false marker, and G trap. No capture.");
+				int32 Done = 0;
+				int32 Total = 0;
+				BHWarmupProgress(PlayerState->PlayerRole, PlayerState->WarmupChecklistMask, Done, Total);
+				if (Total <= 0)
+				{
+					Line = TEXT("Warmup: get ready. The live Hunt resets everyone.");
+				}
+				else if (Done >= Total)
+				{
+					Line = TEXT("Warmup complete - you're ready. Wait for the host to start the Hunt.");
+				}
+				else
+				{
+					const FString NextStep = BHWarmupNextStepLabel(PlayerState->PlayerRole, PlayerState->WarmupChecklistMask);
+					Line = FString::Printf(TEXT("Warmup %d/%d - %s. Hunt start resets everyone."), Done, Total, *NextStep);
+				}
 			}
-			return TEXT("Warmup: practice flashlight (F), hiding, and questions. In Hunt, finish objectives then reach the exit.");
+			// Final handoff: count the last few seconds down so the safe->live switch is unmistakable.
+			if (GameState->RemainingTime > 0 && GameState->RemainingTime <= 5)
+			{
+				return FString::Printf(TEXT("Hunt starts in %ds. %s"), GameState->RemainingTime, *Line);
+			}
+			return Line;
+		}
 		case EBHRoundPhase::Intermission:
 			return BuildTrainActionLine(GameState, PlayerState);
 		case EBHRoundPhase::FinalEscape:
@@ -892,6 +918,12 @@ ABHHUD::ABHHUD()
 	LastSeenPhase = EBHRoundPhase::Lobby;
 	bHasSeenPhase = false;
 	PhaseBannerEndTime = 0.0f;
+	bTaughtFear = false;
+	bTaughtStamina = false;
+	bTaughtTeacherNear = false;
+	bTaughtQuestionFormat = false;
+	bTaughtGuideAccess = false;
+	bTaughtSpectator = false;
 	LastSeenPresencePulse = 0;
 	PresencePulseEndTime = 0.0f;
 	bHasVisibleHunterCue = false;
@@ -921,6 +953,29 @@ void ABHHUD::DrawHUD()
 	// Resolve cached UI preferences (palette, scale, opacity, element toggles) once per frame.
 	RefreshHudPreferences(BHPC, BHGS);
 
+	// In-session Guide discoverability (#8): the how-to-play Guide is already reachable in-match
+	// (Esc -> Guide tab), but a brand-new student may not know it exists. Point them to it once, in
+	// the Lobby before the round starts. One client-side status line; never during a chase.
+	if (!bTaughtGuideAccess && BHGS && BHGS->RoundPhase == EBHRoundPhase::Lobby)
+	{
+		bTaughtGuideAccess = true;
+		if (ABHPlayerController* TeachPC = Cast<ABHPlayerController>(PlayerOwner))
+		{
+			TeachPC->ShowLocalStatusMessage(TEXT("New here? Press Esc and open the GUIDE tab for a 60-second how-to-play."), 6.0f);
+		}
+	}
+
+	// Spectator / late-joiner orientation (#14): someone watching a live round (died, or joined
+	// mid-round) has no context. Orient them once - what to watch and how to ask for a role next time.
+	if (!bTaughtSpectator && BHPS && BHPS->PlayerRole == EBHPlayerRole::Spectator && BHGS && BHGS->RoundPhase != EBHRoundPhase::Lobby)
+	{
+		bTaughtSpectator = true;
+		if (ABHPlayerController* TeachPC = Cast<ABHPlayerController>(PlayerOwner))
+		{
+			TeachPC->ShowLocalStatusMessage(TEXT("You're spectating. Watch how survivors work stations and break the Teacher's line of sight. H cheers; T/Y/U request a role next round."), 6.0f);
+		}
+	}
+
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	if (BHGS)
 	{
@@ -943,10 +998,10 @@ void ABHHUD::DrawHUD()
 		}
 	}
 
-	if (bShowSurvivorWarnings)
-	{
-		DrawHorrorOverlay(Character, BHGS);
-	}
+	// Always run the horror overlay: the explicit scare cues (flash, blink, face image, directive banner)
+	// must render for whoever a cue targeted, even a hunter/tester firing scares from Test Commands. The
+	// fear/dread ambient vignette inside is gated to alive survivors.
+	DrawHorrorOverlay(Character, BHGS);
 
 	const float SafePad = FMath::Max(18.0f, Canvas->ClipX * 0.014f);
 	const float ReadoutW = FMath::Clamp(Canvas->ClipX * 0.38f, 280.0f, 560.0f);
@@ -960,16 +1015,16 @@ void ABHHUD::DrawHUD()
 		const FLinearColor ExitColor = BHGS->bExitUnlocked ? ActivePalette.Good : ActivePalette.Bad;
 		DrawHudText(FString::Printf(TEXT("%s / %s"), *TimerText, *ExitText), SafePad, SafePad, ExitColor, GEngine->GetSmallFont(), 0.88f);
 		DrawWrappedHudText(ActionLine, SafePad, SafePad + 22.0f, ReadoutW, bHighContrastHud ? FLinearColor(0.92f, 0.98f, 0.90f, 1.0f) : FLinearColor(0.84f, 0.80f, 0.70f, 0.90f), GEngine->GetSmallFont(), 0.70f, 13.0f, 2);
-		DrawWrappedHudText(DetailLine, SafePad, SafePad + 55.0f, ReadoutW, bHighContrastHud ? FLinearColor(0.78f, 0.92f, 0.88f, 0.96f) : FLinearColor(0.62f, 0.58f, 0.51f, 0.84f), GEngine->GetSmallFont(), 0.60f, 12.0f, 1);
+		DrawWrappedHudText(DetailLine, SafePad, SafePad + 55.0f, ReadoutW, bHighContrastHud ? FLinearColor(0.78f, 0.92f, 0.88f, 0.96f) : FLinearColor(0.72f, 0.68f, 0.60f, 0.92f), GEngine->GetSmallFont(), 0.60f, 12.0f, 1);
 		if (!AuxLine.IsEmpty())
 		{
-			DrawWrappedHudText(AuxLine, SafePad, SafePad + 73.0f, ReadoutW, bHighContrastHud ? FLinearColor(0.84f, 0.86f, 0.68f, 0.92f) : FLinearColor(0.74f, 0.63f, 0.55f, 0.78f), GEngine->GetSmallFont(), 0.56f, 12.0f, 1);
+			DrawWrappedHudText(AuxLine, SafePad, SafePad + 73.0f, ReadoutW, bHighContrastHud ? FLinearColor(0.84f, 0.86f, 0.68f, 0.92f) : FLinearColor(0.80f, 0.70f, 0.60f, 0.88f), GEngine->GetSmallFont(), 0.56f, 12.0f, 1);
 		}
 	}
 	else
 	{
 		DrawHudText(TEXT("NO SIGNAL"), SafePad, SafePad, FLinearColor(0.96f, 0.24f, 0.16f, 0.92f), GEngine->GetSmallFont(), 0.90f);
-		DrawHudText(TEXT("HOST OR JOIN"), SafePad, SafePad + 21.0f, FLinearColor(0.62f, 0.58f, 0.51f, 0.78f), GEngine->GetSmallFont(), 0.64f);
+		DrawHudText(TEXT("HOST OR JOIN"), SafePad, SafePad + 21.0f, FLinearColor(0.72f, 0.68f, 0.60f, 0.88f), GEngine->GetSmallFont(), 0.64f);
 	}
 
 	if (BHPS)
@@ -992,7 +1047,7 @@ void ABHHUD::DrawHUD()
 		const FString LifeName = LifeEnum ? LifeEnum->GetNameStringByValue(static_cast<int64>(BHPS->LifeState)) : TEXT("Alive");
 		const FString ReadyText = (BHGS && BHGS->bTestMode) ? TEXT("TEST") : ((BHGS && BHGS->bPracticeMode) ? TEXT("LAB") : (BHPS->bReady ? TEXT("READY") : TEXT("NOT READY")));
 		DrawRightAlignedText(RoleName.ToUpper(), Canvas->ClipX - SafePad, SafePad, FLinearColor(0.88f, 0.84f, 0.74f, 0.90f), GEngine->GetSmallFont(), 0.82f);
-		DrawRightAlignedText(FString::Printf(TEXT("%s / %s / AV%02d"), *LifeName.ToUpper(), *ReadyText, BHPS->AvatarIndex + 1), Canvas->ClipX - SafePad, SafePad + 20.0f, FLinearColor(0.55f, 0.52f, 0.47f, 0.76f), GEngine->GetSmallFont(), 0.58f);
+		DrawRightAlignedText(FString::Printf(TEXT("%s / %s / AV%02d"), *LifeName.ToUpper(), *ReadyText, BHPS->AvatarIndex + 1), Canvas->ClipX - SafePad, SafePad + 20.0f, FLinearColor(0.66f, 0.62f, 0.56f, 0.90f), GEngine->GetSmallFont(), 0.58f);
 		if ((BHGS && BHGS->bTestMode) || BHPS->PlayerRole == EBHPlayerRole::Tester)
 		{
 			const float ShortcutW = FMath::Clamp(Canvas->ClipX * 0.34f, 310.0f, 540.0f);
@@ -1056,6 +1111,13 @@ void ABHHUD::DrawHUD()
 		}
 	}
 
+	// Lobby-only: show who is in (humans + bots, ready state) so a small group can fill out the
+	// roster with bots and start once everyone's ready.
+	if (BHGS && BHGS->RoundPhase == EBHRoundPhase::Lobby)
+	{
+		DrawLobbyRoster(BHGS, BHPS);
+	}
+
 	if (Character)
 	{
 		// Probe teacher proximity once -- it feeds both the vitals meter and the threat arrow,
@@ -1095,6 +1157,32 @@ void ABHHUD::DrawHUD()
 			if (!StressHint.IsEmpty())
 			{
 				DrawWrappedHudText(StressHint, SafePad, VitalsY + 122.0f, MeterW, FLinearColor(0.96f, 0.42f, 0.30f, 0.88f), GEngine->GetSmallFont(), 0.48f, 10.0f, 1);
+			}
+
+			// First-time "why" coaching (SHARED-D): the first time each meter is *noticed* (a low
+			// threshold, well below the panic cutoffs above), explain the cause->effect once, then
+			// defer to the steady-state StressHint. Suppressed while the Teacher is visible so it
+			// never adds reading load mid-chase. Pure client-side; fires one short status line.
+			if (bShowSurvivorWarnings && !(TeacherProximity.bFound && TeacherProximity.bLineOfSight))
+			{
+				if (ABHPlayerController* TeachPC = Cast<ABHPlayerController>(PlayerOwner))
+				{
+					if (!bTaughtTeacherNear && TeacherProximity.bFound && TeacherProximity.ProximityPercent >= 34.0f)
+					{
+						bTaughtTeacherNear = true;
+						TeachPC->ShowLocalStatusMessage(TEXT("The TEACHER bar shows how close the Teacher is. When it climbs, hide in a locker or break line of sight."), 4.5f);
+					}
+					else if (!bTaughtFear && Character->GetFear() >= 30.0f)
+					{
+						bTaughtFear = true;
+						TeachPC->ShowLocalStatusMessage(TEXT("FEAR rises near danger - and high Fear makes you louder when you sprint. Move calmly to stay quiet."), 4.5f);
+					}
+					else if (!bTaughtStamina && Character->GetStaminaPercent() <= 34.0f)
+					{
+						bTaughtStamina = true;
+						TeachPC->ShowLocalStatusMessage(TEXT("STAMINA drains when you sprint or vault. Let it recover so you can run when it counts."), 4.5f);
+					}
+				}
 			}
 		}
 
@@ -1144,6 +1232,7 @@ void ABHHUD::DrawHUD()
 	}
 
 	DrawCCTVRevealMarker(Character, BHPC);
+	DrawNodeMarker(Character, BHPC);
 	if (bShowObjectiveBeats)
 	{
 		DrawObjectiveBeats(Character, BHGS);
@@ -1196,6 +1285,7 @@ void ABHHUD::DrawHUD()
 	}
 
 	DrawPhaseBanner(BHGS, Character);
+	DrawRoleIntroCard(BHPC, BHGS);
 	DrawDiagramPreview();
 }
 
@@ -1350,7 +1440,7 @@ void ABHHUD::DrawKeyBox(const FString& Key, float X, float Y, float W, float H, 
 	float TextW = 0.0f;
 	float TextH = 0.0f;
 	Canvas->TextSize(GEngine->GetSmallFont(), Key, TextW, TextH, 0.76f, 0.76f);
-	DrawHudText(Key, X + (W - TextW) * 0.5f, Y + (H - TextH) * 0.5f - 1.0f, bLit ? FLinearColor(0.88f, 1.0f, 0.96f, 1.0f) : FLinearColor(0.50f, 0.58f, 0.58f, 0.88f), GEngine->GetSmallFont(), 0.76f);
+	DrawHudText(Key, X + (W - TextW) * 0.5f, Y + (H - TextH) * 0.5f - 1.0f, bLit ? ActivePalette.KeyBoxLit : ActivePalette.KeyBoxDim, GEngine->GetSmallFont(), 0.76f);
 }
 
 void ABHHUD::DrawStatusPill(const FString& Label, float X, float Y, float W, const FLinearColor& AccentColor, bool bLit)
@@ -1366,7 +1456,7 @@ void ABHHUD::DrawStatusPill(const FString& Label, float X, float Y, float W, con
 	DrawRect(FLinearColor(AccentColor.R, AccentColor.G, AccentColor.B, bLit ? 0.28f : 0.10f), X, Y, W, 1.0f);
 	DrawRect(FLinearColor(AccentColor.R, AccentColor.G, AccentColor.B, bLit ? 0.90f : 0.34f), X + 8.0f, Y + 7.0f, 7.0f, 7.0f);
 	DrawRect(FLinearColor(AccentColor.R, AccentColor.G, AccentColor.B, bLit ? 0.18f : 0.05f), X + 6.0f, Y + 5.0f, 11.0f, 11.0f);
-	DrawWrappedHudText(Label, X + 24.0f, Y + 5.0f, W - 29.0f, bLit ? MainText() : FLinearColor(0.58f, 0.64f, 0.64f, 0.86f), GEngine->GetSmallFont(), 0.60f, 10.0f, 1);
+	DrawWrappedHudText(Label, X + 24.0f, Y + 5.0f, W - 29.0f, bLit ? MainText() : ActivePalette.TextMuted, GEngine->GetSmallFont(), 0.60f, 10.0f, 1);
 }
 
 void ABHHUD::DrawHudText(const FString& Text, float X, float Y, const FLinearColor& Color, const UFont* Font, float Scale) const
@@ -1743,6 +1833,39 @@ void ABHHUD::DrawCCTVRevealMarker(const ABHCharacter* Character, const ABHPlayer
 	DrawHudText(Label, TextX, TextY, MarkerColor, GEngine->GetSmallFont(), TextScale);
 }
 
+void ABHHUD::DrawNodeMarker(const ABHCharacter* Character, const ABHPlayerController* PlayerController)
+{
+	if (!Canvas || !GEngine || !PlayerOwner || !Character || !PlayerController || !GetWorld())
+	{
+		return;
+	}
+	const float Now = GetWorld()->GetTimeSeconds();
+	if (Now >= PlayerController->NodeMarkerUntilTime)
+	{
+		return;
+	}
+	const float Alpha = FMath::Clamp((PlayerController->NodeMarkerUntilTime - Now) / 4.0f, 0.20f, 1.0f);
+	const FLinearColor Color(0.72f, 0.92f, 0.74f, Alpha);
+	const FLinearColor ShadowColor(0.0f, 0.0f, 0.0f, 0.62f * Alpha);
+	FVector2D ScreenLocation;
+	if (!PlayerOwner->ProjectWorldLocationToScreen(PlayerController->NodeMarkerLocation + FVector(0.0f, 0.0f, 115.0f), ScreenLocation, true))
+	{
+		return;
+	}
+	const float DistanceCm = FVector::Dist2D(PlayerController->NodeMarkerLocation, Character->GetActorLocation());
+	const float X = FMath::Clamp(ScreenLocation.X, 34.0f, Canvas->ClipX - 34.0f);
+	const float Y = FMath::Clamp(ScreenLocation.Y, 80.0f, Canvas->ClipY - 96.0f);
+	DrawLine(X - 7.0f, Y, X + 7.0f, Y, Color, 1.0f);
+	DrawLine(X, Y - 7.0f, X, Y + 7.0f, Color, 1.0f);
+	const FString Text = FString::Printf(TEXT("NODE %.0fm"), DistanceCm / 100.0f);
+	const float Scale = 0.56f;
+	float TextW = 0.0f, TextH = 0.0f;
+	Canvas->TextSize(GEngine->GetSmallFont(), Text, TextW, TextH, Scale, Scale);
+	const float TextX = FMath::Clamp(X - TextW * 0.5f, 14.0f, Canvas->ClipX - TextW - 14.0f);
+	DrawHudText(Text, TextX + 1.0f, Y + 11.0f, ShadowColor, GEngine->GetSmallFont(), Scale);
+	DrawHudText(Text, TextX, Y + 10.0f, Color, GEngine->GetSmallFont(), Scale);
+}
+
 void ABHHUD::DrawRawMeter(const FString& Label, float Value, float X, float Y, float W, const FLinearColor& FillColor, bool bHighIsBad)
 {
 	if (!Canvas || !GEngine)
@@ -1865,19 +1988,31 @@ void ABHHUD::DrawHorrorOverlay(const ABHCharacter* Character, const ABHGameState
 	}
 
 	const ABHPlayerState* LocalPS = Character ? Character->GetPlayerState<ABHPlayerState>() : nullptr;
-	if (!LocalPS || !LocalPS->IsAliveSurvivor())
-	{
-		return;
-	}
+	// The fear/dread/presence ambient vignette is survivor-only, but the explicit scare cues below
+	// (flash, blink, face image, directive banner) render for whoever the cue targeted — including a
+	// hunter or tester firing scares from the Test Commands menu.
+	const bool bAliveSurvivor = LocalPS && LocalPS->IsAliveSurvivor();
 
-	const float FearAlpha = Character ? FMath::Clamp(Character->GetFear() / 100.0f, 0.0f, 1.0f) : 0.0f;
-	const float DreadAlpha = Character ? FMath::Clamp(Character->GetDread() / 100.0f, 0.0f, 1.0f) : 0.0f;
-	const float PresenceAlpha = GameState ? FMath::Clamp(GameState->PresenceLevel / 100.0f, 0.0f, 1.0f) : 0.0f;
+	const float FearAlpha = (bAliveSurvivor && Character) ? FMath::Clamp(Character->GetFear() / 100.0f, 0.0f, 1.0f) : 0.0f;
+	const float DreadAlpha = (bAliveSurvivor && Character) ? FMath::Clamp(Character->GetDread() / 100.0f, 0.0f, 1.0f) : 0.0f;
+	const float PresenceAlpha = (bAliveSurvivor && GameState) ? FMath::Clamp(GameState->PresenceLevel / 100.0f, 0.0f, 1.0f) : 0.0f;
 	const ABHPlayerController* BHPC = Cast<ABHPlayerController>(PlayerOwner);
 	const float HorrorFlashAlpha = BHPC ? BHPC->GetHorrorCueFlashAlpha() : 0.0f;
 	const float HorrorBlinkAlpha = BHPC ? BHPC->GetHorrorCueBlinkAlpha() : 0.0f;
-	const float OverlayAlpha = FMath::Clamp(FMath::Max(FMath::Max(FearAlpha, DreadAlpha), PresenceAlpha) * 0.34f, 0.0f, 0.34f);
-	if (OverlayAlpha <= 0.01f && HorrorFlashAlpha <= 0.01f && HorrorBlinkAlpha <= 0.01f)
+	UTexture2D* HorrorFaceImage = BHPC ? BHPC->GetHorrorCueFaceImage() : nullptr;
+	const float HorrorFaceImageAlpha = BHPC ? BHPC->GetHorrorCueFaceImageAlpha() : 0.0f;
+	const FString HorrorDirective = BHPC ? BHPC->GetHorrorDirectiveText() : FString();
+	const float HorrorDirectiveAlpha = BHPC ? BHPC->GetHorrorDirectiveAlpha() : 0.0f;
+	const bool bHasFaceImage = HorrorFaceImage != nullptr && HorrorFaceImageAlpha > 0.01f;
+	const bool bHasDirective = !HorrorDirective.IsEmpty() && HorrorDirectiveAlpha > 0.01f;
+	// The tutorial teaches hiding without punishing it: a freshly-hidden student should not feel like the
+	// lights "died" on them. Soften the fear/dread/presence vignette to a gentle hint there (and cap it low)
+	// so the screen stays readable while they learn lockers, the crawl duct, and the breaker.
+	const bool bTutorialSoften = GameState && GameState->bTutorialMode;
+	const float OverlayScale = bTutorialSoften ? 0.12f : 0.34f;
+	const float OverlayCap = bTutorialSoften ? 0.12f : 0.34f;
+	const float OverlayAlpha = FMath::Clamp(FMath::Max(FMath::Max(FearAlpha, DreadAlpha), PresenceAlpha) * OverlayScale, 0.0f, OverlayCap);
+	if (OverlayAlpha <= 0.01f && HorrorFlashAlpha <= 0.01f && HorrorBlinkAlpha <= 0.01f && !bHasFaceImage && !bHasDirective)
 	{
 		return;
 	}
@@ -1904,6 +2039,25 @@ void ABHHUD::DrawHorrorOverlay(const ABHCharacter* Character, const ABHGameState
 		FLinearColor FlashColor = BHPC->GetHorrorCueFlashColor();
 		FlashColor.A = FMath::Clamp(HorrorFlashAlpha * 0.55f, 0.0f, 0.55f);
 		DrawRect(FlashColor, 0.0f, 0.0f, Canvas->ClipX, Canvas->ClipY);
+	}
+
+	// Full-screen "PNG in your face": cover the whole view with the still (centre-cropped, no
+	// letterboxing) so it reads as a face slammed into the camera. Scanlines/grain below layer over it.
+	if (bHasFaceImage)
+	{
+		const float ScreenW = Canvas->ClipX;
+		const float ScreenH = Canvas->ClipY;
+		const float TexW = FMath::Max(1, HorrorFaceImage->GetSizeX());
+		const float TexH = FMath::Max(1, HorrorFaceImage->GetSizeY());
+		const float CoverScale = FMath::Max(ScreenW / TexW, ScreenH / TexH);
+		const float DrawW = TexW * CoverScale;
+		const float DrawH = TexH * CoverScale;
+		const float DrawX = (ScreenW - DrawW) * 0.5f;
+		const float DrawY = (ScreenH - DrawH) * 0.5f;
+		// Black backdrop first so any transparent texture edges still read as a full takeover.
+		DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, FMath::Clamp(HorrorFaceImageAlpha, 0.0f, 1.0f)), 0.0f, 0.0f, ScreenW, ScreenH);
+		DrawTexture(HorrorFaceImage, DrawX, DrawY, DrawW, DrawH, 0.0f, 0.0f, 1.0f, 1.0f,
+			FLinearColor(1.0f, 1.0f, 1.0f, FMath::Clamp(HorrorFaceImageAlpha, 0.0f, 1.0f)));
 	}
 
 	// Hard black blink drawn last so it briefly punches through everything on the moment of impact.
@@ -1939,6 +2093,22 @@ void ABHHUD::DrawHorrorOverlay(const ABHCharacter* Character, const ABHGameState
 			const float SpeckH = 1.0f + FMath::Frac(SeedB * 11.0f) * 18.0f;
 			DrawRect(FLinearColor(0.92f, 1.0f, 0.96f, GrainAlpha * (0.20f + SeedB * 0.55f)), SeedA * Canvas->ClipX, SeedB * Canvas->ClipY, SpeckW, SpeckH);
 		}
+	}
+
+	// Large centered directive banner ("SOMETHING IS BEHIND YOU", "DON'T TURN AROUND", ...), drawn on top
+	// of everything. Used by the directive/behind-you scares; pulses red and fades with its own alpha.
+	if (bHasDirective)
+	{
+		const UFont* DirectiveFont = GEngine ? GEngine->GetLargeFont() : nullptr;
+		const float DirectiveScale = FMath::Clamp(Canvas->ClipX / 1280.0f, 1.0f, 2.4f) * 1.7f;
+		float TextW = 0.0f;
+		float TextH = 0.0f;
+		Canvas->TextSize(DirectiveFont, HorrorDirective, TextW, TextH, DirectiveScale, DirectiveScale);
+		const float TextX = (Canvas->ClipX - TextW) * 0.5f;
+		const float TextY = Canvas->ClipY * 0.70f;
+		const float DirectivePulse = 0.80f + 0.20f * FMath::Sin(Now * 7.0f);
+		DrawHudText(HorrorDirective, TextX + 2.0f, TextY + 2.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.85f * HorrorDirectiveAlpha), DirectiveFont, DirectiveScale);
+		DrawHudText(HorrorDirective, TextX, TextY, FLinearColor(0.96f, 0.06f, 0.05f, HorrorDirectiveAlpha * DirectivePulse), DirectiveFont, DirectiveScale);
 	}
 }
 
@@ -2315,8 +2485,8 @@ void ABHHUD::DrawInteractionPrompt(ABHCharacter* Character)
 		const FLinearColor DetailColor = bCanInteract
 			? (PromptInfo.bNoisy || PromptInfo.bDangerous
 				? (bHighContrastHud ? FLinearColor(1.0f, 0.42f, 0.24f, 1.0f) : FLinearColor(0.96f, 0.28f, 0.14f, 0.84f))
-				: (bHighContrastHud ? FLinearColor(0.82f, 0.94f, 0.86f, 0.96f) : FLinearColor(0.56f, 0.62f, 0.58f, 0.74f)))
-			: (bHighContrastHud ? FLinearColor(0.92f, 0.74f, 0.52f, 0.96f) : FLinearColor(0.58f, 0.52f, 0.46f, 0.70f));
+				: (bHighContrastHud ? FLinearColor(0.82f, 0.94f, 0.86f, 0.96f) : FLinearColor(0.66f, 0.72f, 0.66f, 0.88f)))
+			: (bHighContrastHud ? FLinearColor(0.92f, 0.74f, 0.52f, 0.96f) : FLinearColor(0.70f, 0.64f, 0.56f, 0.88f));
 		DrawHudText(DetailLine, DetailX + 1.0f, DetailY + 1.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.46f), GEngine->GetSmallFont(), DetailScale);
 		DrawHudText(DetailLine, DetailX, DetailY, DetailColor, GEngine->GetSmallFont(), DetailScale);
 	}
@@ -2486,11 +2656,128 @@ void ABHHUD::DrawSpectatorSupportPanel(const ABHGameState* GameState, const ABHP
 	DrawWrappedHudText(PrefLine, PanelX + 22.0f, PanelY + 65.0f, PanelW - 44.0f, FLinearColor(0.62f, 0.72f, 0.78f, 0.88f), GEngine->GetSmallFont(), 0.50f, 10.0f, 1);
 }
 
+void ABHHUD::DrawLobbyRoster(const ABHGameState* GameState, const ABHPlayerState* LocalPlayerState)
+{
+	if (!Canvas || !GEngine || !GameState)
+	{
+		return;
+	}
+
+	const UFont* Font = GEngine->GetSmallFont();
+
+	// Collect the roster in PlayerArray order and tally humans vs bots / ready vs waiting.
+	TArray<const ABHPlayerState*> Roster;
+	int32 HumanCount = 0;
+	int32 BotCount = 0;
+	int32 ReadyHumans = 0;
+	for (APlayerState* RawPS : GameState->PlayerArray)
+	{
+		const ABHPlayerState* PS = Cast<ABHPlayerState>(RawPS);
+		if (!PS)
+		{
+			continue;
+		}
+		Roster.Add(PS);
+		if (PS->IsABot())
+		{
+			++BotCount;
+		}
+		else
+		{
+			++HumanCount;
+			if (PS->bReady)
+			{
+				++ReadyHumans;
+			}
+		}
+	}
+
+	const float SafePad = FMath::Max(18.0f, Canvas->ClipX * 0.014f);
+	const float RowH = 18.0f;
+	const float HeaderH = 44.0f;
+	const float PanelW = FMath::Clamp(Canvas->ClipX * 0.20f, 224.0f, 308.0f);
+	const float PanelH = HeaderH + RowH * FMath::Max(1, Roster.Num()) + 12.0f;
+	const float PanelX = SafePad;
+	const float PanelY = FMath::Clamp(Canvas->ClipY * 0.16f, 84.0f, FMath::Max(84.0f, Canvas->ClipY - PanelH - SafePad));
+	const FLinearColor Accent(0.34f, 0.72f, 0.62f, 0.90f);
+	DrawPanel(PanelX, PanelY, PanelW, PanelH, FLinearColor(0.010f, 0.014f, 0.016f, 0.82f), Accent);
+
+	DrawHudText(TEXT("LOBBY"), PanelX + 16.0f, PanelY + 12.0f, FLinearColor(0.82f, 0.92f, 0.88f, 0.96f), Font, 0.84f);
+	DrawRightAlignedText(FString::Printf(TEXT("%d IN"), HumanCount + BotCount), PanelX + PanelW - 16.0f, PanelY + 12.0f, MutedText(), Font, 0.58f);
+	const FString Subtitle = FString::Printf(TEXT("%d player%s + %d bot%s  -  %d ready"),
+		HumanCount, HumanCount == 1 ? TEXT("") : TEXT("s"),
+		BotCount, BotCount == 1 ? TEXT("") : TEXT("s"),
+		ReadyHumans);
+	DrawHudText(Subtitle, PanelX + 16.0f, PanelY + 28.0f, FLinearColor(0.60f, 0.70f, 0.70f, 0.90f), Font, 0.56f);
+
+	float RowY = PanelY + HeaderH;
+	for (const ABHPlayerState* PS : Roster)
+	{
+		const bool bIsBot = PS->IsABot();
+		const bool bIsLocal = (PS == LocalPlayerState);
+
+		FString Name = PS->GetPlayerName();
+		if (Name.IsEmpty())
+		{
+			Name = bIsBot ? TEXT("Bot") : TEXT("Player");
+		}
+		if (bIsLocal)
+		{
+			Name += TEXT("  (you)");
+		}
+		const FLinearColor NameColor = bIsLocal
+			? FLinearColor(0.96f, 0.94f, 0.74f, 0.96f)
+			: (bIsBot ? FLinearColor(0.62f, 0.70f, 0.78f, 0.92f) : MainText());
+		DrawHudText(Name, PanelX + 16.0f, RowY, NameColor, Font, 0.66f);
+
+		FString Tag;
+		FLinearColor TagColor;
+		if (bIsBot)
+		{
+			Tag = TEXT("BOT");
+			TagColor = FLinearColor(0.56f, 0.66f, 0.80f, 0.88f);
+		}
+		else if (PS->bReady)
+		{
+			Tag = TEXT("READY");
+			TagColor = FLinearColor(0.50f, 0.86f, 0.50f, 0.94f);
+		}
+		else
+		{
+			Tag = TEXT("WAIT");
+			TagColor = FLinearColor(0.92f, 0.62f, 0.30f, 0.92f);
+		}
+		DrawRightAlignedText(Tag, PanelX + PanelW - 16.0f, RowY, TagColor, Font, 0.58f);
+
+		RowY += RowH;
+	}
+}
+
 void ABHHUD::DrawQuestionPanel(const ABHObjectiveStation* Station)
 {
 	if (!Canvas || !GEngine || !Station || !Station->IsDirectorActive() || Station->IsCompleted() || Station->IsQuestionSolved() || Station->GetQuestionChoiceCount() <= 0)
 	{
 		return;
+	}
+
+	// Mouse interaction state lives on the local pawn (cursor on/off, the in-progress drag). Regions
+	// are rebuilt every frame so a click always hit-tests exactly what is on screen this frame.
+	const ABHCharacter* LocalChar = Cast<ABHCharacter>(GetOwningPawn());
+	const bool bCursor = LocalChar && LocalChar->IsQuestionCursorActive();
+	QuestionHitRegions.Reset();
+
+	// First-time question-format coaching (SHARED-D): on the first checkpoint a student faces,
+	// explain that the diagram shows the givens (never the answer) and how to answer. Fires once.
+	if (!bTaughtQuestionFormat)
+	{
+		bTaughtQuestionFormat = true;
+		if (ABHPlayerController* TeachPC = Cast<ABHPlayerController>(PlayerOwner))
+		{
+			const bool bHasDiagram = Station->GetQuestionDiagramType() != EBHDiagramType::None;
+			TeachPC->ShowLocalStatusMessage(bHasDiagram
+				? TEXT("Tip: the diagram shows the given values, never the answer. Press 1-4 to answer, or Tab to use the mouse.")
+				: TEXT("Tip: answer with keys 1-4 (calculations: type the number, then Enter), or press Tab to use the mouse."), 5.0f);
+		}
 	}
 
 	// HUD scale enlarges this centered, readability-critical panel. Because the panel is
@@ -2502,13 +2789,35 @@ void ABHHUD::DrawQuestionPanel(const ABHObjectiveStation* Station)
 	const float PanelW = FMath::Min(FMath::Clamp(Canvas->ClipX * 0.60f, 560.0f, 920.0f) * S, Canvas->ClipX * 0.94f);
 	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
 	const bool bRevisionQuestion = BHGS && BHGS->bRevisionMode;
+	const EBHQuestionType QType = Station->GetQuestionType();
+	// Interaction modes. Matching/ordering become drag-and-drop while the cursor is up (otherwise the
+	// classic four choice rows answer them with 1-4); calculation questions add an on-screen keypad.
+	const bool bArrangement = Station->HasInteractiveArrangement() && (QType == EBHQuestionType::DragDropMatching || QType == EBHQuestionType::Ordering);
+	const bool bDragMode = bCursor && bArrangement;
+	const bool bCalc = bRevisionQuestion && QType == EBHQuestionType::Calculation;
 	// Draw a diagram whenever the question carries one, in any mode -- so visual tasks
 	// also appear at nodes during standard play, not only in the classroom.
 	const bool bShowDiagram = Station->GetQuestionDiagramType() != EBHDiagramType::None;
 	// Adaptive band height per diagram type (graphs/circuits get more room, spectra less) instead
 	// of a one-size 118px; PanelH and ChoiceStartY below derive from DiagramH so layout follows.
 	const float DiagramH = (bShowDiagram ? FBHDiagramRenderer::BandHeightFor(Station->GetQuestionDiagramType()) : 0.0f) * S;
-	const float PanelH = (194.0f + ChoiceCount * 32.0f + (Station->GetQuestionFeedback().IsEmpty() ? 0.0f : 42.0f)) * S + DiagramH;
+	// Answer-area height varies by mode so the panel grows to fit a drag tray or keypad.
+	const int32 NumSlots = Station->GetInteractiveSlots().Num();
+	float AnswerAreaUnscaled;
+	if (bDragMode)
+	{
+		AnswerAreaUnscaled = 22.0f + NumSlots * 30.0f + 56.0f + 32.0f;
+	}
+	else if (bCalc)
+	{
+		AnswerAreaUnscaled = 50.0f + (bCursor ? 152.0f : 0.0f);
+	}
+	else
+	{
+		AnswerAreaUnscaled = ChoiceCount * 32.0f;
+	}
+	const float FeedbackUnscaled = Station->GetQuestionFeedback().IsEmpty() ? 0.0f : 42.0f;
+	const float PanelH = (112.0f + AnswerAreaUnscaled + 22.0f + 26.0f + FeedbackUnscaled) * S + DiagramH;
 	const float PanelX = (Canvas->ClipX - PanelW) * 0.5f;
 	const float MaxPanelY = FMath::Max(120.0f, Canvas->ClipY - PanelH - 92.0f);
 	const float PanelY = FMath::Min(FMath::Max(Canvas->ClipY * 0.58f, 120.0f), MaxPanelY);
@@ -2561,32 +2870,228 @@ void ABHHUD::DrawQuestionPanel(const ABHObjectiveStation* Station)
 		}
 	}
 
-	// Calculation questions use typed numeric entry instead of multiple choice, so the
-	// student must actually compute the value rather than recognise it among options.
-	if (bRevisionQuestion && Station->GetQuestionType() == EBHQuestionType::Calculation)
+	// Cursor position (viewport pixels) for hover highlighting, and helpers shared by every mode to
+	// register a clickable region (rebuilt each frame -> always matches the draw) and hit-test hover.
+	const UFont* QFont = GEngine->GetSmallFont();
+	float CursorX = -1.0f;
+	float CursorY = -1.0f;
+	if (bCursor && PlayerOwner)
 	{
-		const ABHCharacter* LocalChar = Cast<ABHCharacter>(GetOwningPawn());
+		PlayerOwner->GetMousePosition(CursorX, CursorY);
+	}
+	auto PushRegion = [&](float RX, float RY, float RW, float RH, EBHQuestionRegionKind Kind, int32 IndexA)
+	{
+		QuestionHitRegions.Emplace(FBox2D(FVector2D(RX, RY), FVector2D(RX + RW, RY + RH)), Kind, IndexA);
+	};
+	auto IsHovered = [&](float RX, float RY, float RW, float RH)
+	{
+		return bCursor && CursorX >= RX && CursorX <= RX + RW && CursorY >= RY && CursorY <= RY + RH;
+	};
+	auto DrawBtn = [&](float RX, float RY, float RW, float RH, const FString& Label, const FLinearColor& Accent, bool bHover)
+	{
+		DrawRect(bHover ? FLinearColor(Accent.R, Accent.G, Accent.B, 0.46f) : FLinearColor(0.06f, 0.07f, 0.07f, 0.88f), RX, RY, RW, RH);
+		DrawRect(FLinearColor(Accent.R, Accent.G, Accent.B, 0.85f), RX, RY, RW, 2.0f * S);
+		float TW = 0.0f;
+		float TH = 0.0f;
+		const float TS = 0.72f * S;
+		Canvas->TextSize(QFont, Label, TW, TH, TS, TS);
+		DrawHudText(Label, RX + FMath::Max(4.0f * S, (RW - TW) * 0.5f), RY + (RH - TH) * 0.5f, FLinearColor(0.93f, 0.97f, 0.95f, 1.0f), QFont, TS);
+	};
+
+	if (bDragMode)
+	{
+		// --- Interactive matching / ordering: drag the shuffled pieces onto the fixed slots. ---
+		const TArray<FString>& Slots = Station->GetInteractiveSlots();
+		const TArray<FString>& Pieces = Station->GetInteractivePieces();
+		const TArray<int32>& Arr = LocalChar->GetQuestionArrangement();
+		const int32 Dragged = LocalChar->GetQuestionDraggedPiece();
+		const FLinearColor Teal(0.40f, 0.82f, 0.86f, 1.0f);
+
+		DrawHudText(QType == EBHQuestionType::Ordering ? TEXT("Click a step, then click its slot. Submit when done:") : TEXT("Click a label, then click its match. Submit when done:"),
+			PanelX + 28.0f * S, ChoiceStartY, FLinearColor(0.76f, 0.92f, 0.98f, 1.0f), QFont, 0.70f * S);
+
+		const float SlotsY = ChoiceStartY + 20.0f * S;
+		const float ZoneX = PanelX + PanelW * 0.40f;
+		const float ZoneW = PanelW * 0.54f;
+		for (int32 Slot = 0; Slot < NumSlots; ++Slot)
+		{
+			const float RowY = SlotsY + Slot * 30.0f * S;
+			DrawWrappedHudText(Slots[Slot], PanelX + 30.0f * S, RowY + 5.0f * S, ZoneX - PanelX - 38.0f * S, FLinearColor(0.90f, 0.93f, 0.90f, 1.0f), QFont, 0.70f * S, 12.0f * S, 1);
+			const bool bHover = IsHovered(ZoneX, RowY, ZoneW, 26.0f * S);
+			DrawRect(bHover ? FLinearColor(0.30f, 0.55f, 0.40f, 0.40f) : FLinearColor(0.05f, 0.07f, 0.07f, 0.80f), ZoneX, RowY, ZoneW, 26.0f * S);
+			DrawRect(FLinearColor(0.95f, 0.56f, 0.18f, 0.34f), ZoneX, RowY, 3.0f * S, 26.0f * S);
+			const int32 Placed = Arr.IsValidIndex(Slot) ? Arr[Slot] : INDEX_NONE;
+			if (Pieces.IsValidIndex(Placed))
+			{
+				DrawWrappedHudText(Pieces[Placed], ZoneX + 10.0f * S, RowY + 5.0f * S, ZoneW - 16.0f * S, FLinearColor(0.96f, 0.98f, 0.94f, 1.0f), QFont, 0.70f * S, 12.0f * S, 1);
+			}
+			else
+			{
+				DrawHudText(Dragged != INDEX_NONE ? TEXT("click to place") : TEXT("empty"), ZoneX + 10.0f * S, RowY + 6.0f * S, FLinearColor(0.55f, 0.62f, 0.62f, 0.85f), QFont, 0.60f * S);
+			}
+			PushRegion(ZoneX, RowY, ZoneW, 26.0f * S, EBHQuestionRegionKind::Slot, Slot);
+		}
+
+		// Tray of unplaced pieces (the dragged one is hidden here and drawn at the cursor instead).
+		float TrayY = SlotsY + NumSlots * 30.0f * S + 6.0f * S;
+		DrawHudText(TEXT("Pieces:"), PanelX + 30.0f * S, TrayY, FLinearColor(0.66f, 0.74f, 0.78f, 0.9f), QFont, 0.62f * S);
+		float ChipX = PanelX + 30.0f * S;
+		float ChipY = TrayY + 15.0f * S;
+		const float ChipH = 24.0f * S;
+		const float ChipMaxRight = PanelX + PanelW - 30.0f * S;
+		for (int32 Piece = 0; Piece < Pieces.Num(); ++Piece)
+		{
+			if (Arr.Contains(Piece) || Piece == Dragged)
+			{
+				continue;
+			}
+			float TW = 0.0f;
+			float TH = 0.0f;
+			Canvas->TextSize(QFont, Pieces[Piece], TW, TH, 0.66f * S, 0.66f * S);
+			const float ChipW = FMath::Min(TW + 22.0f * S, PanelW - 64.0f * S);
+			if (ChipX + ChipW > ChipMaxRight)
+			{
+				ChipX = PanelX + 30.0f * S;
+				ChipY += ChipH + 6.0f * S;
+			}
+			DrawBtn(ChipX, ChipY, ChipW, ChipH, Pieces[Piece], Teal, IsHovered(ChipX, ChipY, ChipW, ChipH));
+			PushRegion(ChipX, ChipY, ChipW, ChipH, EBHQuestionRegionKind::Piece, Piece);
+			ChipX += ChipW + 6.0f * S;
+		}
+
+		// Submit.
+		const bool bComplete = Arr.Num() == NumSlots && !Arr.Contains(INDEX_NONE);
+		const float SubW = 130.0f * S;
+		const float SubH = 26.0f * S;
+		const float SubX = PanelX + PanelW - SubW - 30.0f * S;
+		const float SubY = ChoiceStartY + (22.0f + NumSlots * 30.0f + 56.0f) * S;
+		DrawBtn(SubX, SubY, SubW, SubH, bComplete ? TEXT("Submit") : TEXT("Fill all slots"), bComplete ? ActivePalette.Good : FLinearColor(0.5f, 0.5f, 0.5f, 1.0f), IsHovered(SubX, SubY, SubW, SubH));
+		PushRegion(SubX, SubY, SubW, SubH, EBHQuestionRegionKind::Submit, INDEX_NONE);
+
+		// The piece being dragged floats under the cursor, drawn last so it sits on top of everything.
+		if (Pieces.IsValidIndex(Dragged) && CursorX >= 0.0f)
+		{
+			float TW = 0.0f;
+			float TH = 0.0f;
+			Canvas->TextSize(QFont, Pieces[Dragged], TW, TH, 0.66f * S, 0.66f * S);
+			const float ChipW = FMath::Min(TW + 22.0f * S, PanelW - 64.0f * S);
+			DrawBtn(CursorX - ChipW * 0.5f, CursorY - ChipH * 0.5f, ChipW, ChipH, Pieces[Dragged], ActivePalette.WarnHot, true);
+		}
+	}
+	else if (bCalc)
+	{
+		// Calculation questions use numeric entry: typed (keyboard) and, while the cursor is up, an
+		// on-screen keypad. Both feed the same NumericAnswerEntry buffer + Enter-to-submit path.
 		const FString Typed = LocalChar ? LocalChar->GetNumericAnswerEntry() : FString();
 		const float EntryY = ChoiceStartY + 4.0f * S;
 		DrawRect(FLinearColor(0.05f, 0.06f, 0.06f, 0.86f), PanelX + 26.0f * S, EntryY - 5.0f * S, PanelW - 52.0f * S, 30.0f * S);
 		DrawRect(FLinearColor(0.30f, 0.78f, 0.95f, 0.42f), PanelX + 26.0f * S, EntryY - 5.0f * S, 3.0f * S, 30.0f * S);
 		DrawKeyBox(TEXT("0-9"), PanelX + 38.0f * S, EntryY - 2.0f * S, 40.0f * S, 22.0f * S, FLinearColor(0.40f, 0.82f, 0.96f, 0.94f), true);
 		const FString Shown = Typed.IsEmpty() ? TEXT("_") : (Typed + TEXT("_"));
-		DrawHudText(FString::Printf(TEXT("Your answer: %s"), *Shown), PanelX + 92.0f * S, EntryY + 2.0f * S, FLinearColor(0.92f, 0.98f, 1.0f, 1.0f), GEngine->GetSmallFont(), 0.92f * S);
-		DrawWrappedHudText(TEXT("Type the value (digits, . and -). Backspace edits. Press Enter to submit."), PanelX + 28.0f * S, EntryY + 28.0f * S, PanelW - 56.0f * S, FLinearColor(0.66f, 0.78f, 0.84f, 0.92f), GEngine->GetSmallFont(), 0.62f * S, 11.0f * S, 1);
+		DrawHudText(FString::Printf(TEXT("Your answer: %s"), *Shown), PanelX + 92.0f * S, EntryY + 2.0f * S, FLinearColor(0.92f, 0.98f, 1.0f, 1.0f), QFont, 0.92f * S);
+		DrawWrappedHudText(TEXT("Type the value (digits, . and -). Backspace edits. Press Enter to submit."), PanelX + 28.0f * S, EntryY + 28.0f * S, PanelW - 56.0f * S, FLinearColor(0.66f, 0.78f, 0.84f, 0.92f), QFont, 0.62f * S, 11.0f * S, 1);
+
+		if (bCursor)
+		{
+			// Compact keypad: three digit columns x four rows, then a Back/Enter row.
+			const float KeyW = 52.0f * S;
+			const float KeyH = 26.0f * S;
+			const float KeyGap = 6.0f * S;
+			const float KpX = PanelX + 30.0f * S;
+			const float KpY = EntryY + 44.0f * S;
+			const int32 Grid[4][3] = {{7, 8, 9}, {4, 5, 6}, {1, 2, 3}, {-1, 0, -2}};
+			const FLinearColor KeyAccent(0.40f, 0.82f, 0.96f, 1.0f);
+			for (int32 Row = 0; Row < 4; ++Row)
+			{
+				for (int32 Col = 0; Col < 3; ++Col)
+				{
+					const float BX = KpX + Col * (KeyW + KeyGap);
+					const float BY = KpY + Row * (KeyH + KeyGap);
+					const int32 V = Grid[Row][Col];
+					FString Label;
+					EBHQuestionRegionKind Kind = EBHQuestionRegionKind::KeypadDigit;
+					int32 IndexA = INDEX_NONE;
+					if (V >= 0) { Label = FString::FromInt(V); Kind = EBHQuestionRegionKind::KeypadDigit; IndexA = V; }
+					else if (V == -1) { Label = TEXT("."); Kind = EBHQuestionRegionKind::KeypadDecimal; }
+					else { Label = TEXT("-"); Kind = EBHQuestionRegionKind::KeypadMinus; }
+					DrawBtn(BX, BY, KeyW, KeyH, Label, KeyAccent, IsHovered(BX, BY, KeyW, KeyH));
+					PushRegion(BX, BY, KeyW, KeyH, Kind, IndexA);
+				}
+			}
+			const float UtilY = KpY + 4 * (KeyH + KeyGap);
+			const float BackW = KeyW * 1.5f + KeyGap;
+			DrawBtn(KpX, UtilY, BackW, KeyH, TEXT("Back"), FLinearColor(0.92f, 0.62f, 0.38f, 1.0f), IsHovered(KpX, UtilY, BackW, KeyH));
+			PushRegion(KpX, UtilY, BackW, KeyH, EBHQuestionRegionKind::KeypadBackspace, INDEX_NONE);
+			const float EnterX = KpX + BackW + KeyGap;
+			const float EnterW = KeyW * 1.5f + KeyGap;
+			DrawBtn(EnterX, UtilY, EnterW, KeyH, TEXT("Enter"), ActivePalette.Good, IsHovered(EnterX, UtilY, EnterW, KeyH));
+			PushRegion(EnterX, UtilY, EnterW, KeyH, EBHQuestionRegionKind::KeypadEnter, INDEX_NONE);
+		}
 	}
 	else
 	{
 		for (int32 Index = 0; Index < ChoiceCount; ++Index)
 		{
 			const float ChoiceY = ChoiceStartY + Index * 32.0f * S;
-			const FLinearColor RowColor = Index % 2 == 0 ? FLinearColor(0.045f, 0.052f, 0.050f, 0.80f) : FLinearColor(0.034f, 0.041f, 0.040f, 0.80f);
+			// Cap the answer text scale so long choices stay inside the fixed-height row instead of
+			// overflowing / truncating early at high HudScale (the row is 27*S tall, step 32*S).
+			const float ChoiceTextScale = FMath::Min(0.82f * S, 0.99f);
+			const bool bHover = IsHovered(PanelX + 26.0f * S, ChoiceY - 5.0f * S, PanelW - 52.0f * S, 27.0f * S);
+			const FLinearColor RowColor = bHover
+				? FLinearColor(0.14f, 0.18f, 0.16f, 0.92f)
+				: (Index % 2 == 0 ? FLinearColor(0.045f, 0.052f, 0.050f, 0.80f) : FLinearColor(0.034f, 0.041f, 0.040f, 0.80f));
 			DrawRect(RowColor, PanelX + 26.0f * S, ChoiceY - 5.0f * S, PanelW - 52.0f * S, 27.0f * S);
-			DrawRect(FLinearColor(0.95f, 0.56f, 0.18f, 0.34f), PanelX + 26.0f * S, ChoiceY - 5.0f * S, 3.0f * S, 27.0f * S);
+			DrawRect(FLinearColor(0.95f, 0.56f, 0.18f, bHover ? 0.7f : 0.34f), PanelX + 26.0f * S, ChoiceY - 5.0f * S, 3.0f * S, 27.0f * S);
 			DrawKeyBox(FString::Printf(TEXT("%d"), Index + 1), PanelX + 38.0f * S, ChoiceY - 2.0f * S, 26.0f * S, 21.0f * S, FLinearColor(0.95f, 0.56f, 0.18f, 0.94f), true);
-			DrawWrappedHudText(Station->GetQuestionChoice(Index), PanelX + 76.0f * S, ChoiceY + 1.0f * S, PanelW - 116.0f * S, FLinearColor(0.88f, 0.92f, 0.88f, 1.0f), GEngine->GetSmallFont(), 0.82f * S, 14.0f * S, 1);
+			DrawWrappedHudText(Station->GetQuestionChoice(Index), PanelX + 76.0f * S, ChoiceY + 1.0f * S, PanelW - 116.0f * S, FLinearColor(0.88f, 0.92f, 0.88f, 1.0f), QFont, ChoiceTextScale, 14.0f * S, 1);
+			// The whole row is clickable; acted on only while the cursor is up (see the character).
+			PushRegion(PanelX + 26.0f * S, ChoiceY - 5.0f * S, PanelW - 52.0f * S, 27.0f * S, EBHQuestionRegionKind::Choice, Index);
+		}
+
+		// Clickable diagram elements (e.g. EM-spectrum bands) resolve to the matching answer choice.
+		if (bCursor && bShowDiagram)
+		{
+			FBHDiagramDrawContext RegionCtx;
+			RegionCtx.Scale = S;
+			TArray<FBHDiagramClickRegion> DiagramRegions;
+			FBHDiagramRenderer::GetClickableRegions(Station->GetQuestionDiagramType(), Station->GetQuestionDiagram(),
+				PanelX + 24.0f * S, PanelY + 108.0f * S, PanelW - 48.0f * S, DiagramH - 10.0f * S, RegionCtx, DiagramRegions);
+			for (const FBHDiagramClickRegion& DR : DiagramRegions)
+			{
+				if (!DR.Rect.bIsValid)
+				{
+					continue;
+				}
+				// Map the element label to the choice whose text names it (e.g. band "infrared" -> "Infrared").
+				int32 MappedChoice = INDEX_NONE;
+				for (int32 Index = 0; Index < ChoiceCount; ++Index)
+				{
+					if (Station->GetQuestionChoice(Index).Contains(DR.Label, ESearchCase::IgnoreCase))
+					{
+						MappedChoice = Index;
+						break;
+					}
+				}
+				if (MappedChoice == INDEX_NONE)
+				{
+					continue;
+				}
+				const FVector2D RMin = DR.Rect.Min;
+				const FVector2D RSize = DR.Rect.GetSize();
+				const bool bHover = IsHovered(RMin.X, RMin.Y, RSize.X, RSize.Y);
+				DrawCornerBrackets(RMin.X, RMin.Y, RSize.X, RSize.Y, FLinearColor(0.98f, 0.85f, 0.45f, bHover ? 1.0f : 0.55f), 6.0f * S, 2.0f * S);
+				PushRegion(RMin.X, RMin.Y, RSize.X, RSize.Y, EBHQuestionRegionKind::DiagramChoice, MappedChoice);
+			}
 		}
 	}
+
+	// Control hint: how to answer, adapting to the current input mode.
+	const FString ControlHint = bCursor
+		? (bDragMode ? TEXT("Mouse: click a piece, then click a slot. Click Submit.  Tab = keyboard.")
+			: (bCalc ? TEXT("Mouse: tap the keypad, then Enter.  Tab = keyboard.") : TEXT("Mouse: click an answer (or part of the diagram).  Tab = keyboard.")))
+		: (bArrangement ? TEXT("Press 1-4 to answer, or Tab to place the pieces with the mouse.")
+			: (bCalc ? TEXT("Type the value + Enter, or press Tab for an on-screen keypad.") : TEXT("Press 1-4 to answer, or press Tab to answer with the mouse.")));
+	DrawHudText(ControlHint, PanelX + 22.0f * S, ChoiceStartY + AnswerAreaUnscaled * S + 4.0f * S, FLinearColor(0.70f, 0.80f, 0.86f, 0.92f), QFont, 0.62f * S);
 
 	if (!Station->GetQuestionFeedback().IsEmpty())
 	{
@@ -2597,6 +3102,20 @@ void ABHHUD::DrawQuestionPanel(const ABHObjectiveStation* Station)
 			: ActivePalette.Bad;
 		DrawWrappedHudText(Station->GetQuestionFeedback(), PanelX + 22.0f * S, PanelY + PanelH - 38.0f * S, PanelW - 44.0f * S, FeedbackColor, GEngine->GetSmallFont(), 0.80f * S, 14.0f * S, 2);
 	}
+}
+
+bool ABHHUD::GetQuestionRegionAtCursor(const FVector2D& ScreenPos, FBHQuestionHitRegion& OutRegion) const
+{
+	// Reverse order so the most-recently-drawn (visually topmost) region wins any overlap.
+	for (int32 Index = QuestionHitRegions.Num() - 1; Index >= 0; --Index)
+	{
+		if (QuestionHitRegions[Index].Contains(ScreenPos))
+		{
+			OutRegion = QuestionHitRegions[Index];
+			return true;
+		}
+	}
+	return false;
 }
 
 UTexture2D* ABHHUD::ResolveDiagramTexture(const FString& ObjectPath)
@@ -2612,11 +3131,23 @@ UTexture2D* ABHHUD::ResolveDiagramTexture(const FString& ObjectPath)
 			return Cached->Get();
 		}
 	}
-	// Cook-safe: load the imported .uasset by object path. Missing/uncooked assets return
-	// null and the caller falls back to the procedural diagram. Cache the result either
-	// way so a missing asset is not re-searched every frame.
+	// A null result can't live in the weak-pointer cache (it would read as "not cached" and reload
+	// every frame), so remember genuinely-missing paths separately and short-circuit them.
+	if (MissingDiagramTexturePaths.Contains(ObjectPath))
+	{
+		return nullptr;
+	}
+	// Cook-safe: load the imported .uasset by object path. Missing/uncooked assets return null and
+	// the caller falls back to the procedural diagram.
 	UTexture2D* Texture = LoadObject<UTexture2D>(nullptr, *ObjectPath);
-	DiagramTextureCache.Add(ObjectPath, Texture);
+	if (Texture)
+	{
+		DiagramTextureCache.Add(ObjectPath, Texture);
+	}
+	else
+	{
+		MissingDiagramTexturePaths.Add(ObjectPath);
+	}
 	return Texture;
 }
 
@@ -2802,4 +3333,67 @@ void ABHHUD::DrawPhaseBanner(const ABHGameState* GameState, const ABHCharacter* 
 	DrawHudText(Title, PanelX + (PanelW - TitleW) * 0.5f, PanelY + 17.0f * S, WithAlpha(Accent, SmoothAlpha), GEngine->GetSmallFont(), 1.34f * S);
 
 	DrawWrappedHudText(Subtitle, PanelX + 28.0f * S, PanelY + 52.0f * S, PanelW - 56.0f * S, WithAlpha(FLinearColor(0.82f, 0.90f, 0.88f, 1.0f), SmoothAlpha), GEngine->GetSmallFont(), 0.82f * S, 14.0f * S, 1);
+}
+
+void ABHHUD::DrawRoleIntroCard(const ABHPlayerController* BHPC, const ABHGameState* GameState)
+{
+	if (!Canvas || !GEngine || !BHPC || !GameState)
+	{
+		return;
+	}
+	// Only during the live role warmup, and only while the one-shot intro window is active.
+	// Prep-gated so it can never appear during a chase.
+	if (GameState->RoundPhase != EBHRoundPhase::Prep || !BHPC->HasActiveRoleIntro())
+	{
+		return;
+	}
+
+	const float Alpha = BHPC->GetRoleIntroAlpha();
+	if (Alpha <= 0.01f)
+	{
+		return;
+	}
+	const float SmoothAlpha = Alpha * Alpha * (3.0f - 2.0f * Alpha);
+
+	const EBHPlayerRole IntroRole = BHPC->GetRoleIntroRole();
+	const FBHRoleIntroCopy Copy = BHGetRoleIntroCopy(IntroRole, BHPC->IsRoleIntroRevisionMode());
+
+	FLinearColor Accent;
+	switch (IntroRole)
+	{
+	case EBHPlayerRole::Hunter:     Accent = ActivePalette.Bad; break;
+	case EBHPlayerRole::FakeHunter: Accent = FLinearColor(0.95f, 0.76f, 0.36f, 1.0f); break;
+	case EBHPlayerRole::Spectator:  Accent = ActivePalette.TextMuted; break;
+	default:                        Accent = ActivePalette.Good; break;
+	}
+
+	const UFont* Font = GEngine->GetSmallFont();
+	const float S = HudScale;
+	const int32 KeyCount = Copy.Keys.Num();
+	const float PanelW = FMath::Min(FMath::Clamp(Canvas->ClipX * 0.50f, 460.0f, 760.0f) * S, Canvas->ClipX * 0.94f);
+	const float PanelH = (150.0f + KeyCount * 18.0f) * S;
+	const float PanelX = (Canvas->ClipX - PanelW) * 0.5f;
+	// Sits just below the centred phase banner so both read at warmup start without overlap.
+	const float PanelY = Canvas->ClipY * 0.34f - (1.0f - SmoothAlpha) * 16.0f;
+
+	const bool bHighContrastHud = BHPC->IsHighContrastHudEnabled();
+	const FLinearColor Fill = bHighContrastHud ? FLinearColor(0.0f, 0.0f, 0.0f, 0.94f) : FLinearColor(0.014f, 0.016f, 0.020f, 0.90f);
+	const FLinearColor BodyText = bHighContrastHud ? FLinearColor(1.0f, 0.99f, 0.92f, 1.0f) : FLinearColor(0.88f, 0.92f, 0.94f, 1.0f);
+	DrawPanel(PanelX, PanelY, PanelW, PanelH, WithAlpha(Fill, SmoothAlpha), WithAlpha(Accent, SmoothAlpha));
+
+	float TitleW = 0.0f;
+	float TitleH = 0.0f;
+	Canvas->TextSize(Font, Copy.Title, TitleW, TitleH, 1.12f * S, 1.12f * S);
+	DrawHudText(Copy.Title, PanelX + (PanelW - TitleW) * 0.5f, PanelY + 14.0f * S, WithAlpha(Accent, SmoothAlpha), Font, 1.12f * S);
+
+	DrawWrappedHudText(Copy.Goal, PanelX + 26.0f * S, PanelY + 44.0f * S, PanelW - 52.0f * S, WithAlpha(BodyText, SmoothAlpha), Font, 0.92f * S, 16.0f * S, 2);
+
+	float Cursor = PanelY + 80.0f * S;
+	for (const FString& Key : Copy.Keys)
+	{
+		DrawHudText(FString::Printf(TEXT("- %s"), *Key), PanelX + 30.0f * S, Cursor, WithAlpha(BodyText, SmoothAlpha), Font, 0.80f * S);
+		Cursor += 18.0f * S;
+	}
+
+	DrawWrappedHudText(Copy.Tip, PanelX + 26.0f * S, Cursor + 6.0f * S, PanelW - 52.0f * S, WithAlpha(Accent, SmoothAlpha), Font, 0.82f * S, 14.0f * S, 2);
 }

@@ -89,6 +89,9 @@ namespace BHHudTheme
 		P.Good           = FLinearColor(0.62f, 1.0f, 0.58f, 1.0f);
 		P.Bad            = FLinearColor(1.0f, 0.30f, 0.20f, 1.0f);
 		P.KeyBoxLit      = FLinearColor(0.94f, 1.0f, 0.98f, 1.0f);
+		// Brighten the dim/disabled key-cap so "unavailable" states stay legible in high-contrast mode
+		// (Standard leaves this at the historical dim slate).
+		P.KeyBoxDim      = FLinearColor(0.74f, 0.86f, 0.86f, 0.96f);
 		return P;
 	}
 

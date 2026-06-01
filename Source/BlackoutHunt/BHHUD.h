@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "BHTypes.h"
 #include "BHHudTheme.h"
+#include "BHQuestionInteraction.h"
 #include "GameFramework/HUD.h"
 #include "BHHUD.generated.h"
 
@@ -19,6 +20,11 @@ public:
 
 	virtual void DrawHUD() override;
 
+	// Hit-test the most recently drawn question panel against a viewport-pixel cursor position
+	// (matches APlayerController::GetMousePosition). Called by the local character's mouse handlers;
+	// returns false when nothing interactive is under the cursor.
+	bool GetQuestionRegionAtCursor(const FVector2D& ScreenPos, FBHQuestionHitRegion& OutRegion) const;
+
 protected:
 	void DrawPanel(float X, float Y, float W, float H, const FLinearColor& FillColor, const FLinearColor& AccentColor);
 	void DrawCornerBrackets(float X, float Y, float W, float H, const FLinearColor& Color, float Length = 14.0f, float Thickness = 1.0f);
@@ -32,6 +38,7 @@ protected:
 	void DrawRawMeter(const FString& Label, float Value, float X, float Y, float W, const FLinearColor& FillColor, bool bHighIsBad = false);
 	void DrawVisibleHunterArrow(const ABHCharacter* Character, const FVector& HunterLocation, float DistanceCm, float CueStrength);
 	void DrawCCTVRevealMarker(const ABHCharacter* Character, const class ABHPlayerController* PlayerController);
+	void DrawNodeMarker(const ABHCharacter* Character, const class ABHPlayerController* PlayerController);
 	void DrawCrosshair(float DangerAlpha = 0.0f);
 	void DrawHorrorOverlay(const ABHCharacter* Character, const class ABHGameState* GameState);
 	void DrawHeatSensor(const ABHCharacter* Character, const class ABHGameState* GameState, float X, float Y);
@@ -40,6 +47,9 @@ protected:
 	void DrawNearbyNameTags(const ABHCharacter* Character);
 	void DrawEquipmentStrip(const class ABHGameState* GameState);
 	void DrawSpectatorSupportPanel(const class ABHGameState* GameState, const class ABHPlayerState* PlayerState);
+	// Lobby-only roster: lists every connected player and bot with ready state, so a small group can
+	// see who is in and how many bots are filling the empty slots before the host starts the round.
+	void DrawLobbyRoster(const class ABHGameState* GameState, const class ABHPlayerState* LocalPlayerState);
 	void DrawQuestionPanel(const class ABHObjectiveStation* Station);
 	void DrawRevisionDiagram(const class ABHObjectiveStation* Station, float X, float Y, float W, float H, float S = 1.0f);
 	// Dev/QA overlay: when the bh.Diagrams.PreviewType console var is set, draws a sample of that
@@ -50,6 +60,8 @@ protected:
 	// back to the procedural diagram.
 	class UTexture2D* ResolveDiagramTexture(const FString& ObjectPath);
 	void DrawPhaseBanner(const class ABHGameState* GameState, const ABHCharacter* Character);
+	// One-shot role onboarding card shown at warmup start (driven by ClientShowRoleIntro).
+	void DrawRoleIntroCard(const class ABHPlayerController* BHPC, const class ABHGameState* GameState);
 
 	// Refresh cached per-frame UI preferences (palette, scale, opacity, element toggles)
 	// from the owning player controller. Called once at the top of DrawHUD().
@@ -60,8 +72,16 @@ protected:
 	FLinearColor MainText() const;
 	FLinearColor MutedText() const;
 
+	// Clickable regions of the question panel in viewport pixels, rebuilt every frame inside
+	// DrawQuestionPanel so the geometry always matches what is drawn at the current HudScale.
+	TArray<FBHQuestionHitRegion> QuestionHitRegions;
+
 	// Object-path -> loaded diagram texture, populated lazily by ResolveDiagramTexture.
 	TMap<FString, TWeakObjectPtr<class UTexture2D>> DiagramTextureCache;
+
+	// Object paths known to be absent/uncooked. A TWeakObjectPtr can't cache a null, so without this
+	// a missing teacher-authored diagram path would trigger a synchronous LoadObject every HUD frame.
+	TSet<FString> MissingDiagramTexturePaths;
 
 	// Per-frame cached UI preferences (refreshed in RefreshHudPreferences).
 	BHHudTheme::FBHHudPalette ActivePalette = BHHudTheme::MakeStandardPalette();
@@ -81,6 +101,14 @@ protected:
 	EBHRoundPhase LastSeenPhase;
 	bool bHasSeenPhase;
 	float PhaseBannerEndTime;
+	// One-shot teaching flags (SHARED-D): each fires once per session, then the HUD defers to its
+	// steady-state readouts. Pure client-side; never touch gameplay state, stats, or reports.
+	bool bTaughtFear;
+	bool bTaughtStamina;
+	bool bTaughtTeacherNear;
+	bool bTaughtQuestionFormat;
+	bool bTaughtGuideAccess;
+	bool bTaughtSpectator;
 	int32 LastSeenPresencePulse;
 	float PresencePulseEndTime;
 	bool bHasVisibleHunterCue;
