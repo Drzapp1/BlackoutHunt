@@ -109,32 +109,67 @@ void ABHStaticBlockField::RebuildComponents()
 		return;
 	}
 
+	// Batch blocks into one InstancedStaticMeshComponent per distinct render/collision signature rather
+	// than one component per block. A full level can be ~1800 blocks; a component-per-block defeats
+	// instancing and registers ~1800 components on every client (huge draw-call/registration cost and a
+	// long synchronous hitch when the replicated spec array arrives). Blocks sharing material/collision/
+	// hidden state batch into a single component; the per-tint materials key on tint as well so distinct
+	// dynamic materials are not forced to share one component.
+	TMap<FString, UInstancedStaticMeshComponent*> ComponentsByKey;
+
 	for (int32 Index = 0; Index < StaticBlockSpecs.Num(); ++Index)
 	{
 		const FBHStaticBlockSpec& Spec = StaticBlockSpecs[Index];
-		const FName ComponentName = MakeUniqueObjectName(this, UInstancedStaticMeshComponent::StaticClass(), TEXT("StaticBlock"));
-		UInstancedStaticMeshComponent* Component = NewObject<UInstancedStaticMeshComponent>(this, ComponentName);
-		if (!Component)
+
+		// Reject degenerate transforms: a NaN (from corrupt/hostile replication or an upstream math
+		// error) or a fully-zero scale yields invisible-but-colliding geometry and trips render/physics
+		// ensures. Skip rather than feed a bad transform to AddInstance.
+		if (Spec.Location.ContainsNaN() || Spec.Scale.ContainsNaN() || Spec.Rotation.ContainsNaN()
+			|| Spec.Scale.GetAbsMax() <= KINDA_SMALL_NUMBER)
 		{
 			continue;
 		}
 
-		Component->SetStaticMesh(BlockMesh);
-		Component->SetupAttachment(GetRootComponent());
-		Component->SetMobility(EComponentMobility::Static);
-		Component->SetCollisionEnabled(Spec.bCollides ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
-		Component->SetCollisionProfileName(Spec.bCollides ? TEXT("BlockAll") : TEXT("NoCollision"));
-		Component->SetCanEverAffectNavigation(Spec.bCollides);
-		Component->SetCastShadow(Spec.Material != EBHBlockMaterial::FogSheet);
-		Component->SetReceivesDecals(Spec.Material != EBHBlockMaterial::FogSheet);
-		Component->SetTranslucentSortPriority(Spec.Material == EBHBlockMaterial::FogSheet ? 10 : 0);
-		Component->SetHiddenInGame(Spec.bHidden);
-		Component->SetVisibility(!Spec.bHidden, true);
-		ApplyMaterial(Component, Spec);
-		AddInstanceComponent(Component);
-		Component->RegisterComponent();
+		const bool bPerTintMaterial = Spec.Material == EBHBlockMaterial::FogSheet || Spec.Material == EBHBlockMaterial::Tinted;
+		FString Key = FString::Printf(TEXT("M%d_C%d_H%d"), static_cast<int32>(Spec.Material), Spec.bCollides ? 1 : 0, Spec.bHidden ? 1 : 0);
+		if (bPerTintMaterial)
+		{
+			Key += FString::Printf(TEXT("_T%d_%d_%d_%d"),
+				FMath::RoundToInt(Spec.Tint.R * 255.0f),
+				FMath::RoundToInt(Spec.Tint.G * 255.0f),
+				FMath::RoundToInt(Spec.Tint.B * 255.0f),
+				FMath::RoundToInt(Spec.Tint.A * 255.0f));
+		}
+
+		UInstancedStaticMeshComponent* Component = ComponentsByKey.FindRef(Key);
+		if (!Component)
+		{
+			const FName ComponentName = MakeUniqueObjectName(this, UInstancedStaticMeshComponent::StaticClass(), TEXT("StaticBlock"));
+			Component = NewObject<UInstancedStaticMeshComponent>(this, ComponentName);
+			if (!Component)
+			{
+				continue;
+			}
+
+			Component->SetStaticMesh(BlockMesh);
+			Component->SetupAttachment(GetRootComponent());
+			Component->SetMobility(EComponentMobility::Static);
+			Component->SetCollisionEnabled(Spec.bCollides ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
+			Component->SetCollisionProfileName(Spec.bCollides ? TEXT("BlockAll") : TEXT("NoCollision"));
+			Component->SetCanEverAffectNavigation(Spec.bCollides);
+			Component->SetCastShadow(Spec.Material != EBHBlockMaterial::FogSheet);
+			Component->SetReceivesDecals(Spec.Material != EBHBlockMaterial::FogSheet);
+			Component->SetTranslucentSortPriority(Spec.Material == EBHBlockMaterial::FogSheet ? 10 : 0);
+			Component->SetHiddenInGame(Spec.bHidden);
+			Component->SetVisibility(!Spec.bHidden, true);
+			ApplyMaterial(Component, Spec);
+			AddInstanceComponent(Component);
+			Component->RegisterComponent();
+			ComponentsByKey.Add(Key, Component);
+			GeneratedComponents.Add(Component);
+		}
+
 		Component->AddInstance(FTransform(Spec.Rotation, Spec.Location, Spec.Scale), true);
-		GeneratedComponents.Add(Component);
 	}
 }
 
@@ -164,6 +199,18 @@ UMaterialInterface* ABHStaticBlockField::ResolveBaseMaterial(EBHBlockMaterial Ma
 		break;
 	case EBHBlockMaterial::Plaster:
 		MaterialPath = TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_Plaster.M_BH_Plaster");
+		break;
+	case EBHBlockMaterial::ConcreteWA:
+		MaterialPath = TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_ConcreteWA.M_BH_ConcreteWA");
+		break;
+	case EBHBlockMaterial::ConcreteWACool:
+		MaterialPath = TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_ConcreteWA_Cool.M_BH_ConcreteWA_Cool");
+		break;
+	case EBHBlockMaterial::PlasterWA:
+		MaterialPath = TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_PlasterWA.M_BH_PlasterWA");
+		break;
+	case EBHBlockMaterial::BluePanel:
+		MaterialPath = TEXT("/Game/SmartBasicInterfaces/Materials/MI_ScreenPanel1.MI_ScreenPanel1");
 		break;
 	case EBHBlockMaterial::RustedMetal:
 		MaterialPath = TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_RustedMetal.M_BH_RustedMetal");

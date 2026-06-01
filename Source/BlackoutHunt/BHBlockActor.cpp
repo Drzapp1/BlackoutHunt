@@ -27,6 +27,18 @@ UMaterialInterface* LoadBlockMaterial(EBHBlockMaterial Material)
 	case EBHBlockMaterial::Plaster:
 		Path = TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_Plaster.M_BH_Plaster");
 		break;
+	case EBHBlockMaterial::ConcreteWA:
+		Path = TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_ConcreteWA.M_BH_ConcreteWA");
+		break;
+	case EBHBlockMaterial::ConcreteWACool:
+		Path = TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_ConcreteWA_Cool.M_BH_ConcreteWA_Cool");
+		break;
+	case EBHBlockMaterial::PlasterWA:
+		Path = TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_PlasterWA.M_BH_PlasterWA");
+		break;
+	case EBHBlockMaterial::BluePanel:
+		Path = TEXT("/Game/SmartBasicInterfaces/Materials/MI_ScreenPanel1.MI_ScreenPanel1");
+		break;
 	case EBHBlockMaterial::RustedMetal:
 		Path = TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_RustedMetal.M_BH_RustedMetal");
 		break;
@@ -53,6 +65,24 @@ UMaterialInterface* LoadBlockMaterial(EBHBlockMaterial Material)
 	if (!LoadedMaterial && Material == EBHBlockMaterial::FogSheet)
 	{
 		LoadedMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/EngineVolumetrics/Fogsheet/Materials/M_EV_FogSheet_2sided_Master_Addi.M_EV_FogSheet_2sided_Master_Addi"));
+	}
+	// World-aligned variants: do NOT fall back to the plain M_BH_Concrete/M_BH_Plaster (the plain concrete is
+	// the bright-red one). If the WA asset fails to load, leave the result null so ApplyVisualStyle paints the
+	// block with its (grey) VisualTint instead of a red surface. One-time diagnostic so we can see, in the game
+	// log, whether the WA material actually resolves at runtime or silently isn't loading.
+	if (Material == EBHBlockMaterial::ConcreteWA || Material == EBHBlockMaterial::PlasterWA || Material == EBHBlockMaterial::ConcreteWACool)
+	{
+		const TCHAR* WAName = Material == EBHBlockMaterial::ConcreteWA ? TEXT("ConcreteWA")
+			: (Material == EBHBlockMaterial::PlasterWA ? TEXT("PlasterWA") : TEXT("ConcreteWACool"));
+		UE_LOG(LogTemp, Warning, TEXT("[BHBlock] WA material %s resolved to: %s"),
+			WAName,
+			LoadedMaterial ? *GetNameSafe(LoadedMaterial) : TEXT("NULL -> grey VisualTint fallback"));
+	}
+	// Blue panel: prefer a solid blue if the sci-fi screen panel is missing; otherwise leave null so
+	// ApplyVisualStyle paints the block with its (blue) VisualTint as a last resort.
+	if (!LoadedMaterial && Material == EBHBlockMaterial::BluePanel)
+	{
+		LoadedMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/BFHorror/DemoAssets/Materials/MI_Solid_Blue.MI_Solid_Blue"));
 	}
 	MaterialCache.Add(Material, LoadedMaterial);
 	return LoadedMaterial;
@@ -90,6 +120,19 @@ ABHBlockActor::ABHBlockActor()
 	}
 }
 
+void ABHBlockActor::BeginPlay()
+{
+	Super::BeginPlay();
+
+	// Map-placed (authored) instances are never configured through the spawn-time setters, and the authored
+	// export strips dynamic materials to their parent before save, so re-apply visuals + collision/hidden
+	// state from the serialized properties on every authority. Without this a listen-server host (the
+	// teacher) renders authored dynamic blocks as flat, untinted base material because it never receives an
+	// OnRep for its own placed actors. Idempotent for the procedural path (setters already ran).
+	ApplyVisualStyle();
+	ApplyBlockState();
+}
+
 void ABHBlockActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
@@ -113,12 +156,22 @@ void ABHBlockActor::SetBlockMaterial(EBHBlockMaterial NewMaterial)
 
 void ABHBlockActor::SetBlockCollisionEnabled(bool bEnabled)
 {
+	if (!HasAuthority())
+	{
+		return;
+	}
+
 	bBlockCollisionEnabled = bEnabled;
 	ApplyBlockState();
 }
 
 void ABHBlockActor::SetBlockHiddenInGame(bool bNewHidden)
 {
+	if (!HasAuthority())
+	{
+		return;
+	}
+
 	bBlockHiddenInGame = bNewHidden;
 	ApplyBlockState();
 }

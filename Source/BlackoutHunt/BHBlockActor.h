@@ -17,7 +17,20 @@ enum class EBHBlockMaterial : uint8
 	PaintedMetal,
 	Tiles,
 	WarningSign,
-	FogSheet
+	FogSheet,
+	// World-aligned (triplanar) variants of Concrete/Plaster. Tiling is in world space, so the texture stays
+	// consistent no matter how the cube is scaled or rotated -> large blockout walls / floor / ceiling slabs and
+	// angled partitions read as proper concrete/plaster instead of stretched smears. Used by the backrooms maze.
+	// Appended at the end so existing baked .umaps keep their serialized enum byte values.
+	ConcreteWA,
+	PlasterWA,
+	// Glowing blue sci-fi panel graphic (orientation accents in the dark hall). Falls back to a solid blue
+	// tint if the screen material is missing.
+	BluePanel,
+	// Cool gray-teal world-aligned concrete: same triplanar tiling as ConcreteWA but a cold industrial tint
+	// instead of the backrooms dark-red. Used for the Substation so its concrete reads textured (not stretched)
+	// while keeping the substation's cold palette. Appended last to preserve baked .umap enum byte values.
+	ConcreteWACool
 };
 
 UCLASS()
@@ -39,6 +52,8 @@ public:
 	EBHBlockMaterial GetBlockMaterial() const { return BlockMaterial; }
 
 protected:
+	virtual void BeginPlay() override;
+
 	UFUNCTION()
 	void OnRep_VisualTint();
 
