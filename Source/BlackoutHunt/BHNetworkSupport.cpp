@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #include "BHNetworkSupport.h"
 
 #include "HAL/FileManager.h"
@@ -324,6 +328,9 @@ namespace
 
 		Address.RemoveFromStart(TEXT("http://"), ESearchCase::IgnoreCase);
 		Address.RemoveFromStart(TEXT("https://"), ESearchCase::IgnoreCase);
+		// playit.gg / tunnel UIs sometimes present the endpoint as udp://host:port. Strip the scheme so a
+		// pasted tunnel address normalizes to host:port instead of being rejected by the "://" guard below.
+		Address.RemoveFromStart(TEXT("udp://"), ESearchCase::IgnoreCase);
 
 		if (Address.Contains(TEXT("://")))
 		{

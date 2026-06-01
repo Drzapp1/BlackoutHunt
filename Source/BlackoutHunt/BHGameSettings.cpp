@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #include "BHGameSettings.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimSequence.h"
@@ -169,6 +173,20 @@ FBHMovementRoleTuning BHMakeMovementRoleTuning(
 }
 }
 
+int32 UBHGameSettings::GetClampedClassMaxPlayers()
+{
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	return Settings ? FMath::Clamp(Settings->MaxPlayers, 2, 64) : 32;
+}
+
+void UBHGameSettings::AppendMaxPlayersOption(FString& Options)
+{
+	if (!Options.Contains(TEXT("MaxPlayers=")))
+	{
+		Options += FString::Printf(TEXT("?MaxPlayers=%d"), GetClampedClassMaxPlayers());
+	}
+}
+
 UBHGameSettings::UBHGameSettings()
 {
 	MinPlayers = 2;
@@ -192,6 +210,10 @@ UBHGameSettings::UBHGameSettings()
 	CaptureDistance = 220.0f;
 
 	FlashlightDrainPerSecond = 0.17f;
+	BlackoutFlashlightDrainMultiplier = 3.0f;
+	BlackoutFlashlightStrengthScale = 0.15f;
+	BlackoutFlashlightWeakenSeconds = 6.0f;
+	BlackoutFlashlightEffectRadius = 2600.0f;
 	ScanCooldownSeconds = 25.0f;
 	DecoyCooldownSeconds = 10.0f;
 	HunterSprintDrainMultiplierMax = 0.85f;

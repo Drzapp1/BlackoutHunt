@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #include "BHAmbientEmitter.h"
 #include "BHSynthComponent.h"
 #include "Net/UnrealNetwork.h"
@@ -8,6 +12,10 @@ ABHAmbientEmitter::ABHAmbientEmitter()
 	SetReplicateMovement(false);
 	SetNetUpdateFrequency(1.0f);
 	SetMinNetUpdateFrequency(0.25f);
+	// These short-lived cosmetic emitters are spawned frequently (sprint/answer/scare beats). The synth audio
+	// is silent past ~1800 units, so culling the replicated actor at ~20m means distant clients don't get an
+	// actor channel for a sound they can't hear — cutting needless create/destroy churn at 10 players.
+	SetNetCullDistanceSquared(2000.0f * 2000.0f);
 
 	Synth = CreateDefaultSubobject<UBHSynthComponent>(TEXT("Synth"));
 	SetRootComponent(Synth);

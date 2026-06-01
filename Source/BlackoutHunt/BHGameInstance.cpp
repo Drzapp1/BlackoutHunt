@@ -55,7 +55,11 @@ namespace
 		// falls back to the GameInstance's persisted stage index, which only resets when a train run
 		// reaches its final recap — so abandoning a run mid-way and hosting again would otherwise
 		// inherit the stale stage (wrong durations / inflated targets / "final" framing).
-		return FString::Printf(TEXT("listen?BHLevel=%s?BHFogPreset=Heavy?BHStageIndex=0"), *NormalizeRuntimeLevelName(LevelName));
+		FString Options = FString::Printf(TEXT("listen?BHLevel=%s?BHFogPreset=Heavy?BHStageIndex=0"), *NormalizeRuntimeLevelName(LevelName));
+		// Match the engine AGameSession cap (default 16) to the configured class size; without this the
+		// EOS-hosted classroom would silently reject students past 16 at login. See BHPlayerController.
+		UBHGameSettings::AppendMaxPlayersOption(Options);
+		return Options;
 	}
 
 	void ShowTravelLoadingScreen(UWorld* World, const FString& Title, const FString& Detail)
@@ -82,12 +86,20 @@ namespace
 		return PlayerState->GetPlayerName();
 	}
 
-	// Match a stored travel entry to a player. When BOTH sides carry a real stable id (the online /
-	// unique-net-id case) they must match exactly — a coinciding display name must NOT bind a player
-	// to a different account's saved progress. The display-name fallback is allowed only when a stable
-	// id is unavailable on at least one side (the OSS-Null/LAN case), and never matches a blank name.
-	bool TravelEntryMatches(const FBHTravelPlayerProgress& Progress, const FString& StableId, const FString& PlayerName)
+	// Match a stored travel entry to a player. Priority order:
+	//   1. The unguessable server-issued reconnect token. It is carried across every non-seamless
+	//      ServerTravel by UBHLocalPlayer::GetGameLoginOptions and is unique per client, so it is immune
+	//      to duplicate display names (two students both named "Sam" no longer share one entry).
+	//   2. A real stable id (online / unique-net-id case) — must match exactly so a coinciding display
+	//      name cannot bind a player to a different account's saved progress.
+	//   3. Display name — only when neither a token nor a stable id is available on both sides (the
+	//      OSS-Null/LAN fallback), and never matches a blank name.
+	bool TravelEntryMatches(const FBHTravelPlayerProgress& Progress, const FString& ReconnectToken, const FString& StableId, const FString& PlayerName)
 	{
+		if (!ReconnectToken.IsEmpty() && !Progress.ReconnectToken.IsEmpty())
+		{
+			return Progress.ReconnectToken == ReconnectToken;
+		}
 		if (!StableId.IsEmpty() && !Progress.StableId.IsEmpty())
 		{
 			return Progress.StableId == StableId;
@@ -959,14 +971,15 @@ void UBHGameInstance::PersistTravelPlayerState(const ABHPlayerState* PlayerState
 
 	const FString StableId = TravelStableIdForPlayerState(PlayerState);
 	const FString PlayerName = PlayerState->GetPlayerName();
-	if (StableId.IsEmpty() && PlayerName.IsEmpty())
+	const FString ReconnectToken = PlayerState->ReconnectToken;
+	if (StableId.IsEmpty() && PlayerName.IsEmpty() && ReconnectToken.IsEmpty())
 	{
 		return;
 	}
 
 	FBHTravelPlayerProgress* Existing = TravelPlayerProgress.FindByPredicate([&](const FBHTravelPlayerProgress& Progress)
 	{
-		return TravelEntryMatches(Progress, StableId, PlayerName);
+		return TravelEntryMatches(Progress, ReconnectToken, StableId, PlayerName);
 	});
 
 	FBHTravelPlayerProgress& Progress = Existing ? *Existing : TravelPlayerProgress.AddDefaulted_GetRef();
@@ -995,9 +1008,10 @@ bool UBHGameInstance::RestoreTravelPlayerState(ABHPlayerState* PlayerState, bool
 
 	const FString StableId = TravelStableIdForPlayerState(PlayerState);
 	const FString PlayerName = PlayerState->GetPlayerName();
+	const FString ReconnectToken = PlayerState->ReconnectToken;
 	const FBHTravelPlayerProgress* Existing = TravelPlayerProgress.FindByPredicate([&](const FBHTravelPlayerProgress& Progress)
 	{
-		return TravelEntryMatches(Progress, StableId, PlayerName);
+		return TravelEntryMatches(Progress, ReconnectToken, StableId, PlayerName);
 	});
 
 	if (!Existing)
@@ -1044,11 +1058,12 @@ void UBHGameInstance::MarkTravelPlayerLeftForReconnect(const ABHPlayerState* Pla
 	// rejoin within the grace window can be recognized and restored.
 	PersistTravelPlayerState(PlayerState);
 
+	const FString ReconnectToken = PlayerState->ReconnectToken;
 	const FString StableId = TravelStableIdForPlayerState(PlayerState);
 	const FString PlayerName = PlayerState->GetPlayerName();
 	FBHTravelPlayerProgress* Existing = TravelPlayerProgress.FindByPredicate([&](const FBHTravelPlayerProgress& Progress)
 	{
-		return TravelEntryMatches(Progress, StableId, PlayerName);
+		return TravelEntryMatches(Progress, ReconnectToken, StableId, PlayerName);
 	});
 
 	if (Existing)
@@ -1107,18 +1122,15 @@ void UBHGameInstance::ClearReconnectMark(const ABHPlayerState* PlayerState)
 		return;
 	}
 
-	// Match the way TryGetReconnectProgress did (by the secret token) so the just-consumed reconnect entry
-	// is the one cleared. Fall back to id/name for any legacy entry that predates token issuance.
-	const FString Token = PlayerState->ReconnectToken;
+	// Clear the just-consumed reconnect entry. TravelEntryMatches keys off the secret token first (so the
+	// correct entry is cleared even when two students share a display name), falling back to id/name for any
+	// legacy entry that predates token issuance.
+	const FString ReconnectToken = PlayerState->ReconnectToken;
 	const FString StableId = TravelStableIdForPlayerState(PlayerState);
 	const FString PlayerName = PlayerState->GetPlayerName();
 	FBHTravelPlayerProgress* Existing = TravelPlayerProgress.FindByPredicate([&](const FBHTravelPlayerProgress& Progress)
 	{
-		if (!Token.IsEmpty() && !Progress.ReconnectToken.IsEmpty())
-		{
-			return Progress.ReconnectToken == Token;
-		}
-		return TravelEntryMatches(Progress, StableId, PlayerName);
+		return TravelEntryMatches(Progress, ReconnectToken, StableId, PlayerName);
 	});
 
 	if (Existing)

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #include "BHSecurityMonitor.h"
 #include "BHGameState.h"
 #include "BHCharacter.h"
@@ -349,6 +353,30 @@ void ABHSecurityMonitor::RefreshLiveFeed()
 	if (GetNetMode() == NM_DedicatedServer || !bLiveFeedEnabled || !Screen)
 	{
 		ReleaseLiveFeedCamera();
+		return;
+	}
+
+	// Only run the live feed (a full per-frame SceneCapture on the bound camera) when the LOCAL viewer is
+	// actually near this monitor. Without this gate every monitor with a camera in range renders a scene
+	// capture every frame on every client forever, which tanks the listen-server host with 10 players. The
+	// 2s refresh cadence re-checks proximity, so the feed activates within ~2s of a student approaching and
+	// releases ~2s after they leave.
+	const AActor* LocalViewer = nullptr;
+	if (const APlayerController* LocalPC = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr)
+	{
+		if (LocalPC->IsLocalController())
+		{
+			LocalViewer = LocalPC->GetPawn();
+		}
+	}
+	constexpr float LiveFeedActivationDistSq = 1500.0f * 1500.0f;
+	const float ViewerDistSq = LocalViewer
+		? FVector::DistSquared(LocalViewer->GetActorLocation(), GetActorLocation())
+		: TNumericLimits<float>::Max();
+	if (ViewerDistSq > LiveFeedActivationDistSq)
+	{
+		ReleaseLiveFeedCamera();
+		ApplyStaticScreenVisual();
 		return;
 	}
 

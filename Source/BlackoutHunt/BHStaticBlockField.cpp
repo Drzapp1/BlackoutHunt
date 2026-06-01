@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #include "BHStaticBlockField.h"
 
 #include "Components/InstancedStaticMeshComponent.h"
@@ -18,6 +22,10 @@ ABHStaticBlockField::ABHStaticBlockField()
 
 	USceneComponent* Root = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
 	SetRootComponent(Root);
+	// The generated instanced-mesh children are Static; a Static child attached to a non-Static parent
+	// trips the engine "cannot attach ... is static. Aborting" error on host and every client. Make the
+	// root Static so the attachment is valid.
+	Root->SetMobility(EComponentMobility::Static);
 
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> CubeMesh(TEXT("/Engine/BasicShapes/Cube.Cube"));
 	if (CubeMesh.Succeeded())

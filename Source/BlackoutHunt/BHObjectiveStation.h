@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #pragma once
 
 #include "CoreMinimal.h"
@@ -301,7 +305,10 @@ protected:
 	// queue during adaptive planning, consumed by the next ConfigureQuestion.
 	FString PendingReviewQuestionId;
 	float LastNoiseTime;
-	float LastAnswerTime;
+	// Per-player answer throttle keyed by PlayerId. A single shared timestamp would let one
+	// student's press eat every other student's press inside the 0.45s window, silently dropping
+	// votes when a whole class answers together. Mirrors BHTrainBonusQuestionTerminal.
+	TMap<int32, float> LastAnswerTimeByPlayerId;
 	// Server-only anti-gaming state. After a wrong answer the station holds answer submission
 	// until this server time so the student reads the correction instead of brute-forcing the
 	// four choices; the hold escalates with consecutive wrong answers. Neither pins the player

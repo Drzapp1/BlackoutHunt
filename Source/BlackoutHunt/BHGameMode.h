@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #pragma once
 
 #include "CoreMinimal.h"
@@ -16,6 +20,7 @@ class ABHDoor;
 class ABHExitGate;
 class ABHEscapeStationManager;
 class ABHFlickerLight;
+class ABHGameState;
 class ABHObjectiveStation;
 class ABHPlayerController;
 class ABHPlayerState;
@@ -148,6 +153,14 @@ public:
 	// Called by ABHTutorialDirector when the student reaches the exit: ServerTravel-reload the Tutorial map
 	// into the next phase (Survivor -> Teacher -> Monitor), or return to the main menu after Monitor.
 	void AdvanceTutorialPhase();
+	// Tutorial atmosphere gate. The director flips this ON only for the scripted Survivor-phase Teacher chase
+	// (Encounter/Escape) so ambient dread (whispers, dread audio, light flicker/cuts) plays for that climax but is
+	// fully suppressed during the calm teaching steps. IsTutorialHorrorSuppressed() is the single predicate the
+	// presence/atmosphere chokepoints read; it is false (never suppresses) outside tutorial mode, so live matches
+	// are unaffected. The random monster-charge jumpscare is gated separately on bTutorialMode alone, so it never
+	// fires in ANY tutorial state - even the chase.
+	void SetTutorialHorrorAllowed(bool bAllowed) { bTutorialHorrorAllowed = bAllowed; }
+	bool IsTutorialHorrorSuppressed() const { return bTutorialMode && !bTutorialHorrorAllowed; }
 	void SetBotCount(ABHPlayerController* RequestingController, int32 NewBotCount);
 	void SetBotDifficulty(ABHPlayerController* RequestingController, EBHBotDifficulty NewDifficulty);
 	// Top up the bot roster so humans + bots fill every slot (MaxPlayers). Bots still yield
@@ -296,6 +309,10 @@ protected:
 	void PrepareRoundDirector();
 	void StartDirectorTimer();
 	void TickDirector();
+	// Periodically (on a jittered cooldown) hands a single-use decoy to a small random subset of alive human
+	// survivors who aren't already holding one, so decoys stay scarce and unpredictable instead of being a
+	// tap-spam tool every player carries. Called from TickDirector during the Hunt.
+	void MaybeHandOutDecoys();
 	void TriggerScareEvent();
 	bool TriggerRevisionThemedAmbientScare(ABHCharacter* Target);
 	// Occasional dread builder: a flicker + faint whisper/footstep near the target that resolves to
@@ -490,8 +507,15 @@ protected:
 	TArray<TObjectPtr<ABHEscapeStationManager>> EscapeStationManagers;
 	UPROPERTY(Transient)
 	TObjectPtr<ABHTrainIntermissionManager> TrainIntermissionManager;
+	// The active block-field shard that AddStaticBlock currently appends to. Once it reaches the per-shard
+	// spec cap a new shard is spawned (see EnsureStaticBlockField). StaticBlockFields holds every shard for
+	// reset/finalize. Sharding keeps each actor's replicated spec array well under the engine's ~64KB single
+	// bunch limit, so a dense procedural level (e.g. the train intermission) replicates to all clients instead
+	// of erroring out and leaving everyone in empty geometry.
 	UPROPERTY(Transient)
 	TObjectPtr<ABHStaticBlockField> StaticBlockField;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<ABHStaticBlockField>> StaticBlockFields;
 	UPROPERTY(Transient)
 	TObjectPtr<UBHAtmosphereDirector> AtmosphereDirector;
 	FVector HunterSpawn;
@@ -522,6 +546,10 @@ protected:
 	// The solo guided tutorial rides on the practice sandbox but additionally hands beat ownership to the
 	// map-baked ABHTutorialDirector, which points a single marker at the one next object the lesson needs.
 	bool bTutorialMode;
+	// Set true by ABHTutorialDirector ONLY during the scripted Survivor-phase Teacher chase so ambient dread runs
+	// for that climax; false (the default) during every calm teaching step and every other phase. See
+	// IsTutorialHorrorSuppressed(). Reset to its default on each phase ServerTravel (fresh game mode instance).
+	bool bTutorialHorrorAllowed = false;
 	// Which tutorial the director runs (Survivor -> Teacher -> Monitor). Parsed from ?BHTutorialPhase=.
 	EBHTutorialPhase RuntimeTutorialPhase = EBHTutorialPhase::Survivor;
 	// Whether to chain to the next tutorial on reaching the exit (full course) or return to the menu (single
@@ -550,6 +578,8 @@ protected:
 	FName LastJumpscareVariantId;
 	EBHJumpscareApproach LastJumpscareApproach = EBHJumpscareApproach::HeadOn;
 	float LastColdCallTime;
+	// Cooldown clock for the random single-use decoy hand-out (see MaybeHandOutDecoys).
+	float LastDecoyHandoutTime;
 	float LastPresenceWhisperTime;
 	float LastWhisperJumpscareTime;
 	float LastPresenceSpikeTime;

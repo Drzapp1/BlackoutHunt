@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #include "BHGameMode.h"
 #include "BHAlarmTrap.h"
 #include "BHAtmosphereDirector.h"
@@ -879,7 +883,9 @@ ABHGameMode::ABHGameMode()
 
 	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
 	MinPlayers = FMath::Max(1, Settings->MinPlayers);
-	MaxPlayers = FMath::Max(MinPlayers, Settings->MaxPlayers);
+	// Clamp to the engine-valid connection range so the GameMode's own login cap can never exceed the
+	// AGameSession / EOS caps (both clamped to 64). Keeps all three sources of "max players" consistent.
+	MaxPlayers = FMath::Clamp(FMath::Max(MinPlayers, Settings->MaxPlayers), 2, 64);
 	PrepSeconds = FMath::Max(0, Settings->PrepSeconds);
 	bExtendedFirstWarmup = Settings->bExtendedFirstWarmup;
 	ExtendedPrepSeconds = FMath::Max(0, Settings->ExtendedPrepSeconds);
@@ -922,6 +928,7 @@ ABHGameMode::ABHGameMode()
 	LastDirectorScareTime = -999.0f;
 	LastMonsterChargeTime = -999.0f;
 	LastColdCallTime = -999.0f;
+	LastDecoyHandoutTime = -999.0f;
 	LastPresenceWhisperTime = -999.0f;
 	LastWhisperJumpscareTime = -999.0f;
 	LastPresenceSpikeTime = -999.0f;
@@ -938,6 +945,7 @@ ABHGameMode::ABHGameMode()
 	RuntimeNavBounds = nullptr;
 	TrainIntermissionManager = nullptr;
 	StaticBlockField = nullptr;
+	StaticBlockFields.Reset();
 	AtmosphereDirector = nullptr;
 }
 
@@ -1428,7 +1436,10 @@ void ABHGameMode::NotifyObjectiveStationCompleted(ABHObjectiveStation* Station)
 		RevisionReviewTimeRemaining = 60;
 		UpdateRevisionSummary(FString::Printf(TEXT("Stage review %d/%d: discuss the explanation, exam method, and weakest topic before moving."), NewCompleted, RequiredSideObjectives));
 	}
-	if (bPartyPace || BHGS->RoundModifier == EBHRoundModifier::PanicSurge)
+	// Never fire a scare from answering a station question in the tutorial (a teaching beat). Today this is also
+	// blocked because party-pace/panic are off in the tutorial, but guard it explicitly so a future modifier change
+	// can't leak a scare into the lesson.
+	if ((bPartyPace || BHGS->RoundModifier == EBHRoundModifier::PanicSurge) && !bTutorialMode)
 	{
 		TriggerScareEvent();
 	}
@@ -1450,9 +1461,16 @@ void ABHGameMode::NotifySurvivorCaptured(ABHCharacter* Survivor, ABHCharacter* C
 	if (bPracticeMode || bTestMode)
 	{
 		const FVector CaptureLocation = Survivor->GetActorLocation();
+		// A scripted AI Hunter tagging an AI student (e.g. the Monitor tutorial's Teacher catching the Student)
+		// is just background scene for the human to mislead - don't spike their presence meter or announce a
+		// "capture registered" they didn't make. Human-driven practice captures still get the confirmation below.
+		const bool bAICapture = CapturingHunterPS && CapturingHunterPS->IsABot();
 		RecordPlaytestTelemetryMarker(TEXT("capture"), CaptureLocation, bTestMode ? TEXT("test") : TEXT("practice"), CapturingHunterPS, SurvivorPS);
 		Survivor->MarkCaptured();
-		ApplyPresenceSpike(CaptureLocation, 70.0f, bTestMode ? TEXT("Test capture registered.") : TEXT("Practice capture registered."));
+		if (!bAICapture)
+		{
+			ApplyPresenceSpike(CaptureLocation, 70.0f, bTestMode ? TEXT("Test capture registered.") : TEXT("Practice capture registered."));
+		}
 		if (SurvivorPS)
 		{
 			SurvivorPS->SetLifeState(EBHPlayerLifeState::Alive);
@@ -1467,7 +1485,10 @@ void ABHGameMode::NotifySurvivorCaptured(ABHCharacter* Survivor, ABHCharacter* C
 		{
 			RestartPlayer(SurvivorController);
 		}
-		BroadcastStatus(bTestMode ? TEXT("Test capture registered. The round stays open.") : TEXT("Practice capture registered. The round stays open."), 3.5f);
+		if (!bAICapture)
+		{
+			BroadcastStatus(bTestMode ? TEXT("Test capture registered. The round stays open.") : TEXT("Practice capture registered. The round stays open."), 3.5f);
+		}
 		return;
 	}
 
@@ -1526,7 +1547,10 @@ void ABHGameMode::NotifySurvivorCaptured(ABHCharacter* Survivor, ABHCharacter* C
 	Survivor->MarkCaptured();
 	ReportBotStimulus(EBHBotStimulusType::Capture, CaptureLocation, Survivor, Survivor, TEXT("survivor captured"), 1.6f);
 	ApplyPresenceSpike(CaptureLocation, 92.0f, TEXT("The Teacher found someone."));
-	if (SurvivorPS && bCanReturnAsFakeHunter)
+	// Only flag hall-monitor eligibility when the conversion below will actually run (same guard). Setting it
+	// unconditionally left the LAST-caught survivor (CountAliveSurvivors()==0, round ending) with a lingering
+	// eligible flag that would force them into FakeHunter next round if a non-travel restart ever occurred.
+	if (SurvivorPS && bCanReturnAsFakeHunter && CountAliveSurvivors() > 0)
 	{
 		SurvivorPS->SetFakeHunterEligible(true);
 	}
@@ -1555,7 +1579,10 @@ void ABHGameMode::NotifySurvivorCaptured(ABHCharacter* Survivor, ABHCharacter* C
 
 	if (CountAliveSurvivors() <= 0)
 	{
-		EndRound(EBHRoundPhase::HunterWin);
+		// Evacuate-together: when the last alive survivor is caught, the class still wins if anyone already
+		// reached the exit. Hard-coding HunterWin here would discard survivors who escaped and are waiting.
+		// Mirrors the Hunt-tick resolution.
+		EndRound(CountEscapedSurvivors() > 0 ? EBHRoundPhase::SurvivorsWin : EBHRoundPhase::HunterWin);
 	}
 }
 
@@ -1597,7 +1624,23 @@ void ABHGameMode::NotifySurvivorEscaped(ABHCharacter* Survivor)
 			return;
 		}
 	}
-	EndRound(EBHRoundPhase::SurvivorsWin);
+
+	// Standard exit: evacuate together. The student reaches the exit (already MarkEscaped above, so they no
+	// longer count as an alive survivor) and waits; the round only ends once no alive survivor remains
+	// inside — everyone has either escaped or been caught. Previously the first survivor to touch the exit
+	// ended the round for the whole class, cutting the others off.
+	const ABHPlayerState* EscapedPS = Survivor->GetPlayerState<ABHPlayerState>();
+	const FString EscapedName = EscapedPS ? EscapedPS->GetPlayerName() : FString(TEXT("A student"));
+	const int32 StillInside = CountAliveSurvivors();
+	if (StillInside <= 0)
+	{
+		BroadcastStatus(FString::Printf(TEXT("%s reached the exit. Everyone is out — the class escaped!"), *EscapedName), 4.0f);
+		EndRound(EBHRoundPhase::SurvivorsWin);
+	}
+	else
+	{
+		BroadcastStatus(FString::Printf(TEXT("%s reached the exit. %d still inside."), *EscapedName, StillInside), 3.5f);
+	}
 }
 
 void ABHGameMode::ToggleLightCircuit(int32 CircuitId)
@@ -2099,7 +2142,10 @@ void ABHGameMode::ReportAtmosphereStimulus(EBHAtmosphereStimulusType Type, const
 		const ABHCharacter* TargetCharacter = Cast<ABHCharacter>(TargetActor);
 		RecordPlaytestTelemetryMarker(TEXT("atmosphere_stimulus"), Location, FString::Printf(TEXT("%s %.2f %s"), *StimulusName, Strength, *Reason.Left(72)), nullptr, TargetCharacter ? TargetCharacter->GetPlayerState<ABHPlayerState>() : nullptr);
 	}
-	if (AtmosphereDirector)
+	// Suppress stimulus-reactive atmosphere cues (whisper / locker-knock / light-cut / footstep-echo) during calm
+	// tutorial teaching beats; they resume for the scripted chase climax (bTutorialHorrorAllowed). Telemetry above
+	// still records. No effect outside tutorial mode.
+	if (AtmosphereDirector && !IsTutorialHorrorSuppressed())
 	{
 		AtmosphereDirector->ReportAtmosphereStimulus(Type, Location, SourceActor, TargetActor, Strength, Reason);
 	}
@@ -3892,6 +3938,7 @@ void ABHGameMode::TesterLoadFinalStation(ABHPlayerController* RequestingControll
 	{
 		TravelURL += TEXT("?BHFogOverride=1");
 	}
+	UBHGameSettings::AppendMaxPlayersOption(TravelURL);
 	RequestServerTravel(TravelURL, true);
 }
 
@@ -5246,6 +5293,7 @@ void ABHGameMode::TriggerHunterBlackout(const FVector& SourceLocation, int32 Sur
 		}
 	}
 
+	float KilledLightSpread = 0.0f;
 	if (!PoweredLights.IsEmpty())
 	{
 		PoweredLights.Sort([&SourceLocation](const ABHFlickerLight& A, const ABHFlickerLight& B)
@@ -5259,12 +5307,27 @@ void ABHGameMode::TriggerHunterBlackout(const FVector& SourceLocation, int32 Sur
 			if (PoweredLights[Index])
 			{
 				PoweredLights[Index]->SetPowered(false);
+				KilledLightSpread = FMath::Max(KilledLightSpread, FVector::Dist2D(PoweredLights[Index]->GetActorLocation(), SourceLocation));
 			}
 		}
 	}
 
 	SpawnAmbient(SourceLocation + FVector(0.0f, 0.0f, 80.0f), 90.0f + 10.0f * static_cast<float>(ClampedSurgeCharges), 0.32f, 0.22f, 5.0f, 5.5f);
 	ApplyPresenceSpike(SourceLocation, 72.0f + 8.0f * static_cast<float>(ClampedSurgeCharges), TEXT("The dark moved with the Teacher."));
+
+	// A nearby student's flashlight is overwhelmed by the dark: open a located blackout over the killed-light
+	// area during which their beam flickers down to a near-dead level and their battery drains faster (see
+	// ABHCharacter::IsInTeacherBlackout / UpdateFlashlightFeel). Each surge charge lengthens the window.
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	const float WeakenSeconds = Settings ? FMath::Max(0.0f, Settings->BlackoutFlashlightWeakenSeconds) : 0.0f;
+	if (WeakenSeconds > 0.0f)
+	{
+		const float FallbackRadius = Settings ? FMath::Max(0.0f, Settings->BlackoutFlashlightEffectRadius) : 2600.0f;
+		const float EffectRadius = KilledLightSpread > 0.0f ? KilledLightSpread + 700.0f : FallbackRadius;
+		const float WindowSeconds = WeakenSeconds + 2.0f * static_cast<float>(ClampedSurgeCharges);
+		BHGS->SetTeacherBlackout(SourceLocation, EffectRadius, BHGS->GetServerWorldTimeSeconds() + WindowSeconds);
+	}
+
 	BroadcastStatus(TEXT("The Teacher killed a bank of lights."), 3.5f);
 }
 
@@ -6839,7 +6902,10 @@ void ABHGameMode::BuildFacilityLevel()
 		FVector(5150.0f, 0.0f, 110.0f)
 	});
 
-	AddMoodPass(FLinearColor(0.020f, 0.032f, 0.040f, 1.0f), 0.014f, 0.55f, 0.14f);
+	// Faint red, ground-hugging mist for atmosphere: the fog is tinted a dim red but kept very thin and
+	// strongly floor-concentrated (see the bFacilityMist branch in AddMoodPass), so the red only reads as a
+	// light haze pooled on the ground and fades out by standing height rather than washing the room red.
+	AddMoodPass(FLinearColor(0.060f, 0.013f, 0.011f, 1.0f), 0.012f, 0.55f, 0.14f);
 	AddFacilityVerticalSlicePass();
 	AddFacilityDetailPass();
 	// AddClassroomHorrorPass(); // disabled: crude blockout classroom (blackboard + red mark + cube desks) looked bad (playtest)
@@ -9450,8 +9516,12 @@ void ABHGameMode::AddMoodPass(const FLinearColor& FogColor, float FogDensity, fl
 			// Substation gets a low, ground-hugging fog (high height-falloff) so the haze pools near the floor as a
 			// light mist for atmosphere instead of filling the room; other indoor maps keep the thin, even height fog.
 			const bool bSubstationMist = RuntimeLevelName.Equals(TEXT("Substation"), ESearchCase::IgnoreCase);
+			// Facility (the first, tight map) gets the same ground-hugging treatment as Substation but lighter, so
+			// its faint red tint pools as a very slight mist on the floor instead of filling the room.
+			const bool bFacilityMist = RuntimeLevelName.Equals(TEXT("Facility"), ESearchCase::IgnoreCase);
+			const bool bGroundMist = bSubstationMist || bFacilityMist;
 			FogComponent->SetFogDensity(bSubstationMist ? 0.018f : FogDensity);
-			FogComponent->SetFogHeightFalloff(bFoggrounds ? (bExtremeFog ? 0.034f : 0.036f) : (bSubstationMist ? 0.34f : 0.075f));
+			FogComponent->SetFogHeightFalloff(bFoggrounds ? (bExtremeFog ? 0.034f : 0.036f) : (bGroundMist ? 0.34f : 0.075f));
 			FogComponent->SetFogInscatteringColor(FogColor);
 			FogComponent->SetFogMaxOpacity(bFoggrounds ? (bExtremeFog ? 0.96f : (bHeavyFog ? 0.92f : 0.80f)) : 1.0f);
 			FogComponent->SetStartDistance(bFoggrounds ? (bExtremeFog ? 80.0f : 110.0f) : 0.0f);
@@ -9485,13 +9555,28 @@ void ABHGameMode::AddMoodPass(const FLinearColor& FogColor, float FogDensity, fl
 				FogComponent->SetSecondFogHeightFalloff(1.0f);
 				FogComponent->SetSecondFogHeightOffset(0.0f);
 			}
+			else if (bFacilityMist)
+			{
+				// Same floor-pooling second layer as Substation but much lighter, so the red reads as a barely-there
+				// haze hugging the ground rather than a visible mist bank.
+				FogComponent->SetSecondFogData(FExponentialHeightFogData());
+				FogComponent->SetSecondFogDensity(0.08f);
+				FogComponent->SetSecondFogHeightFalloff(1.0f);
+				FogComponent->SetSecondFogHeightOffset(0.0f);
+			}
 		}
 	}
 }
 
 ABHStaticBlockField* ABHGameMode::EnsureStaticBlockField()
 {
-	if (IsValid(StaticBlockField))
+	// Per-shard spec cap. Under Large World Coordinates FBHStaticBlockSpec serializes to ~90 bytes (double
+	// FVector/FRotator), so 300 specs keeps a shard's replicated array near ~27KB — a comfortable 2x margin
+	// below the engine's single-bunch limit (~64KB), past which UChannel::SendBunch drops the bunch and
+	// clients never receive the geometry. A dense level simply spans several shards.
+	static constexpr int32 MaxSpecsPerShard = 300;
+
+	if (IsValid(StaticBlockField) && StaticBlockField->GetStaticBlockCount() < MaxSpecsPerShard)
 	{
 		return StaticBlockField;
 	}
@@ -9504,22 +9589,36 @@ ABHStaticBlockField* ABHGameMode::EnsureStaticBlockField()
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	StaticBlockField = GetWorld()->SpawnActor<ABHStaticBlockField>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+	if (StaticBlockField)
+	{
+		StaticBlockFields.Add(StaticBlockField);
+	}
 	return StaticBlockField;
 }
 
 void ABHGameMode::ResetStaticBlockField()
 {
-	if (ABHStaticBlockField* Field = EnsureStaticBlockField())
+	// Destroy every shard so the next build starts from an empty field. EnsureStaticBlockField re-spawns the
+	// first shard on the next AddStaticBlock call.
+	for (ABHStaticBlockField* Field : StaticBlockFields)
 	{
-		Field->ResetBlockSpecs();
+		if (IsValid(Field))
+		{
+			Field->Destroy();
+		}
 	}
+	StaticBlockFields.Reset();
+	StaticBlockField = nullptr;
 }
 
 void ABHGameMode::FinalizeStaticBlockField()
 {
-	if (IsValid(StaticBlockField))
+	for (ABHStaticBlockField* Field : StaticBlockFields)
 	{
-		StaticBlockField->FinalizeBuild();
+		if (IsValid(Field))
+		{
+			Field->FinalizeBuild();
+		}
 	}
 }
 
@@ -9767,6 +9866,12 @@ FVector ABHGameMode::GetVoidRecoveryLocationFor(const ABHCharacter* Character) c
 
 void ABHGameMode::SpawnAmbient(const FVector& Location, float Frequency, float Volume, float Noise, float Pulse, float LifeSpan)
 {
+	// Single chokepoint for every dread audio drone. Suppressed during calm tutorial teaching beats; allowed during
+	// the scripted chase climax (bTutorialHorrorAllowed) and never gated outside tutorial mode.
+	if (IsTutorialHorrorSuppressed())
+	{
+		return;
+	}
 	if (ABHAmbientEmitter* Emitter = GetWorld()->SpawnActor<ABHAmbientEmitter>(Location, FRotator::ZeroRotator))
 	{
 		Emitter->Configure(Frequency, Volume, Noise, Pulse);
@@ -9993,6 +10098,9 @@ void ABHGameMode::PrepareRoundDirector()
 	LastDirectorScareTime = GetWorld() ? GetWorld()->GetTimeSeconds() : -999.0f;
 	LastMonsterChargeTime = LastDirectorScareTime - 999.0f;
 	LastColdCallTime = LastDirectorScareTime - 999.0f;
+	// Wait out one full hand-out cooldown into the Hunt before the first decoy drop, so the opening minute
+	// stays clean and the first hand-out feels like a mid-hunt event.
+	LastDecoyHandoutTime = LastDirectorScareTime;
 	LastPresenceWhisperTime = LastDirectorScareTime - 999.0f;
 	LastWhisperJumpscareTime = LastDirectorScareTime - 999.0f;
 	LastPresenceSpikeTime = LastDirectorScareTime - 999.0f;
@@ -10049,6 +10157,16 @@ void ABHGameMode::TickDirector()
 	}
 
 	UpdatePresenceDirector();
+
+	// Tutorials stage their OWN scripted scares (the Teacher reveal cutscene + chase, run by ABHTutorialDirector).
+	// Suppress the random director scares, cold calls, and "scare a random Hunter" jolts here so a teaching beat
+	// (press F, answer a question, learn the axe) is never interrupted by an unscripted jumpscare - and so the
+	// jolt can't fire on the human player while they're learning to BE the Teacher. Presence still updates above,
+	// so the dread vignette reads normally.
+	if (bTutorialMode)
+	{
+		return;
+	}
 
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	const bool bPanicRound = BHGS->RoundModifier == EBHRoundModifier::PanicSurge;
@@ -10126,6 +10244,76 @@ void ABHGameMode::TickDirector()
 		{
 			TriggerProperScareOnTeacher(AliveHunters[FMath::RandRange(0, AliveHunters.Num() - 1)]);
 			LastTeacherProperScareTime = Now;
+		}
+	}
+
+	MaybeHandOutDecoys();
+}
+
+void ABHGameMode::MaybeHandOutDecoys()
+{
+	const ABHGameState* BHGS = GetGameState<ABHGameState>();
+	if (!GetWorld() || !BHGS || BHGS->RoundPhase != EBHRoundPhase::Hunt)
+	{
+		return;
+	}
+	const float Now = GetWorld()->GetTimeSeconds();
+
+	// Minimum spacing between drops, plus a per-window coin flip so the cadence is irregular rather than a
+	// predictable metronome. With a 7s director tick this averages a drop somewhere around once a minute.
+	const float HandoutCooldown = 38.0f;
+	if (Now - LastDecoyHandoutTime < HandoutCooldown)
+	{
+		return;
+	}
+	if (FMath::FRand() > 0.5f)
+	{
+		return;
+	}
+
+	// Eligible = alive human survivors who aren't already holding a decoy (so we keep handing fresh ones to
+	// players who have none, never stacking). Bots are excluded -- their baiting is paced by the bot AI.
+	TArray<ABHPlayerState*> Eligible;
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get());
+		ABHPlayerState* BHPS = PC ? PC->GetPlayerState<ABHPlayerState>() : nullptr;
+		if (!PC || !BHPS || BHPS->IsABot())
+		{
+			continue;
+		}
+		if (!BHPS->IsAliveSurvivor() || BHPS->PlayerRole == EBHPlayerRole::Tester)
+		{
+			continue;
+		}
+		if (BHPS->GetPowerupCharges(EBHPowerupType::DecoySound) > 0)
+		{
+			continue;
+		}
+		Eligible.Add(BHPS);
+	}
+	if (Eligible.Num() == 0)
+	{
+		return;
+	}
+
+	LastDecoyHandoutTime = Now;
+
+	// Hand to a small random subset -- "a few people", never the whole class at once. Roughly a third of the
+	// eligible players, clamped to 1-2 so big lobbies don't suddenly arm five decoys in one beat.
+	const int32 GrantCount = FMath::Clamp(FMath::CeilToInt(Eligible.Num() * 0.34f), 1, 2);
+	for (int32 Granted = 0; Granted < GrantCount && Eligible.Num() > 0; ++Granted)
+	{
+		const int32 Pick = FMath::RandRange(0, Eligible.Num() - 1);
+		ABHPlayerState* BHPS = Eligible[Pick];
+		Eligible.RemoveAtSwap(Pick);
+		// Cap the held charge at 1: a handed-out decoy is strictly single use.
+		if (BHPS->AddPowerupCharge(EBHPowerupType::DecoySound, 1))
+		{
+			if (ABHPlayerController* PC = Cast<ABHPlayerController>(BHPS->GetOwningController()))
+			{
+				PC->ClientShowStatusMessage(TEXT("You found a decoy noisemaker. Throw it with your Decoy key to fake footsteps and pull the Teacher away. Single use."), 4.5f);
+			}
 		}
 	}
 }
@@ -10297,7 +10485,9 @@ void ABHGameMode::UpdatePresenceDirector()
 	const float WhisperCooldown = bPartyPace || BHGS->RoundModifier == EBHRoundModifier::PanicSurge ? 8.5f : 14.0f;
 	const bool bWhisperMoment = BestTarget
 		&& (BestTargetDistance <= 4200.0f || BestTarget->IsHiddenInLocker() || BestTarget->GetDread() >= 52.0f || BestTarget->IsDetentionMarked());
-	if (bWhisperMoment && NewPresence >= 54.0f && Now - LastPresenceWhisperTime >= WhisperCooldown)
+	// The whole presence-whisper cue (behind-you drone, dread, on-screen line, light-kill) is suppressed during calm
+	// tutorial teaching beats and resumes for the scripted chase climax. The presence meter above is unaffected.
+	if (bWhisperMoment && NewPresence >= 54.0f && Now - LastPresenceWhisperTime >= WhisperCooldown && !IsTutorialHorrorSuppressed())
 	{
 		const FVector BehindTarget = BestTarget->GetActorLocation() - BestTarget->GetActorForwardVector() * FMath::FRandRange(180.0f, 420.0f) + FVector(0.0f, 0.0f, 88.0f);
 		const float WhisperJumpscareCooldown = bPartyPace || BHGS->RoundModifier == EBHRoundModifier::PanicSurge ? 36.0f : 68.0f;
@@ -10306,7 +10496,10 @@ void ABHGameMode::UpdatePresenceDirector()
 			|| BestTarget->GetDread() >= 70.0f
 			|| BestTarget->IsDetentionMarked();
 		FBHJumpscareVariant PendingWhisperVariant;
+		// Never escalate to the monster-charge jumpscare in ANY tutorial state (including the chase): the scripted
+		// reveal is the only intended scare. The softer whisper/locker-knock cue above still plays during the chase.
 		const bool bTriggerWhisperJumpscare = bHighPressureWhisper
+			&& !bTutorialMode
 			&& GetEffectiveScareIntensity() > 0
 			&& Now - LastWhisperJumpscareTime >= WhisperJumpscareCooldown
 			&& Now - LastMonsterChargeTime >= 12.0f
@@ -10431,8 +10624,9 @@ void ABHGameMode::ApplyPresenceSpike(const FVector& SourceLocation, float SpikeL
 	// flicker so the lighting itself signals the Shape is closing in. Reuses the self-reverting burst
 	// system (timer-based restore, replication- and reduced-flash-comfort safe), so this is purely
 	// event-driven with no per-frame cost. Capped at a few nearest lights so it reads as a cue rather
-	// than a room-wide strobe, and scales hotter with the spike level.
-	if (!FlickerLights.IsEmpty())
+	// than a room-wide strobe, and scales hotter with the spike level. Suppressed during calm tutorial
+	// teaching beats (the presence meter above still updates); allowed during the scripted chase climax.
+	if (!FlickerLights.IsEmpty() && !IsTutorialHorrorSuppressed())
 	{
 		const float PresenceAlpha = FMath::Clamp(SpikeLevel / 100.0f, 0.0f, 1.0f);
 		const FLinearColor DreadTint = FMath::Lerp(FLinearColor(0.92f, 0.70f, 0.26f, 1.0f), FLinearColor(0.62f, 0.80f, 0.30f, 1.0f), PresenceAlpha);
@@ -13004,6 +13198,50 @@ void ABHGameMode::AssignRoles()
 			++AssignedFakeHunters;
 		}
 	}
+	// Symmetric hunter guarantee. With 2+ participants a round MUST have at least one Hunter, or the Hunt
+	// timer runs to zero with nobody able to capture anyone — an unwinnable, confusing round. This can
+	// happen when the survivor-guarantee fallback above flips the only chosen Hunter back to Survivor, or
+	// when a host forces every player to Monitor/Survivor. Promote a Monitor first (keeps the survivor
+	// count intact), otherwise a Survivor — but only while at least one survivor would remain.
+	if (AssignedHunters == 0 && Players.Num() >= 2)
+	{
+		ABHPlayerState* Promote = nullptr;
+		for (ABHPlayerState* BHPS : Players)
+		{
+			if (BHPS && BHPS->PlayerRole == EBHPlayerRole::FakeHunter)
+			{
+				Promote = BHPS;
+				break;
+			}
+		}
+		if (!Promote && AssignedSurvivors >= 2)
+		{
+			for (ABHPlayerState* BHPS : Players)
+			{
+				if (BHPS && BHPS->PlayerRole == EBHPlayerRole::Survivor)
+				{
+					Promote = BHPS;
+					break;
+				}
+			}
+		}
+		if (Promote)
+		{
+			const bool bWasSurvivor = Promote->PlayerRole == EBHPlayerRole::Survivor;
+			Promote->SetRole(EBHPlayerRole::Hunter);
+			Promote->SetFakeHunterEligible(false);
+			++AssignedHunters;
+			if (bWasSurvivor)
+			{
+				--AssignedSurvivors;
+			}
+			else
+			{
+				--AssignedFakeHunters;
+			}
+		}
+	}
+
 	UE_LOG(LogTemp, Log, TEXT("BlackoutHunt roles assigned: players=%d hunters=%d survivors=%d monitors=%d botHunters=%d botSurvivors=%d"),
 		Players.Num(),
 		AssignedHunters,
@@ -13079,11 +13317,21 @@ void ABHGameMode::TickRoundTimer()
 			UpdateExitUnlockState(false);
 		}
 
-		if (CountEscapedSurvivors() > 0)
+		if (CountAliveSurvivors() <= 0)
 		{
+			// Evacuate-together: everyone still inside has either escaped or been caught. Survivors win only
+			// if at least one student made it out to the exit; if every survivor was captured, the hunters
+			// win. (The first survivor to escape no longer ends the round for the whole class.)
+			EndRound(CountEscapedSurvivors() > 0 ? EBHRoundPhase::SurvivorsWin : EBHRoundPhase::HunterWin);
+		}
+		else if (CountAliveHunters() <= 0)
+		{
+			// No hunter remains — every hunter disconnected, or a degenerate role assignment left none.
+			// Survivors can never be caught, so resolve in their favor now instead of stalling on the Hunt
+			// timer (which would otherwise wrongly credit the absent hunters on timeout). Mirrors Logout.
 			EndRound(EBHRoundPhase::SurvivorsWin);
 		}
-		else if (CountAliveSurvivors() <= 0 || BHGS->RemainingTime <= 0)
+		else if (BHGS->RemainingTime <= 0)
 		{
 			EndRound(EBHRoundPhase::HunterWin);
 		}
@@ -13187,8 +13435,11 @@ void ABHGameMode::AdvanceTutorialPhase()
 	{
 		// ServerTravel-reload the same baked Tutorial map into the next phase (mirrors the train-intermission
 		// reload). The map, nav, and director re-initialise fresh; the director reads the new phase option.
-		// Carry BHTutorialChain=1 so the reloaded map keeps chaining through the remaining tutorials.
-		const FString TravelURL = FString::Printf(TEXT("%s?listen?BHLevel=Tutorial?BHTutorial=1?BHTutorialPhase=%s?BHTutorialChain=1"),
+		// Carry BHTutorialChain=1 so the reloaded map keeps chaining through the remaining tutorials. Pin
+		// BHStageIndex=0 so IsFinalStage() is deterministically false in the tutorial regardless of the player's
+		// persisted campaign stage - otherwise a player who last reached stage 2 would make the tutorial look like
+		// the final stage and could arm the final-escape/train path.
+		const FString TravelURL = FString::Printf(TEXT("%s?listen?BHLevel=Tutorial?BHTutorial=1?BHTutorialPhase=%s?BHTutorialChain=1?BHStageIndex=0"),
 			*BHResolveLevelMapPackage(TEXT("Tutorial")), NextPhaseName);
 		RequestServerTravel(TravelURL, true);
 		return;
@@ -13377,6 +13628,11 @@ FString ABHGameMode::BuildTravelOptionsForLevel(const FString& LevelName, bool b
 	{
 		TravelURL += TEXT("?BHTestMode=1");
 	}
+
+	// Non-seamless ServerTravel rebuilds AGameSession, whose MaxPlayers resets to the engine default (16)
+	// unless the travel URL carries ?MaxPlayers=. Without this a class larger than 16 is silently bounced
+	// at login on every level hop and intermission. Mirrors the initial listen-host options.
+	UBHGameSettings::AppendMaxPlayersOption(TravelURL);
 
 	return TravelURL;
 }

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #include "BHPlayerController.h"
 #include "BHAccountSubsystem.h"
 #include "BHAutomationSupport.h"
@@ -627,12 +631,7 @@ FString BHMakeListenOptions(const FString& LevelName, const FString& ExtraOption
 	// Raise the engine session cap (AGameSession::MaxPlayers, default 16) to the configured class size
 	// via the ?MaxPlayers= URL option AGameSession::InitOptions reads. Without this the engine rejects
 	// students past 16 at login even though ABHGameMode's own cap is the configured value.
-	if (!Options.Contains(TEXT("MaxPlayers=")))
-	{
-		const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
-		const int32 ClassCap = Settings ? FMath::Clamp(Settings->MaxPlayers, 2, 64) : 32;
-		Options += FString::Printf(TEXT("?MaxPlayers=%d"), ClassCap);
-	}
+	UBHGameSettings::AppendMaxPlayersOption(Options);
 	return Options;
 }
 
@@ -1613,7 +1612,10 @@ void ABHPlayerController::HostTutorialPhase(EBHTutorialPhase StartPhase, bool bC
 	case EBHTutorialPhase::Survivor:
 	default:                        PhaseName = TEXT("Survivor"); break;
 	}
-	const FString Options = FString::Printf(TEXT("listen?BHLevel=Tutorial?BHTutorial=1?BHTutorialPhase=%s?BHTutorialChain=%d"),
+	// Pin BHStageIndex=0 so IsFinalStage() is deterministically false in the tutorial regardless of the player's
+	// persisted campaign stage (otherwise a player who last reached stage 2 would make the tutorial read as the
+	// final stage). The chaining travels in AdvanceTutorialPhase carry the same pin.
+	const FString Options = FString::Printf(TEXT("listen?BHLevel=Tutorial?BHTutorial=1?BHTutorialPhase=%s?BHTutorialChain=%d?BHStageIndex=0"),
 		PhaseName, bChain ? 1 : 0);
 	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(TEXT("Tutorial"))), true, Options);
 }
@@ -5833,6 +5835,69 @@ bool ABHPlayerController::IsRoleIntroRevisionMode() const
 	return bRoleIntroRevisionMode;
 }
 
+bool ABHPlayerController::HasActiveTutorialCard() const
+{
+	const UWorld* World = GetWorld();
+	return World && World->GetTimeSeconds() < TutorialCardEndTime && !TutorialCardTitle.IsEmpty();
+}
+
+float ABHPlayerController::GetTutorialCardAlpha() const
+{
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return 0.0f;
+	}
+	const float Now = World->GetTimeSeconds();
+	const float Remaining = TutorialCardEndTime - Now;
+	if (Remaining <= 0.0f)
+	{
+		return 0.0f;
+	}
+	const float FadeIn = FMath::Clamp((Now - TutorialCardStartTime) / 0.3f, 0.0f, 1.0f);
+	const float FadeOut = FMath::Clamp(Remaining / 0.5f, 0.0f, 1.0f);
+	return FMath::Min(FadeIn, FadeOut);
+}
+
+const FString& ABHPlayerController::GetTutorialCardTitle() const
+{
+	return TutorialCardTitle;
+}
+
+const FString& ABHPlayerController::GetTutorialCardBody() const
+{
+	return TutorialCardBody;
+}
+
+bool ABHPlayerController::HasActiveTutorialPrompt() const
+{
+	const UWorld* World = GetWorld();
+	return World && World->GetTimeSeconds() < TutorialPromptEndTime && !TutorialPromptMessage.IsEmpty();
+}
+
+float ABHPlayerController::GetTutorialPromptAlpha() const
+{
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return 0.0f;
+	}
+	const float Now = World->GetTimeSeconds();
+	const float Remaining = TutorialPromptEndTime - Now;
+	if (Remaining <= 0.0f)
+	{
+		return 0.0f;
+	}
+	const float FadeIn = FMath::Clamp((Now - TutorialPromptStartTime) / 0.2f, 0.0f, 1.0f);
+	const float FadeOut = FMath::Clamp(Remaining / 0.4f, 0.0f, 1.0f);
+	return FMath::Min(FadeIn, FadeOut);
+}
+
+const FString& ABHPlayerController::GetTutorialPromptMessage() const
+{
+	return TutorialPromptMessage;
+}
+
 bool ABHPlayerController::HasActiveCCTVReveal() const
 {
 	const UWorld* World = GetWorld();
@@ -8010,6 +8075,23 @@ void ABHPlayerController::ClientShowRoleIntro_Implementation(EBHPlayerRole InRol
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	RoleIntroStartTime = Now;
 	RoleIntroEndTime = Now + 5.5f;
+}
+
+void ABHPlayerController::ClientShowTutorialCard_Implementation(const FString& Title, const FString& Body, float Seconds)
+{
+	TutorialCardTitle = Title;
+	TutorialCardBody = Body;
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	TutorialCardStartTime = Now;
+	TutorialCardEndTime = Now + FMath::Max(0.5f, Seconds);
+}
+
+void ABHPlayerController::ClientShowTutorialPrompt_Implementation(const FString& Message, float Seconds)
+{
+	TutorialPromptMessage = Message;
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	TutorialPromptStartTime = Now;
+	TutorialPromptEndTime = Now + FMath::Max(0.5f, Seconds);
 }
 
 void ABHPlayerController::ClientShowCCTVReveal_Implementation(ABHCharacter* RevealTarget, const FVector& RevealLocation, const FString& TargetName, float DurationSeconds)

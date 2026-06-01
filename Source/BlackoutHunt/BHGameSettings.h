@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #pragma once
 
 #include "CoreMinimal.h"
@@ -17,10 +21,21 @@ class BLACKOUTHUNT_API UBHGameSettings : public UObject
 public:
 	UBHGameSettings();
 
+	// Returns the configured class size clamped to the engine-valid connection range [2, 64]. Used to set
+	// the ?MaxPlayers= URL option so the engine AGameSession cap (default 16) matches the configured size.
+	static int32 GetClampedClassMaxPlayers();
+
+	// Appends ?MaxPlayers=<GetClampedClassMaxPlayers()> to a listen/travel URL if not already present. Every
+	// listen-host and ServerTravel URL must carry this; otherwise the engine silently caps the session at 16
+	// connections after the first level transition and rejects later students at login.
+	static void AppendMaxPlayersOption(FString& Options);
+
 	UPROPERTY(Config, EditAnywhere, Category = "Rules")
 	int32 MinPlayers;
 
-	UPROPERTY(Config, EditAnywhere, Category = "Rules")
+	// Class size. Clamped to the engine-valid connection range [2,64]; the listen/EOS/travel caps all clamp
+	// to 64 too, so a hand-edited config above 64 can't create a phantom higher cap the engine won't honor.
+	UPROPERTY(Config, EditAnywhere, Category = "Rules", meta = (ClampMin = "2", ClampMax = "64"))
 	int32 MaxPlayers;
 
 	UPROPERTY(Config, EditAnywhere, Category = "Rules")
@@ -86,6 +101,26 @@ public:
 
 	UPROPERTY(Config, EditAnywhere, Category = "Horror")
 	float FlashlightDrainPerSecond;
+
+	// When the Teacher fires a blackout, a nearby student's flashlight is overwhelmed by the dark for a short
+	// window: its battery drains FlashlightDrainPerSecond * this multiplier. 1.0 disables the battery surge.
+	UPROPERTY(Config, EditAnywhere, Category = "Horror")
+	float BlackoutFlashlightDrainMultiplier;
+
+	// ...and its beam strength collapses toward this fraction of normal while violently flickering (0.15 = a
+	// near-dead 15% beam). 1.0 disables the dimming.
+	UPROPERTY(Config, EditAnywhere, Category = "Horror", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float BlackoutFlashlightStrengthScale;
+
+	// How long that blackout weakening (faster battery drain + flickering near-dead beam) lasts on a student.
+	// Each Blackout Surge upgrade charge extends the window by two seconds.
+	UPROPERTY(Config, EditAnywhere, Category = "Horror", meta = (ClampMin = "0.0"))
+	float BlackoutFlashlightWeakenSeconds;
+
+	// Radius (cm) around the Teacher's blackout within which students' flashlights are weakened. Used as a
+	// fallback when no lights were killed; otherwise the killed-light spread plus a margin is used.
+	UPROPERTY(Config, EditAnywhere, Category = "Horror", meta = (ClampMin = "0.0"))
+	float BlackoutFlashlightEffectRadius;
 
 	UPROPERTY(Config, EditAnywhere, Category = "Horror")
 	float ScanCooldownSeconds;

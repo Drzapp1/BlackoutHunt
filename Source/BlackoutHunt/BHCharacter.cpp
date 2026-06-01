@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #include "BHCharacter.h"
 #include "BHCosmeticUnlocks.h"
 #include "BHAlarmTrap.h"
@@ -1713,7 +1717,7 @@ void ABHCharacter::Tick(float DeltaSeconds)
 		else if (!bTrainIntermission)
 		{
 			const float PreviousBattery = FlashlightBattery;
-			FlashlightBattery = FMath::Max(0.0f, FlashlightBattery - FlashlightDrainPerSecond * DeltaSeconds);
+			FlashlightBattery = FMath::Max(0.0f, FlashlightBattery - GetEffectiveFlashlightDrainPerSecond() * DeltaSeconds);
 			if (FlashlightBattery <= 0.0f)
 			{
 				if (PreviousBattery > 0.0f && !bFlashlightEmptyTelemetryReported)
@@ -1727,6 +1731,13 @@ void ABHCharacter::Tick(float DeltaSeconds)
 				bFlashlightOn = false;
 				ApplyFlashlightState();
 				BroadcastFlashlightAudioCue(false, true);
+			}
+
+			// A student caught in the Teacher's blackout: the dark keeps choking the beam, so emit a
+			// stuttering "struggling light" cue (the call rate-limits itself to an erratic cadence).
+			if (bFlashlightOn && IsInTeacherBlackout())
+			{
+				BroadcastFlashlightStruggleAudioCue();
 			}
 		}
 	}
@@ -2220,10 +2231,16 @@ void ABHCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
 	DOREPLIFETIME(ABHCharacter, bFlashlightOn);
+	// FlashlightBattery stays replicated to everyone: ApplyFlashlightState dims the spotlight beam by
+	// battery level, and that beam is rendered on remote clients. DetentionMarkRemaining likewise drives a
+	// shared cue and changes infrequently, so keep it broadcast.
 	DOREPLIFETIME(ABHCharacter, FlashlightBattery);
-	DOREPLIFETIME(ABHCharacter, Stamina);
-	DOREPLIFETIME(ABHCharacter, Fear);
-	DOREPLIFETIME(ABHCharacter, Dread);
+	// Stamina/Fear/Dread are read only by the owning client's HUD and by the server (AI/objective logic);
+	// no remote client renders another pawn's meters. Replicating them to all 10 clients every net tick is
+	// pure O(n^2) waste, so restrict them to the owner. The server keeps its authoritative copy regardless.
+	DOREPLIFETIME_CONDITION(ABHCharacter, Stamina, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(ABHCharacter, Fear, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(ABHCharacter, Dread, COND_OwnerOnly);
 	DOREPLIFETIME(ABHCharacter, DetentionMarkRemaining);
 	DOREPLIFETIME(ABHCharacter, MovementSpecialState);
 	DOREPLIFETIME(ABHCharacter, bTeacherCaptureAttackActive);
@@ -2523,6 +2540,48 @@ bool ABHCharacter::IsHiddenInLocker() const
 float ABHCharacter::GetFlashlightBattery() const
 {
 	return FlashlightBattery;
+}
+
+bool ABHCharacter::IsInTeacherBlackout() const
+{
+	// Student-only: the Teacher (and dead / non-survivor roles) are never weakened by their own dark.
+	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	if (!BHPS || !BHPS->IsAliveSurvivor())
+	{
+		return false;
+	}
+	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	return BHGS && BHGS->IsPointInTeacherBlackout(GetActorLocation());
+}
+
+float ABHCharacter::GetEffectiveFlashlightDrainPerSecond() const
+{
+	float DrainRate = FlashlightDrainPerSecond;
+
+	// A student caught in the Teacher's blackout burns battery faster while the dark smothers the beam.
+	if (IsInTeacherBlackout())
+	{
+		const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+		const float Multiplier = Settings ? FMath::Max(1.0f, Settings->BlackoutFlashlightDrainMultiplier) : 1.0f;
+		DrainRate *= Multiplier;
+	}
+
+	return DrainRate;
+}
+
+float ABHCharacter::ComputeBlackoutFlashlightFlicker() const
+{
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	const float Floor = Settings ? FMath::Clamp(Settings->BlackoutFlashlightStrengthScale, 0.0f, 1.0f) : 0.15f;
+
+	// Irregular high-frequency stutter with periodic near-cutouts, so the beam hovers around the configured
+	// near-dead floor while violently fighting to stay alive. Driven by FlashlightPulseTime (advanced per
+	// frame in UpdateFlashlightFeel) so no RNG is needed.
+	const float T = FlashlightPulseTime;
+	const float Stutter = 0.5f + 0.5f * FMath::Sin(T * 51.0f) * FMath::Sin(T * 23.0f + 1.3f);   // [0..1]
+	const float Cutout = FMath::Square(FMath::Max(0.0f, FMath::Sin(T * 9.0f + 0.7f)));            // occasional [0..1]
+	const float Flicker = FMath::Lerp(0.35f, 1.6f, Stutter) * FMath::Lerp(1.0f, 0.12f, Cutout);
+	return FMath::Clamp(Floor * Flicker, 0.02f, 0.55f);
 }
 
 float ABHCharacter::GetFlashlightTuningValue(FName ParameterName) const
@@ -4282,13 +4341,16 @@ void ABHCharacter::SendFakeHunterHint(bool bRealHint)
 
 	if (bRealHint)
 	{
+		// Point at the nearest ALIVE survivor, iterating characters (not just human player controllers) so an AI
+		// student counts too: a hall monitor's real hint should be able to surface a bot survivor, and the solo
+		// Monitor tutorial's only student IS a bot - the old player-controller-only scan reported "no signal" and
+		// made the lesson's Q look broken.
 		float BestDistSq = TNumericLimits<float>::Max();
-		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+		for (TActorIterator<ABHCharacter> It(GetWorld()); It; ++It)
 		{
-			APlayerController* PC = It->Get();
-			ABHCharacter* Target = PC ? Cast<ABHCharacter>(PC->GetPawn()) : nullptr;
+			ABHCharacter* Target = *It;
 			const ABHPlayerState* TargetPS = Target ? Target->GetPlayerState<ABHPlayerState>() : nullptr;
-			if (!Target || !TargetPS || !TargetPS->IsAliveSurvivor())
+			if (!Target || Target == this || !TargetPS || !TargetPS->IsAliveSurvivor())
 			{
 				continue;
 			}
@@ -5191,8 +5253,13 @@ void ABHCharacter::UpdateFlashlightFeel(float DeltaSeconds)
 		* FMath::Lerp(1.0f, 0.95f, FearPanicAlpha);
 
 	const float LightBoostMultiplier = PowerupComponent ? PowerupComponent->GetFlashlightMultiplier() : 1.0f;
-	const float EffectiveIntensity = (bExtremeFog ? FMath::Min(NormalIntensity, 10000.0f) : (bHeavyFog ? FMath::Min(NormalIntensity, 10800.0f) : NormalIntensity)) * LightBoostMultiplier * FlashlightTuningIntensityScale * TrainFlashlightIntensityScale;
-	const float EffectiveRadius = (bExtremeFog ? FMath::Min(NormalRadius, 2200.0f) : (bHeavyFog ? FMath::Min(NormalRadius, 2400.0f) : NormalRadius)) * FMath::Lerp(1.0f, 1.16f, LightBoostMultiplier - 1.0f) * FlashlightTuningRadiusScale * TrainFlashlightRadiusScale;
+	// A student caught in a Teacher blackout: the beam flickers down to a near-dead level (brightness) while
+	// its reach collapses to a short, steady stub. Everyone else keeps a scale of 1.0.
+	const bool bTeacherBlackout = IsInTeacherBlackout();
+	const float BlackoutBeamScale = bTeacherBlackout ? ComputeBlackoutFlashlightFlicker() : 1.0f;
+	const float BlackoutRadiusScale = bTeacherBlackout ? 0.55f : 1.0f;
+	const float EffectiveIntensity = (bExtremeFog ? FMath::Min(NormalIntensity, 10000.0f) : (bHeavyFog ? FMath::Min(NormalIntensity, 10800.0f) : NormalIntensity)) * LightBoostMultiplier * FlashlightTuningIntensityScale * TrainFlashlightIntensityScale * BlackoutBeamScale;
+	const float EffectiveRadius = (bExtremeFog ? FMath::Min(NormalRadius, 2200.0f) : (bHeavyFog ? FMath::Min(NormalRadius, 2400.0f) : NormalRadius)) * FMath::Lerp(1.0f, 1.16f, LightBoostMultiplier - 1.0f) * FlashlightTuningRadiusScale * TrainFlashlightRadiusScale * BlackoutRadiusScale;
 	const float EffectiveInnerConeAngle = (bExtremeFog ? 9.0f : (bHeavyFog ? 10.0f : 18.0f)) * FlashlightTuningConeScale;
 	const float EffectiveOuterConeAngle = (bExtremeFog ? 18.0f : (bHeavyFog ? 20.0f : (34.0f + LowBatteryAlpha * 2.5f + HorrorAlpha * 1.8f))) * FlashlightTuningConeScale;
 	const float RayVisibilityScale = FMath::Clamp(FlashlightTuningRayVisibilityScale, 0.0f, 3.0f);
@@ -5209,7 +5276,7 @@ void ABHCharacter::UpdateFlashlightFeel(float DeltaSeconds)
 	Flashlight->SetAttenuationRadius(EffectiveRadius);
 	Flashlight->SetInnerConeAngle(FMath::Clamp(EffectiveInnerConeAngle, 4.0f, 80.0f));
 	Flashlight->SetOuterConeAngle(FMath::Clamp(EffectiveOuterConeAngle, 6.0f, 88.0f));
-	Flashlight->SetVolumetricScatteringIntensity((bExtremeFog ? 5.6f : (bHeavyFog ? 6.0f : 6.6f)) * FlashlightTuningVolumetricScale * VolumetricRayBoost * TrainFlashlightIntensityScale);
+	Flashlight->SetVolumetricScatteringIntensity((bExtremeFog ? 5.6f : (bHeavyFog ? 6.0f : 6.6f)) * FlashlightTuningVolumetricScale * VolumetricRayBoost * TrainFlashlightIntensityScale * BlackoutBeamScale);
 
 	const float FogScatterAlpha =
 		ActiveFogPreset == EBHFogPreset::Extreme ? 0.80f :
@@ -5259,8 +5326,8 @@ void ABHCharacter::UpdateFlashlightFeel(float DeltaSeconds)
 		}
 	};
 
-	const float OuterOpacity = FMath::Clamp((0.014f + FogScatterAlpha * 0.028f + LowBatteryAlpha * 0.004f) * BeamPulse * FlashlightTuningBeamOpacityScale * RayVisibilityBoost * TrainFlashlightIntensityScale, 0.0f, bExtremeFog ? 0.145f : (bHeavyFog ? 0.158f : 0.180f));
-	const float CoreOpacity = FMath::Clamp((0.010f + FogScatterAlpha * 0.020f) * BeamPulse * FlashlightTuningBeamOpacityScale * RayVisibilityBoost * TrainFlashlightIntensityScale, 0.0f, bExtremeFog ? 0.110f : (bHeavyFog ? 0.120f : 0.140f));
+	const float OuterOpacity = FMath::Clamp((0.014f + FogScatterAlpha * 0.028f + LowBatteryAlpha * 0.004f) * BeamPulse * FlashlightTuningBeamOpacityScale * RayVisibilityBoost * TrainFlashlightIntensityScale * BlackoutBeamScale, 0.0f, bExtremeFog ? 0.145f : (bHeavyFog ? 0.158f : 0.180f));
+	const float CoreOpacity = FMath::Clamp((0.010f + FogScatterAlpha * 0.020f) * BeamPulse * FlashlightTuningBeamOpacityScale * RayVisibilityBoost * TrainFlashlightIntensityScale * BlackoutBeamScale, 0.0f, bExtremeFog ? 0.110f : (bHeavyFog ? 0.120f : 0.140f));
 	ConfigureBeam(FlashlightBeamOuter, FlashlightBeamOuterMaterial, BeamLength, EffectiveOuterConeAngle, 0.92f * RayWidthScale, OuterOpacity, (bExtremeFog ? 0.86f : (bHeavyFog ? 0.92f : 1.00f)) * FlashlightTuningBeamBrightnessScale * FMath::Lerp(0.65f, 1.20f, RayBoostAlpha));
 	ConfigureBeam(FlashlightBeamCore, FlashlightBeamCoreMaterial, BeamLength * 0.82f, EffectiveInnerConeAngle, 0.48f * RayWidthScale, CoreOpacity, (bExtremeFog ? 1.05f : (bHeavyFog ? 1.12f : 1.20f)) * FlashlightTuningBeamBrightnessScale * FMath::Lerp(0.70f, 1.18f, RayBoostAlpha));
 }
@@ -5309,6 +5376,15 @@ void ABHCharacter::ApplyHiddenState()
 		if (bAlive)
 		{
 			GetCharacterMovement()->SetMovementMode(MOVE_Walking);
+		}
+		else
+		{
+			// A non-alive pawn that didn't take the bOutOfPlay path above (a freshly spawned late-join
+			// spectator, or a reconnected captured student) has collision disabled here; without also
+			// stopping movement the CharacterMovementComponent stays in MOVE_Walking, finds no floor, and
+			// falls through the world — dragging the spectator's attached camera into the void.
+			GetCharacterMovement()->StopMovementImmediately();
+			GetCharacterMovement()->DisableMovement();
 		}
 	}
 
@@ -5941,6 +6017,44 @@ void ABHCharacter::BroadcastFlashlightAudioCue(bool bNewOn, bool bBatteryDied)
 	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
 	{
 		LastFlashlightAudioCueTime = Now;
+		BHGM->BroadcastGameplayAudioCue(Cue);
+	}
+}
+
+void ABHCharacter::BroadcastFlashlightStruggleAudioCue()
+{
+	if (!HasAuthority() || !GetWorld())
+	{
+		return;
+	}
+
+	const float Now = GetWorld()->GetTimeSeconds();
+	// Erratic cadence: a short floor between clicks plus a gated stutter, so the dying light ticks
+	// irregularly instead of like a metronome.
+	if (Now - LastFlashlightStruggleAudioTime < 0.18f || FMath::Frac(Now * 5.7f) > 0.5f)
+	{
+		return;
+	}
+
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	if (!Settings)
+	{
+		return;
+	}
+
+	FBHGameplayAudioCue Cue;
+	Cue.AudioAsset = Settings->FlashlightOffSound;   // reuse the flashlight click as a dying stutter (no new asset)
+	Cue.Location = GetActorLocation() + FVector(0.0f, 0.0f, 62.0f);
+	Cue.Caption = TEXT("Flashlight stutters against the dark.");
+	Cue.Volume = 0.3f;
+	Cue.Pitch = 0.66f + 0.5f * FMath::Frac(Now * 7.3f);   // varied pitch so the stutter does not sound mechanical
+	Cue.MaxAudibleDistance = 1500.0f;
+	Cue.CaptionSeconds = 0.55f;
+	Cue.bSpatial = true;
+
+	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+	{
+		LastFlashlightStruggleAudioTime = Now;
 		BHGM->BroadcastGameplayAudioCue(Cue);
 	}
 }
@@ -6598,8 +6712,9 @@ bool ABHCharacter::IsTimedCaptureEvasionActive(float Now) const
 
 bool ABHCharacter::CanStaggerTeacherWithFlashlight(const ABHCharacter* Survivor) const
 {
-	if (!Survivor || !Survivor->bFlashlightOn || Survivor->FlashlightBattery < BHTeacherFlashlightStaggerBatteryCost * 0.35f || Survivor->IsHiddenInLocker())
+	if (!Survivor || !Survivor->bFlashlightOn || Survivor->FlashlightBattery < BHTeacherFlashlightStaggerBatteryCost * 0.35f || Survivor->IsHiddenInLocker() || Survivor->IsInTeacherBlackout())
 	{
+		// A flashlight smothered by the Teacher's own blackout is too weak to stagger them.
 		return false;
 	}
 
@@ -6861,6 +6976,13 @@ bool ABHCharacter::UseScanAuthority(bool bShowFailureMessages)
 	const ABHPlayerState* HunterPS = GetPlayerState<ABHPlayerState>();
 	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
 	const bool bRoleWarmup = BHIsRoleWarmupPhase(BHGS);
+	// Tutorials hand-drive the AI cast: a bot must never autonomously scan. Each bot scan fires a loud-noise
+	// presence spike (escalating the dread the tutorial is trying to keep calm) for no teaching value. The human's
+	// own scan still works; the director stages any demonstration itself.
+	if (BHGS && BHGS->bTutorialMode && HunterPS && HunterPS->IsABot())
+	{
+		return false;
+	}
 	if (HunterPS && HunterPS->PlayerRole == EBHPlayerRole::FakeHunter && HunterPS->LifeState == EBHPlayerLifeState::Alive)
 	{
 		if (!BHGS || (BHGS->RoundPhase != EBHRoundPhase::Hunt && !bRoleWarmup))
@@ -7024,6 +7146,14 @@ bool ABHCharacter::UseHunterPowerAuthority(bool bShowFailureMessages)
 		return false;
 	}
 
+	// Tutorials hand-drive the AI cast: a bot must never autonomously blackout/false-marker. The bot blackout does
+	// nothing visible on the circuit-less tutorial map anyway, but it spikes presence every few seconds. The human's
+	// own R power still works; the director stages any demonstration itself.
+	if (BHGS && BHGS->bTutorialMode && BHPS->IsABot())
+	{
+		return false;
+	}
+
 	if (!BHGS || (BHGS->RoundPhase != EBHRoundPhase::Hunt && !bRoleWarmup))
 	{
 		if (bShowFailureMessages)
@@ -7130,6 +7260,14 @@ bool ABHCharacter::DropDecoyAuthority(bool bShowFailureMessages)
 		return false;
 	}
 
+	// Tutorials hand-drive the AI cast: a bot student/teacher must not autonomously spam decoys or traps, because
+	// every drop fires a noise alert that overwrites the on-screen lesson prompt. The tutorial director stages a
+	// single demonstration decoy itself when teaching the concept.
+	if (BHGS && BHGS->bTutorialMode && BHPS->IsABot())
+	{
+		return false;
+	}
+
 	if (BHPS->PlayerRole == EBHPlayerRole::FakeHunter)
 	{
 		FString MonitorBlockReason;
@@ -7150,22 +7288,27 @@ bool ABHCharacter::DropDecoyAuthority(bool bShowFailureMessages)
 	}
 
 	const float Now = GetWorld()->GetTimeSeconds();
+	// Human survivors no longer drop decoys on tap. During the live Hunt they can only throw a single-use
+	// decoy the class handed them (see ABHGameMode::MaybeHandOutDecoys), so the held charge is the limiter and
+	// they skip the shared cooldown. Tester debug, warmup practice, bot baiting, and the Hall Monitor trap all
+	// stay on the cooldown so nothing else can be spammed.
+	const bool bSurvivorChargeThrow = BHPS->IsAliveSurvivor()
+		&& BHPS->PlayerRole != EBHPlayerRole::Tester
+		&& !bRoleWarmup
+		&& !(BHGS && BHGS->bTutorialMode)
+		&& !BHPS->IsABot();
 	const float EffectiveDecoyCooldownSeconds = bRoleWarmup ? 2.0f : DecoyCooldownSeconds;
-	if (Now - LastDecoyTime < EffectiveDecoyCooldownSeconds)
+	if (!bSurvivorChargeThrow && Now - LastDecoyTime < EffectiveDecoyCooldownSeconds)
 	{
 		return false;
 	}
 
-	LastDecoyTime = Now;
 	const FVector SpawnLocation = GetActorLocation() + GetActorForwardVector() * 115.0f + FVector(0.0f, 0.0f, 20.0f);
 	if (BHPS->PlayerRole == EBHPlayerRole::Tester)
 	{
+		LastDecoyTime = Now;
 		GetWorld()->SpawnActor<ABHNoiseDecoy>(SpawnLocation, GetActorRotation());
 		GetWorld()->SpawnActor<ABHAlarmTrap>(SpawnLocation + GetActorRightVector() * 70.0f, GetActorRotation());
-		if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
-		{
-			BHGM->NotifyLoudNoise(SpawnLocation, TEXT("test decoy"));
-		}
 		if (bShowFailureMessages)
 		{
 			SendStatusMessage(TEXT("Tester decoy and trap placed."));
@@ -7175,23 +7318,36 @@ bool ABHCharacter::DropDecoyAuthority(bool bShowFailureMessages)
 
 	if (BHPS->IsAliveSurvivor())
 	{
-		GetWorld()->SpawnActor<ABHNoiseDecoy>(SpawnLocation, GetActorRotation());
-		if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+		if (bSurvivorChargeThrow)
 		{
-			if (!bRoleWarmup)
+			// Single use: consume the handed-out decoy charge. No charge means no throw -- this is what stops
+			// ten players carpeting the map with decoys.
+			ABHPlayerState* MutablePS = GetPlayerState<ABHPlayerState>();
+			if (!MutablePS || !MutablePS->ConsumePowerupCharge(EBHPowerupType::DecoySound))
 			{
-				BHGM->NotifyLoudNoise(SpawnLocation, TEXT("decoy"));
+				if (bShowFailureMessages)
+				{
+					SendStatusMessage(TEXT("No decoy in hand. The class hands a few out during the hunt."));
+				}
+				return false;
 			}
 		}
-		if (bRoleWarmup && bShowFailureMessages)
+		LastDecoyTime = Now;
+		GetWorld()->SpawnActor<ABHNoiseDecoy>(SpawnLocation, GetActorRotation());
+		// The decoy now emits its own realistic footstep/breathing noise over its lifetime, so there is no
+		// "decoy"-labelled ping here that would give it away to the Teacher.
+		if (bShowFailureMessages)
 		{
-			SendStatusMessage(TEXT("Warmup decoy placed. It will be cleared before the Hunt."));
+			SendStatusMessage(bRoleWarmup
+				? TEXT("Warmup decoy placed. It will be cleared before the Hunt.")
+				: TEXT("Decoy thrown. Fake footsteps will pull the Teacher off your trail."));
 		}
 		return true;
 	}
 
 	if (BHPS->PlayerRole == EBHPlayerRole::FakeHunter)
 	{
+		LastDecoyTime = Now;
 		GetWorld()->SpawnActor<ABHAlarmTrap>(SpawnLocation, GetActorRotation());
 		if (ABHPlayerState* WarmupPS = GetPlayerState<ABHPlayerState>())
 		{
@@ -7310,6 +7466,22 @@ bool ABHCharacter::SubmitNumericAnswerAuthority(float Value)
 	return Station->SubmitNumericAnswer(this, Value);
 }
 
+// Heading to a scanned target expressed relative to where the player is LOOKING (yaw), so the readout reads
+// "to your left/right", "straight ahead", "behind you" - not a map compass bearing players can't orient to.
+// UE yaw is clockwise from +X and +Y is to the player's right, so a positive relative angle is to the right.
+static FString BHRelativeHeadingText(const FVector& Delta, float ViewYawDeg)
+{
+	const float TargetYaw = FMath::RadiansToDegrees(FMath::Atan2(Delta.Y, Delta.X));
+	const float Rel = FMath::UnwindDegrees(TargetYaw - ViewYawDeg);
+	const float A = FMath::Abs(Rel);
+	if (A <= 22.5f) { return TEXT("straight ahead"); }
+	if (A >= 157.5f) { return TEXT("behind you"); }
+	const bool bRight = Rel > 0.0f;
+	if (A <= 67.5f) { return bRight ? TEXT("ahead on your right") : TEXT("ahead on your left"); }
+	if (A <= 112.5f) { return bRight ? TEXT("to your right") : TEXT("to your left"); }
+	return bRight ? TEXT("behind you on the right") : TEXT("behind you on the left");
+}
+
 void ABHCharacter::ClientReceiveScanResult_Implementation(const FVector& TargetLocation, bool bTargetHidden, bool bFoundTarget)
 {
 	ABHPlayerController* PC = Cast<ABHPlayerController>(GetController());
@@ -7326,16 +7498,11 @@ void ABHCharacter::ClientReceiveScanResult_Implementation(const FVector& TargetL
 
 	const FVector Delta = TargetLocation - GetActorLocation();
 	const float DistanceMeters = Delta.Size2D() / 100.0f;
-	// Compass bearing: north = 0, clockwise through east = 90 (game convention: +X east, +Y north).
-	float BearingDeg = FMath::RadiansToDegrees(FMath::Atan2(Delta.X, Delta.Y));
-	if (BearingDeg < 0.0f)
-	{
-		BearingDeg += 360.0f;
-	}
+	// Direction RELATIVE to where the Teacher is looking (their view yaw), not a map compass bearing.
+	const FString Heading = BHRelativeHeadingText(Delta, GetControlRotation().Yaw);
 	const FString HiddenText = bTargetHidden ? TEXT(" Hidden.") : TEXT("");
 	PC->ShowLocalStatusMessage(
-		FString::Printf(TEXT("Heartbeat detected: %s, %.0f m, bearing %03.0f.%s"),
-			*BHCompassFromDelta(Delta), DistanceMeters, BearingDeg, *HiddenText),
+		FString::Printf(TEXT("Heartbeat: %s, %.0f m.%s"), *Heading, DistanceMeters, *HiddenText),
 		3.0f);
 }
 

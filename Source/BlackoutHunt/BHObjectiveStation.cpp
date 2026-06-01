@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #include "BHObjectiveStation.h"
 #include "BHPropVisuals.h"
 #include "BHCharacter.h"
@@ -404,7 +408,7 @@ ABHObjectiveStation::ABHObjectiveStation()
 	PendingReviewQuestionId = TEXT("");
 	WorkSeconds = 5.5f;
 	LastNoiseTime = -999.0f;
-	LastAnswerTime = -999.0f;
+	LastAnswerTimeByPlayerId.Reset();
 	InteractionLabel = FText::FromString(TEXT("Objective Station"));
 	SetActorScale3D(FVector::OneVector);
 
@@ -618,10 +622,12 @@ FText ABHObjectiveStation::GetInteractionLabel_Implementation(ABHCharacter* Char
 	}
 
 	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	// Monitors may answer in revision mode, and also in the tutorial (which runs in practice mode, where
+	// revision mode is force-off) so the Monitor lesson can teach "revise to unlock your tools".
 	const bool bAliveMonitorCanAnswer = BHPS->PlayerRole == EBHPlayerRole::FakeHunter
 		&& BHPS->LifeState == EBHPlayerLifeState::Alive
 		&& BHGS
-		&& BHGS->bRevisionMode
+		&& (BHGS->bRevisionMode || BHGS->bTutorialMode)
 		&& !bQuestionSolved
 		&& QuestionChoices.Num() > 0;
 	if (!BHPS->IsAliveSurvivor() && !bAliveMonitorCanAnswer)
@@ -695,7 +701,7 @@ FBHInteractionPromptInfo ABHObjectiveStation::GetInteractionPromptInfo_Implement
 	{
 		const bool bAliveMonitorCanAnswer = BHPS->PlayerRole == EBHPlayerRole::FakeHunter
 			&& BHPS->LifeState == EBHPlayerLifeState::Alive
-			&& BHGS->bRevisionMode
+			&& (BHGS->bRevisionMode || BHGS->bTutorialMode)
 			&& !bQuestionSolved
 			&& QuestionChoices.Num() > 0;
 		if (!BHPS->IsAliveSurvivor() && !bAliveMonitorCanAnswer)
@@ -909,7 +915,7 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 		&& BHPS->PlayerRole == EBHPlayerRole::FakeHunter
 		&& BHPS->LifeState == EBHPlayerLifeState::Alive
 		&& BHGS
-		&& BHGS->bRevisionMode;
+		&& (BHGS->bRevisionMode || BHGS->bTutorialMode);
 	const bool bRoleWarmup = BHStationAllowsWarmup(BHGS);
 	if (!bDirectorActive || bCompleted || !BHPS || (!bAliveSurvivor && !bAliveMonitorCanAnswer) || !BHGS || (BHGS->RoundPhase != EBHRoundPhase::Hunt && !bRoleWarmup))
 	{
@@ -939,11 +945,17 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 	}
 
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
-	if (Now - LastAnswerTime < 0.45f)
+	const int32 ThrottlePlayerId = BHPS->GetPlayerId();
+	// Only throttle when this player has answered before; a missing entry must NOT default to 0.0 and
+	// block the very first answer when world time is still under 0.45s (e.g. right after level start).
+	if (const float* LastAnswer = LastAnswerTimeByPlayerId.Find(ThrottlePlayerId))
 	{
-		return false;
+		if (Now - *LastAnswer < 0.45f)
+		{
+			return false;
+		}
 	}
-	LastAnswerTime = Now;
+	LastAnswerTimeByPlayerId.Add(ThrottlePlayerId, Now);
 
 	if (bRoleWarmup)
 	{
@@ -1300,7 +1312,7 @@ bool ABHObjectiveStation::SubmitNumericAnswer(ABHCharacter* Character, float Val
 		&& BHPS->PlayerRole == EBHPlayerRole::FakeHunter
 		&& BHPS->LifeState == EBHPlayerLifeState::Alive
 		&& BHGS
-		&& BHGS->bRevisionMode;
+		&& (BHGS->bRevisionMode || BHGS->bTutorialMode);
 	const bool bRoleWarmup = BHStationAllowsWarmup(BHGS);
 	if (!bDirectorActive || bCompleted || !BHPS || (!bAliveSurvivor && !bAliveMonitorCanAnswer) || !BHGS || (BHGS->RoundPhase != EBHRoundPhase::Hunt && !bRoleWarmup))
 	{
@@ -1323,11 +1335,17 @@ bool ABHObjectiveStation::SubmitNumericAnswer(ABHCharacter* Character, float Val
 	}
 
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
-	if (Now - LastAnswerTime < 0.45f)
+	const int32 ThrottlePlayerId = BHPS->GetPlayerId();
+	// Only throttle when this player has answered before; a missing entry must NOT default to 0.0 and
+	// block the very first answer when world time is still under 0.45s (e.g. right after level start).
+	if (const float* LastAnswer = LastAnswerTimeByPlayerId.Find(ThrottlePlayerId))
 	{
-		return false;
+		if (Now - *LastAnswer < 0.45f)
+		{
+			return false;
+		}
 	}
-	LastAnswerTime = Now;
+	LastAnswerTimeByPlayerId.Add(ThrottlePlayerId, Now);
 
 	// Validate against the question's target value within tolerance. The bank authors a
 	// tolerance (e.g. 0.1) for calculation questions; fall back to a tiny epsilon if absent.
