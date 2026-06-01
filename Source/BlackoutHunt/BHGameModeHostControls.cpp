@@ -58,7 +58,8 @@ const TCHAR* SelectHostControlPromptLine(const TCHAR* const* Lines, int32 LineCo
 		return TEXT("");
 	}
 
-	return Lines[FMath::Abs(Salt) % LineCount];
+	// Unsigned modulo: FMath::Abs(INT32_MIN) is UB and stays negative, which would index out of bounds.
+	return Lines[static_cast<int32>(static_cast<uint32>(Salt) % static_cast<uint32>(LineCount))];
 }
 }
 
@@ -101,9 +102,21 @@ bool ABHGameMode::RequireHostAdmin(ABHPlayerController* RequestingController, co
 		*Action,
 		*GetNameSafe(RequestingController));
 
+	// Throttle the reliable denial reply per controller. Without this a misbehaving client can spam
+	// host-only Server RPCs and force us to flood it (and the reliable channel) with status messages.
+	// The deny itself is always logged/enforced above; only the client-facing reply is rate-limited.
 	if (RequestingController)
 	{
-		RequestingController->ClientShowStatusMessage(FString::Printf(TEXT("Only the host machine can %s."), *Action), 3.0f);
+		constexpr float DenialReplyCooldownSeconds = 2.5f;
+		const UWorld* World = GetWorld();
+		const float Now = World ? World->GetTimeSeconds() : 0.0f;
+		const TObjectKey<APlayerController> ControllerKey(RequestingController);
+		const float* LastReplyTime = HostAdminDenialReplyTimes.Find(ControllerKey);
+		if (!LastReplyTime || (Now - *LastReplyTime) >= DenialReplyCooldownSeconds)
+		{
+			RequestingController->ClientShowStatusMessage(FString::Printf(TEXT("Only the host machine can %s."), *Action), 3.0f);
+			HostAdminDenialReplyTimes.Add(ControllerKey, Now);
+		}
 	}
 
 	return false;
@@ -139,10 +152,44 @@ void ABHGameMode::ForceStartRound(ABHPlayerController* RequestingController)
 
 	if (!bAllowHostForceStart)
 	{
-		if (RequestingController)
+		// bAllowHostForceStart gates the UNCONDITIONAL brute force-start (launch even with nobody ready),
+		// which ships off by default so a stray click can't start an empty/unprepared lobby. But a single
+		// AFK or never-ready student must never be able to block the whole class: AreAllReady() requires
+		// EVERY connected player to be ready, so one straggler stalls all 32 with no escape hatch. Even with
+		// the brute flag off, allow a host-initiated start once a healthy quorum (>= MinPlayers) has readied
+		// up. This goes through the normal StartPrepPhase() warmup (not the brute immediate hunt), and any
+		// not-ready stragglers simply come along in their current lobby state.
+		if (!RequireHostAdmin(RequestingController, TEXT("start the round with the ready players")))
 		{
-			RequestingController->ClientShowStatusMessage(TEXT("Host force-start is disabled in BHGameSettings."), 3.0f);
+			return;
 		}
+
+		int32 ReadyCount = 0;
+		if (GameState)
+		{
+			for (APlayerState* RawPS : GameState->PlayerArray)
+			{
+				const ABHPlayerState* ReadyPS = Cast<ABHPlayerState>(RawPS);
+				if (ReadyPS && ReadyPS->bReady)
+				{
+					++ReadyCount;
+				}
+			}
+		}
+
+		if (ReadyCount < MinPlayers)
+		{
+			if (RequestingController)
+			{
+				RequestingController->ClientShowStatusMessage(
+					FString::Printf(TEXT("Can't start yet: need at least %d ready players (currently %d). Ready up more students, or enable force-start in settings."), MinPlayers, ReadyCount),
+					3.5f);
+			}
+			return;
+		}
+
+		BroadcastStatus(FString::Printf(TEXT("Host started the round with %d ready player(s)."), ReadyCount), 3.5f);
+		StartPrepPhase();
 		return;
 	}
 
