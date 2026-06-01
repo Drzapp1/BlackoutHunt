@@ -47,12 +47,19 @@ function Get-RelativePackagePath {
 }
 
 $rootLauncher = Join-Path $resolvedPackageRoot "BlackoutHunt.exe"
-$gameExecutable = Join-Path $resolvedPackageRoot "BlackoutHunt\Binaries\Win64\BlackoutHunt.exe"
+# The staged game binary is BlackoutHunt.exe for a Development cook but
+# BlackoutHunt-Win64-Shipping.exe for a Shipping cook; accept either name.
+$win64Dir = Join-Path $resolvedPackageRoot "BlackoutHunt\Binaries\Win64"
+$gameExecutables = @()
+if (Test-Path -LiteralPath $win64Dir) {
+    $gameExecutables = @(Get-ChildItem -LiteralPath $win64Dir -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ieq "BlackoutHunt.exe" -or $_.Name -ieq "BlackoutHunt-Win64-Shipping.exe" })
+}
 if (-not (Test-Path -LiteralPath $rootLauncher)) {
     Add-Failure "missing root launcher: BlackoutHunt.exe"
 }
-if (-not (Test-Path -LiteralPath $gameExecutable)) {
-    Add-Failure "missing Win64 executable: BlackoutHunt\Binaries\Win64\BlackoutHunt.exe"
+if ($gameExecutables.Count -lt 1) {
+    Add-Failure "missing Win64 game executable: BlackoutHunt\Binaries\Win64\BlackoutHunt.exe or BlackoutHunt-Win64-Shipping.exe"
 }
 
 $eosDlls = @($allFiles | Where-Object { $_.Name -ieq "EOSSDK-Win64-Shipping.dll" })
