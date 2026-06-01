@@ -185,8 +185,11 @@ void ABHTrainIntermissionManager::TesterFinishIntermission()
 		return;
 	}
 
+	// Drive the finish through the Departing case so it inherits the same retry-on-failure watchdog
+	// instead of a single fire-and-forget attempt that could leave the session stuck.
 	GetWorldTimerManager().ClearTimer(PhaseTimerHandle);
-	FinishIntermission();
+	CurrentPhase = EBHTrainPhase::Departing;
+	AdvancePhase();
 }
 
 void ABHTrainIntermissionManager::BeginPlay()
@@ -239,6 +242,26 @@ void ABHTrainIntermissionManager::StartIntermission()
 	SetPhase(EBHTrainPhase::Arrival, ArrivalSeconds, TEXT("Doors open. Board now; snacks, drinks, and minigames are optional once aboard."));
 }
 
+namespace
+{
+	// Short, projector-safe coaching tip rotated across intermission legs (#9). The train window is
+	// the only safe, no-Hunter time students will actually read, so it teaches the "why". Never
+	// reveals answers or hidden positions; classroom-board safe.
+	FString BHTrainCoachingTip(int32 LegSeed)
+	{
+		static const TCHAR* const Tips[] = {
+			TEXT("Tip: exits need power AND tasks AND class mastery - the HUD shows what's still missing."),
+			TEXT("Tip: when the TEACHER bar climbs, hide in a locker or break line of sight, don't just outrun."),
+			TEXT("Tip: high Fear makes sprinting louder - move calmly near danger to stay quiet."),
+			TEXT("Tip: question diagrams show the given values, never the answer. Read them, then pick 1-4."),
+			TEXT("Tip: Hall Monitors answer at stations first to unlock their hint and trap tools."),
+		};
+		const int32 Count = UE_ARRAY_COUNT(Tips);
+		const int32 Index = ((LegSeed % Count) + Count) % Count;
+		return FString(Tips[Index]);
+	}
+}
+
 void ABHTrainIntermissionManager::SetPhase(EBHTrainPhase NewPhase, float DurationSeconds, const FString& Announcement)
 {
 	CurrentPhase = NewPhase;
@@ -277,14 +300,28 @@ void ABHTrainIntermissionManager::AdvancePhase()
 		AutoBoardPlayers();
 		SetTrainDoorsOpen(false);
 		SetTunnelMoving(true);
-		SetPhase(EBHTrainPhase::Recap, RecapSeconds, TEXT("Recap boards live. Review summary, weak topics, or try the social-car activities."));
+		// On the final stage the train doesn't stop anywhere else, so make the single ride ~1 minute before it
+		// pulls into its terminal and the game ends.
+		SetPhase(EBHTrainPhase::Recap, bFinalRecap ? FMath::Max(RecapSeconds, 55.0f) : RecapSeconds,
+			bFinalRecap
+				? FString::Printf(TEXT("Final service. Review the class recap; arriving at the terminal shortly.  %s"), *BHTrainCoachingTip(CompletedStageIndex))
+				: FString::Printf(TEXT("Recap boards live. Review summary, weak topics, or try the social-car activities.  %s"), *BHTrainCoachingTip(CompletedStageIndex)));
 		break;
 	case EBHTrainPhase::Recap:
 		if (bFinalRecap)
 		{
+			// Final stage: arrive at the terminal and END the game in place -- no onward travel. The GameMode
+			// posts the top-5 leaderboard + class summary to the boards and exports the class/per-student files.
+			// Then we hold here (no phase timer) so the host can review before returning to the lobby.
 			SetTunnelMoving(false);
 			SetTrainDoorsOpen(true);
-			SetPhase(EBHTrainPhase::StationStop, StationStopSeconds, TEXT("Final leaderboard posted. Review results before returning to the lobby."));
+			CurrentPhase = EBHTrainPhase::StationStop;
+			if (ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
+			{
+				BHGM->EnterFinalResultsHold();
+			}
+			UpdateDisplaysForPhase();
+			GetWorldTimerManager().ClearTimer(PhaseTimerHandle);
 		}
 		else
 		{
@@ -292,7 +329,7 @@ void ABHTrainIntermissionManager::AdvancePhase()
 		}
 		break;
 	case EBHTrainPhase::BonusQuestion:
-		SetPhase(EBHTrainPhase::Shop, ShopSeconds, TEXT("Shop carriage open. Buy upgrades; snacks, drinks, and minigames stay open while waiting."));
+		SetPhase(EBHTrainPhase::Shop, ShopSeconds, FString::Printf(TEXT("Shop carriage open. Buy upgrades; snacks, drinks, and minigames stay open while waiting.  %s"), *BHTrainCoachingTip(CompletedStageIndex + 2)));
 		break;
 	case EBHTrainPhase::Shop:
 		SetTunnelMoving(false);
@@ -306,7 +343,13 @@ void ABHTrainIntermissionManager::AdvancePhase()
 		SetPhase(EBHTrainPhase::Departing, DepartureSeconds, FString::Printf(TEXT("Boarding closed. Departing for %s; next route loading."), *DestinationText));
 		break;
 	case EBHTrainPhase::Departing:
-		FinishIntermission();
+		if (!FinishIntermission())
+		{
+			// The GameMode could not travel yet (transiently null / not authority). Re-arm the phase
+			// timer so the Departing step keeps retrying instead of bricking the session at the train.
+			GetWorldTimerManager().ClearTimer(PhaseTimerHandle);
+			GetWorldTimerManager().SetTimer(PhaseTimerHandle, this, &ABHTrainIntermissionManager::AdvancePhase, 1.0f, false);
+		}
 		break;
 	default:
 		break;
@@ -472,12 +515,13 @@ void ABHTrainIntermissionManager::AutoBoardPlayers()
 	}
 }
 
-void ABHTrainIntermissionManager::FinishIntermission()
+bool ABHTrainIntermissionManager::FinishIntermission()
 {
 	if (ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
 	{
-		BHGM->CompleteTrainIntermission(NextMapName, bFinalRecap);
+		return BHGM->CompleteTrainIntermission(NextMapName, bFinalRecap);
 	}
+	return false;
 }
 
 EBHPhysicsTopic ABHTrainIntermissionManager::SelectBonusTopic() const

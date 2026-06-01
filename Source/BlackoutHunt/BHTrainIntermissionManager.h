@@ -44,7 +44,8 @@ protected:
 	void SetTunnelMoving(bool bMoving);
 	void SetMovingBarriersClosed(bool bClosed);
 	void AutoBoardPlayers();
-	void FinishIntermission();
+	// Returns true if the GameMode initiated the post-intermission travel; false means retry.
+	bool FinishIntermission();
 	EBHPhysicsTopic SelectBonusTopic() const;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Train")
