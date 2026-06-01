@@ -32,7 +32,7 @@ namespace
 {
 	const FName BHOnlineLevelSetting(TEXT("BHLEVEL"));
 	const FName BHOnlineBuildSetting(TEXT("BHBUILD"));
-	const FString BHOnlineBuildId(TEXT("BlackoutHunt-0.5.0-beta.1"));
+	const FString BHOnlineBuildId(TEXT("BlackoutHunt-0.6.0"));
 	constexpr int32 BHOnlineMaxSearchResults = 25;
 
 	FString NormalizeRuntimeLevelName(FString LevelName)
@@ -216,6 +216,14 @@ void UBHGameInstance::JoinGame(const FString& Address)
 		return;
 	}
 
+	// Echo this client's server-issued reconnect token (from a prior session this process), so a mid-round
+	// rejoin is matched by the secret token rather than the spoofable display name. Empty on a first join.
+	FString TravelAddress = NormalizedAddress;
+	if (!ClientReconnectToken.IsEmpty())
+	{
+		TravelAddress += FString::Printf(TEXT("?BHReconnect=%s"), *ClientReconnectToken);
+	}
+
 	if (UWorld* World = GetWorld())
 	{
 		if (APlayerController* PC = World->GetFirstPlayerController())
@@ -224,7 +232,7 @@ void UBHGameInstance::JoinGame(const FString& Address)
 			{
 				BHPC->ShowTravelLoadingScreen(TEXT("JOINING GAME"), FString::Printf(TEXT("Connecting to %s."), *NormalizedAddress));
 			}
-			PC->ClientTravel(NormalizedAddress, TRAVEL_Absolute);
+			PC->ClientTravel(TravelAddress, TRAVEL_Absolute);
 		}
 	}
 }
@@ -342,8 +350,11 @@ bool UBHGameInstance::TryHostOnlineGame(const FString& LevelName, FString& OutMe
 		return false;
 	}
 
+	const UBHGameSettings* GameSettings = GetDefault<UBHGameSettings>();
+	const int32 OnlineConnectionCap = GameSettings ? FMath::Clamp(GameSettings->MaxPlayers, 2, 64) : 32;
+
 	FOnlineSessionSettings Settings;
-	Settings.NumPublicConnections = 12;
+	Settings.NumPublicConnections = OnlineConnectionCap;
 	Settings.NumPrivateConnections = 0;
 	Settings.bShouldAdvertise = true;
 	Settings.bAllowJoinInProgress = true;
@@ -363,6 +374,7 @@ bool UBHGameInstance::TryHostOnlineGame(const FString& LevelName, FString& OutMe
 	CreateOnlineSessionCompleteHandle = Sessions->AddOnCreateSessionCompleteDelegate_Handle(
 		FOnCreateSessionCompleteDelegate::CreateUObject(this, &UBHGameInstance::OnCreateOnlineSessionComplete));
 
+	bPendingOnlineHostCancel = false;
 	bOnlineSessionBusy = true;
 	if (!Sessions->CreateSession(0, NAME_GameSession, Settings))
 	{
@@ -526,6 +538,10 @@ void UBHGameInstance::LeaveOnlineSessionIfActive()
 {
 	if (bOnlineSessionBusy)
 	{
+		// A host create/start is still in flight, so we can't synchronously destroy the session here.
+		// Record the intent to leave; OnCreate/OnStartOnlineSessionComplete will tear the session down
+		// instead of travelling the (now-departing) host into a lobby and leaving a session behind.
+		bPendingOnlineHostCancel = true;
 		return;
 	}
 
@@ -721,7 +737,7 @@ void UBHGameInstance::HandleEngineNetworkFailure(UWorld* FailedWorld, UNetDriver
 		Message = TEXT("The host refused the connection or is not reachable yet. Make sure hosting has started and the tunnel/port is open.");
 		break;
 	case ENetworkFailure::ConnectionLost:
-		Message = TEXT("Lost connection to the host.");
+		Message = TEXT("Lost connection to the host. Your progress is held for about 2 minutes - reopen JOIN and reconnect to the same host address to rejoin the round.");
 		break;
 	case ENetworkFailure::OutdatedClient:
 	case ENetworkFailure::OutdatedServer:
@@ -730,6 +746,11 @@ void UBHGameInstance::HandleEngineNetworkFailure(UWorld* FailedWorld, UNetDriver
 	case ENetworkFailure::NetGuidMismatch:
 	case ENetworkFailure::NetChecksumMismatch:
 		Message = TEXT("Content mismatch with the host. Make sure you are on the same build, then try again.");
+		break;
+	case ENetworkFailure::FailureReceived:
+		// The host actively rejected the join (PreLogin error) - by far the most common cause in the
+		// classroom is the 32-player session being full, or the round being locked to new joins.
+		Message = TEXT("The host turned you away. The class may be full (32 players max) or the round may have locked - ask the teacher, then reopen JOIN and try again.");
 		break;
 	default:
 		Message = FString::Printf(TEXT("Could not connect to the host (%s)."), ENetworkFailure::ToString(FailureType));
@@ -958,9 +979,10 @@ void UBHGameInstance::PersistTravelPlayerState(const ABHPlayerState* PlayerState
 	Progress.HunterPoints = PlayerState->HunterPoints;
 	Progress.LifetimeHunterPoints = PlayerState->LifetimeHunterPoints;
 	Progress.Powerups = PlayerState->Powerups;
+	Progress.ReconnectToken = PlayerState->ReconnectToken;
 }
 
-bool UBHGameInstance::RestoreTravelPlayerState(ABHPlayerState* PlayerState) const
+bool UBHGameInstance::RestoreTravelPlayerState(ABHPlayerState* PlayerState, bool bApplyRoleAndLifeState) const
 {
 	if (!PlayerState)
 	{
@@ -979,11 +1001,18 @@ bool UBHGameInstance::RestoreTravelPlayerState(ABHPlayerState* PlayerState) cons
 		return false;
 	}
 
-	PlayerState->SetRole(Existing->PlayerRole);
-	PlayerState->SetDesiredRole(Existing->DesiredRole);
-	PlayerState->SetSpectatorRolePreference(Existing->SpectatorRolePreference);
-	PlayerState->SetLifeState(EBHPlayerLifeState::Alive);
-	PlayerState->SetFakeHunterEligible(false);
+	// Skip the identity override for a fresh late join that arrives during an active round: the player
+	// was just placed into Spectator/Captured by PostLogin and must NOT be resurrected as a live,
+	// capturable, win-condition-counted participant by a stale travel entry from an earlier round.
+	// Banked progress below is still carried over so a later host promotion keeps their points.
+	if (bApplyRoleAndLifeState)
+	{
+		PlayerState->SetRole(Existing->PlayerRole);
+		PlayerState->SetDesiredRole(Existing->DesiredRole);
+		PlayerState->SetSpectatorRolePreference(Existing->SpectatorRolePreference);
+		PlayerState->SetLifeState(EBHPlayerLifeState::Alive);
+		PlayerState->SetFakeHunterEligible(false);
+	}
 	PlayerState->RevisionStats = Existing->RevisionStats;
 	PlayerState->QuestionPoints = FMath::Max(0, Existing->QuestionPoints);
 	PlayerState->LifetimeQuestionPoints = FMath::Max(PlayerState->QuestionPoints, Existing->LifetimeQuestionPoints);
@@ -1020,7 +1049,7 @@ void UBHGameInstance::MarkTravelPlayerLeftForReconnect(const ABHPlayerState* Pla
 
 	if (Existing)
 	{
-		Existing->LeftServerWorldTime = FPlatformTime::Seconds();
+		Existing->LeftServerWorldTime = (ReconnectClockOverrideSeconds >= 0.0) ? ReconnectClockOverrideSeconds : FPlatformTime::Seconds();
 	}
 }
 
@@ -1031,11 +1060,21 @@ bool UBHGameInstance::TryGetReconnectProgress(const ABHPlayerState* PlayerState,
 		return false;
 	}
 
-	const FString StableId = TravelStableIdForPlayerState(PlayerState);
-	const FString PlayerName = PlayerState->GetPlayerName();
-	const FBHTravelPlayerProgress* Existing = TravelPlayerProgress.FindByPredicate([&](const FBHTravelPlayerProgress& Progress)
+	// Identity-safety: restoring a player's exact role / life-state / banked points on reconnect must key
+	// off the secret per-client token the server issued (echoed back in the join URL), NOT the typed
+	// display name. On the direct-IP / Playit / OSS-Null path GetUniqueId() is empty, so name-matching
+	// would let two students who typed the same lobby name be restored into each other's slot. A client
+	// that lost its token (crash / manual rejoin without it) presents none and falls through to a normal
+	// late join instead of being guessed by name.
+	const FString Token = PlayerState->ReconnectToken;
+	if (Token.IsEmpty())
 	{
-		return TravelEntryMatches(Progress, StableId, PlayerName);
+		return false;
+	}
+
+	const FBHTravelPlayerProgress* Existing = TravelPlayerProgress.FindByPredicate([&Token](const FBHTravelPlayerProgress& Progress)
+	{
+		return !Progress.ReconnectToken.IsEmpty() && Progress.ReconnectToken == Token;
 	});
 
 	if (!Existing || Existing->LeftServerWorldTime < 0.0)
@@ -1046,7 +1085,8 @@ bool UBHGameInstance::TryGetReconnectProgress(const ABHPlayerState* PlayerState,
 	// Compare against the same process-wide monotonic clock the leave time was stamped with, so the
 	// grace window survives ServerTravel. The caller's world time is ignored on purpose.
 	(void)NowServerTimeSeconds;
-	const double ElapsedSinceLeft = FPlatformTime::Seconds() - Existing->LeftServerWorldTime;
+	const double NowSeconds = (ReconnectClockOverrideSeconds >= 0.0) ? ReconnectClockOverrideSeconds : FPlatformTime::Seconds();
+	const double ElapsedSinceLeft = NowSeconds - Existing->LeftServerWorldTime;
 	if (ElapsedSinceLeft < 0.0 || ElapsedSinceLeft > static_cast<double>(GraceSeconds))
 	{
 		return false;
@@ -1063,10 +1103,17 @@ void UBHGameInstance::ClearReconnectMark(const ABHPlayerState* PlayerState)
 		return;
 	}
 
+	// Match the way TryGetReconnectProgress did (by the secret token) so the just-consumed reconnect entry
+	// is the one cleared. Fall back to id/name for any legacy entry that predates token issuance.
+	const FString Token = PlayerState->ReconnectToken;
 	const FString StableId = TravelStableIdForPlayerState(PlayerState);
 	const FString PlayerName = PlayerState->GetPlayerName();
 	FBHTravelPlayerProgress* Existing = TravelPlayerProgress.FindByPredicate([&](const FBHTravelPlayerProgress& Progress)
 	{
+		if (!Token.IsEmpty() && !Progress.ReconnectToken.IsEmpty())
+		{
+			return Progress.ReconnectToken == Token;
+		}
 		return TravelEntryMatches(Progress, StableId, PlayerName);
 	});
 
@@ -1074,6 +1121,11 @@ void UBHGameInstance::ClearReconnectMark(const ABHPlayerState* PlayerState)
 	{
 		Existing->LeftServerWorldTime = -1.0f;
 	}
+}
+
+void UBHGameInstance::SetReconnectClockOverrideForTest(double NowSeconds)
+{
+	ReconnectClockOverrideSeconds = NowSeconds;
 }
 
 void UBHGameInstance::ResetPersistentHunterPoints()
@@ -1649,7 +1701,31 @@ void UBHGameInstance::OnCreateOnlineSessionComplete(FName SessionName, bool bWas
 	if (!bWasSuccessful)
 	{
 		bOnlineSessionBusy = false;
+		bPendingOnlineHostCancel = false;
 		SetLastNetworkMessage(FString::Printf(TEXT("%s failed to create the online session."), *GetOnlineSubsystemName()));
+		return;
+	}
+
+	if (bPendingOnlineHostCancel)
+	{
+		// The host left to the menu during creation. Don't start the session; tear the just-created one
+		// down. bOnlineSessionBusy stays true until OnDestroyOnlineSessionComplete clears it.
+		bPendingOnlineHostCancel = false;
+		SetLastNetworkMessage(TEXT("Cancelled hosting before it finished; tearing the session down."));
+		if (Sessions->GetNamedSession(NAME_GameSession))
+		{
+			DestroyOnlineSessionCompleteHandle = Sessions->AddOnDestroySessionCompleteDelegate_Handle(
+				FOnDestroySessionCompleteDelegate::CreateUObject(this, &UBHGameInstance::OnDestroyOnlineSessionComplete));
+			if (!Sessions->DestroySession(NAME_GameSession))
+			{
+				Sessions->ClearOnDestroySessionCompleteDelegate_Handle(DestroyOnlineSessionCompleteHandle);
+				bOnlineSessionBusy = false;
+			}
+		}
+		else
+		{
+			bOnlineSessionBusy = false;
+		}
 		return;
 	}
 
@@ -1685,7 +1761,28 @@ void UBHGameInstance::OnStartOnlineSessionComplete(FName SessionName, bool bWasS
 	bOnlineSessionBusy = false;
 	if (!bWasSuccessful)
 	{
+		bPendingOnlineHostCancel = false;
 		SetLastNetworkMessage(TEXT("Online session was created, but start failed."));
+		return;
+	}
+
+	if (bPendingOnlineHostCancel)
+	{
+		// The host left to the menu during create/start. Tear the freshly-started session down instead
+		// of travelling them into a lobby they already chose to leave.
+		bPendingOnlineHostCancel = false;
+		SetLastNetworkMessage(TEXT("Left before hosting finished; tearing the session down."));
+		if (Sessions.IsValid() && Sessions->GetNamedSession(NAME_GameSession))
+		{
+			DestroyOnlineSessionCompleteHandle = Sessions->AddOnDestroySessionCompleteDelegate_Handle(
+				FOnDestroySessionCompleteDelegate::CreateUObject(this, &UBHGameInstance::OnDestroyOnlineSessionComplete));
+			bOnlineSessionBusy = true;
+			if (!Sessions->DestroySession(NAME_GameSession))
+			{
+				Sessions->ClearOnDestroySessionCompleteDelegate_Handle(DestroyOnlineSessionCompleteHandle);
+				bOnlineSessionBusy = false;
+			}
+		}
 		return;
 	}
 

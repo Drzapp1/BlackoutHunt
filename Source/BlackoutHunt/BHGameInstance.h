@@ -32,6 +32,10 @@ struct FBHTravelPlayerProgress
 {
 	FString StableId;
 	FString PlayerName;
+	// Secret per-client token the server issued to this player. A mid-round reconnect is matched on
+	// this token (not the spoofable display name), so two students who type the same lobby name on the
+	// id-less direct-IP/Playit path can no longer be restored into each other's role/points.
+	FString ReconnectToken;
 	EBHPlayerRole PlayerRole = EBHPlayerRole::Unassigned;
 	EBHPlayerRole DesiredRole = EBHPlayerRole::Unassigned;
 	EBHPlayerRole SpectatorRolePreference = EBHPlayerRole::Unassigned;
@@ -172,13 +176,27 @@ public:
 	bool LogAutomationMarkerOnce(const FString& Marker);
 	void RequestCleanExit(const FString& Reason);
 	void PersistTravelPlayerState(const ABHPlayerState* PlayerState);
-	bool RestoreTravelPlayerState(ABHPlayerState* PlayerState) const;
+	// bApplyRoleAndLifeState gates the identity override (Role/DesiredRole/SpectatorRolePreference/
+	// LifeState/FakeHunterEligible). Pass false for a fresh late join that lands mid-round (Hunt/
+	// FinalEscape) so the spectator/captured state already assigned in PostLogin is preserved while
+	// banked progress (points/powerups) is still carried over. Legitimate cross-travel relogins land
+	// in a non-active phase (Lobby/Prep/Intermission) and pass true for a full restore.
+	bool RestoreTravelPlayerState(ABHPlayerState* PlayerState, bool bApplyRoleAndLifeState = true) const;
 	// Mid-round reconnect support. MarkTravelPlayerLeftForReconnect persists the player's current
 	// state and stamps the leave time; TryGetReconnectProgress returns a copy if a matching entry
 	// is still within the grace window; ClearReconnectMark consumes it after a successful rejoin.
 	void MarkTravelPlayerLeftForReconnect(const ABHPlayerState* PlayerState, float ServerTimeSeconds);
 	bool TryGetReconnectProgress(const ABHPlayerState* PlayerState, float NowServerTimeSeconds, float GraceSeconds, FBHTravelPlayerProgress& OutProgress) const;
 	void ClearReconnectMark(const ABHPlayerState* PlayerState);
+	// Per-client reconnect token storage (Bug-9 secure reconnect). The server issues a token at join and
+	// pushes it to the owning client via ClientReceiveReconnectToken; the client stores it here and the
+	// JoinGame URL echoes it on a later rejoin, so the reconnect is keyed on this unguessable token.
+	void SetClientReconnectToken(const FString& Token) { ClientReconnectToken = Token; }
+	const FString& GetClientReconnectToken() const { return ClientReconnectToken; }
+	// Test-only override for the monotonic reconnect clock. When >= 0 it is used in place of
+	// FPlatformTime::Seconds() so the grace-window expiry path can be exercised deterministically.
+	// Production never sets this, so behaviour is unchanged (real monotonic time that survives ServerTravel).
+	void SetReconnectClockOverrideForTest(double NowSeconds);
 	void ResetPersistentHunterPoints();
 	void ResetPersistentTrainRunProgress();
 	void RecordQuestionAttempt(const FBHQuestionAttemptRecord& Attempt);
@@ -229,6 +247,13 @@ private:
 	TArray<FBHOnlineSessionSummary> OnlineSessionSummaries;
 	FString PendingOnlineLevelName;
 	bool bOnlineSessionBusy = false;
+	// Set when the user leaves to the menu while a host create/start is still in flight. The async
+	// create/start completion handlers honor it by tearing the session down instead of travelling the
+	// host into a lobby they already chose to leave (and leaving the session created behind them).
+	bool bPendingOnlineHostCancel = false;
+	// This client's current reconnect token (server-issued, stored here so it survives a disconnect and
+	// is echoed in the next JoinGame URL). Empty until the server pushes one after a join.
+	FString ClientReconnectToken;
 	bool bSteamAutoLoginAttempted = false;
 	bool bEOSAutoLoginAttempted = false;
 
@@ -242,6 +267,8 @@ private:
 	bool bAutomationJoinConsumed = false;
 	TSet<FString> AutomationMarkersLogged;
 	TArray<FBHTravelPlayerProgress> TravelPlayerProgress;
+	// >= 0 only in automated tests; otherwise the reconnect grace clock uses FPlatformTime::Seconds().
+	double ReconnectClockOverrideSeconds = -1.0;
 	TArray<FBHQuestionAttemptRecord> QuestionAttemptHistory;
 	TArray<FBHPlaytestTelemetryEvent> PlaytestTelemetryEvents;
 	TMap<FString, FString> PlaytestTelemetryPlayerTagsById;
