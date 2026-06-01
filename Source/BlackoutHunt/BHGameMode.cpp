@@ -26,6 +26,7 @@
 #include "BHLessonPreset.h"
 #include "BHLevelMarker.h"
 #include "BHLocker.h"
+#include "BHTutorialDirector.h"
 #include "BHNoiseDecoy.h"
 #include "BHObjectiveStation.h"
 #include "BHPanicAlarm.h"
@@ -62,6 +63,8 @@
 #include "Engine/PostProcessVolume.h"
 #include "Engine/SkyLight.h"
 #include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshActor.h"
+#include "Materials/MaterialInterface.h"
 #include "EngineUtils.h"
 #include "Engine/World.h"
 #include "GameFramework/GameStateBase.h"
@@ -75,6 +78,7 @@
 #include "HAL/FileManager.h"
 #include "Misc/DateTime.h"
 #include "Misc/FileHelper.h"
+#include "Misc/Guid.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "Sound/SoundBase.h"
@@ -396,6 +400,10 @@ FString NormalizeBHLevelName(FString LevelName)
 	{
 		return TEXT("Foggrounds");
 	}
+	if (LevelName.Equals(TEXT("Tutorial"), ESearchCase::IgnoreCase))
+	{
+		return TEXT("Tutorial");
+	}
 	return LevelName.Equals(TEXT("Substation"), ESearchCase::IgnoreCase) ? TEXT("Substation") : TEXT("Facility");
 }
 
@@ -680,21 +688,26 @@ EBHPhysicsTopic StrongestTopicForStats(const FBHPlayerRevisionStats& Stats, int3
 	return StrongTopic;
 }
 
-EBHQuestionDifficulty AdaptiveDifficultyForStats(const FBHPlayerRevisionStats& Stats, bool bLastAnswerCorrect)
+// Difficulty is judged against DecisionMastery — the mastery of the *specific topic the next
+// question will target* — not the student's cross-topic average. A student who is strong overall
+// but weak in one topic should still be eased into that weak topic rather than thrown a Hard
+// question on it. Callers on the live path pass the targeted topic's mastery; report/follow-up
+// callers that only have a synthesized overall figure pass that instead.
+EBHQuestionDifficulty AdaptiveDifficultyForStats(const FBHPlayerRevisionStats& Stats, float DecisionMastery, bool bLastAnswerCorrect)
 {
 	if (Stats.Attempts <= 0)
 	{
 		return EBHQuestionDifficulty::Easy;
 	}
-	if (!bLastAnswerCorrect && Stats.MasteryPercent < 55.0f)
+	if (!bLastAnswerCorrect && DecisionMastery < 55.0f)
 	{
 		return EBHQuestionDifficulty::Easy;
 	}
-	if (Stats.MasteryPercent >= 78.0f && bLastAnswerCorrect)
+	if (DecisionMastery >= 78.0f && bLastAnswerCorrect)
 	{
 		return EBHQuestionDifficulty::Hard;
 	}
-	if (Stats.MasteryPercent >= 45.0f)
+	if (DecisionMastery >= 45.0f)
 	{
 		return EBHQuestionDifficulty::Medium;
 	}
@@ -845,7 +858,8 @@ const TCHAR* SelectPromptLine(const TCHAR* const* Lines, int32 LineCount, int32 
 		return TEXT("");
 	}
 
-	return Lines[FMath::Abs(Salt) % LineCount];
+	// Unsigned modulo: FMath::Abs(INT32_MIN) is UB and stays negative, which would index out of bounds.
+	return Lines[static_cast<int32>(static_cast<uint32>(Salt) % static_cast<uint32>(LineCount))];
 }
 
 int32 BHVariationSeedForLevel(const FString& LevelName, int32 StageIndex, int32 RoundSeed)
@@ -867,6 +881,9 @@ ABHGameMode::ABHGameMode()
 	MinPlayers = FMath::Max(1, Settings->MinPlayers);
 	MaxPlayers = FMath::Max(MinPlayers, Settings->MaxPlayers);
 	PrepSeconds = FMath::Max(0, Settings->PrepSeconds);
+	bExtendedFirstWarmup = Settings->bExtendedFirstWarmup;
+	ExtendedPrepSeconds = FMath::Max(0, Settings->ExtendedPrepSeconds);
+	bHasHostedClassBefore = Settings->bHasHostedClassBefore;
 	HuntSeconds = FMath::Max(60, Settings->HuntSeconds);
 	RequiredBreakers = FMath::Max(1, Settings->RequiredBreakers);
 	bAllowHostForceStart = Settings->bAllowHostForceStart;
@@ -885,6 +902,7 @@ ABHGameMode::ABHGameMode()
 	bInfectionMode = false;
 	bPartyPace = false;
 	bPracticeMode = false;
+	bTutorialMode = false;
 	bTestMode = false;
 	RevisionMode = EBHRevisionMode::None;
 	bRevisionMode = false;
@@ -915,6 +933,7 @@ ABHGameMode::ABHGameMode()
 	bRuntimeNavigationReady = false;
 	bTrainIntermissionLevel = false;
 	RuntimeStageIndex = 0;
+	RevisionContributionGateTarget = 1;
 	PendingIntermissionResult = EBHRoundPhase::Lobby;
 	RuntimeNavBounds = nullptr;
 	TrainIntermissionManager = nullptr;
@@ -961,7 +980,7 @@ void ABHGameMode::BeginPlay()
 		BHGS->SetTestMode(bTestMode);
 		BHGS->SetBotOptions(bBotMode, TargetBotCount, BotDifficulty);
 		BHGS->SetRevisionOptions(RevisionMode, RevisionTopicMask, RevisionDifficultyMix, RevisionClassThreshold, RevisionIndividualThreshold, RevisionRoundDuration, RevisionScareIntensity);
-		BHGS->SetRevisionContributionTarget(GetRevisionMinimumContributionTarget());
+		RefreshRevisionContributionGateTarget();
 		BHGS->SetRevisionSummary(0.0f, EBHPhysicsTopic::ForcesAndMotion, 0, TEXT(""));
 	}
 
@@ -1036,6 +1055,19 @@ void ABHGameMode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		GetWorldTimerManager().ClearAllTimersForObject(this);
 	}
 	Super::EndPlay(EndPlayReason);
+}
+
+FString ABHGameMode::InitNewPlayer(APlayerController* NewPlayerController, const FUniqueNetIdRepl& UniqueId, const FString& Options, const FString& Portal)
+{
+	const FString Result = Super::InitNewPlayer(NewPlayerController, UniqueId, Options, Portal);
+	// Capture the secret reconnect token the client echoed in its join URL (if any) BEFORE PostLogin's
+	// reconnect check runs, so TryGetReconnectProgress can match on it. A blank token (first join, or a
+	// client that lost it on a crash / manual rejoin) leaves this empty and PostLogin issues a fresh one.
+	if (ABHPlayerState* BHPS = NewPlayerController ? NewPlayerController->GetPlayerState<ABHPlayerState>() : nullptr)
+	{
+		BHPS->ReconnectToken = UGameplayStatics::ParseOption(Options, TEXT("BHReconnect"));
+	}
+	return Result;
 }
 
 void ABHGameMode::PostLogin(APlayerController* NewPlayer)
@@ -1118,6 +1150,20 @@ void ABHGameMode::PostLogin(APlayerController* NewPlayer)
 				BHPS->ResetRevisionStats();
 			}
 			RestorePlayersAfterTravel(NewPlayer);
+		}
+
+		// Issue a fresh per-client reconnect token to anyone who didn't arrive with one (first join, or a
+		// post-ServerTravel relogin whose engine-driven travel URL carries no token). It's pushed to the
+		// owning client, which echoes it on a later rejoin so the mid-round reconnect above is matched by
+		// this unguessable token, never the spoofable display name. A successful grace reconnect already
+		// presented a matching token, so leave it untouched.
+		if (BHPS->ReconnectToken.IsEmpty())
+		{
+			BHPS->ReconnectToken = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+			if (ABHPlayerController* TokenPC = Cast<ABHPlayerController>(NewPlayer))
+			{
+				TokenPC->ClientReceiveReconnectToken(BHPS->ReconnectToken);
+			}
 		}
 	}
 
@@ -1231,6 +1277,12 @@ void ABHGameMode::Logout(AController* Exiting)
 	if (const APlayerState* ExitingPS = Exiting ? Exiting->GetPlayerState<APlayerState>() : nullptr)
 	{
 		SpectatorEncouragementTimes.Remove(TObjectKey<APlayerState>(ExitingPS));
+	}
+
+	// Same rationale for the host-admin denial throttle keyed by controller.
+	if (const APlayerController* ExitingPC = Cast<APlayerController>(Exiting))
+	{
+		HostAdminDenialReplyTimes.Remove(TObjectKey<APlayerController>(ExitingPC));
 	}
 
 	Super::Logout(Exiting);
@@ -1831,6 +1883,19 @@ ABHRuntimeMeshPropActor* ABHGameMode::SpawnRuntimeMeshProp(
 		return nullptr;
 	}
 
+#if WITH_EDITOR
+	// Authored export: bake the prop as a real AStaticMeshActor with a hard mesh ref (so it serializes,
+	// cooks with the map, and is editable), falling back to an authored block actor if the mesh is missing.
+	if (bAuthoringExport)
+	{
+		if (!SpawnAuthoredMeshActor(Location, Rotation, MeshAssetPath, MaterialAssetPath, MeshScale, bCollides))
+		{
+			SpawnAuthoredBlockActor(Location, FallbackScale, FallbackTint, Rotation, bCollides, FallbackMaterial, false);
+		}
+		return nullptr;
+	}
+#endif
+
 	UStaticMesh* MeshAsset = MeshAssetPath.IsEmpty() ? nullptr : LoadObject<UStaticMesh>(nullptr, *MeshAssetPath);
 	if (!MeshAsset)
 	{
@@ -2076,7 +2141,7 @@ float ABHGameMode::GetScareSensoryScale() const
 	}
 }
 
-FBHJumpscareVariant ABHGameMode::ChooseJumpscareVariant(EBHScareEventType EventType) const
+FBHJumpscareVariant ABHGameMode::ChooseJumpscareVariant(EBHScareEventType EventType, bool bPreferRealMesh) const
 {
 	const int32 EffectiveScareIntensity = GetEffectiveScareIntensity();
 	const TArray<FBHJumpscareVariant> Variants = GetResolvedJumpscareVariants();
@@ -2102,6 +2167,33 @@ FBHJumpscareVariant ABHGameMode::ChooseJumpscareVariant(EBHScareEventType EventT
 
 		Candidates.Add(&Variant);
 		TotalWeight += FMath::Max(0.01f, Variant.Weight);
+	}
+
+	// Showcased close-up scares demand a genuine creature: if any imported-mesh variant is eligible, drop the
+	// procedural "simple render" proxies from the pool entirely so the in-your-face / behind-you / peek /
+	// SCP-096 scares never present a low-poly proxy.
+	if (bPreferRealMesh && Candidates.Num() > 1)
+	{
+		bool bHasRealMesh = false;
+		for (const FBHJumpscareVariant* Candidate : Candidates)
+		{
+			if (Candidate && !BHJumpscareVariantHasProxyVisual(*Candidate))
+			{
+				bHasRealMesh = true;
+				break;
+			}
+		}
+		if (bHasRealMesh)
+		{
+			for (int32 Index = Candidates.Num() - 1; Index >= 0; --Index)
+			{
+				if (Candidates[Index] && BHJumpscareVariantHasProxyVisual(*Candidates[Index]))
+				{
+					TotalWeight -= FMath::Max(0.01f, Candidates[Index]->Weight);
+					Candidates.RemoveAt(Index);
+				}
+			}
+		}
 	}
 
 	// Anti-repetition: when more than one variant is eligible, drop the one used last time so
@@ -2153,6 +2245,7 @@ FString ABHGameMode::GetJumpscareVariantTestReport() const
 	const TArray<FBHJumpscareVariant> Variants = GetResolvedJumpscareVariants();
 	FString Report = TEXT("Jumpscare variants are available from Escape > Round > Test Commands.\n");
 	Report += TEXT("Use SUPER JUMPSCARE CHAIN for peek, cross-screen sprint, corner sprint, final impact close-up. Use SUPER1, SUPER2, SUPER3 to force a pack chain.\n");
+	Report += TEXT("New scares: type 'face' (full-screen image in your face), 'peek' (figure leans out from a wall), 'behind' (turn-around lock that springs a payoff jumpscare).\n");
 	Report += TEXT("Configured jumpscare variants:\n");
 
 	if (Variants.IsEmpty())
@@ -2506,6 +2599,52 @@ void ABHGameMode::TestJumpscareVariant(ABHPlayerController* RequestingController
 		TriggerTesterSuperJumpscare(RequestingController);
 		return;
 	}
+
+	// New scare types: fire them on the requesting tester's own pawn for quick in-engine checks.
+	if (Normalized == TEXT("face") || Normalized == TEXT("faceimage") || Normalized == TEXT("png")
+		|| Normalized == TEXT("peek") || Normalized == TEXT("corner") || Normalized == TEXT("cornerpeek")
+		|| Normalized == TEXT("behind") || Normalized == TEXT("behindyou") || Normalized == TEXT("turn") || Normalized == TEXT("turnaround")
+		|| Normalized == TEXT("scp") || Normalized == TEXT("scp096") || Normalized == TEXT("scp-096") || Normalized == TEXT("reveal")
+		|| Normalized == TEXT("realscp") || Normalized == TEXT("scpreal") || Normalized == TEXT("scp096real") || Normalized == TEXT("096") || Normalized == TEXT("scpmodel"))
+	{
+		ABHCharacter* Target = RequestingController ? Cast<ABHCharacter>(RequestingController->GetPawn()) : nullptr;
+		const ABHPlayerState* TargetPS = RequestingController ? RequestingController->GetPlayerState<ABHPlayerState>() : nullptr;
+		if (!Target || !TargetPS || TargetPS->LifeState != EBHPlayerLifeState::Alive)
+		{
+			if (RequestingController)
+			{
+				RequestingController->ClientShowStatusMessage(TEXT("Jumpscare testing needs an alive player pawn."), 3.0f);
+			}
+			return;
+		}
+
+		if (Normalized == TEXT("face") || Normalized == TEXT("faceimage") || Normalized == TEXT("png"))
+		{
+			TriggerFaceImageJumpscare(Target);
+			RequestingController->ClientShowStatusMessage(TEXT("Face-image jumpscare fired."), 2.0f);
+		}
+		else if (Normalized == TEXT("peek") || Normalized == TEXT("corner") || Normalized == TEXT("cornerpeek"))
+		{
+			TriggerCornerPeek(Target);
+			RequestingController->ClientShowStatusMessage(TEXT("Corner-peek spawned to one side - look around to catch it."), 3.0f);
+		}
+		else if (Normalized == TEXT("realscp") || Normalized == TEXT("scpreal") || Normalized == TEXT("scp096real") || Normalized == TEXT("096") || Normalized == TEXT("scpmodel"))
+		{
+			TriggerRealScp096Scare(Target);
+			RequestingController->ClientShowStatusMessage(TEXT("SCP-096 (real model) armed - far reveal, pause, then it charges."), 3.0f);
+		}
+		else if (Normalized == TEXT("scp") || Normalized == TEXT("scp096") || Normalized == TEXT("scp-096") || Normalized == TEXT("reveal"))
+		{
+			TriggerScp096Scare(Target);
+			RequestingController->ClientShowStatusMessage(TEXT("SCP-096 reveal armed - it appears far off, pauses, then charges."), 3.0f);
+		}
+		else
+		{
+			TriggerBehindYouScare(Target);
+			RequestingController->ClientShowStatusMessage(TEXT("Behind-you scare armed - turn around."), 3.0f);
+		}
+		return;
+	}
 	if (Normalized == TEXT("super1") || Normalized == TEXT("super01")
 		|| Normalized == TEXT("super2") || Normalized == TEXT("super02")
 		|| Normalized == TEXT("super3") || Normalized == TEXT("super03")
@@ -2761,14 +2900,18 @@ bool ABHGameMode::ResolveSuperJumpscareRoute(ABHCharacter* Target, ABHPlayerCont
 	};
 	auto HasSpawnSpace = [World, &TraceParams](const FVector& Location)
 	{
-		const FCollisionShape Shape = FCollisionShape::MakeCapsule(62.0f, 142.0f);
-		return !World->OverlapBlockingTestByChannel(Location + FVector(0.0f, 0.0f, 142.0f), FQuat::Identity, ECC_WorldStatic, Shape, TraceParams);
+		// Slimmer than the monster's own capsule so the chain can route through tighter rooms/corridors; the
+		// figure is only on-screen for a beat, so a snug fit reads fine.
+		const FCollisionShape Shape = FCollisionShape::MakeCapsule(40.0f, 110.0f);
+		return !World->OverlapBlockingTestByChannel(Location + FVector(0.0f, 0.0f, 110.0f), FQuat::Identity, ECC_WorldStatic, Shape, TraceParams);
 	};
 
 	const int32 FirstSide = FMath::RandBool() ? 1 : -1;
 	const int32 SideOptions[] = { FirstSide, -FirstSide };
-	const float ForwardDistances[] = { 1550.0f, 1850.0f, 2200.0f, 2550.0f };
-	const float SideScales[] = { 1.0f, 0.72f, 0.52f };
+	// Include short distances + tighter side scales so a route is found in small rooms, not just open halls —
+	// otherwise the whole chain collapses to the single direct-charge fallback.
+	const float ForwardDistances[] = { 850.0f, 1100.0f, 1400.0f, 1700.0f, 2050.0f, 2450.0f };
+	const float SideScales[] = { 1.0f, 0.78f, 0.58f, 0.42f, 0.30f };
 	for (int32 Side : SideOptions)
 	{
 		for (float ForwardDistance : ForwardDistances)
@@ -2788,11 +2931,14 @@ bool ABHGameMode::ResolveSuperJumpscareRoute(ABHCharacter* Target, ABHPlayerCont
 				{
 					continue;
 				}
-				if (!HasVisibleFocus(PeekEnd) || !HasVisibleFocus(CrossStart) || !HasVisibleFocus(CrossEnd) || !HasVisibleFocus(ChargeStart))
+				// Require the two beats the player must actually SEE — the peek reveal and the final charge start.
+				// The wide cross-screen sprint endpoints sit far to the sides and often fall outside the view
+				// cone in tight rooms; demanding them too was the main reason the whole chain fell back.
+				if (!HasVisibleFocus(PeekEnd) || !HasVisibleFocus(ChargeStart))
 				{
 					continue;
 				}
-				if (!HasClearSweep(PeekStart, PeekEnd, 46.0f) || !HasClearSweep(CrossStart, CrossEnd, 54.0f) || !HasClearSweep(ChargeBendStart, ChargeStart, 62.0f) || !HasClearSweep(ChargeStart, ChargeEnd, 70.0f))
+				if (!HasClearSweep(PeekStart, PeekEnd, 34.0f) || !HasClearSweep(CrossStart, CrossEnd, 40.0f) || !HasClearSweep(ChargeBendStart, ChargeStart, 46.0f) || !HasClearSweep(ChargeStart, ChargeEnd, 52.0f))
 				{
 					continue;
 				}
@@ -3103,9 +3249,26 @@ int32 ABHGameMode::GetRevisionAnswerTeamTargetSize() const
 	return 4;
 }
 
+int32 ABHGameMode::ComputeLiveRevisionContributionTarget() const
+{
+	return FMath::Clamp(5 + FMath::Clamp(RuntimeStageIndex, 0, 1), 5, 6);
+}
+
 int32 ABHGameMode::GetRevisionMinimumContributionTarget() const
 {
-	return FMath::Clamp(GetRevisionQuestionTargetPerNode() - 1 + FMath::Clamp(RuntimeStageIndex, 0, 2), 1, 4);
+	// Return the frozen per-round snapshot, NOT the live formula. This keeps the enforced gate
+	// (CanUseHallMonitorTools) and every displayed/replicated contribution requirement identical and
+	// stable for the whole round, so students joining/leaving cannot shift the threshold mid-round.
+	return FMath::Clamp(RevisionContributionGateTarget, 1, 6);
+}
+
+void ABHGameMode::RefreshRevisionContributionGateTarget()
+{
+	RevisionContributionGateTarget = ComputeLiveRevisionContributionTarget();
+	if (ABHGameState* BHGS = GetGameState<ABHGameState>())
+	{
+		BHGS->SetRevisionContributionTarget(RevisionContributionGateTarget);
+	}
 }
 
 bool ABHGameMode::IsRevisionParticipantRole(EBHPlayerRole Role)
@@ -3166,7 +3329,9 @@ void ABHGameMode::GetAdaptiveRevisionPlan(const ABHPlayerState* PlayerState, boo
 
 	const FBHPlayerRevisionStats& Stats = PlayerState->RevisionStats;
 	OutTopic = WeakestTopicForStats(Stats, RevisionTopicMask);
-	OutDifficulty = AdaptiveDifficultyForStats(Stats, bLastAnswerCorrect);
+	// Calibrate difficulty to the targeted (weakest) topic's mastery, not the cross-topic average,
+	// so a student who is strong overall but weak here is eased in rather than over-faced.
+	OutDifficulty = AdaptiveDifficultyForStats(Stats, RevisionTopicMastery(Stats, OutTopic), bLastAnswerCorrect);
 	OutReason = FString::Printf(TEXT("Mastery %.0f%% after %d attempt(s); next question targets %s at %s difficulty."),
 		Stats.MasteryPercent,
 		Stats.Attempts,
@@ -3209,7 +3374,12 @@ int32 ABHGameMode::RecordRevisionAnswer(ABHCharacter* Character, const FBHRevisi
 			Stats.CorrectionsCompleted = FMath::Max(0, Stats.CorrectionsCompleted + 1);
 		}
 
-		const float DiffMult = FMath::Clamp(Question.MasteryWeight, 1.0f, 1.5f);
+		// Ceiling raised from 1.5 so a visually-answered question's bonus isn't clipped: the caller
+		// (ABHObjectiveStation::FinalizeRevisionAnswer) scales Question.MasteryWeight up when the answer
+		// was given via the interactive visual method (drag arrangement / diagram element) rather than
+		// picking a multiple-choice option, so visual answers build mastery faster. Authored weights are
+		// difficulty-based and stay <= 1.5, so non-visual answers are unaffected by the higher ceiling.
+		const float DiffMult = FMath::Clamp(Question.MasteryWeight, 1.0f, 3.0f);
 		const float Headroom = FMath::Max(1.0f - (TopicMastery / 100.0f) * 0.6f, 0.25f);
 		TopicMastery = TopicMastery + 15.0f * DiffMult * Headroom;
 	}
@@ -3422,7 +3592,8 @@ void ABHGameMode::SetPhysicsTopics(ABHPlayerController* RequestingController, co
 	if (ABHGameState* BHGS = GetGameState<ABHGameState>())
 	{
 		BHGS->SetRevisionOptions(RevisionMode, RevisionTopicMask, RevisionDifficultyMix, RevisionClassThreshold, RevisionIndividualThreshold, RevisionRoundDuration, RevisionScareIntensity);
-		BHGS->SetRevisionContributionTarget(GetRevisionMinimumContributionTarget());
+		// Admin intentionally changed an input that affects the gate target: re-snapshot the frozen value.
+		RefreshRevisionContributionGateTarget();
 	}
 	BroadcastStatus(FString::Printf(TEXT("Physics topics updated. Mask=%d."), RevisionTopicMask), 3.0f);
 }
@@ -3438,7 +3609,8 @@ void ABHGameMode::SetRevisionDifficultyMix(ABHPlayerController* RequestingContro
 	if (ABHGameState* BHGS = GetGameState<ABHGameState>())
 	{
 		BHGS->SetRevisionOptions(RevisionMode, RevisionTopicMask, RevisionDifficultyMix, RevisionClassThreshold, RevisionIndividualThreshold, RevisionRoundDuration, RevisionScareIntensity);
-		BHGS->SetRevisionContributionTarget(GetRevisionMinimumContributionTarget());
+		// Admin intentionally changed an input that affects the gate target: re-snapshot the frozen value.
+		RefreshRevisionContributionGateTarget();
 	}
 	BroadcastStatus(FString::Printf(TEXT("Revision difficulty mix: %s."), *RevisionDifficultyMixToString(RevisionDifficultyMix)), 3.0f);
 }
@@ -3455,7 +3627,8 @@ void ABHGameMode::SetRevisionThresholds(ABHPlayerController* RequestingControlle
 	if (ABHGameState* BHGS = GetGameState<ABHGameState>())
 	{
 		BHGS->SetRevisionOptions(RevisionMode, RevisionTopicMask, RevisionDifficultyMix, RevisionClassThreshold, RevisionIndividualThreshold, RevisionRoundDuration, RevisionScareIntensity);
-		BHGS->SetRevisionContributionTarget(GetRevisionMinimumContributionTarget());
+		// Admin intentionally changed an input that affects the gate target: re-snapshot the frozen value.
+		RefreshRevisionContributionGateTarget();
 	}
 	UpdateRevisionSummary(TEXT("Thresholds changed by classroom admin."));
 	BroadcastStatus(FString::Printf(TEXT("Revision thresholds set: class %.0f%%, individual %.0f%%."), RevisionClassThreshold, RevisionIndividualThreshold), 3.5f);
@@ -3473,7 +3646,8 @@ void ABHGameMode::SetRevisionRoundDuration(ABHPlayerController* RequestingContro
 	if (ABHGameState* BHGS = GetGameState<ABHGameState>())
 	{
 		BHGS->SetRevisionOptions(RevisionMode, RevisionTopicMask, RevisionDifficultyMix, RevisionClassThreshold, RevisionIndividualThreshold, RevisionRoundDuration, RevisionScareIntensity);
-		BHGS->SetRevisionContributionTarget(GetRevisionMinimumContributionTarget());
+		// Admin intentionally changed an input that affects the gate target: re-snapshot the frozen value.
+		RefreshRevisionContributionGateTarget();
 		if (BHGS->RoundPhase == EBHRoundPhase::Hunt)
 		{
 			BroadcastStatus(FString::Printf(TEXT("Next classroom hunt duration set to %d seconds."), RevisionRoundDuration), 3.0f);
@@ -3494,7 +3668,8 @@ void ABHGameMode::SetScareIntensity(ABHPlayerController* RequestingController, i
 	if (ABHGameState* BHGS = GetGameState<ABHGameState>())
 	{
 		BHGS->SetRevisionOptions(RevisionMode, RevisionTopicMask, RevisionDifficultyMix, RevisionClassThreshold, RevisionIndividualThreshold, RevisionRoundDuration, RevisionScareIntensity);
-		BHGS->SetRevisionContributionTarget(GetRevisionMinimumContributionTarget());
+		// Admin intentionally changed an input that affects the gate target: re-snapshot the frozen value.
+		RefreshRevisionContributionGateTarget();
 	}
 	BroadcastStatus(FString::Printf(TEXT("Scare intensity set to %d."), RevisionScareIntensity), 3.0f);
 }
@@ -3551,7 +3726,8 @@ bool ABHGameMode::ApplyLessonPreset(ABHPlayerController* RequestingController, c
 
 	UpdateDirectorGameState(BHGS->ObjectiveText);
 	BHGS->SetRevisionOptions(RevisionMode, RevisionTopicMask, RevisionDifficultyMix, RevisionClassThreshold, RevisionIndividualThreshold, RevisionRoundDuration, RevisionScareIntensity);
-	BHGS->SetRevisionContributionTarget(GetRevisionMinimumContributionTarget());
+	// Lesson preset intentionally changes gate-target inputs: re-snapshot the frozen value.
+	RefreshRevisionContributionGateTarget();
 	BHGS->SetBotOptions(bBotMode, TargetBotCount, BotDifficulty);
 	UpdateRevisionSummary(TEXT("Lesson preset applied by classroom admin."));
 	if (bBotMode)
@@ -3868,6 +4044,9 @@ void ABHGameMode::UpdateRevisionSummary(const FString& ReviewText)
 				Summary.LowestStudentMastery,
 				Summary.StudentsWithoutContribution)
 			: ReviewText;
+		// Re-publish the FROZEN gate target (do NOT recompute it here). UpdateRevisionSummary runs on every
+		// answer/join/leave; recomputing here is exactly what made the threshold drift mid-round. The frozen
+		// value only changes at round start or on an admin change (RefreshRevisionContributionGateTarget).
 		BHGS->SetRevisionContributionTarget(GetRevisionMinimumContributionTarget());
 		BHGS->SetRevisionSummary(Summary.ClassMasteryAverage, Summary.WeakTopic, RevisionReviewTimeRemaining, Text);
 	}
@@ -4330,7 +4509,9 @@ bool ABHGameMode::ExportRevisionReportToDisk(EBHRoundPhase ResultPhase, bool bAu
 
 		const EBHPhysicsTopic StrongTopic = StrongestTopicForStats(EffectiveStats, RevisionTopicMask);
 		const EBHPhysicsTopic WeakTopic = WeakestTopicForStats(EffectiveStats, RevisionTopicMask);
-		const EBHQuestionDifficulty RecommendedDifficulty = AdaptiveDifficultyForStats(EffectiveStats, Row->Attempts <= 0 || Row->Correct >= Row->Attempts);
+		// Report rows may be reconstructed from CSV without per-topic mastery, so gauge the coarse
+		// follow-up difficulty against the overall figure that is always present here.
+		const EBHQuestionDifficulty RecommendedDifficulty = AdaptiveDifficultyForStats(EffectiveStats, EffectiveStats.MasteryPercent, Row->Attempts <= 0 || Row->Correct >= Row->Attempts);
 		const FString AdaptiveReason = FString::Printf(TEXT("Mastery %.0f%% over %d attempt(s); target %s at %s."),
 			EffectiveStats.MasteryPercent,
 			Row->Attempts,
@@ -4615,7 +4796,8 @@ bool ABHGameMode::ExportRevisionReportToDisk(EBHRoundPhase ResultPhase, bool bAu
 		}
 
 		const EBHPhysicsTopic WeakTopic = WeakestTopicForStats(EffectiveStats, RevisionTopicMask);
-		const EBHQuestionDifficulty RecommendedDifficulty = AdaptiveDifficultyForStats(EffectiveStats, Row->Attempts <= 0 || Row->Correct >= Row->Attempts);
+		// Coarse follow-up hint from CSV-reconstructed stats: gauge against the always-present overall.
+		const EBHQuestionDifficulty RecommendedDifficulty = AdaptiveDifficultyForStats(EffectiveStats, EffectiveStats.MasteryPercent, Row->Attempts <= 0 || Row->Correct >= Row->Attempts);
 		FStudentFollowupRow Followup;
 		Followup.PlayerName = Row->PlayerName;
 		Followup.Mastery = EffectiveStats.MasteryPercent;
@@ -5035,11 +5217,11 @@ void ABHGameMode::TriggerTargetedJumpscare(ABHPlayerController* RequestingContro
 		return;
 	}
 
-	if (!TriggerManualScare(Target, EBHScareEventType::MonsterCharge))
-	{
-		TriggerMonsterChargeJumpscare(Target);
-	}
-	if (ABHPlayerController* TargetPC = Cast<ABHPlayerController>(Target->GetController()))
+	// A deliberate teacher scare is intentional, so it bypasses the "teacher nearby" suppression and rolls one
+	// of the showcased scares at random rather than always firing a monster charge.
+	ABHPlayerController* TargetPC = Cast<ABHPlayerController>(Target->GetController());
+	TriggerTeacherChosenScare(Target, TargetPC);
+	if (TargetPC)
 	{
 		TargetPC->ClientShowStatusMessage(TEXT("The Teacher chose you."), 2.75f);
 	}
@@ -5094,6 +5276,11 @@ void ABHGameMode::BuildLevelForExport(const FString& InLevelName)
 		return;
 	}
 
+	// Bake all blockout geometry + mesh props as real, hard-referenced AStaticMeshActors for this build so
+	// the saved .umap is visible/editable in-editor and the meshes become hard map cook dependencies. Reset
+	// at the end so nothing downstream of export keeps emitting placed actors.
+	bAuthoringExport = true;
+
 	// Editor export only: produce the same geometry + gameplay actors a live build would, but with none
 	// of the round/timer/atmosphere state (those come from BeginPlay at runtime, not the builders). Reset
 	// the tracked arrays the way BuildRuntimeFacility would before a dispatch, then run one builder.
@@ -5124,10 +5311,297 @@ void ABHGameMode::BuildLevelForExport(const FString& InLevelName)
 	{
 		BuildFoggroundsLevel();
 	}
+	else if (Normalized.Equals(TEXT("Tutorial"), ESearchCase::IgnoreCase))
+	{
+		BuildTutorialLevel();
+	}
 	else
 	{
 		RuntimeLevelName = TEXT("Facility");
 		BuildFacilityLevel();
+	}
+
+	// Discovery reads survivor/teacher spawns from placed APlayerStart actors; the runtime generator uses
+	// bare coordinates, so the export must materialize them (one tagged "Hunter" for the teacher).
+	SpawnAuthoredPlayerStarts();
+
+	bAuthoringExport = false;
+}
+
+AStaticMeshActor* ABHGameMode::SpawnAuthoredBlockActor(const FVector& Location, const FVector& Scale, const FLinearColor& Tint, const FRotator& Rotation, bool bCollides, EBHBlockMaterial Material, bool bStartHidden)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return nullptr;
+	}
+
+	// FogSheet blocks are runtime-only translucent fog cues; the authored map ships real ExponentialHeightFog,
+	// so do not bake them into geometry.
+	if (Material == EBHBlockMaterial::FogSheet)
+	{
+		return nullptr;
+	}
+
+	// Material selection. Saturated decorative cues (route stripes, signs, pads, beacons, glyphs) keep their
+	// route COLOUR via the serializable MI_BH_Route_* palette (the runtime per-instance tint is a dynamic
+	// material instance that cannot serialize into the .umap). Near-grey structural surfaces (zone wall/floor
+	// tints) keep their PBR M_BH material. Mirrors ABHStaticBlockField::ResolveBaseMaterial for the latter.
+	auto MaterialPath = [](EBHBlockMaterial M) -> const TCHAR*
+	{
+		switch (M)
+		{
+		case EBHBlockMaterial::Concrete:     return TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_Concrete.M_BH_Concrete");
+		case EBHBlockMaterial::Plaster:      return TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_Plaster.M_BH_Plaster");
+		case EBHBlockMaterial::ConcreteWA:   return TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_ConcreteWA.M_BH_ConcreteWA");
+		case EBHBlockMaterial::ConcreteWACool: return TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_ConcreteWA_Cool.M_BH_ConcreteWA_Cool");
+		case EBHBlockMaterial::PlasterWA:    return TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_PlasterWA.M_BH_PlasterWA");
+		case EBHBlockMaterial::BluePanel:    return TEXT("/Game/SmartBasicInterfaces/Materials/MI_ScreenPanel1.MI_ScreenPanel1");
+		case EBHBlockMaterial::RustedMetal:  return TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_RustedMetal.M_BH_RustedMetal");
+		case EBHBlockMaterial::DiamondPlate: return TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_DiamondPlate.M_BH_DiamondPlate");
+		case EBHBlockMaterial::PaintedMetal: return TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_PaintedMetal.M_BH_PaintedMetal");
+		case EBHBlockMaterial::Tiles:        return TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_Tiles.M_BH_Tiles");
+		case EBHBlockMaterial::WarningSign:  return TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_WarningSign.M_BH_WarningSign");
+		default:                             return TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_PaintedMetal.M_BH_PaintedMetal");
+		}
+	};
+
+	// Nearest route-colour MIC for a saturated cue tint; nullptr for near-grey structural tints.
+	auto RouteMaterialPath = [](const FLinearColor& T) -> const TCHAR*
+	{
+		const float Chroma = FMath::Max3(T.R, T.G, T.B) - FMath::Min3(T.R, T.G, T.B);
+		if (Chroma < 0.20f)
+		{
+			return nullptr;
+		}
+		struct FRoute { const TCHAR* Path; FLinearColor Col; };
+		static const FRoute Routes[] = {
+			{ TEXT("/Game/BlackoutHunt/Art/Materials/MI_BH_Route_Green.MI_BH_Route_Green"),   FLinearColor(0.10f, 0.85f, 0.42f) },
+			{ TEXT("/Game/BlackoutHunt/Art/Materials/MI_BH_Route_Amber.MI_BH_Route_Amber"),   FLinearColor(0.95f, 0.55f, 0.14f) },
+			{ TEXT("/Game/BlackoutHunt/Art/Materials/MI_BH_Route_Cyan.MI_BH_Route_Cyan"),     FLinearColor(0.14f, 0.68f, 0.92f) },
+			{ TEXT("/Game/BlackoutHunt/Art/Materials/MI_BH_Route_Violet.MI_BH_Route_Violet"), FLinearColor(0.66f, 0.34f, 0.92f) },
+			{ TEXT("/Game/BlackoutHunt/Art/Materials/MI_BH_Route_Yellow.MI_BH_Route_Yellow"), FLinearColor(0.95f, 0.80f, 0.16f) },
+			{ TEXT("/Game/BlackoutHunt/Art/Materials/MI_BH_Route_Red.MI_BH_Route_Red"),       FLinearColor(0.90f, 0.13f, 0.10f) },
+			{ TEXT("/Game/BlackoutHunt/Art/Materials/MI_BH_Route_Blue.MI_BH_Route_Blue"),     FLinearColor(0.16f, 0.55f, 0.92f) },
+		};
+		const TCHAR* Best = nullptr;
+		float BestDistance = TNumericLimits<float>::Max();
+		for (const FRoute& Route : Routes)
+		{
+			const float Distance = FMath::Square(T.R - Route.Col.R) + FMath::Square(T.G - Route.Col.G) + FMath::Square(T.B - Route.Col.B);
+			if (Distance < BestDistance)
+			{
+				BestDistance = Distance;
+				Best = Route.Path;
+			}
+		}
+		return Best;
+	};
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AStaticMeshActor* MeshActor = World->SpawnActor<AStaticMeshActor>(Location, Rotation, SpawnParams);
+	if (!MeshActor)
+	{
+		return nullptr;
+	}
+
+	if (UStaticMeshComponent* Component = MeshActor->GetStaticMeshComponent())
+	{
+		Component->SetMobility(EComponentMobility::Static);
+		if (UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube")))
+		{
+			Component->SetStaticMesh(Cube);
+		}
+		const TCHAR* RoutePath = RouteMaterialPath(Tint);
+		const TCHAR* ChosenPath = RoutePath ? RoutePath : MaterialPath(Material);
+		if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, ChosenPath))
+		{
+			Component->SetMaterial(0, Mat);
+		}
+		Component->SetCollisionEnabled(bCollides ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
+		Component->SetCollisionProfileName(bCollides ? TEXT("BlockAll") : TEXT("NoCollision"));
+		Component->SetCanEverAffectNavigation(bCollides);
+	}
+
+	MeshActor->SetActorScale3D(Scale);
+	if (bStartHidden)
+	{
+		// Containment blockers: collision only, invisible in game, still selectable/visible in-editor.
+		MeshActor->SetActorHiddenInGame(true);
+	}
+
+	// Pre-organize the bake by role so the ~1800-actor Outliner is navigable for hand-polish: collidable
+	// blocks are the shell/structure, non-collidable thin blocks are floor decals/route signage, and
+	// hidden blocks are the perimeter containment. Labels auto-number (ShellBlock, ShellBlock1, ...).
+	const TCHAR* BakeFolder = bStartHidden ? TEXT("Authored/Containment") : (bCollides ? TEXT("Authored/Shell") : TEXT("Authored/Decals_Signage"));
+	const TCHAR* BakeLabel = bStartHidden ? TEXT("Containment") : (bCollides ? TEXT("ShellBlock") : TEXT("DecalBlock"));
+	MeshActor->SetFolderPath(FName(BakeFolder));
+	MeshActor->SetActorLabel(BakeLabel);
+
+	// v2 industrial look: clad wall-shaped collidable blocks (tall, thin in one horizontal axis, long in
+	// the other) with modular metal panels on the industrial levels. Additive/fail-safe -- the cube above
+	// keeps collision/nav. Floors/ceilings (thin Z), pillars (not long), and containment are skipped.
+	const bool bWallShaped = bCollides && !bStartHidden && Scale.Z >= 2.5f
+		&& FMath::Min(Scale.X, Scale.Y) <= 0.6f && FMath::Max(Scale.X, Scale.Y) >= 1.5f;
+	const bool bIndustrialLevel = RuntimeLevelName.Equals(TEXT("Facility"), ESearchCase::IgnoreCase)
+		|| RuntimeLevelName.Equals(TEXT("Substation"), ESearchCase::IgnoreCase);
+	// Skip the industrial metal-panel cladding for the world-aligned concrete walls (ConcreteWA / ConcreteWACool)
+	// so the backrooms hall and the Substation stay uniform bare concrete instead of mixing in metal panels.
+	if (bWallShaped && bIndustrialLevel && Material != EBHBlockMaterial::ConcreteWA && Material != EBHBlockMaterial::ConcreteWACool)
+	{
+		CladAuthoredWall(Location, Scale, Rotation);
+	}
+	return MeshActor;
+}
+
+AStaticMeshActor* ABHGameMode::SpawnAuthoredMeshActor(const FVector& Location, const FRotator& Rotation, const FString& MeshAssetPath, const FString& MaterialAssetPath, const FVector& MeshScale, bool bCollides)
+{
+	UWorld* World = GetWorld();
+	if (!World || MeshAssetPath.IsEmpty())
+	{
+		return nullptr;
+	}
+
+	UStaticMesh* MeshAsset = LoadObject<UStaticMesh>(nullptr, *MeshAssetPath);
+	if (!MeshAsset)
+	{
+		return nullptr;
+	}
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AStaticMeshActor* MeshActor = World->SpawnActor<AStaticMeshActor>(Location, Rotation, SpawnParams);
+	if (!MeshActor)
+	{
+		return nullptr;
+	}
+
+	if (UStaticMeshComponent* Component = MeshActor->GetStaticMeshComponent())
+	{
+		Component->SetMobility(EComponentMobility::Static);
+		Component->SetStaticMesh(MeshAsset);
+		if (!MaterialAssetPath.IsEmpty())
+		{
+			if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, *MaterialAssetPath))
+			{
+				Component->SetMaterial(0, Mat);
+			}
+		}
+		Component->SetCollisionEnabled(bCollides ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
+		Component->SetCanEverAffectNavigation(bCollides);
+	}
+
+	MeshActor->SetActorScale3D(MeshScale);
+	MeshActor->SetFolderPath(FName(TEXT("Authored/Props")));
+	MeshActor->SetActorLabel(MeshAsset->GetName());
+	return MeshActor;
+}
+
+void ABHGameMode::SpawnAuthoredPlayerStarts()
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	for (const FVector& Spawn : SurvivorSpawns)
+	{
+		World->SpawnActor<APlayerStart>(Spawn, FRotator::ZeroRotator, SpawnParams);
+	}
+
+	if (APlayerStart* HunterStart = World->SpawnActor<APlayerStart>(HunterSpawn, FRotator::ZeroRotator, SpawnParams))
+	{
+		HunterStart->PlayerStartTag = FName(TEXT("Hunter"));
+	}
+
+	UE_LOG(LogTemp, Display, TEXT("[BHExportLevel] Placed %d survivor PlayerStarts + 1 Hunter PlayerStart for authored discovery."), SurvivorSpawns.Num());
+}
+
+void ABHGameMode::CladAuthoredWall(const FVector& Center, const FVector& Scale, const FRotator& Rotation)
+{
+	UWorld* World = GetWorld();
+	// Facility/Substation walls are axis-aligned (ZeroRotator); skip anything rotated so the placement math
+	// below stays correct (the cube wall still reads fine uncladded if we bail).
+	if (!World || !FMath::IsNearlyZero(Rotation.Yaw))
+	{
+		return;
+	}
+
+	UStaticMesh* Panel = LoadObject<UStaticMesh>(nullptr, TEXT("/Game/ContainersHouseCH/StaticMesh/SM_Wall_Metal_6m.SM_Wall_Metal_6m"));
+	if (!Panel)
+	{
+		return; // kit not present -> the v1 cube shell stands, nothing broken
+	}
+	UMaterialInterface* PanelMat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/ContainersHouseCH/Materials/MI_CH_Walls_Metal.MI_CH_Walls_Metal"));
+
+	// SM_Wall_Metal_6m native bounds (Tools/MeshCatalog.json): thickness ~8.5cm along local +X, length
+	// ~600cm along local -Y, height ~230cm along local +Z, pivot at the +Y bottom end.
+	constexpr float PanelLen = 600.0f;
+	constexpr float PanelHeight = 230.0f;
+
+	const float LenX = Scale.X * 100.0f;
+	const float LenY = Scale.Y * 100.0f;
+	const float Height = Scale.Z * 100.0f;
+	const bool bAlongX = LenX >= LenY;
+	const float WallLen = bAlongX ? LenX : LenY;
+	const float WallThick = bAlongX ? LenY : LenX;
+	const float BottomZ = Center.Z - Height * 0.5f;
+
+	const int32 Tiles = FMath::Max(1, FMath::RoundToInt(WallLen / PanelLen));
+	const float TileLen = WallLen / Tiles;
+	// Local axes: X=thickness, Y=length, Z=height. Keep native ~8.5cm thickness, scale length to the tile,
+	// height to the wall.
+	const FVector TileScale(1.0f, TileLen / PanelLen, Height / PanelHeight);
+
+	auto SpawnPanel = [&](const FVector& PivotLoc, float Yaw)
+	{
+		FActorSpawnParameters Params;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		AStaticMeshActor* Clad = World->SpawnActor<AStaticMeshActor>(PivotLoc, FRotator(0.0f, Yaw, 0.0f), Params);
+		if (!Clad)
+		{
+			return;
+		}
+		if (UStaticMeshComponent* Component = Clad->GetStaticMeshComponent())
+		{
+			Component->SetMobility(EComponentMobility::Static);
+			Component->SetStaticMesh(Panel);
+			if (PanelMat)
+			{
+				Component->SetMaterial(0, PanelMat);
+			}
+			Component->SetCollisionEnabled(ECollisionEnabled::NoCollision); // visual only; cube wall owns collision/nav
+			Component->SetCanEverAffectNavigation(false);
+		}
+		Clad->SetActorScale3D(TileScale);
+		Clad->SetFolderPath(FName(TEXT("Authored/MetalCladding")));
+		Clad->SetActorLabel(TEXT("WallClad"));
+	};
+
+	// Tile both faces. Pivot sits on the wall face; the panel's 8.5cm depth (both faces modeled) sits just
+	// proud of the cube. Yaw maps local -Y (length) onto the wall's long axis and local +X (thickness)
+	// outward from each face. Verified against the catalog bounds.
+	for (int32 i = 0; i < Tiles; ++i)
+	{
+		if (bAlongX)
+		{
+			const float StartX = Center.X - WallLen * 0.5f + i * TileLen; // -X end of this tile (yaw 90 extends +X)
+			const float EndX = Center.X + WallLen * 0.5f - i * TileLen;    // +X end (yaw -90 extends -X)
+			SpawnPanel(FVector(StartX, Center.Y + WallThick * 0.5f, BottomZ), 90.0f);  // +Y face
+			SpawnPanel(FVector(EndX, Center.Y - WallThick * 0.5f, BottomZ), -90.0f);   // -Y face
+		}
+		else
+		{
+			const float StartY = Center.Y + WallLen * 0.5f - i * TileLen; // +Y end (yaw 0 extends -Y)
+			const float EndY = Center.Y - WallLen * 0.5f + i * TileLen;    // -Y end (yaw 180 extends +Y)
+			SpawnPanel(FVector(Center.X + WallThick * 0.5f, StartY, BottomZ), 0.0f);    // +X face
+			SpawnPanel(FVector(Center.X - WallThick * 0.5f, EndY, BottomZ), 180.0f);    // -X face
+		}
 	}
 }
 #endif
@@ -5196,7 +5670,15 @@ bool ABHGameMode::DiscoverAuthoredLevel()
 	}
 	for (TActorIterator<ABHObjectiveStation> It(World); It; ++It)
 	{
-		ObjectiveStations.Add(*It);
+		// Exclude the hidden teacher mirror-trap node. The generator spawns it but deliberately keeps it
+		// OUT of ObjectiveStations (it is a scare relay, never a completable objective). Discovery must
+		// match, or an authored map counts an extra "objective" that can never complete -> SideObjectives
+		// can never be satisfied and the exit never unlocks (unwinnable round), and the always-armed trap
+		// gets toggled off by the director's active-objective selection.
+		if (*It && !(*It)->IsTeacherMirrorTrapNode())
+		{
+			ObjectiveStations.Add(*It);
+		}
 	}
 	for (TActorIterator<ABHEscapeStationManager> It(World); It; ++It)
 	{
@@ -5257,6 +5739,30 @@ bool ABHGameMode::DiscoverAuthoredLevel()
 		UE_LOG(LogTemp, Warning, TEXT("[BlackoutHunt] Authored level '%s' is in revision mode but has no ABHObjectiveStation actors; revision rounds need stations. Place stations or disable revision for this map."), *RuntimeLevelName);
 	}
 
+	// Rebuild crawl-space gates from the marker if the loaded map has none of its own. Crawl runs are low
+	// GEOMETRY that only blocks standing pawns; the ABHCrawlSpaceVolume is what ejects a prone Teacher (and
+	// non-survivors), so a baked map that lost its volumes while being remeshed would let the Teacher follow
+	// survivors through. Only spawn when zero volumes exist, so an intact bake is never duplicated.
+	bool bHasCrawlVolume = false;
+	for (TActorIterator<ABHCrawlSpaceVolume> It(World); It; ++It)
+	{
+		bHasCrawlVolume = true;
+		break;
+	}
+	if (!bHasCrawlVolume && Marker->CrawlGates.Num() > 0)
+	{
+		int32 RebuiltGates = 0;
+		for (const FBHAuthoredCrawlGate& Gate : Marker->CrawlGates)
+		{
+			if (ABHCrawlSpaceVolume* CrawlVolume = World->SpawnActor<ABHCrawlSpaceVolume>(Gate.Location, Gate.Rotation))
+			{
+				CrawlVolume->Configure(Gate.Extent);
+				++RebuiltGates;
+			}
+		}
+		UE_LOG(LogTemp, Warning, TEXT("[BlackoutHunt] Authored level '%s' had no ABHCrawlSpaceVolume actors; rebuilt %d crawl gate(s) from the level marker so non-survivors stay blocked from crawl spaces."), *RuntimeLevelName, RebuiltGates);
+	}
+
 	// Authored maps should ship a baked NavMeshBoundsVolume; until then the marker keeps the runtime
 	// navigation rebuild enabled so bots have a usable nav mesh.
 	if (Marker->bRebuildRuntimeNavigation)
@@ -5308,6 +5814,35 @@ void ABHGameMode::BuildRuntimeFacility()
 	bPracticeMode = !bTestMode && (PracticeOption.Equals(TEXT("1"), ESearchCase::IgnoreCase)
 		|| PracticeOption.Equals(TEXT("true"), ESearchCase::IgnoreCase)
 		|| PracticeOption.Equals(TEXT("Practice"), ESearchCase::IgnoreCase));
+	// The solo tutorial rides on the practice sandbox (no ready-up, no match timer, no forced round end);
+	// the map-baked ABHTutorialDirector layers the guided lesson + scripted Teacher on top of it.
+	const FString TutorialOption = GetWorld()->URL.GetOption(TEXT("BHTutorial="), TEXT(""));
+	if (!bTestMode && (TutorialOption.Equals(TEXT("1"), ESearchCase::IgnoreCase)
+		|| TutorialOption.Equals(TEXT("true"), ESearchCase::IgnoreCase)
+		|| TutorialOption.Equals(TEXT("Tutorial"), ESearchCase::IgnoreCase)))
+	{
+		bPracticeMode = true;
+		bTutorialMode = true;
+		// Which guided tutorial runs: Survivor (default) -> Teacher -> Monitor, chained on reaching the exit.
+		const FString TutorialPhaseOption = GetWorld()->URL.GetOption(TEXT("BHTutorialPhase="), TEXT("Survivor"));
+		if (TutorialPhaseOption.Equals(TEXT("Teacher"), ESearchCase::IgnoreCase))
+		{
+			RuntimeTutorialPhase = EBHTutorialPhase::Teacher;
+		}
+		else if (TutorialPhaseOption.Equals(TEXT("Monitor"), ESearchCase::IgnoreCase))
+		{
+			RuntimeTutorialPhase = EBHTutorialPhase::Monitor;
+		}
+		else
+		{
+			RuntimeTutorialPhase = EBHTutorialPhase::Survivor;
+		}
+		// Chain to the next tutorial on exit (full course) unless the player picked one tutorial to practise.
+		// Defaults to chained; only an explicit ?BHTutorialChain=0 (or false) makes it a single standalone lesson.
+		const FString TutorialChainOption = GetWorld()->URL.GetOption(TEXT("BHTutorialChain="), TEXT("1"));
+		bTutorialChain = !(TutorialChainOption.Equals(TEXT("0"), ESearchCase::IgnoreCase)
+			|| TutorialChainOption.Equals(TEXT("false"), ESearchCase::IgnoreCase));
+	}
 	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
 	const FString HuntSecondsOption = GetWorld()->URL.GetOption(TEXT("BHHuntSeconds="), TEXT(""));
 	if (!HuntSecondsOption.IsEmpty())
@@ -5420,8 +5955,479 @@ void ABHGameMode::BuildRuntimeFacility()
 	BuildFacilityLevel();
 }
 
+void ABHGameMode::BuildTutorialLevel()
+{
+	// A larger linear greybox for the self-serve solo tutorial, sized so the Teacher encounter is a REAL
+	// chase. Teaching rooms run west->east, separated by partition walls with a central 6 m doorway:
+	// (1) entry/move/flashlight, (2) locker alcove, (3) crawl-duct room, (4) breaker/blackout room, then a
+	// long open eastern hall holding (5) the visual question station and (6) the chase arena with cover +
+	// lockers, ending at (7) the green exit. The lone student spawns far west; the Teacher spawns in the
+	// arena, between the student and the exit, so reaching the exit means evading an active pursuer.
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	SurvivorSpawns = { FVector(-200.0f, 0.0f, 120.0f) };
+	HunterSpawn = FVector(9400.0f, 0.0f, 120.0f);
+
+	const FLinearColor FloorTint(0.12f, 0.14f, 0.15f, 1.0f);
+	const FLinearColor CeilingTint(0.06f, 0.07f, 0.08f, 1.0f);
+	const FLinearColor WallTint(0.27f, 0.30f, 0.33f, 1.0f);
+	const FLinearColor RoomTint(0.20f, 0.24f, 0.27f, 1.0f);
+
+	// Shell: floor + ceiling spanning X[-600,11400] x Y[-1800,1800], ceiling at 340 cm.
+	SpawnBlock(FVector(5400.0f, 0.0f, CenterZForBlockTop(0.0f, 0.30f)), FVector(120.0f, 36.0f, 0.30f), FloorTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+	SpawnBlock(FVector(5400.0f, 0.0f, CenterZForBlockBottom(340.0f, 0.15f)), FVector(120.0f, 36.0f, 0.15f), CeilingTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Plaster);
+
+	// Perimeter walls (3.4 m tall).
+	SpawnBlock(FVector(-600.0f, 0.0f, CenterZForBlockBottom(0.0f, 3.4f)), FVector(0.4f, 36.0f, 3.4f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Plaster);
+	SpawnBlock(FVector(11400.0f, 0.0f, CenterZForBlockBottom(0.0f, 3.4f)), FVector(0.4f, 36.0f, 3.4f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Plaster);
+	SpawnBlock(FVector(5400.0f, -1800.0f, CenterZForBlockBottom(0.0f, 3.4f)), FVector(120.0f, 0.4f, 3.4f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Plaster);
+	SpawnBlock(FVector(5400.0f, 1800.0f, CenterZForBlockBottom(0.0f, 3.4f)), FVector(120.0f, 0.4f, 3.4f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Plaster);
+
+	// Internal partitions for the teaching rooms only: each is two segments leaving a 6 m central doorway
+	// (Y[-300,300]). The eastern hall (station + arena + exit) east of X=6400 is left OPEN for the chase.
+	const TArray<float> PartitionX = { 1600.0f, 3200.0f, 4800.0f, 6400.0f };
+	for (const float WallX : PartitionX)
+	{
+		SpawnBlock(FVector(WallX, -1050.0f, CenterZForBlockBottom(0.0f, 3.2f)), FVector(0.4f, 15.0f, 3.2f), RoomTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Plaster);
+		SpawnBlock(FVector(WallX, 1050.0f, CenterZForBlockBottom(0.0f, 3.2f)), FVector(0.4f, 15.0f, 3.2f), RoomTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Plaster);
+	}
+
+	// Ceiling flicker lights down the centre + arena so the greybox is navigable (the flashlight + breaker
+	// blackout lessons read). These are the lights the breaker step cuts and restores.
+	const TArray<FVector> LightPoints = {
+		FVector(0.0f, 0.0f, 320.0f), FVector(2400.0f, 0.0f, 320.0f), FVector(4000.0f, 0.0f, 320.0f),
+		FVector(5600.0f, 0.0f, 320.0f), FVector(7000.0f, 0.0f, 320.0f), FVector(8400.0f, 700.0f, 320.0f),
+		FVector(8400.0f, -700.0f, 320.0f), FVector(9800.0f, 0.0f, 320.0f), FVector(11000.0f, 0.0f, 320.0f)
+	};
+	for (const FVector& LightPoint : LightPoints)
+	{
+		if (ABHFlickerLight* Light = World->SpawnActor<ABHFlickerLight>(LightPoint, FRotator::ZeroRotator))
+		{
+			FlickerLights.Add(Light);
+		}
+	}
+
+	// Reusable prone-only crawl duct: two low side walls + a low roof leave a ~2 m-wide, ~1.5 m-tall tunnel a
+	// standing pawn can't enter; the ABHCrawlSpaceVolume ejects anyone who isn't prone/sliding. Mirrors
+	// BuildFoggroundsLevel's SpawnCrawlTunnel so the export records the gate onto the ABHLevelMarker for
+	// DiscoverAuthoredLevel to rebuild even if the volume actor is later deleted while remeshing.
+	auto SpawnTutorialCrawlTunnel = [&](float cx, float cy, float yaw, float lenScale)
+	{
+		const float Rad = FMath::DegreesToRadians(yaw);
+		const float Cs = FMath::Cos(Rad);
+		const float Sn = FMath::Sin(Rad);
+		auto LP = [&](float lx, float ly, float z) { return FVector(cx + lx * Cs - ly * Sn, cy + lx * Sn + ly * Cs, z); };
+		const FRotator Rot(0.0f, yaw, 0.0f);
+		const float SideH = 1.55f;
+		SpawnBlock(LP(0.0f, -100.0f, CenterZForBlockBottom(0.0f, SideH)), FVector(lenScale, 0.12f, SideH), WallTint, Rot, true, EBHBlockMaterial::Concrete);
+		SpawnBlock(LP(0.0f, 100.0f, CenterZForBlockBottom(0.0f, SideH)), FVector(lenScale, 0.12f, SideH), WallTint, Rot, true, EBHBlockMaterial::Concrete);
+		SpawnBlock(LP(0.0f, 0.0f, CenterZForBlockBottom(150.0f, 0.12f)), FVector(lenScale, 2.1f, 0.12f), WallTint, Rot, true, EBHBlockMaterial::Concrete);
+		if (ABHCrawlSpaceVolume* Crawl = World->SpawnActor<ABHCrawlSpaceVolume>(LP(0.0f, 0.0f, 80.0f), Rot))
+		{
+			Crawl->Configure(FVector(lenScale * 50.0f + 40.0f, 95.0f, 110.0f));
+		}
+	};
+
+	// Zone 2 (X 1600..3200): the LOCKER to hide in (north side of the alcove).
+	World->SpawnActor<ABHLocker>(FVector(2400.0f, 1350.0f, 95.0f), FRotator(0.0f, -90.0f, 0.0f));
+
+	// Zone 3 (X 3200..4800): the prone-only CRAWL DUCT, south side, running east-west, clear of the doorway.
+	SpawnTutorialCrawlTunnel(4000.0f, -1250.0f, 0.0f, 5.0f);
+
+	// Zone 4 (X 4800..6400): the BREAKER the student repairs during the blackout (north side, easy to find by
+	// flashlight once the lights cut). The director cuts every flicker light on the Breaker step and restores
+	// them when this is repaired.
+	if (ABHBreaker* Breaker = World->SpawnActor<ABHBreaker>(FVector(5600.0f, 1250.0f, 95.0f), FRotator(0.0f, -90.0f, 0.0f)))
+	{
+		BreakerActors.Add(Breaker);
+	}
+
+	// Zone 5 (eastern hall, west end): TWO question STATIONS. The tutorial director sorts stations by X and
+	// overrides their questions at runtime: the westerly one (X 6700) becomes the VISUAL diagram question
+	// (ConfigureTutorialVisualQuestion), the easterly one (X 7500) becomes the INTERACTIVE drag-drop question
+	// (ConfigureTutorialInteractiveQuestion). Placed on opposite walls so both are clearly separate nodes.
+	if (ABHObjectiveStation* VisualStation = World->SpawnActor<ABHObjectiveStation>(FVector(6700.0f, -900.0f, 95.0f), FRotator(0.0f, 90.0f, 0.0f)))
+	{
+		VisualStation->Configure(EBHObjectiveStationType::Terminal);
+		ObjectiveStations.Add(VisualStation);
+	}
+	if (ABHObjectiveStation* InteractiveStation = World->SpawnActor<ABHObjectiveStation>(FVector(7500.0f, 900.0f, 95.0f), FRotator(0.0f, -90.0f, 0.0f)))
+	{
+		InteractiveStation->Configure(EBHObjectiveStationType::Valve);
+		ObjectiveStations.Add(InteractiveStation);
+	}
+
+	// Zone 6 (X 8000..10800): the open CHASE ARENA. Full-height pillars + waist-high crates give cover to
+	// break line of sight, and two lockers give mid-chase hiding spots, staggered with clear running lanes so
+	// the Teacher (spawned mid-arena at X=9400) can be juked on the way to the exit.
+	const TArray<FVector> CoverPillars = {
+		FVector(8200.0f, -700.0f, 0.0f), FVector(8200.0f, 700.0f, 0.0f),
+		FVector(8900.0f, 0.0f, 0.0f),
+		FVector(9600.0f, -800.0f, 0.0f), FVector(9600.0f, 800.0f, 0.0f),
+		FVector(10300.0f, 0.0f, 0.0f), FVector(10300.0f, -1200.0f, 0.0f), FVector(10300.0f, 1200.0f, 0.0f)
+	};
+	for (const FVector& Pillar : CoverPillars)
+	{
+		SpawnBlock(FVector(Pillar.X, Pillar.Y, CenterZForBlockBottom(0.0f, 2.8f)), FVector(1.5f, 1.5f, 2.8f), RoomTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+	}
+	const TArray<FVector> Crates = {
+		FVector(8600.0f, -1300.0f, 0.0f), FVector(8600.0f, 1300.0f, 0.0f),
+		FVector(9200.0f, 1100.0f, 0.0f), FVector(9950.0f, -1150.0f, 0.0f), FVector(10600.0f, 600.0f, 0.0f)
+	};
+	for (const FVector& Crate : Crates)
+	{
+		SpawnBlock(FVector(Crate.X, Crate.Y, CenterZForBlockBottom(0.0f, 0.9f)), FVector(1.1f, 1.1f, 0.9f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+	}
+	// Two arena lockers (north + south) so the student can practise hiding mid-chase.
+	World->SpawnActor<ABHLocker>(FVector(8500.0f, 1550.0f, 95.0f), FRotator(0.0f, -90.0f, 0.0f));
+	World->SpawnActor<ABHLocker>(FVector(10100.0f, -1550.0f, 95.0f), FRotator(0.0f, 90.0f, 0.0f));
+
+	// Zone 7 (X ~11200): the green EXIT at the east end (faces back west toward the approaching student).
+	if (ABHExitGate* ExitGate = World->SpawnActor<ABHExitGate>(FVector(11200.0f, 0.0f, 120.0f), FRotator(0.0f, 180.0f, 0.0f)))
+	{
+		ExitGates.Add(ExitGate);
+	}
+
+	// The guided-lesson brain, baked into the map so it self-activates on the listen-server host at runtime.
+	World->SpawnActor<ABHTutorialDirector>(FVector(5400.0f, 0.0f, 100.0f), FRotator::ZeroRotator);
+}
+
+void ABHGameMode::BuildBackroomsFacility()
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	// ---- One large, continuous "constant mesh" hall (Backrooms): a single big space under a low ceiling,
+	// filled with a REGULAR grid of identical full-height concrete pillars so every direction looks the same
+	// and you can't keep a bearing, then woven through with MANY freestanding angled partitions that carve
+	// tight slots, blind corners and dead-end alcoves - cover to break the hunter's line of sight and hide.
+	// There are no enclosed rooms; it reads as one endless, oppressive space built for hiding and tension. ----
+	constexpr int32 Cols = 26;
+	constexpr int32 Rows = 21;
+	constexpr float Pitch = 540.0f;        // tight pillar spacing -> uniform, occluding, close-quarters
+	constexpr float PillarHalf = 0.90f;    // SpawnBlock scale x100 => 180u (1.8m) square column
+	constexpr float WallThick = 0.30f;     // partitions: x100 => 30u thick
+	constexpr float CeilZ = 260.0f;        // low, oppressive roof
+	const float WallH = CeilZ / 100.0f;
+	const float W = Cols * Pitch;
+	const float D = Rows * Pitch;
+	const float X0 = -W * 0.5f;
+	const float Y0 = -D * 0.5f;
+	auto NodeXY = [&](int32 c, int32 r) { return FVector(X0 + (c + 0.5f) * Pitch, Y0 + (r + 0.5f) * Pitch, 0.0f); };
+	auto IsSpawnNode = [&](int32 c, int32 r) { return c >= Cols - 2 && r >= Rows - 2; };   // SE 2x2 spawn cluster
+	auto IsExitNode = [&](int32 c, int32 r) { return c <= 1 && r <= 1; };                  // NW exit corner
+
+	FRandomStream Rng(20260531);
+
+	// ---- Dark, grimy, mono palette (the WA materials carry the texture colour; tints stay near-black). ----
+	const FLinearColor FloorTint(0.09f, 0.09f, 0.10f, 1.0f);
+	const FLinearColor CeilTint(0.05f, 0.05f, 0.055f, 1.0f);
+	const FLinearColor WallTint(0.13f, 0.13f, 0.14f, 1.0f);
+
+	// Floor + ceiling slabs (world-aligned so the large planes tile properly).
+	SpawnBlock(FVector(0.0f, 0.0f, CenterZForBlockTop(0.0f, 0.25f)), FVector(W / 100.0f, D / 100.0f, 0.25f), FloorTint, FRotator::ZeroRotator, true, EBHBlockMaterial::ConcreteWA);
+	SpawnBlock(FVector(0.0f, 0.0f, CenterZForBlockBottom(CeilZ, 0.12f)), FVector(W / 100.0f, D / 100.0f, 0.12f), CeilTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PlasterWA);
+	AddMapContainment(W * 0.5f, D * 0.5f);
+
+	// Helper: keep the spawn cluster and the exit corner clear of partitions/clutter.
+	auto InReserved = [&](float x, float y, float pad)
+	{
+		const FVector Sp = NodeXY(Cols - 1, Rows - 1);
+		const FVector Ex = NodeXY(0, 0);
+		return FVector2D::Distance(FVector2D(x, y), FVector2D(Sp.X, Sp.Y)) < pad
+			|| FVector2D::Distance(FVector2D(x, y), FVector2D(Ex.X, Ex.Y)) < pad;
+	};
+	auto SpawnPartition = [&](float cx, float cy, float yaw, float len)
+	{
+		if (len < 40.0f) { return; }
+		SpawnBlock(FVector(cx, cy, CenterZForBlockBottom(0.0f, WallH)), FVector(len / 100.0f, WallThick, WallH), WallTint, FRotator(0.0f, yaw, 0.0f), true, EBHBlockMaterial::ConcreteWA);
+	};
+
+	// ---- Pre-plan the prone-only crawl tunnels FIRST, so pillars/partitions can be cleared out of each
+	// tunnel's footprint (otherwise a pillar/partition sits in the tunnel and blocks it). Entry = (cx,cy,yaw,lenScale). ----
+	const float CrawlSpecs[16][4] = {
+		{ 4.0f, 4.0f, 30.0f, 5.0f }, { 9.0f, 3.0f, 90.0f, 4.8f }, { 14.0f, 5.0f, 150.0f, 5.2f },
+		{ 20.0f, 4.0f, 60.0f, 4.6f }, { 23.0f, 9.0f, 90.0f, 5.0f }, { 3.0f, 9.0f, 0.0f, 5.2f },
+		{ 8.0f, 10.0f, 45.0f, 4.8f }, { 13.0f, 11.0f, 120.0f, 5.0f }, { 18.0f, 12.0f, 75.0f, 4.8f },
+		{ 22.0f, 13.0f, 30.0f, 4.6f }, { 5.0f, 15.0f, 90.0f, 5.0f }, { 10.0f, 17.0f, 135.0f, 5.2f },
+		{ 15.0f, 16.0f, 15.0f, 4.8f }, { 19.0f, 18.0f, 60.0f, 5.0f }, { 12.0f, 8.0f, 105.0f, 4.8f },
+		{ 6.0f, 12.0f, 160.0f, 5.0f }
+	};
+	TArray<FVector4> CrawlPlacements;
+	for (const float (&Cspec)[4] : CrawlSpecs)
+	{
+		const FVector P = NodeXY(static_cast<int32>(Cspec[0]), static_cast<int32>(Cspec[1]));
+		if (InReserved(P.X, P.Y, 2.0f * Pitch)) { continue; }
+		CrawlPlacements.Add(FVector4(P.X, P.Y, Cspec[2], Cspec[3]));
+	}
+	// True if (x,y) is inside any crawl tunnel's footprint (oriented box) - used to clear pillars/partitions.
+	auto InCrawlClearZone = [&](float x, float y)
+	{
+		for (const FVector4& T : CrawlPlacements)
+		{
+			const float Rad = FMath::DegreesToRadians(T.Z);
+			const float Cs = FMath::Cos(Rad);
+			const float Sn = FMath::Sin(Rad);
+			const float dx = x - T.X;
+			const float dy = y - T.Y;
+			const float lx = dx * Cs + dy * Sn;     // world -> tunnel-local (inverse yaw)
+			const float ly = -dx * Sn + dy * Cs;
+			if (FMath::Abs(lx) < T.W * 50.0f + 120.0f && FMath::Abs(ly) < 175.0f) { return true; }
+		}
+		return false;
+	};
+
+	// ---- The constant mesh: a regular grid of identical full-height pillars. ----
+	int32 PillarCount = 0;
+	for (int32 r = 0; r < Rows; ++r)
+	{
+		for (int32 c = 0; c < Cols; ++c)
+		{
+			if (IsSpawnNode(c, r) || IsExitNode(c, r)) { continue; }   // keep spawn/exit clear
+			const FVector P = NodeXY(c, r);
+			if (InCrawlClearZone(P.X, P.Y)) { continue; }              // keep crawl tunnels unobstructed
+			SpawnBlock(FVector(P.X, P.Y, CenterZForBlockBottom(0.0f, WallH)), FVector(PillarHalf, PillarHalf, WallH), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::ConcreteWA);
+			++PillarCount;
+		}
+	}
+
+	// ---- Tight cover: many freestanding angled partitions woven between the pillars. Finite segments at
+	// random angles never seal the hall into rooms (it stays one connected space), but locally they make tight
+	// slots, blind corners and dead-end alcoves to break line of sight and hide from the hunter. ----
+	const int32 TargetPartitions = (Cols * Rows * 11) / 10;   // ~1.1 per node
+	int32 PartCount = 0;
+	for (int32 i = 0; i < TargetPartitions * 3 && PartCount < TargetPartitions; ++i)
+	{
+		const float px = Rng.FRandRange(X0 + Pitch, X0 + W - Pitch);
+		const float py = Rng.FRandRange(Y0 + Pitch, Y0 + D - Pitch);
+		if (InReserved(px, py, 2.2f * Pitch) || InCrawlClearZone(px, py)) { continue; }
+		SpawnPartition(px, py, Rng.FRandRange(0.0f, 180.0f), Rng.FRandRange(2.4f, 6.0f) * 100.0f);   // 240..600
+		++PartCount;
+	}
+
+	// ---- A handful of longer meandering wall runs for stronger occlusion and forced detours. ----
+	int32 RunSegs = 0;
+	for (int32 i = 0; i < 12; ++i)
+	{
+		float px = Rng.FRandRange(X0 + 2.0f * Pitch, X0 + W - 2.0f * Pitch);
+		float py = Rng.FRandRange(Y0 + 2.0f * Pitch, Y0 + D - 2.0f * Pitch);
+		float Yaw = Rng.FRandRange(0.0f, 360.0f);
+		const int32 Segs = Rng.RandRange(3, 6);
+		for (int32 s = 0; s < Segs; ++s)
+		{
+			const float Len = Rng.FRandRange(4.0f, 7.0f) * 100.0f;
+			const float Rad = FMath::DegreesToRadians(Yaw);
+			const float Dx = FMath::Cos(Rad);
+			const float Dy = FMath::Sin(Rad);
+			const float Cx = px + Dx * Len * 0.5f;
+			const float Cy = py + Dy * Len * 0.5f;
+			if (!InReserved(Cx, Cy, 2.0f * Pitch) && !InCrawlClearZone(Cx, Cy)
+				&& Cx > X0 + Pitch && Cx < X0 + W - Pitch && Cy > Y0 + Pitch && Cy < Y0 + D - Pitch)
+			{
+				SpawnPartition(Cx, Cy, Yaw, Len);
+				++RunSegs;
+			}
+			px += Dx * Len;
+			py += Dy * Len;
+			Yaw += Rng.FRandRange(-40.0f, 40.0f);
+			px = FMath::Clamp(px, X0 + Pitch, X0 + W - Pitch);
+			py = FMath::Clamp(py, Y0 + Pitch, Y0 + D - Pitch);
+		}
+	}
+
+	// ---- Perimeter: solid concrete on all four sides; one exit doorway in the NW corner (west wall). ----
+	auto SpawnSeg = [&](float Cx, float Cy, bool bVertical, float Length)
+	{
+		if (Length < 40.0f) { return; }
+		const FVector Scale = bVertical ? FVector(WallThick, Length / 100.0f, WallH) : FVector(Length / 100.0f, WallThick, WallH);
+		SpawnBlock(FVector(Cx, Cy, CenterZForBlockBottom(0.0f, WallH)), Scale, WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::ConcreteWA);
+	};
+	SpawnSeg(0.0f, Y0, false, W);            // north outer
+	SpawnSeg(0.0f, Y0 + D, false, W);        // south outer
+	SpawnSeg(X0 + W, 0.0f, true, D);         // east outer
+	{
+		constexpr float Door = 260.0f;
+		const float ExitY = NodeXY(0, 0).Y;
+		const float LowLen = (ExitY - Door * 0.5f) - Y0;
+		const float HiLen = (Y0 + D) - (ExitY + Door * 0.5f);
+		if (LowLen > 40.0f) { SpawnSeg(X0, Y0 + LowLen * 0.5f, true, LowLen); }
+		if (HiLen > 40.0f) { SpawnSeg(X0, (Y0 + D) - HiLen * 0.5f, true, HiLen); }
+	}
+
+	// ---- Hiding: prone-only crawl tunnels (low concrete ducts). A standing hunter can't follow through the
+	// ~1.5m roof; a survivor crawls in to escape or hide. Built as two low side walls + a low roof, open at
+	// both ends, with an ABHCrawlSpaceVolume gate that rejects standing characters. ----
+	auto SpawnCrawlTunnel = [&](float cx, float cy, float yaw, float lenScale)
+	{
+		const float Rad = FMath::DegreesToRadians(yaw);
+		const float Cs = FMath::Cos(Rad);
+		const float Sn = FMath::Sin(Rad);
+		auto LP = [&](float lx, float ly, float z) { return FVector(cx + lx * Cs - ly * Sn, cy + lx * Sn + ly * Cs, z); };
+		const FRotator Rot(0.0f, yaw, 0.0f);
+		const float SideH = 1.55f;
+		SpawnBlock(LP(0.0f, -100.0f, CenterZForBlockBottom(0.0f, SideH)), FVector(lenScale, 0.12f, SideH), WallTint, Rot, true, EBHBlockMaterial::ConcreteWA);
+		SpawnBlock(LP(0.0f, 100.0f, CenterZForBlockBottom(0.0f, SideH)), FVector(lenScale, 0.12f, SideH), WallTint, Rot, true, EBHBlockMaterial::ConcreteWA);
+		SpawnBlock(LP(0.0f, 0.0f, CenterZForBlockBottom(150.0f, 0.12f)), FVector(lenScale, 2.1f, 0.12f), WallTint, Rot, true, EBHBlockMaterial::ConcreteWA);
+		if (ABHCrawlSpaceVolume* Crawl = World->SpawnActor<ABHCrawlSpaceVolume>(LP(0.0f, 0.0f, 80.0f), Rot))
+		{
+			Crawl->Configure(FVector(lenScale * 50.0f + 40.0f, 95.0f, 110.0f));
+		}
+	};
+	int32 CrawlCount = 0;
+	for (const FVector4& T : CrawlPlacements)   // pre-planned above; pillars/partitions already cleared from these
+	{
+		SpawnCrawlTunnel(T.X, T.Y, T.Z, T.W);
+		++CrawlCount;
+	}
+
+	// Lockers dotted through the hall (door faces -Y at yaw 0). Body is ~2.3m tall and centred on the actor,
+	// so origin z=116 sits the base on the floor.
+	int32 LockerCount = 0;
+	for (int32 r = 0; r < Rows; ++r)
+	{
+		for (int32 c = 0; c < Cols; ++c)
+		{
+			if (IsSpawnNode(c, r) || IsExitNode(c, r)) { continue; }
+			if (((c % 5) == 0) && ((r % 6) == 3))
+			{
+				const FVector P = NodeXY(c, r) + FVector(0.0f, Pitch * 0.5f, 116.0f);   // aisle between this node and the next
+				if (InReserved(P.X, P.Y, 1.6f * Pitch)) { continue; }
+				World->SpawnActor<ABHLocker>(P, FRotator(0.0f, static_cast<float>(((c + r) % 4) * 90), 0.0f));
+				++LockerCount;
+			}
+		}
+	}
+
+	// ---- Blue panel graphics: glowing sci-fi screens on some pillar faces + a soft (always-on) blue light,
+	// as colour accents and faint orientation landmarks in the grey hall. ----
+	int32 PanelCount = 0;
+	const FLinearColor PanelBlue(0.20f, 0.55f, 1.0f, 1.0f);
+	for (int32 r = 0; r < Rows; ++r)
+	{
+		for (int32 c = 0; c < Cols; ++c)
+		{
+			if (IsSpawnNode(c, r) || IsExitNode(c, r)) { continue; }
+			if (((c % 7) == 2) && ((r % 4) == 1))
+			{
+				const FVector Node = NodeXY(c, r);
+				const float FaceX = Node.X + PillarHalf * 100.0f + 4.0f;   // on the pillar's +X face
+				SpawnBlock(FVector(FaceX, Node.Y, CenterZForBlockBottom(120.0f, 1.0f)), FVector(0.06f, 1.4f, 1.0f), PanelBlue, FRotator::ZeroRotator, false, EBHBlockMaterial::BluePanel);
+				if (ABHFlickerLight* Light = World->SpawnActor<ABHFlickerLight>(FVector(FaceX + 120.0f, Node.Y, 175.0f), FRotator::ZeroRotator))
+				{
+					Light->Configure(0, FLinearColor(0.30f, 0.55f, 1.0f, 1.0f), 230.0f, 430.0f);
+					FlickerLights.Add(Light);
+				}
+				++PanelCount;
+			}
+		}
+	}
+
+	// ---- Spawns: 12 survivors clustered in the cleared SE corner. ----
+	SurvivorSpawns.Reset();
+	const int32 SpawnNodes[4][2] = { {Cols - 1, Rows - 1}, {Cols - 2, Rows - 1}, {Cols - 1, Rows - 2}, {Cols - 2, Rows - 2} };
+	const float SpawnOX[3] = { -150.0f, 150.0f, 0.0f };
+	const float SpawnOY[3] = { -150.0f, 150.0f, 0.0f };
+	for (int32 i = 0; i < 12; ++i)
+	{
+		const int32 (&Sc)[2] = SpawnNodes[i % 4];
+		const int32 k = i / 4;
+		const FVector Base = NodeXY(Sc[0], Sc[1]) + FVector(0.0f, 0.0f, 120.0f);
+		SurvivorSpawns.Add(Base + FVector(SpawnOX[k], SpawnOY[k], 0.0f));
+	}
+
+	// ---- One clear exit in the NW corner. ----
+	if (ABHExitGate* ExitGate = World->SpawnActor<ABHExitGate>(NodeXY(0, 0) + FVector(0.0f, 0.0f, 120.0f), FRotator::ZeroRotator))
+	{
+		ExitGates.Add(ExitGate);
+	}
+
+	// ---- Lighting: mostly dark for tension; a sparse dim grid + a few brighter "spot" pools for orientation
+	// relief. Kept light-count low (weak lab GPUs) and the map dark so the flashlight matters. ----
+	int32 LightCount = 0;
+	for (int32 r = 0; r < Rows; ++r)
+	{
+		for (int32 c = 0; c < Cols; ++c)
+		{
+			if (IsSpawnNode(c, r) || IsExitNode(c, r)) { continue; }
+			const bool bDim = ((c % 5) == 2) && ((r % 5) == 2);
+			const bool bSpot = ((c % 8) == 4) && ((r % 7) == 3);
+			if (bDim || bSpot)
+			{
+				if (ABHFlickerLight* Light = World->SpawnActor<ABHFlickerLight>(NodeXY(c, r) + FVector(0.0f, 0.0f, 235.0f), FRotator::ZeroRotator))
+				{
+					const FLinearColor Col = bSpot ? FLinearColor(0.95f, 0.86f, 0.70f, 1.0f) : FLinearColor(0.55f, 0.60f, 0.70f, 1.0f);
+					Light->Configure((LightCount % 6) + 1, Col, bSpot ? 720.0f : 240.0f, bSpot ? 1000.0f : 650.0f);
+					FlickerLights.Add(Light);
+					++LightCount;
+				}
+			}
+		}
+	}
+
+	// ---- Distribute question stations, breakers, switches, battery pickups across the hall (skip reserved). ----
+	const EBHObjectiveStationType StationCycle[4] = { EBHObjectiveStationType::Terminal, EBHObjectiveStationType::Valve, EBHObjectiveStationType::Evidence, EBHObjectiveStationType::Antenna };
+	int32 StationCount = 0;
+	int32 BreakerCount = 0;
+	int32 SwitchCount = 0;
+	for (int32 r = 0; r < Rows; ++r)
+	{
+		for (int32 c = 0; c < Cols; ++c)
+		{
+			if (IsSpawnNode(c, r) || IsExitNode(c, r)) { continue; }
+			if (StationCount < 47 && ((c * 3 + r * 2) % 11) == 0)
+			{
+				if (ABHObjectiveStation* Station = World->SpawnActor<ABHObjectiveStation>(NodeXY(c, r) + FVector(Pitch * 0.28f, 0.0f, 95.0f), FRotator(0.0f, static_cast<float>((c * 53 + r * 31) % 360), 0.0f)))
+				{
+					Station->Configure(StationCycle[StationCount % 4]);
+					ObjectiveStations.Add(Station);
+					++StationCount;
+				}
+			}
+			else if (BreakerCount < 7 && ((c + 2 * r) % 17) == 0)
+			{
+				if (ABHBreaker* Breaker = World->SpawnActor<ABHBreaker>(NodeXY(c, r) + FVector(0.0f, Pitch * 0.28f, 80.0f), FRotator(0.0f, 180.0f, 0.0f)))
+				{
+					BreakerActors.Add(Breaker);
+					++BreakerCount;
+				}
+			}
+			if (SwitchCount < 6 && ((c * 2 + r) % 23) == 0)
+			{
+				if (ABHPowerSwitch* Switch = World->SpawnActor<ABHPowerSwitch>(NodeXY(c, r) + FVector(-Pitch * 0.28f, 0.0f, 120.0f), FRotator(0.0f, -90.0f, 0.0f)))
+				{
+					Switch->Configure(SwitchCount + 1, FText::FromString(FString::Printf(TEXT("Toggle Circuit %d"), SwitchCount + 1)));
+					++SwitchCount;
+				}
+			}
+			if (((c + r) % 7) == 3)
+			{
+				World->SpawnActor<ABHBatteryPickup>(NodeXY(c, r) + FVector(0.0f, -Pitch * 0.26f, 70.0f), FRotator(0.0f, 90.0f, 0.0f));
+			}
+		}
+	}
+
+	UE_LOG(LogTemp, Display, TEXT("[Backrooms] Facility hall %dx%d nodes: %d pillars, %d partitions (+%d run segs), %d lockers, %d crawl tunnels, %d blue panels, %d stations, %d breakers, %d switches, %d lights, %d spawns."),
+		Cols, Rows, PillarCount, PartCount, RunSegs, LockerCount, CrawlCount, PanelCount, StationCount, BreakerCount, SwitchCount, LightCount, SurvivorSpawns.Num());
+}
+
 void ABHGameMode::BuildFacilityLevel()
 {
+	// Whole-map backrooms conversion: route the Facility to the dark-liminal maze generator instead of the
+	// legacy hand-authored industrial layout retained below. bBuildBackroomsFacility is a (non-const) member
+	// so the legacy body stays reachable to the compiler (no unreachable-code warning) and remains a fallback.
+	if (bBuildBackroomsFacility)
+	{
+		BuildBackroomsFacility();
+		return;
+	}
+
 	SurvivorSpawns = {
 		FVector(4320.0f, -1320.0f, 120.0f),
 		FVector(4520.0f, -960.0f, 120.0f),
@@ -5836,7 +6842,7 @@ void ABHGameMode::BuildFacilityLevel()
 	AddMoodPass(FLinearColor(0.020f, 0.032f, 0.040f, 1.0f), 0.014f, 0.55f, 0.14f);
 	AddFacilityVerticalSlicePass();
 	AddFacilityDetailPass();
-	AddClassroomHorrorPass();
+	// AddClassroomHorrorPass(); // disabled: crude blockout classroom (blackboard + red mark + cube desks) looked bad (playtest)
 	{
 		FRandomStream VariationStream(BHVariationSeedForLevel(RuntimeLevelName, RuntimeStageIndex, RoundSeed));
 		AddHorrorVariationPass(VariationStream);
@@ -6179,7 +7185,27 @@ void ABHGameMode::BuildFoggroundsLevel()
 		{FVector(-7050.0f, 1925.0f, CenterZForBlockBottom(0.0f, 2.85f)), FVector(7.0f, 0.38f, 2.85f), FRotator(0.0f, 22.0f, 0.0f), DarkScreen, EBHBlockMaterial::PaintedMetal},
 		{FVector(7200.0f, 2550.0f, CenterZForBlockBottom(0.0f, 2.85f)), FVector(0.42f, 8.4f, 2.85f), FRotator(0.0f, 8.0f, 0.0f), BrushScreen, EBHBlockMaterial::PaintedMetal},
 		{FVector(-800.0f, -100.0f, CenterZForBlockBottom(0.0f, 2.60f)), FVector(9.0f, 0.36f, 2.60f), FRotator(0.0f, 24.0f, 0.0f), DarkScreen, EBHBlockMaterial::PaintedMetal},
-		{FVector(3000.0f, -50.0f, CenterZForBlockBottom(0.0f, 2.60f)), FVector(0.38f, 8.8f, 2.60f), FRotator(0.0f, -18.0f, 0.0f), BrushScreen, EBHBlockMaterial::PaintedMetal}
+		{FVector(3000.0f, -50.0f, CenterZForBlockBottom(0.0f, 2.60f)), FVector(0.38f, 8.8f, 2.60f), FRotator(0.0f, -18.0f, 0.0f), BrushScreen, EBHBlockMaterial::PaintedMetal},
+		// ---- Extra sightline breakers: this is the running map and it was reading too open, so a denser scatter of
+		// freestanding angled screens (NOT maze walls) cuts the long cross-yard diagonals -> the space feels bigger
+		// and more dangerous while every cell still has multiple ways through, preserving the chase flow. Kept clear
+		// of the secret rooms / culvert mouths so no crawl route gets sealed. ----
+		{FVector(-2000.0f, -1500.0f, CenterZForBlockBottom(0.0f, 2.70f)), FVector(8.5f, 0.40f, 2.70f), FRotator(0.0f, -22.0f, 0.0f), DarkScreen, EBHBlockMaterial::PaintedMetal},
+		{FVector(2200.0f, -1900.0f, CenterZForBlockBottom(0.0f, 2.70f)), FVector(0.42f, 9.0f, 2.70f), FRotator(0.0f, 12.0f, 0.0f), BrushScreen, EBHBlockMaterial::RustedMetal},
+		{FVector(4800.0f, -1100.0f, CenterZForBlockBottom(0.0f, 2.70f)), FVector(7.5f, 0.38f, 2.70f), FRotator(0.0f, 16.0f, 0.0f), DarkScreen, EBHBlockMaterial::PaintedMetal},
+		{FVector(-4400.0f, -2600.0f, CenterZForBlockBottom(0.0f, 2.85f)), FVector(0.42f, 8.0f, 2.85f), FRotator(0.0f, -8.0f, 0.0f), BrushScreen, EBHBlockMaterial::PaintedMetal},
+		{FVector(-1300.0f, -3100.0f, CenterZForBlockBottom(0.0f, 2.75f)), FVector(7.0f, 0.40f, 2.75f), FRotator(0.0f, 28.0f, 0.0f), DarkScreen, EBHBlockMaterial::RustedMetal},
+		{FVector(3400.0f, -2400.0f, CenterZForBlockBottom(0.0f, 2.80f)), FVector(0.40f, 7.5f, 2.80f), FRotator(0.0f, -14.0f, 0.0f), BrushScreen, EBHBlockMaterial::PaintedMetal},
+		{FVector(-3000.0f, 300.0f, CenterZForBlockBottom(0.0f, 2.70f)), FVector(8.0f, 0.38f, 2.70f), FRotator(0.0f, 18.0f, 0.0f), DarkScreen, EBHBlockMaterial::PaintedMetal},
+		{FVector(1200.0f, -400.0f, CenterZForBlockBottom(0.0f, 2.65f)), FVector(0.40f, 7.0f, 2.65f), FRotator(0.0f, -24.0f, 0.0f), BrushScreen, EBHBlockMaterial::PaintedMetal},
+		{FVector(5400.0f, 900.0f, CenterZForBlockBottom(0.0f, 2.70f)), FVector(6.5f, 0.40f, 2.70f), FRotator(0.0f, 10.0f, 0.0f), DarkScreen, EBHBlockMaterial::RustedMetal},
+		{FVector(-5800.0f, -3300.0f, CenterZForBlockBottom(0.0f, 2.90f)), FVector(0.42f, 7.0f, 2.90f), FRotator(0.0f, 6.0f, 0.0f), BrushScreen, EBHBlockMaterial::PaintedMetal},
+		{FVector(0.0f, 2200.0f, CenterZForBlockBottom(0.0f, 2.75f)), FVector(9.0f, 0.40f, 2.75f), FRotator(0.0f, -16.0f, 0.0f), DarkScreen, EBHBlockMaterial::PaintedMetal},
+		{FVector(3000.0f, 2000.0f, CenterZForBlockBottom(0.0f, 2.70f)), FVector(0.40f, 8.0f, 2.70f), FRotator(0.0f, 14.0f, 0.0f), BrushScreen, EBHBlockMaterial::RustedMetal},
+		{FVector(-2100.0f, 3800.0f, CenterZForBlockBottom(0.0f, 2.70f)), FVector(7.5f, 0.38f, 2.70f), FRotator(0.0f, -10.0f, 0.0f), DarkScreen, EBHBlockMaterial::PaintedMetal},
+		{FVector(5200.0f, 3400.0f, CenterZForBlockBottom(0.0f, 2.80f)), FVector(0.42f, 7.0f, 2.80f), FRotator(0.0f, 8.0f, 0.0f), BrushScreen, EBHBlockMaterial::PaintedMetal},
+		{FVector(-4200.0f, 4600.0f, CenterZForBlockBottom(0.0f, 2.75f)), FVector(7.0f, 0.40f, 2.75f), FRotator(0.0f, 20.0f, 0.0f), DarkScreen, EBHBlockMaterial::PaintedMetal},
+		{FVector(1600.0f, 4200.0f, CenterZForBlockBottom(0.0f, 2.70f)), FVector(0.40f, 6.5f, 2.70f), FRotator(0.0f, -18.0f, 0.0f), BrushScreen, EBHBlockMaterial::RustedMetal}
 	};
 	for (const FFoggroundsScreenSpec& Screen : SightScreens)
 	{
@@ -6718,36 +7744,126 @@ void ABHGameMode::BuildFoggroundsFinalStation()
 void ABHGameMode::BuildTrainIntermissionLevel()
 {
 	SurvivorSpawns = {
-		FVector(-520.0f, -140.0f, 124.0f), FVector(-420.0f, -40.0f, 124.0f), FVector(-320.0f, 80.0f, 124.0f),
+		FVector(-520.0f, -140.0f, 124.0f), FVector(-400.0f, -20.0f, 124.0f), FVector(-320.0f, 80.0f, 124.0f),
 		FVector(-220.0f, 180.0f, 124.0f), FVector(-90.0f, -165.0f, 124.0f), FVector(20.0f, -55.0f, 124.0f),
 		FVector(130.0f, 65.0f, 124.0f), FVector(240.0f, 165.0f, 124.0f), FVector(360.0f, -145.0f, 124.0f),
 		FVector(470.0f, -45.0f, 124.0f), FVector(580.0f, 65.0f, 124.0f), FVector(690.0f, 165.0f, 124.0f)
 	};
-	HunterSpawn = FVector(-760.0f, 0.0f, 124.0f);
+	HunterSpawn = FVector(-980.0f, 0.0f, 124.0f);
 
 	const FLinearColor FloorTint(0.055f, 0.065f, 0.068f, 1.0f);
 	const FLinearColor WallTint(0.10f, 0.12f, 0.13f, 1.0f);
-	const FLinearColor TrainMetal(0.18f, 0.22f, 0.23f, 1.0f);
 	const FLinearColor SeatTint(0.10f, 0.36f, 0.42f, 1.0f);
 	const FLinearColor PoleTint(0.70f, 0.66f, 0.54f, 1.0f);
 	const FLinearColor PlatformTint(0.17f, 0.16f, 0.14f, 1.0f);
 	const FLinearColor WarningTint(0.92f, 0.64f, 0.18f, 1.0f);
 
+	// =============================================================================================
+	// Sealed five-car subway tube. Previously each car was four loose slabs with open ends and 200cm
+	// gaps, so players could walk off the ends / through the gaps into the service trench and see the
+	// fake "moving sticks" on a bare platform. It is now ONE continuous, fully enclosed tube
+	// (interior y in [-300,300], z in [0,300], x in [-3750,3750]) split into cars by gangway bulkheads
+	// with open archways, with glazed full-height side walls (collidable tinted glass), sealed end
+	// caps, an opaque tunnel backdrop behind the windows, and architectural trim so it reads as a real
+	// carriage. CenterX for car i = -3000 + i*1500.
+	// =============================================================================================
+	const float TubeMinX = -3750.0f;
+	const float TubeMaxX = 3750.0f;
+	const float TubeLen = (TubeMaxX - TubeMinX) / 100.0f;   // 75 units = 7500cm
+	const float WallY = 300.0f;   // interior side-wall plane
+	const float CeilZ = 300.0f;   // interior ceiling underside
+	const float WinBotZ = 118.0f; // window band bottom
+	const float WinTopZ = 212.0f; // window band top
+	const float WallTh = 0.18f;   // 18cm wall thickness
+	const float BackdropY = 580.0f;
+
+	const FLinearColor GlassTint(0.020f, 0.032f, 0.040f, 0.55f);
+	const FLinearColor TrimTint(0.34f, 0.36f, 0.33f, 1.0f);
+	const FLinearColor RoofTint(0.085f, 0.10f, 0.105f, 1.0f);
+	const FLinearColor TunnelWallTint(0.014f, 0.018f, 0.022f, 1.0f);
+	const FLinearColor CoveTint(0.40f, 0.66f, 0.70f, 1.0f);
+	const FLinearColor SkirtTint(0.05f, 0.055f, 0.05f, 1.0f);
+
+	// Substrate floor (kept) + a flush finished interior floor for the cars.
 	SpawnBlock(FVector(0.0f, 0.0f, CenterZForBlockTop(0.0f, 0.20f)), FVector(80.0f, 24.0f, 0.20f), FloorTint, FRotator::ZeroRotator, true, EBHBlockMaterial::DiamondPlate);
-	SpawnBlock(FVector(0.0f, -1180.0f, CenterZForBlockBottom(0.0f, 3.1f)), FVector(80.0f, 0.22f, 3.1f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
-	SpawnBlock(FVector(0.0f, 1180.0f, CenterZForBlockBottom(0.0f, 3.1f)), FVector(80.0f, 0.22f, 3.1f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
-	SpawnBlock(FVector(-4000.0f, 0.0f, CenterZForBlockBottom(0.0f, 3.1f)), FVector(0.22f, 24.0f, 3.1f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
-	SpawnBlock(FVector(4000.0f, 0.0f, CenterZForBlockBottom(0.0f, 3.1f)), FVector(0.22f, 24.0f, 3.1f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
-	SpawnBlock(FVector(0.0f, -620.0f, CenterZForBlockTop(3.0f, 0.07f)), FVector(80.0f, 3.7f, 0.07f), FLinearColor(0.018f, 0.021f, 0.023f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::RustedMetal);
-	SpawnBlock(FVector(0.0f, 620.0f, CenterZForBlockTop(3.0f, 0.07f)), FVector(80.0f, 3.7f, 0.07f), FLinearColor(0.018f, 0.021f, 0.023f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::RustedMetal);
-	SpawnBlock(FVector(0.0f, -720.0f, 21.0f), FVector(78.0f, 0.055f, 0.12f), FLinearColor(0.68f, 0.64f, 0.46f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
-	SpawnBlock(FVector(0.0f, -520.0f, 21.0f), FVector(78.0f, 0.055f, 0.12f), FLinearColor(0.68f, 0.64f, 0.46f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
-	SpawnBlock(FVector(0.0f, 520.0f, 21.0f), FVector(78.0f, 0.055f, 0.12f), FLinearColor(0.68f, 0.64f, 0.46f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
-	SpawnBlock(FVector(0.0f, 720.0f, 21.0f), FVector(78.0f, 0.055f, 0.12f), FLinearColor(0.68f, 0.64f, 0.46f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
-	SpawnBlock(FVector(-1150.0f, -392.0f, CenterZForBlockBottom(0.0f, 1.35f)), FVector(57.0f, 0.10f, 1.35f), FLinearColor(0.035f, 0.045f, 0.050f, 1.0f), FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
-	SpawnBlock(FVector(0.0f, 392.0f, CenterZForBlockBottom(0.0f, 1.35f)), FVector(80.0f, 0.10f, 1.35f), FLinearColor(0.035f, 0.045f, 0.050f, 1.0f), FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
-	SpawnBlock(FVector(0.0f, -520.0f, CenterZForBlockBottom(0.0f, 0.48f)), FVector(80.0f, 0.07f, 0.48f), FLinearColor(0.06f, 0.07f, 0.07f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::RustedMetal);
-	SpawnBlock(FVector(0.0f, 520.0f, CenterZForBlockBottom(0.0f, 0.48f)), FVector(80.0f, 0.07f, 0.48f), FLinearColor(0.06f, 0.07f, 0.07f, 1.0f), FRotator::ZeroRotator, true, EBHBlockMaterial::RustedMetal);
+	SpawnBlock(FVector(0.0f, 0.0f, CenterZForBlockTop(2.0f, 0.05f)), FVector(TubeLen, 6.1f, 0.05f), FLinearColor(0.085f, 0.098f, 0.104f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::DiamondPlate);
+
+	// Outer enclosure (kept as the far bound; never seen once the tube is sealed). Raised above the backdrop.
+	SpawnBlock(FVector(0.0f, -1180.0f, CenterZForBlockBottom(0.0f, 3.4f)), FVector(80.0f, 0.22f, 3.4f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(0.0f, 1180.0f, CenterZForBlockBottom(0.0f, 3.4f)), FVector(80.0f, 0.22f, 3.4f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(-4000.0f, 0.0f, CenterZForBlockBottom(0.0f, 3.4f)), FVector(0.22f, 24.0f, 3.4f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(4000.0f, 0.0f, CenterZForBlockBottom(0.0f, 3.4f)), FVector(0.22f, 24.0f, 3.4f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+
+	// Continuous ceiling over the whole tube + a recessed glowing light cove down the centreline.
+	SpawnBlock(FVector(0.0f, 0.0f, CenterZForBlockBottom(CeilZ, 0.16f)), FVector(TubeLen, 6.2f, 0.16f), RoofTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(0.0f, 0.0f, CeilZ - 9.0f), FVector(TubeLen, 1.4f, 0.05f), CoveTint, FRotator::ZeroRotator, false, EBHBlockMaterial::Tinted);
+
+	// Adds a sealed, full-height window wall (solid wainscot + collidable tinted glass band + solid
+	// header) along an X-segment at plane y=YPlane. The glass seals the band so the tunnel strips read
+	// through it but cannot be reached or jumped through.
+	auto AddWallRun = [&](float YPlane, float X0, float X1)
+	{
+		const float Len = (X1 - X0) / 100.0f;
+		const float Mid = (X0 + X1) * 0.5f;
+		if (Len <= 0.02f)
+		{
+			return;
+		}
+		SpawnBlock(FVector(Mid, YPlane, CenterZForBlockBottom(0.0f, WinBotZ / 100.0f)), FVector(Len, WallTh, WinBotZ / 100.0f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(Mid, YPlane, CenterZForBlockBottom(WinTopZ, (CeilZ - WinTopZ) / 100.0f)), FVector(Len, WallTh, (CeilZ - WinTopZ) / 100.0f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(Mid, YPlane, CenterZForBlockBottom(WinBotZ, (WinTopZ - WinBotZ) / 100.0f)), FVector(Len, 0.05f, (WinTopZ - WinBotZ) / 100.0f), GlassTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tinted);
+	};
+
+	// Decorative (non-colliding) framing for one side wall: window sill/header rails, floor skirting,
+	// a cant rail under the roof, and vertical window mullions.
+	auto AddWallTrim = [&](float YPlane)
+	{
+		const float InY = YPlane > 0.0f ? YPlane - 5.0f : YPlane + 5.0f;
+		SpawnBlock(FVector(0.0f, InY, WinBotZ), FVector(TubeLen, 0.05f, 0.06f), TrimTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(0.0f, InY, WinTopZ), FVector(TubeLen, 0.05f, 0.06f), TrimTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(0.0f, InY, 16.0f), FVector(TubeLen, 0.06f, 0.16f), SkirtTint, FRotator::ZeroRotator, false, EBHBlockMaterial::RustedMetal);
+		SpawnBlock(FVector(0.0f, InY, CeilZ - 7.0f), FVector(TubeLen, 0.05f, 0.07f), TrimTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+		for (float MullX = TubeMinX + 150.0f; MullX <= TubeMaxX - 150.0f; MullX += 300.0f)
+		{
+			SpawnBlock(FVector(MullX, InY, (WinBotZ + WinTopZ) * 0.5f), FVector(0.07f, 0.05f, (WinTopZ - WinBotZ) / 100.0f), TrimTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+		}
+	};
+
+	// Both side walls are fully sealed (no openings). The level advances on the intermission timer, not
+	// by reaching the platform, so there is no door in the side wall to slip through into the service
+	// trench; the station beyond the -Y wall is now scenery viewed through the STATION car's windows.
+	AddWallRun(WallY, TubeMinX, TubeMaxX);
+	AddWallRun(-WallY, TubeMinX, TubeMaxX);
+	AddWallTrim(WallY);
+	AddWallTrim(-WallY);
+
+	// Sealed end caps (front & back of the train) with a dark cab window inset.
+	for (float EndX : {TubeMinX, TubeMaxX})
+	{
+		SpawnBlock(FVector(EndX, 0.0f, CenterZForBlockBottom(0.0f, CeilZ / 100.0f)), FVector(WallTh, 6.0f, CeilZ / 100.0f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(EndX > 0.0f ? EndX - 7.0f : EndX + 7.0f, 0.0f, 168.0f), FVector(0.05f, 2.2f, 0.55f), GlassTint, FRotator::ZeroRotator, false, EBHBlockMaterial::Tinted);
+	}
+
+	// Opaque tunnel backdrop just behind the windows so the moving strips read as a real tunnel rather
+	// than floating sticks on an open platform. Full length on +Y; on -Y it stops short of the station.
+	SpawnBlock(FVector(0.0f, BackdropY, CenterZForBlockBottom(0.0f, 3.2f)), FVector(TubeLen, 0.2f, 3.2f), TunnelWallTint, FRotator::ZeroRotator, false, EBHBlockMaterial::Concrete);
+	SpawnBlock(FVector((TubeMinX + 2000.0f) * 0.5f, -BackdropY, CenterZForBlockBottom(0.0f, 3.2f)), FVector((2000.0f - TubeMinX) / 100.0f, 0.2f, 3.2f), TunnelWallTint, FRotator::ZeroRotator, false, EBHBlockMaterial::Concrete);
+
+	// Gangway bulkheads between the five cars: full-height transverse walls with a centred open archway
+	// so players can always move car to car (no door that could trap them during the moving phases).
+	const float ArchHalf = 95.0f;
+	const float ArchTopZ = 215.0f;
+	for (float GangwayX : {-2250.0f, -750.0f, 750.0f, 2250.0f})
+	{
+		const float PanelSpan = WallY - ArchHalf;
+		const float PanelCtr = ArchHalf + PanelSpan * 0.5f;
+		SpawnBlock(FVector(GangwayX, -PanelCtr, CenterZForBlockBottom(0.0f, CeilZ / 100.0f)), FVector(WallTh, PanelSpan / 100.0f, CeilZ / 100.0f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(GangwayX, PanelCtr, CenterZForBlockBottom(0.0f, CeilZ / 100.0f)), FVector(WallTh, PanelSpan / 100.0f, CeilZ / 100.0f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(GangwayX, 0.0f, CenterZForBlockBottom(ArchTopZ, (CeilZ - ArchTopZ) / 100.0f)), FVector(WallTh, (2.0f * ArchHalf) / 100.0f, (CeilZ - ArchTopZ) / 100.0f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(GangwayX, -ArchHalf, CenterZForBlockBottom(0.0f, ArchTopZ / 100.0f)), FVector(WallTh + 0.05f, 0.08f, ArchTopZ / 100.0f), TrimTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(GangwayX, ArchHalf, CenterZForBlockBottom(0.0f, ArchTopZ / 100.0f)), FVector(WallTh + 0.05f, 0.08f, ArchTopZ / 100.0f), TrimTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(GangwayX, 0.0f, CenterZForBlockBottom(ArchTopZ, 0.06f)), FVector(WallTh + 0.05f, (2.0f * ArchHalf) / 100.0f, 0.06f), TrimTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+	}
 
 	const FString Destination = PendingIntermissionResult == EBHRoundPhase::HunterWin
 		? TEXT("Remediation Platform")
@@ -6760,33 +7876,41 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 		TrainIntermissionManager->ConfigureIntermission(RuntimeStageIndex, GetNextMapAfterStage(RuntimeStageIndex), bFinalRecap ? TEXT("Final Station: Leaderboard") : Destination, bFinalRecap);
 	}
 
+	// Per-car interior dressing + one recap board (-Y wall) + the tunnel-motion strips. Board #1 is
+	// registered here for all cars before the second loop registers board #2, preserving the manager's
+	// display-index -> content mapping.
 	for (int32 CarIndex = 0; CarIndex < 5; ++CarIndex)
 	{
 		const float CenterX = -3000.0f + CarIndex * 1500.0f;
 		const FString CarName = CarIndex == 0
 			? TEXT("BOARDING")
 			: (CarIndex == 1 ? TEXT("RECAP") : (CarIndex == 2 ? TEXT("SHOP") : (CarIndex == 3 ? TEXT("SOCIAL") : TEXT("STATION"))));
-		SpawnBlock(FVector(CenterX, 0.0f, CenterZForBlockTop(0.0f, 0.18f)), FVector(13.0f, 4.8f, 0.18f), TrainMetal, FRotator::ZeroRotator, true, EBHBlockMaterial::DiamondPlate);
-		SpawnBlock(FVector(CenterX, -300.0f, 148.0f), FVector(13.0f, 0.14f, 2.1f), TrainMetal, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
-		SpawnBlock(FVector(CenterX, 300.0f, 148.0f), FVector(13.0f, 0.14f, 2.1f), TrainMetal, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
-		SpawnBlock(FVector(CenterX, 0.0f, 304.0f), FVector(13.0f, 4.9f, 0.16f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
-		for (float BenchXOffset : {-430.0f, 430.0f})
-		{
-			SpawnBlock(FVector(CenterX + BenchXOffset, -238.0f, 70.0f), FVector(2.55f, 0.42f, 0.38f), SeatTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
-			SpawnBlock(FVector(CenterX + BenchXOffset, 238.0f, 70.0f), FVector(2.55f, 0.42f, 0.38f), SeatTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
-		}
-		SpawnBlock(FVector(CenterX, -265.0f, 166.0f), FVector(1.25f, 0.04f, 0.68f), FLinearColor(0.02f, 0.03f, 0.04f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::Tinted);
-		SpawnBlock(FVector(CenterX, 265.0f, 166.0f), FVector(1.25f, 0.04f, 0.68f), FLinearColor(0.02f, 0.03f, 0.04f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::Tinted);
-		SpawnBlock(FVector(CenterX, 0.0f, 260.0f), FVector(5.8f, 0.05f, 0.06f), WarningTint, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
 
+		// Wall-side bench seating only in the cars without wall props (RECAP, STATION); the BOARDING,
+		// SHOP and SOCIAL cars carry teacher / survivor terminals and minigames against the walls.
+		// Shorter than before so the cars no longer read as bench-jammed.
+		if (CarIndex == 1 || CarIndex == 4)
+		{
+			for (float BenchXOffset : {-380.0f, 380.0f})
+			{
+				SpawnBlock(FVector(CenterX + BenchXOffset, -255.0f, 70.0f), FVector(1.55f, 0.42f, 0.38f), SeatTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+				SpawnBlock(FVector(CenterX + BenchXOffset, 255.0f, 70.0f), FVector(1.55f, 0.42f, 0.38f), SeatTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+			}
+		}
+
+		// Hand poles + longitudinal overhead grab rails + a ceiling warning strip.
 		for (int32 PoleIndex = 0; PoleIndex < 2; ++PoleIndex)
 		{
 			const float PoleX = CenterX - 420.0f + PoleIndex * 840.0f;
 			SpawnBlock(FVector(PoleX, -72.0f, 150.0f), FVector(0.07f, 0.07f, 2.7f), PoleTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
 			SpawnBlock(FVector(PoleX, 72.0f, 150.0f), FVector(0.07f, 0.07f, 2.7f), PoleTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
 		}
+		SpawnBlock(FVector(CenterX, -72.0f, 248.0f), FVector(8.2f, 0.05f, 0.05f), PoleTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(CenterX, 72.0f, 248.0f), FVector(8.2f, 0.05f, 0.05f), PoleTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(CenterX, 0.0f, 272.0f), FVector(5.0f, 0.05f, 0.05f), WarningTint, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
 
-		if (ABHTrainDisplayActor* Display = GetWorld()->SpawnActor<ABHTrainDisplayActor>(FVector(CenterX - 250.0f, -304.0f, 178.0f), FRotator(0.0f, 0.0f, 0.0f)))
+		// Recap board #1, mounted just inside the -Y window glass so its frame clears the wall plane.
+		if (ABHTrainDisplayActor* Display = GetWorld()->SpawnActor<ABHTrainDisplayActor>(FVector(CenterX - 250.0f, -290.0f, 178.0f), FRotator(0.0f, 0.0f, 0.0f)))
 		{
 			Display->SetDisplayProfile(EBHTrainDisplayProfile::TrainWallRecap);
 			Display->ConfigureDisplay(CarName, TEXT("Class performance review in progress."), FLinearColor(0.38f, 0.90f, 0.78f, 1.0f));
@@ -6796,30 +7920,28 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 			}
 		}
 
-		if (ABHTrainTunnelMotionActor* TunnelLeft = GetWorld()->SpawnActor<ABHTrainTunnelMotionActor>(FVector(CenterX, -430.0f, 166.0f), FRotator::ZeroRotator))
+		// Scrolling tunnel-motion strips seen through the windows: +Y on every car; -Y only on the front
+		// cars (BOARDING/RECAP/SHOP, CarIndex<3). The two rear cars (SOCIAL, STATION) sit alongside the
+		// station, so their -Y windows look onto the station scenery rather than a moving tunnel, and the
+		// -Y backdrop ends at x2000 (clear of the station's west wall at x2018) to avoid clipping it.
+		auto AddTunnelSide = [&](float SideY)
 		{
-			TunnelLeft->ConfigureMotion(1250.0f, 740.0f);
-			if (TrainIntermissionManager)
+			// The window glass is permanently sealed now, so the old opaque "shutter" that used to slide
+			// over an open window during motion would only blank out the view. It is gone: the scrolling
+			// strips plus the dark backdrop carry the moving-tunnel read on their own.
+			if (ABHTrainTunnelMotionActor* Tunnel = GetWorld()->SpawnActor<ABHTrainTunnelMotionActor>(FVector(CenterX, SideY, 165.0f), FRotator::ZeroRotator))
 			{
-				TrainIntermissionManager->RegisterTunnelMotion(TunnelLeft);
+				Tunnel->ConfigureMotion(1250.0f, 740.0f);
+				if (TrainIntermissionManager)
+				{
+					TrainIntermissionManager->RegisterTunnelMotion(Tunnel);
+				}
 			}
-		}
-		if (ABHTrainTunnelMotionActor* TunnelRight = GetWorld()->SpawnActor<ABHTrainTunnelMotionActor>(FVector(CenterX, 430.0f, 166.0f), FRotator::ZeroRotator))
+		};
+		AddTunnelSide(430.0f);
+		if (CarIndex < 3)
 		{
-			TunnelRight->ConfigureMotion(1250.0f, 740.0f);
-			if (TrainIntermissionManager)
-			{
-				TrainIntermissionManager->RegisterTunnelMotion(TunnelRight);
-			}
-		}
-		if (TrainIntermissionManager)
-		{
-			ABHBlockActor* LeftShutter = SpawnDynamicBlock(FVector(CenterX, -430.0f, 166.0f), FVector(10.8f, 0.10f, 1.02f), FLinearColor(0.050f, 0.060f, 0.062f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
-			ABHBlockActor* LeftBlocker = SpawnDynamicBlock(FVector(CenterX, -430.0f, 156.0f), FVector(11.2f, 0.18f, 2.24f), FLinearColor(0.0f, 0.0f, 0.0f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::Tinted);
-			ABHBlockActor* RightShutter = SpawnDynamicBlock(FVector(CenterX, 430.0f, 166.0f), FVector(10.8f, 0.10f, 1.02f), FLinearColor(0.050f, 0.060f, 0.062f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
-			ABHBlockActor* RightBlocker = SpawnDynamicBlock(FVector(CenterX, 430.0f, 156.0f), FVector(11.2f, 0.18f, 2.24f), FLinearColor(0.0f, 0.0f, 0.0f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::Tinted);
-			TrainIntermissionManager->RegisterMovingBarrier(LeftShutter, LeftBlocker);
-			TrainIntermissionManager->RegisterMovingBarrier(RightShutter, RightBlocker);
+			AddTunnelSide(-430.0f);
 		}
 	}
 
@@ -6829,7 +7951,7 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 		const FString CarName = CarIndex == 0
 			? TEXT("BOARDING")
 			: (CarIndex == 1 ? TEXT("RECAP") : (CarIndex == 2 ? TEXT("SHOP") : (CarIndex == 3 ? TEXT("SOCIAL") : TEXT("STATION"))));
-		if (ABHTrainDisplayActor* Display = GetWorld()->SpawnActor<ABHTrainDisplayActor>(FVector(CenterX + 250.0f, 304.0f, 178.0f), FRotator(0.0f, 180.0f, 0.0f)))
+		if (ABHTrainDisplayActor* Display = GetWorld()->SpawnActor<ABHTrainDisplayActor>(FVector(CenterX + 250.0f, 290.0f, 178.0f), FRotator(0.0f, 180.0f, 0.0f)))
 		{
 			Display->SetDisplayProfile(EBHTrainDisplayProfile::TrainWallRecap);
 			Display->ConfigureDisplay(CarName, TEXT("Class performance review in progress."), FLinearColor(0.38f, 0.90f, 0.78f, 1.0f));
@@ -6840,28 +7962,9 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 		}
 	}
 
-	for (int32 LinkIndex = 0; LinkIndex < 4; ++LinkIndex)
-	{
-		const float DoorX = -2250.0f + LinkIndex * 1500.0f;
-		if (ABHTrainDoor* Door = GetWorld()->SpawnActor<ABHTrainDoor>(FVector(DoorX, -304.0f, 92.0f), FRotator(0.0f, 0.0f, 0.0f)))
-		{
-			Door->ConfigureDoor(false, TEXT("Carriage Door"));
-			Door->SetDoorOpen(true);
-			if (TrainIntermissionManager)
-			{
-				TrainIntermissionManager->RegisterDoor(Door);
-			}
-		}
-	}
-
-	if (ABHTrainDoor* PlatformDoor = GetWorld()->SpawnActor<ABHTrainDoor>(FVector(3600.0f, -304.0f, 92.0f), FRotator(0.0f, 0.0f, 0.0f)))
-	{
-		PlatformDoor->ConfigureDoor(false, TEXT("Station Access"));
-		if (TrainIntermissionManager)
-		{
-			TrainIntermissionManager->RegisterDoor(PlatformDoor);
-		}
-	}
+	// No side doors: the inter-car connections are open gangway archways and both side walls are fully
+	// sealed, so there is nothing to slip through. The level transitions on the intermission timer
+	// (FinishIntermission), not by walking to a door, so no platform door is needed.
 
 	const EBHPowerupType ShopTypes[] = {
 		EBHPowerupType::StaminaBoost,
@@ -6871,9 +7974,18 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 		EBHPowerupType::DecoySound,
 		EBHPowerupType::DoorRush
 	};
+	// Survivor shop terminals line the SHOP car (CenterX 0) walls but are kept clear of the recap boards'
+	// X-spans (board #1 at x[-518,18] on the -Y wall, board #2 at x[-18,518] on the +Y wall) so they no
+	// longer stand in front of the boards: three on the +Y wall left of board #2, three on the -Y wall
+	// right of board #1, each turned to face the aisle.
+	const FVector SurvivorShopSlots[] = {
+		FVector(-120.0f, 235.0f, 110.0f), FVector(-300.0f, 235.0f, 110.0f), FVector(-480.0f, 235.0f, 110.0f),
+		FVector(120.0f, -235.0f, 110.0f), FVector(300.0f, -235.0f, 110.0f), FVector(480.0f, -235.0f, 110.0f)
+	};
 	for (int32 Index = 0; Index < UE_ARRAY_COUNT(ShopTypes); ++Index)
 	{
-		if (ABHPowerupShopTerminal* Terminal = GetWorld()->SpawnActor<ABHPowerupShopTerminal>(FVector(-120.0f + (Index % 3) * 280.0f, 210.0f - (Index / 3) * 420.0f, 110.0f), FRotator(0.0f, 180.0f, 0.0f)))
+		const FRotator SlotRot(0.0f, SurvivorShopSlots[Index].Y > 0.0f ? 90.0f : -90.0f, 0.0f);
+		if (ABHPowerupShopTerminal* Terminal = GetWorld()->SpawnActor<ABHPowerupShopTerminal>(SurvivorShopSlots[Index], SlotRot))
 		{
 			Terminal->ConfigureShopItem(ShopTypes[Index]);
 		}
@@ -6884,9 +7996,15 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 		EBHPowerupType::TeacherBlackoutSurge,
 		EBHPowerupType::TeacherPatrolIntel
 	};
+	// Teacher terminals move to the BOARDING car (CenterX -3000) -Y wall, clear of that car's recap
+	// board (x[-3518,-2982]); previously they were jammed into the SOCIAL car beside the minigames and
+	// in front of its board.
+	const FVector TeacherShopSlots[] = {
+		FVector(-2900.0f, -235.0f, 110.0f), FVector(-2720.0f, -235.0f, 110.0f), FVector(-2540.0f, -235.0f, 110.0f)
+	};
 	for (int32 Index = 0; Index < UE_ARRAY_COUNT(TeacherShopTypes); ++Index)
 	{
-		if (ABHPowerupShopTerminal* Terminal = GetWorld()->SpawnActor<ABHPowerupShopTerminal>(FVector(1040.0f + Index * 270.0f, -210.0f, 110.0f), FRotator(0.0f, 0.0f, 0.0f)))
+		if (ABHPowerupShopTerminal* Terminal = GetWorld()->SpawnActor<ABHPowerupShopTerminal>(TeacherShopSlots[Index], FRotator(0.0f, -90.0f, 0.0f)))
 		{
 			Terminal->ConfigureShopItem(TeacherShopTypes[Index]);
 		}
@@ -6907,11 +8025,14 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 		FRotator Rotation;
 		int32 SeedOffset;
 	};
+	// Minigames pushed against the SOCIAL car (CenterX 1500) walls and spread along X, opening a wide
+	// central aisle (previously all four sat at y=+/-96, crammed around the hand poles). Each is kept
+	// clear of that car's recap boards (board #1 x[982,1518] on -Y, board #2 x[1482,2018] on +Y).
 	const FTrainActivitySpec ActivitySpecs[] = {
-		{EBHTrainActivityType::ReflexArcade, FVector(1320.0f, 96.0f, 110.0f), FRotator(0.0f, 180.0f, 0.0f), 17},
-		{EBHTrainActivityType::SnackCart, FVector(1320.0f, -96.0f, 108.0f), FRotator(0.0f, 0.0f, 0.0f), 31},
-		{EBHTrainActivityType::DrinkCooler, FVector(1680.0f, 96.0f, 108.0f), FRotator(0.0f, 180.0f, 0.0f), 47},
-		{EBHTrainActivityType::MemoryTable, FVector(1680.0f, -96.0f, 104.0f), FRotator(0.0f, 0.0f, 0.0f), 59}
+		{EBHTrainActivityType::ReflexArcade, FVector(1100.0f, 210.0f, 110.0f), FRotator(0.0f, 180.0f, 0.0f), 17},
+		{EBHTrainActivityType::DrinkCooler, FVector(1340.0f, 210.0f, 108.0f), FRotator(0.0f, 180.0f, 0.0f), 47},
+		{EBHTrainActivityType::SnackCart, FVector(1570.0f, -210.0f, 108.0f), FRotator(0.0f, 0.0f, 0.0f), 31},
+		{EBHTrainActivityType::MemoryTable, FVector(1900.0f, -210.0f, 104.0f), FRotator(0.0f, 0.0f, 0.0f), 59}
 	};
 	for (const FTrainActivitySpec& Spec : ActivitySpecs)
 	{
@@ -7072,13 +8193,15 @@ void ABHGameMode::BuildSubstationLevel()
 	const FLinearColor ControlBlue(0.08f, 0.22f, 0.30f, 1.0f);
 	const FLinearColor SickGreen(0.08f, 0.26f, 0.14f, 1.0f);
 
-	SpawnBlock(FVector(0.0f, 0.0f, CenterZForBlockTop(0.0f, 0.25f)), FVector(122.0f, 92.0f, 0.25f), Concrete, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
-	SpawnBlock(FVector(0.0f, 0.0f, CenterZForBlockBottom(350.0f, 0.12f)), FVector(122.0f, 92.0f, 0.12f), Ceiling, FRotator::ZeroRotator, true, EBHBlockMaterial::Plaster);
+	// World-aligned (triplanar) concrete/plaster so the big floor/ceiling slabs and the tall interior walls read
+	// as real textured concrete instead of stretched smears. ConcreteWACool keeps the substation's cold palette.
+	SpawnBlock(FVector(0.0f, 0.0f, CenterZForBlockTop(0.0f, 0.25f)), FVector(122.0f, 92.0f, 0.25f), Concrete, FRotator::ZeroRotator, true, EBHBlockMaterial::ConcreteWACool);
+	SpawnBlock(FVector(0.0f, 0.0f, CenterZForBlockBottom(350.0f, 0.12f)), FVector(122.0f, 92.0f, 0.12f), Ceiling, FRotator::ZeroRotator, true, EBHBlockMaterial::PlasterWA);
 
-	SpawnBlock(FVector(0.0f, -4600.0f, CenterZForBlockBottom(0.0f, 3.5f)), FVector(122.0f, 0.35f, 3.5f), Wall, FRotator::ZeroRotator, true, EBHBlockMaterial::Plaster);
-	SpawnBlock(FVector(0.0f, 4600.0f, CenterZForBlockBottom(0.0f, 3.5f)), FVector(122.0f, 0.35f, 3.5f), Wall, FRotator::ZeroRotator, true, EBHBlockMaterial::Plaster);
-	SpawnBlock(FVector(-6100.0f, 0.0f, CenterZForBlockBottom(0.0f, 3.5f)), FVector(0.35f, 92.0f, 3.5f), Wall, FRotator::ZeroRotator, true, EBHBlockMaterial::Plaster);
-	SpawnBlock(FVector(6100.0f, 0.0f, CenterZForBlockBottom(0.0f, 3.5f)), FVector(0.35f, 92.0f, 3.5f), Wall, FRotator::ZeroRotator, true, EBHBlockMaterial::Plaster);
+	SpawnBlock(FVector(0.0f, -4600.0f, CenterZForBlockBottom(0.0f, 3.5f)), FVector(122.0f, 0.35f, 3.5f), Wall, FRotator::ZeroRotator, true, EBHBlockMaterial::ConcreteWACool);
+	SpawnBlock(FVector(0.0f, 4600.0f, CenterZForBlockBottom(0.0f, 3.5f)), FVector(122.0f, 0.35f, 3.5f), Wall, FRotator::ZeroRotator, true, EBHBlockMaterial::ConcreteWACool);
+	SpawnBlock(FVector(-6100.0f, 0.0f, CenterZForBlockBottom(0.0f, 3.5f)), FVector(0.35f, 92.0f, 3.5f), Wall, FRotator::ZeroRotator, true, EBHBlockMaterial::ConcreteWACool);
+	SpawnBlock(FVector(6100.0f, 0.0f, CenterZForBlockBottom(0.0f, 3.5f)), FVector(0.35f, 92.0f, 3.5f), Wall, FRotator::ZeroRotator, true, EBHBlockMaterial::ConcreteWACool);
 	AddMapContainment(6100.0f, 4600.0f);
 
 	const TArray<TPair<FVector, FVector>> Walls = {
@@ -7091,9 +8214,46 @@ void ABHGameMode::BuildSubstationLevel()
 		{FVector(1800.0f, -1400.0f, 175.0f), FVector(0.30f, 32.0f, 3.25f)}, {FVector(1800.0f, 3600.0f, 175.0f), FVector(0.30f, 20.0f, 3.25f)},
 		{FVector(3900.0f, -3400.0f, 175.0f), FVector(0.30f, 24.0f, 3.25f)}, {FVector(3900.0f, 1300.0f, 175.0f), FVector(0.30f, 32.0f, 3.25f)}
 	};
+	// Dress every interior wall so it doesn't read as one flat grey slab: a tiled wainscot (lower band, breaks the
+	// concrete with a different texture), a painted accent stripe that alternates amber/teal for colour variety,
+	// and a metal cornice line near the top. All cosmetic (proud of the wall, non-colliding) on both faces.
+	const FLinearColor WainscotTint(0.16f, 0.185f, 0.20f, 1.0f);
+	const FLinearColor TrimTint(0.26f, 0.28f, 0.29f, 1.0f);
+	auto DressWall = [&](float cx, float cy, const FVector& Scale, int32 Index)
+	{
+		const bool bAlongX = Scale.X >= Scale.Y;
+		const FLinearColor Accent = (Index % 2 == 0) ? Warning : ControlBlue;
+		for (float Face : {-1.0f, 1.0f})
+		{
+			const float Ox = bAlongX ? 0.0f : Face * 18.0f;
+			const float Oy = bAlongX ? Face * 18.0f : 0.0f;
+			const FVector WsScale = bAlongX ? FVector(Scale.X, 0.04f, 1.30f) : FVector(0.04f, Scale.Y, 1.30f);
+			const FVector StScale = bAlongX ? FVector(Scale.X, 0.03f, 0.10f) : FVector(0.03f, Scale.Y, 0.10f);
+			const FVector CnScale = bAlongX ? FVector(Scale.X, 0.05f, 0.10f) : FVector(0.05f, Scale.Y, 0.10f);
+			SpawnBlock(FVector(cx + Ox, cy + Oy, CenterZForBlockBottom(0.0f, 1.30f)), WsScale, WainscotTint, FRotator::ZeroRotator, false, EBHBlockMaterial::Tiles);
+			SpawnBlock(FVector(cx + Ox * 1.2f, cy + Oy * 1.2f, CenterZForBlockBottom(150.0f, 0.10f)), StScale, Accent, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+			SpawnBlock(FVector(cx + Ox * 1.2f, cy + Oy * 1.2f, CenterZForBlockBottom(298.0f, 0.10f)), CnScale, TrimTint, FRotator::ZeroRotator, false, EBHBlockMaterial::DiamondPlate);
+		}
+	};
+	int32 WallIdx = 0;
 	for (const TPair<FVector, FVector>& WallSpec : Walls)
 	{
-		SpawnBlock(FVector(WallSpec.Key.X, WallSpec.Key.Y, CenterZForBlockBottom(0.0f, WallSpec.Value.Z)), WallSpec.Value, Wall, FRotator::ZeroRotator, true, EBHBlockMaterial::Plaster);
+		SpawnBlock(FVector(WallSpec.Key.X, WallSpec.Key.Y, CenterZForBlockBottom(0.0f, WallSpec.Value.Z)), WallSpec.Value, Wall, FRotator::ZeroRotator, true, EBHBlockMaterial::ConcreteWACool);
+		DressWall(WallSpec.Key.X, WallSpec.Key.Y, WallSpec.Value, WallIdx++);
+	}
+
+	// ---- A little more closed (less "chasey"): extra partial walls that break the long open lanes in the outer
+	// rooms and the central aisles into more corners/cover, while leaving generous end gaps so every route still
+	// connects (no sealed rooms). Dressed like the rest. ----
+	const TArray<TPair<FVector, FVector>> ExtraWalls = {
+		{FVector(-2000.0f, -3500.0f, 175.0f), FVector(0.30f, 13.0f, 3.25f)}, {FVector(1300.0f, -3500.0f, 175.0f), FVector(0.30f, 13.0f, 3.25f)},
+		{FVector(-2000.0f, 3500.0f, 175.0f), FVector(0.30f, 13.0f, 3.25f)}, {FVector(1300.0f, 3500.0f, 175.0f), FVector(0.30f, 13.0f, 3.25f)},
+		{FVector(-3300.0f, -1900.0f, 175.0f), FVector(11.0f, 0.30f, 3.25f)}, {FVector(3000.0f, 1900.0f, 175.0f), FVector(11.0f, 0.30f, 3.25f)}
+	};
+	for (const TPair<FVector, FVector>& WallSpec : ExtraWalls)
+	{
+		SpawnBlock(FVector(WallSpec.Key.X, WallSpec.Key.Y, CenterZForBlockBottom(0.0f, WallSpec.Value.Z)), WallSpec.Value, Wall, FRotator::ZeroRotator, true, EBHBlockMaterial::ConcreteWACool);
+		DressWall(WallSpec.Key.X, WallSpec.Key.Y, WallSpec.Value, WallIdx++);
 	}
 
 	const TArray<TPair<FVector, FRotator>> Doors = {
@@ -7232,6 +8392,81 @@ void ABHGameMode::BuildSubstationLevel()
 		GetWorld()->SpawnActor<ABHLocker>(Location, FRotator::ZeroRotator);
 	}
 
+	// ---- Hiding pass (mid map = hide-and-move): the Facility hiding vocabulary at lower density. Prone-only
+	// crawl ducts to break sightline + duck the hunter, squeeze pockets reachable only by turning sideways
+	// (auto-squeeze), and glowing blue control panels as cold orientation accents. All placed in the open outer
+	// rooms / perimeter aisles, clear of the transformer bays, doors, spawns and the exit platform. ----
+	const FLinearColor DuctTint(0.16f, 0.18f, 0.19f, 1.0f);
+	const FLinearColor PanelBlue(0.20f, 0.55f, 1.0f, 1.0f);
+
+	auto SpawnCrawlDuct = [&](float cx, float cy, float yaw, float lenScale)
+	{
+		const float Rad = FMath::DegreesToRadians(yaw);
+		const float Cs = FMath::Cos(Rad);
+		const float Sn = FMath::Sin(Rad);
+		auto LP = [&](float lx, float ly, float z) { return FVector(cx + lx * Cs - ly * Sn, cy + lx * Sn + ly * Cs, z); };
+		const FRotator Rot(0.0f, yaw, 0.0f);
+		const float SideH = 1.55f;
+		SpawnBlock(LP(0.0f, -100.0f, CenterZForBlockBottom(0.0f, SideH)), FVector(lenScale, 0.12f, SideH), DuctTint, Rot, true, EBHBlockMaterial::ConcreteWACool);
+		SpawnBlock(LP(0.0f, 100.0f, CenterZForBlockBottom(0.0f, SideH)), FVector(lenScale, 0.12f, SideH), DuctTint, Rot, true, EBHBlockMaterial::ConcreteWACool);
+		SpawnBlock(LP(0.0f, 0.0f, CenterZForBlockBottom(150.0f, 0.12f)), FVector(lenScale, 2.1f, 0.12f), DuctTint, Rot, true, EBHBlockMaterial::ConcreteWACool);
+		if (ABHCrawlSpaceVolume* Crawl = GetWorld()->SpawnActor<ABHCrawlSpaceVolume>(LP(0.0f, 0.0f, 80.0f), Rot))
+		{
+			Crawl->Configure(FVector(lenScale * 50.0f + 40.0f, 95.0f, 110.0f));
+		}
+	};
+	const float DuctSpecs[8][4] = {
+		{ -3400.0f, -3350.0f, 0.0f, 4.8f }, { 1500.0f, -3350.0f, 0.0f, 4.6f },
+		{ -3400.0f, 3350.0f, 0.0f, 4.8f }, { 600.0f, 3350.0f, 0.0f, 4.6f },
+		{ -5650.0f, 0.0f, 90.0f, 4.8f }, { -5650.0f, -3000.0f, 0.0f, 3.6f },
+		{ -5650.0f, 3000.0f, 0.0f, 3.6f }, { 4300.0f, -3350.0f, 0.0f, 4.6f }
+	};
+	for (const float (&Duct)[4] : DuctSpecs)
+	{
+		SpawnCrawlDuct(Duct[0], Duct[1], Duct[2], Duct[3]);
+	}
+
+	// A snug ~2.6m hidey-pocket whose only entrance is a ~40u front slot: too narrow for the round standing
+	// capsule, so the survivor must turn sideways (auto-squeeze) to slip in. Three solid walls + a slotted front.
+	auto SpawnSqueezePocket = [&](float cx, float cy, float yaw)
+	{
+		const float Rad = FMath::DegreesToRadians(yaw);
+		const float Cs = FMath::Cos(Rad);
+		const float Sn = FMath::Sin(Rad);
+		auto LP = [&](float lx, float ly, float z) { return FVector(cx + lx * Cs - ly * Sn, cy + lx * Sn + ly * Cs, z); };
+		const FRotator Rot(0.0f, yaw, 0.0f);
+		const float H = 2.6f;
+		SpawnBlock(LP(150.0f, 0.0f, CenterZForBlockBottom(0.0f, H)), FVector(0.4f, 3.4f, H), Wall, Rot, true, EBHBlockMaterial::ConcreteWACool);   // back
+		SpawnBlock(LP(0.0f, -150.0f, CenterZForBlockBottom(0.0f, H)), FVector(3.0f, 0.4f, H), Wall, Rot, true, EBHBlockMaterial::ConcreteWACool);  // side
+		SpawnBlock(LP(0.0f, 150.0f, CenterZForBlockBottom(0.0f, H)), FVector(3.0f, 0.4f, H), Wall, Rot, true, EBHBlockMaterial::ConcreteWACool);   // side
+		SpawnBlock(LP(-150.0f, -75.0f, CenterZForBlockBottom(0.0f, H)), FVector(0.4f, 1.1f, H), Wall, Rot, true, EBHBlockMaterial::ConcreteWACool); // front stub (slot @ ~40u)
+		SpawnBlock(LP(-150.0f, 75.0f, CenterZForBlockBottom(0.0f, H)), FVector(0.4f, 1.1f, H), Wall, Rot, true, EBHBlockMaterial::ConcreteWACool);
+	};
+	SpawnSqueezePocket(-1900.0f, -3350.0f, 0.0f);
+	SpawnSqueezePocket(2700.0f, -3350.0f, 180.0f);
+	SpawnSqueezePocket(-1900.0f, 3350.0f, 0.0f);
+	SpawnSqueezePocket(2700.0f, 3350.0f, 180.0f);
+
+	// Glowing blue control panels mounted on the perimeter walls + a soft blue light each (cold accents / faint
+	// orientation landmarks). Falls back to a solid blue tint if the screen material is missing.
+	struct FSubstationPanelSpec { FVector Location; FVector Scale; };
+	const FSubstationPanelSpec SubstationPanels[] = {
+		{ FVector(-6070.0f, -2000.0f, 150.0f), FVector(0.06f, 1.4f, 1.0f) }, { FVector(-6070.0f, 2000.0f, 150.0f), FVector(0.06f, 1.4f, 1.0f) },
+		{ FVector(6070.0f, -2000.0f, 150.0f), FVector(0.06f, 1.4f, 1.0f) }, { FVector(6070.0f, 2000.0f, 150.0f), FVector(0.06f, 1.4f, 1.0f) },
+		{ FVector(-2000.0f, -4570.0f, 150.0f), FVector(1.4f, 0.06f, 1.0f) }, { FVector(2000.0f, 4570.0f, 150.0f), FVector(1.4f, 0.06f, 1.0f) }
+	};
+	for (const FSubstationPanelSpec& Panel : SubstationPanels)
+	{
+		SpawnBlock(Panel.Location, Panel.Scale, PanelBlue, FRotator::ZeroRotator, false, EBHBlockMaterial::BluePanel);
+		const FVector LightOffset(FMath::IsNearlyZero(Panel.Scale.X - 0.06f) ? (Panel.Location.X < 0.0f ? 180.0f : -180.0f) : 0.0f,
+			FMath::IsNearlyZero(Panel.Scale.Y - 0.06f) ? (Panel.Location.Y < 0.0f ? 180.0f : -180.0f) : 0.0f, 25.0f);
+		if (ABHFlickerLight* Light = GetWorld()->SpawnActor<ABHFlickerLight>(Panel.Location + LightOffset, FRotator::ZeroRotator))
+		{
+			Light->Configure(0, FLinearColor(0.30f, 0.55f, 1.0f, 1.0f), 230.0f, 430.0f);
+			FlickerLights.Add(Light);
+		}
+	}
+
 	const FVector Batteries[] = {
 		FVector(-5200.0f, -1650.0f, 70.0f), FVector(-5200.0f, 1650.0f, 70.0f), FVector(-1500.0f, -3650.0f, 70.0f), FVector(-1500.0f, 3650.0f, 70.0f),
 		FVector(900.0f, -3650.0f, 70.0f), FVector(900.0f, 3650.0f, 70.0f), FVector(3300.0f, -1450.0f, 70.0f), FVector(3300.0f, 1450.0f, 70.0f),
@@ -7339,7 +8574,7 @@ void ABHGameMode::BuildSubstationLevel()
 	});
 
 	AddMoodPass(FLinearColor(0.018f, 0.045f, 0.052f, 1.0f), 0.010f, 0.50f, 0.10f);
-	AddClassroomHorrorPass();
+	// AddClassroomHorrorPass(); // disabled: crude blockout classroom (blackboard + red mark + cube desks) looked bad (playtest)
 	{
 		FRandomStream VariationStream(BHVariationSeedForLevel(RuntimeLevelName, RuntimeStageIndex, RoundSeed));
 		AddHorrorVariationPass(VariationStream);
@@ -7354,13 +8589,35 @@ void ABHGameMode::BuildRuntimeNavigation()
 		return;
 	}
 
+#if WITH_EDITOR
+	// During the authored-map export bake, do not spawn/serialize a runtime nav volume. The authored .umap
+	// keeps marker.bRebuildRuntimeNavigation = true, so the runtime rebuilds nav fresh on load; baking one
+	// here would ship a stale, Movable-brush NavMeshBoundsVolume + RecastNavMesh that the runtime then
+	// duplicates. The export produces geometry + gameplay actors only.
+	if (bAuthoringExport)
+	{
+		return;
+	}
+#endif
+
 	bRuntimeNavigationReady = false;
 	FinalizeStaticBlockField();
 
 	const bool bSubstation = RuntimeLevelName.Equals(TEXT("Substation"), ESearchCase::IgnoreCase);
 	const bool bFoggrounds = RuntimeLevelName.Equals(TEXT("Foggrounds"), ESearchCase::IgnoreCase);
-	const FVector BoundsSize = bFoggrounds ? FVector(17000.0f, 13600.0f, 1000.0f) : (bSubstation ? FVector(13200.0f, 10000.0f, 800.0f) : FVector(12000.0f, 9600.0f, 800.0f));
-	const FVector BoundsCenter(0.0f, 0.0f, BoundsSize.Z * 0.5f);
+	const bool bTutorial = RuntimeLevelName.Equals(TEXT("Tutorial"), ESearchCase::IgnoreCase);
+	const FVector BoundsSize = bFoggrounds ? FVector(17000.0f, 13600.0f, 1000.0f)
+		: (bSubstation ? FVector(13200.0f, 10000.0f, 800.0f)
+		: (bTutorial ? FVector(13200.0f, 4400.0f, 400.0f) : FVector(12000.0f, 9600.0f, 800.0f)));
+	// The tutorial greybox is offset east (spans X[-600,11400]), so its nav volume must follow or the chase
+	// arena + exit fall outside the mesh. It is ALSO a fully enclosed box (floor at Z=0, ceiling at Z=340):
+	// a Z band of [0,800] makes Recast generate the navmesh on the CEILING ROOF (the floor sits on the very
+	// bottom voxel and is skipped), so the Teacher's path projects up to the roof and it can never move.
+	// Centre the band at Z=100 with half-height 200 -> Z[-100,300]: it dips below the floor (so the floor IS
+	// captured) and stops below the ceiling (so the roof is NOT), giving one correct ground-level navmesh.
+	const FVector BoundsCenter = bTutorial
+		? FVector(5400.0f, 0.0f, 100.0f)
+		: FVector(0.0f, 0.0f, BoundsSize.Z * 0.5f);
 
 	if (!RuntimeNavBounds)
 	{
@@ -7504,6 +8761,9 @@ void ABHGameMode::AddFacilityDetailPass()
 	}
 }
 
+// DISABLED at the call sites: the blockout "classroom" scenes this builds (a dark blackboard rectangle with
+// a red chalk-mark square, plus cube desks/chairs) read as crude placeholder art rather than horror dressing,
+// so the calls in the level builds are commented out. Kept here for reference / future real-mesh classrooms.
 void ABHGameMode::AddClassroomHorrorPass()
 {
 	const FLinearColor Blackboard(0.015f, 0.075f, 0.055f, 1.0f);
@@ -7618,12 +8878,12 @@ void ABHGameMode::AddHorrorVariationPass(FRandomStream& Stream)
 			{FVector(2200.0f, 0.0f, 26.0f), FVector(980.0f, 380.0f, 70.0f), EBHFootstepSurface::Metal},
 			{FVector(3300.0f, -760.0f, 30.0f), FVector(1550.0f, 480.0f, 70.0f), EBHFootstepSurface::Concrete}
 		};
-		for (float CenterX = -3000.0f; CenterX <= 3000.0f; CenterX += 1500.0f)
-		{
-			GlassPanes.Add({FVector(CenterX, -265.0f, 166.0f), FVector(1.25f, 0.05f, 0.68f), FRotator::ZeroRotator, FText::FromString(TEXT("Break Train Glass"))});
-			GlassPanes.Add({FVector(CenterX, 265.0f, 166.0f), FVector(1.25f, 0.05f, 0.68f), FRotator::ZeroRotator, FText::FromString(TEXT("Break Train Glass"))});
-		}
-		SafeClutter = {FVector(-3450.0f, -880.0f, 38.0f), FVector(0.0f, 880.0f, 38.0f), FVector(3450.0f, -880.0f, 38.0f)};
+		// No breakable train windows: the carriage now has sealed, collidable tinted glass set into the
+		// side walls (see BuildTrainIntermissionLevel), so breakable panes here would be redundant and
+		// would float as loose panels in front of the real window wall. Clutter crates move inside the
+		// sealed tube against clear wall spots (the old y=+/-880 points are now behind the tunnel
+		// backdrop and unreachable).
+		SafeClutter = {FVector(-2950.0f, 250.0f, 38.0f), FVector(-650.0f, 250.0f, 38.0f), FVector(650.0f, -250.0f, 38.0f)};
 	}
 	else
 	{
@@ -7692,15 +8952,34 @@ void ABHGameMode::AddSurfaceDetailGrid(float HalfX, float HalfY, const FLinearCo
 
 void ABHGameMode::AddIndustrialClutter(const TArray<FVector>& Centers, const FLinearColor& Tint)
 {
-	const FLinearColor DarkMetal(0.08f, 0.09f, 0.095f, 1.0f);
+	// Real-prop set dressing. Each curated (already collision-safe) clutter centre gets a SmartBasicInterfaces
+	// industrial prop instead of a bare cube stack: a large floor prop (cabinet / shelf / generator) plus a
+	// couple of small accents (gas can / battery). Meshes + scales are reused from AddFacilityVerticalSlicePass
+	// so they are known-good sizes, and SpawnRuntimeMeshProp bakes a real AStaticMeshActor during authored
+	// export while falling back to a tinted cube if a mesh is ever missing -- so this can never break the cook
+	// or leave a hole. SmartBasicInterfaces is whole-AlwaysCook (DefaultGame.ini), so no new cook dependency.
+	// ONE real prop per clutter centre (down from a 3-4 cube stack) for a far less cramped, more readable
+	// space, cycling a varied set: SmartBasicInterfaces industrial pieces (known-good scales reused from the
+	// vertical-slice pass) plus a few ResidentHorrorV1 props for flavour. SpawnRuntimeMeshProp bakes a real
+	// AStaticMeshActor and falls back to a tinted cube if a mesh is missing. SmartBasicInterfaces is
+	// whole-AlwaysCook; the ResidentHorrorV1 meshes cook transitively via the baked map's references.
+	// NOTE: ResidentHorrorV1 props are placed at scale 1.0 (their native size is unverified) - flag any that
+	// look wrong-sized on a walk-through and the scale here is a one-number fix.
+	struct FClutterProp { const TCHAR* Mesh; const TCHAR* Material; float Scale; };
+	static const FClutterProp Props[] = {
+		{ TEXT("/Game/SmartBasicInterfaces/Meshes/SM_cabinet.SM_cabinet"),                   TEXT("/Game/SmartBasicInterfaces/Materials/MI_Cabinet.MI_Cabinet"),                   0.62f },
+		{ TEXT("/Game/ResidentHorrorV1/Demo/Meshes/SM_Computer.SM_Computer"),                TEXT(""),                                                                             1.00f },
+		{ TEXT("/Game/SmartBasicInterfaces/Demo/SCContent/Props/SM_Shelf.SM_Shelf"),         TEXT(""),                                                                             0.62f },
+		{ TEXT("/Game/ResidentHorrorV1/Demo/Meshes/SM_trashbin.SM_trashbin"),                TEXT(""),                                                                             1.00f },
+		{ TEXT("/Game/SmartBasicInterfaces/Meshes/SM_generatorSection.SM_generatorSection"), TEXT("/Game/SmartBasicInterfaces/Materials/MI_GeneratorSection.MI_GeneratorSection"), 0.58f },
+		{ TEXT("/Game/ResidentHorrorV1/Demo/Meshes/SM_ammoBox.SM_ammoBox"),                  TEXT(""),                                                                             1.00f },
+	};
+	const int32 NumProps = static_cast<int32>(UE_ARRAY_COUNT(Props));
 	for (int32 Index = 0; Index < Centers.Num(); ++Index)
 	{
-		const FVector& Center = Centers[Index];
-		const float Angle = (Index * 37) % 180;
-		SpawnBlock(Center, FVector(0.85f, 0.85f, 0.85f), Tint, FRotator(0.0f, Angle, 0.0f), true, EBHBlockMaterial::RustedMetal);
-		SpawnBlock(Center + FVector(115.0f, -85.0f, 25.0f), FVector(0.55f, 0.42f, 0.46f), DarkMetal, FRotator(0.0f, Angle + 18.0f, 0.0f), true, EBHBlockMaterial::PaintedMetal);
-		SpawnBlock(Center + FVector(-95.0f, 115.0f, 75.0f), FVector(0.35f, 0.35f, 1.25f), DarkMetal, FRotator(0.0f, Angle - 25.0f, 0.0f), true, EBHBlockMaterial::RustedMetal);
-		SpawnBlock(Center + FVector(20.0f, 0.0f, 165.0f), FVector(0.10f, 1.4f, 0.10f), DarkMetal, FRotator(0.0f, Angle, 0.0f), false, EBHBlockMaterial::PaintedMetal);
+		const FClutterProp& Prop = Props[Index % NumProps];
+		const float Yaw = static_cast<float>((Index * 53) % 360);
+		SpawnRuntimeMeshProp(Centers[Index], FRotator(0.0f, Yaw, 0.0f), FString(Prop.Mesh), FString(Prop.Material), FVector(Prop.Scale), true, FVector(0.85f, 0.52f, 1.20f), Tint, EBHBlockMaterial::RustedMetal);
 	}
 }
 
@@ -8168,8 +9447,11 @@ void ABHGameMode::AddMoodPass(const FLinearColor& FogColor, float FogDensity, fl
 	{
 		if (UExponentialHeightFogComponent* FogComponent = Fog->GetComponent())
 		{
-			FogComponent->SetFogDensity(FogDensity);
-			FogComponent->SetFogHeightFalloff(bFoggrounds ? (bExtremeFog ? 0.034f : 0.036f) : 0.075f);
+			// Substation gets a low, ground-hugging fog (high height-falloff) so the haze pools near the floor as a
+			// light mist for atmosphere instead of filling the room; other indoor maps keep the thin, even height fog.
+			const bool bSubstationMist = RuntimeLevelName.Equals(TEXT("Substation"), ESearchCase::IgnoreCase);
+			FogComponent->SetFogDensity(bSubstationMist ? 0.018f : FogDensity);
+			FogComponent->SetFogHeightFalloff(bFoggrounds ? (bExtremeFog ? 0.034f : 0.036f) : (bSubstationMist ? 0.34f : 0.075f));
 			FogComponent->SetFogInscatteringColor(FogColor);
 			FogComponent->SetFogMaxOpacity(bFoggrounds ? (bExtremeFog ? 0.96f : (bHeavyFog ? 0.92f : 0.80f)) : 1.0f);
 			FogComponent->SetStartDistance(bFoggrounds ? (bExtremeFog ? 80.0f : 110.0f) : 0.0f);
@@ -8192,6 +9474,17 @@ void ABHGameMode::AddMoodPass(const FLinearColor& FogColor, float FogDensity, fl
 			FogComponent->SetVolumetricFogDistance(bFoggrounds ? (bExtremeFog ? 7200.0f : 7800.0f) : (bExtremeFog ? 4200.0f : 5200.0f));
 			FogComponent->SetVolumetricFogStartDistance(bFoggrounds ? 100.0f : 0.0f);
 			FogComponent->SetVolumetricFogNearFadeInDistance(bFoggrounds ? 180.0f : (bExtremeFog ? 75.0f : 55.0f));
+
+			// Substation (the middle map): a denser, strongly ground-concentrated second fog layer pools a
+			// visible-but-light mist on the floor that fades out by standing height. Volumetric fog picks it up
+			// so it reads as drifting ground mist rather than a flat screen tint. No extra actor needed.
+			if (bSubstationMist)
+			{
+				FogComponent->SetSecondFogData(FExponentialHeightFogData());
+				FogComponent->SetSecondFogDensity(0.22f);
+				FogComponent->SetSecondFogHeightFalloff(1.0f);
+				FogComponent->SetSecondFogHeightOffset(0.0f);
+			}
 		}
 	}
 }
@@ -8232,6 +9525,16 @@ void ABHGameMode::FinalizeStaticBlockField()
 
 void ABHGameMode::AddStaticBlock(const FVector& Location, const FVector& Scale, const FLinearColor& Tint, const FRotator& Rotation, bool bCollides, EBHBlockMaterial Material, bool bStartHidden)
 {
+#if WITH_EDITOR
+	// Authored export: emit a real, editable, hard-referenced AStaticMeshActor instead of a runtime
+	// block-field spec (which is invisible in-editor until BeginPlay rebuilds the instanced components).
+	if (bAuthoringExport)
+	{
+		SpawnAuthoredBlockActor(Location, Scale, Tint, Rotation, bCollides, Material, bStartHidden);
+		return;
+	}
+#endif
+
 	ABHStaticBlockField* Field = EnsureStaticBlockField();
 	if (!Field)
 	{
@@ -8694,6 +9997,7 @@ void ABHGameMode::PrepareRoundDirector()
 	LastWhisperJumpscareTime = LastDirectorScareTime - 999.0f;
 	LastPresenceSpikeTime = LastDirectorScareTime - 999.0f;
 	LastTeacherCounterScareTime = LastDirectorScareTime - 999.0f;
+	LastTeacherProperScareTime = LastDirectorScareTime - 999.0f;
 	if (ABHGameState* BHGS = GetGameState<ABHGameState>())
 	{
 		BHGS->SetBreakerCounts(0, ActiveBreakerCount);
@@ -8701,7 +10005,9 @@ void ABHGameMode::PrepareRoundDirector()
 		BHGS->SetRoundOptions(TargetHunterCount, ObjectiveIntensity, bInfectionMode, bPartyPace, ChosenModifier);
 		BHGS->SetPresenceState(12.0f, TEXT("The building is listening."), 0);
 		BHGS->SetRevisionOptions(RevisionMode, RevisionTopicMask, RevisionDifficultyMix, RevisionClassThreshold, RevisionIndividualThreshold, RevisionRoundDuration, RevisionScareIntensity);
-		BHGS->SetRevisionContributionTarget(GetRevisionMinimumContributionTarget());
+		// Freeze the hall-monitor contribution gate target for the whole round at round start, so the
+		// enforced threshold never shifts when students join/leave mid-round.
+		RefreshRevisionContributionGateTarget();
 	}
 	if (bRevisionMode)
 	{
@@ -8798,6 +10104,29 @@ void ABHGameMode::TickDirector()
 	if (Now - LastColdCallTime >= ColdCallCooldown && FMath::FRand() < ColdCallChance)
 	{
 		TriggerColdCallEvent();
+	}
+
+	// Keep the Teacher in the horror too: every now and then spring a proper scare (turn-around / super chain /
+	// SCP-096) on a random alive hunter. Generous cooldown so it's an occasional jolt, never a nuisance.
+	const float TeacherScareCooldown = bPartyPace || bPanicRound ? 80.0f : 135.0f;
+	const float TeacherScareChance = bPartyPace || bPanicRound ? 0.22f : 0.13f;
+	if (Now - LastTeacherProperScareTime >= TeacherScareCooldown && FMath::FRand() < TeacherScareChance)
+	{
+		TArray<ABHCharacter*> AliveHunters;
+		for (TActorIterator<ABHCharacter> It(GetWorld()); It; ++It)
+		{
+			ABHCharacter* Character = *It;
+			const ABHPlayerState* HunterPS = Character ? Character->GetPlayerState<ABHPlayerState>() : nullptr;
+			if (Character && HunterPS && HunterPS->IsAliveHunter())
+			{
+				AliveHunters.Add(Character);
+			}
+		}
+		if (AliveHunters.Num() > 0)
+		{
+			TriggerProperScareOnTeacher(AliveHunters[FMath::RandRange(0, AliveHunters.Num() - 1)]);
+			LastTeacherProperScareTime = Now;
+		}
 	}
 }
 
@@ -9097,12 +10426,49 @@ void ABHGameMode::ApplyPresenceSpike(const FVector& SourceLocation, float SpikeL
 	{
 		SpawnAmbient(SourceLocation + FVector(0.0f, 0.0f, 86.0f), FMath::FRandRange(125.0f, 260.0f), 0.20f, 0.16f, 4.7f, 3.25f);
 	}
+
+	// Danger reaction: briefly tint the nearest fixtures toward a sickly amber-green and quicken their
+	// flicker so the lighting itself signals the Shape is closing in. Reuses the self-reverting burst
+	// system (timer-based restore, replication- and reduced-flash-comfort safe), so this is purely
+	// event-driven with no per-frame cost. Capped at a few nearest lights so it reads as a cue rather
+	// than a room-wide strobe, and scales hotter with the spike level.
+	if (!FlickerLights.IsEmpty())
+	{
+		const float PresenceAlpha = FMath::Clamp(SpikeLevel / 100.0f, 0.0f, 1.0f);
+		const FLinearColor DreadTint = FMath::Lerp(FLinearColor(0.92f, 0.70f, 0.26f, 1.0f), FLinearColor(0.62f, 0.80f, 0.30f, 1.0f), PresenceAlpha);
+		const float BurstMul = FMath::Lerp(1.25f, 1.7f, PresenceAlpha);
+		const float BurstSpeed = FMath::Lerp(11.0f, 16.0f, PresenceAlpha);
+		const float BurstDuration = FMath::Lerp(1.1f, 1.7f, PresenceAlpha);
+		const float ReactRadiusSq = FMath::Square(2400.0f);
+		const int32 MaxReacting = PresenceAlpha > 0.66f ? 4 : (PresenceAlpha > 0.33f ? 3 : 2);
+		int32 Reacted = 0;
+		for (ABHFlickerLight* Light : FlickerLights)
+		{
+			if (Reacted >= MaxReacting)
+			{
+				break;
+			}
+			if (Light && Light->IsPowered() && FVector::DistSquared(Light->GetActorLocation(), SourceLocation) <= ReactRadiusSq)
+			{
+				Light->TriggerFlickerBurst(BurstDuration, BurstMul, DreadTint, BurstSpeed);
+				++Reacted;
+			}
+		}
+	}
 }
 
 void ABHGameMode::PublishObjectiveBeats()
 {
 	ABHGameState* BHGS = GetGameState<ABHGameState>();
 	if (!BHGS)
+	{
+		return;
+	}
+
+	// The guided tutorial deliberately shows a single marker for the one next object the current lesson step
+	// needs (locker, then crawl duct, then station, then exit). ABHTutorialDirector publishes that beat, so
+	// the generic many-beat planner must not run here or it would clutter the screen with every objective.
+	if (bTutorialMode)
 	{
 		return;
 	}
@@ -9178,6 +10544,12 @@ void ABHGameMode::PublishDangerObjectiveBeat(const FVector& Location, const FStr
 		return;
 	}
 
+	// Keep the tutorial's single next-object marker uncluttered: no transient red danger pings.
+	if (bTutorialMode)
+	{
+		return;
+	}
+
 	const float Now = GetWorld()->GetTimeSeconds();
 	if (Now - LastObjectiveDangerBeatTime < 4.5f)
 	{
@@ -9220,6 +10592,28 @@ bool ABHGameMode::TriggerFakeOutTensionCue(ABHCharacter* Target)
 		return false;
 	}
 	LastFakeOutTime = Now;
+
+	// "It saw you" pure-tension tease: sometimes just whisper a line onto the screen with nothing actually
+	// happening — the psychological poke the user asked for. No sound, flicker, lock, or monster; only dread.
+	if (FMath::FRand() < 0.45f)
+	{
+		if (ABHPlayerController* TextPC = Cast<ABHPlayerController>(Target->GetController()))
+		{
+			static const TCHAR* TeaseLines[] = {
+				TEXT("It saw you."),
+				TEXT("It knows where you are."),
+				TEXT("You are not alone in here."),
+				TEXT("Something is watching."),
+				TEXT("Don't look behind you."),
+				TEXT("It heard that.")
+			};
+			const FString Line = TeaseLines[FMath::RandRange(0, static_cast<int32>(UE_ARRAY_COUNT(TeaseLines)) - 1)];
+			TextPC->ClientShowStatusMessage(Line, 2.6f);
+		}
+		Target->AddDread(5.0f);
+		RecordPlaytestTelemetryMarker(TEXT("scare_cue"), Target->GetActorLocation(), TEXT("fake_out_text"), nullptr, Target->GetPlayerState<ABHPlayerState>());
+		return true;
+	}
 
 	const FVector TargetLocation = Target->GetActorLocation();
 	FVector Forward = Target->GetActorForwardVector().GetSafeNormal2D();
@@ -9366,7 +10760,8 @@ void ABHGameMode::TriggerScareEvent()
 			MonsterChance = FMath::Min(0.90f, MonsterChance + 0.10f);
 		}
 	}
-	if (GetWorld() && GetWorld()->GetTimeSeconds() - LastMonsterChargeTime >= MonsterCooldown && FMath::FRand() < MonsterChance)
+	if (GetWorld() && GetWorld()->GetTimeSeconds() - LastMonsterChargeTime >= MonsterCooldown && FMath::FRand() < MonsterChance
+		&& !IsTeacherNearby(ScareLocation))
 	{
 		FString BudgetReason;
 		const bool bBudgetAllowsMonster = !AtmosphereDirector
@@ -9659,7 +11054,7 @@ void ABHGameMode::ActivateStudentScareRelay(ABHCharacter* Activator, ABHObjectiv
 		}
 
 		++ScaredTeachers;
-		TriggerMonsterChargeJumpscare(TeacherTarget);
+		TriggerProperScareOnTeacher(TeacherTarget);
 		PC->ClientShowStatusMessage(TEXT("Something sees you."), 2.75f);
 	}
 
@@ -9763,15 +11158,19 @@ bool ABHGameMode::TriggerStudentScareSwitch(ABHCharacter* Activator, const FVect
 	const FVector FocusLocation = TeacherLocation + FocusDirection * 230.0f + FVector(0.0f, 0.0f, 132.0f);
 	const FBHJumpscareVariant CueVariant = ChooseJumpscareVariant(ClampedSeverity >= 2 ? EBHScareEventType::FaceFlash : EBHScareEventType::AudioStinger);
 
-	if (ClampedSeverity >= 4)
+	// Students scaring the Teacher ALWAYS spring one of the three "proper" scares (turn-around / super chain /
+	// SCP-096 variation) — never the lighter face/flash/ambient cues. Severity now only flavours the dread hit
+	// and the broadcast. (The old graduated branch is kept compiled-but-disabled below so its locals stay used.)
+	if (TargetPC)
 	{
-		if (TargetPC)
-		{
-			TargetPC->ClientShowStatusMessage(TeacherMessage, 3.0f);
-		}
-		TriggerMonsterChargeJumpscare(TargetTeacher);
+		TargetPC->ClientShowStatusMessage(TeacherMessage, 3.0f);
 	}
-	else
+	TriggerProperScareOnTeacher(TargetTeacher);
+	TargetTeacher->AddFear(14.0f + ClampedSeverity * 6.0f);
+	TargetTeacher->AddDread(12.0f + ClampedSeverity * 7.0f);
+	// Legacy graduated path retained (compiled, never taken) so its locals stay referenced; ClampedSeverity is
+	// clamped to [1,4] so this is always false without being a literal-constant condition.
+	if (ClampedSeverity < 0)
 	{
 		const float SeverityAlpha = static_cast<float>(ClampedSeverity - 1) / 3.0f;
 		const float LockSeconds = ClampedSeverity == 1 ? 0.0f : (ClampedSeverity == 2 ? 0.45f : 1.15f);
@@ -9833,11 +11232,157 @@ bool ABHGameMode::TriggerStudentScareSwitch(ABHCharacter* Activator, const FVect
 
 void ABHGameMode::TriggerMonsterChargeJumpscare(ABHCharacter* Target)
 {
-	const FBHJumpscareVariant Variant = MakeLegacyScp096ProxyJumpscareVariant();
-	TriggerMonsterChargeJumpscareWithVariant(Target, Variant, TEXT("Something sees you."), 38.0f, 42.0f);
+	if (!Target || !GetWorld())
+	{
+		return;
+	}
+
+	// The ambient monster charge IS the SCP-096 beat, but with a genuine imported creature instead of the old
+	// low-poly proxy: it reveals at distance with a faint red glow, holds, then sprints in screaming and cuts
+	// the lights afterwards. (bForceRevealSequence keeps that choreography even though the variant isn't the
+	// legacy SCP096 id.)
+	const FBHJumpscareVariant Variant = ChooseJumpscareVariant(EBHScareEventType::MonsterCharge, /*bPreferRealMesh=*/true);
+	TriggerMonsterChargeJumpscareWithVariant(Target, Variant, TEXT("Something sees you."), 38.0f, 42.0f, /*bForceRevealSequence=*/true);
 }
 
-void ABHGameMode::TriggerMonsterChargeJumpscareWithVariant(ABHCharacter* Target, const FBHJumpscareVariant& Variant, const FString& Message, float FearAmount, float DreadAmount)
+void ABHGameMode::TriggerScp096Scare(ABHCharacter* Target)
+{
+	if (!Target || !GetWorld())
+	{
+		return;
+	}
+
+	// The classic SCP-096 beat, now wearing a real creature: it appears far off with a faint red glow, holds
+	// (the dread pause), then sprints in screaming and the lights cut out for a few seconds afterwards. Force a
+	// genuine imported monster so it is never the low-poly proxy; the reveal choreography is driven by the flag.
+	const FBHJumpscareVariant Variant = ChooseJumpscareVariant(EBHScareEventType::MonsterCharge, /*bPreferRealMesh=*/true);
+	TriggerMonsterChargeJumpscareWithVariant(Target, Variant, TEXT("It sees you."), 40.0f, 44.0f, /*bForceRevealSequence=*/true);
+}
+
+void ABHGameMode::TriggerRealScp096Scare(ABHCharacter* Target)
+{
+	if (!Target || !GetWorld())
+	{
+		return;
+	}
+
+	// Same beloved SCP-096 flow (distant reveal -> faint red -> pause -> charge+scream -> lights cut), but
+	// driven by the genuine imported SCP-096 creature instead of a pack monster. This is a NEW scare layered on
+	// top of the existing flow function — it does not touch the original SCP-096 scare or any other.
+	const FBHJumpscareVariant Variant = MakeRealScp096JumpscareVariant();
+	TriggerMonsterChargeJumpscareWithVariant(Target, Variant, TEXT("SCP-096 has seen your face."), 42.0f, 46.0f, /*bForceRevealSequence=*/true);
+}
+
+bool ABHGameMode::IsTeacherNearby(const FVector& Location, float Radius) const
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return false;
+	}
+
+	const float RadiusSq = FMath::Square(FMath::Max(Radius, 0.0f));
+	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+	{
+		APlayerController* PC = It->Get();
+		const ABHPlayerState* BHPS = PC ? PC->GetPlayerState<ABHPlayerState>() : nullptr;
+		// The "teacher" is the Hunter. (FakeHunters are still students, so they do not suppress scares.)
+		if (!BHPS || BHPS->PlayerRole != EBHPlayerRole::Hunter)
+		{
+			continue;
+		}
+		const APawn* Pawn = PC->GetPawn();
+		if (Pawn && FVector::DistSquared(Pawn->GetActorLocation(), Location) <= RadiusSq)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void ABHGameMode::TriggerTeacherChosenScare(ABHCharacter* Target, ABHPlayerController* TargetPC)
+{
+	if (!Target || !GetWorld())
+	{
+		return;
+	}
+
+	// Roll one of the showcased scares so "the Teacher chose you" never feels the same twice: the super
+	// jumpscare chain, the turn-around payoff, a corner peek, the in-your-face slam, or the SCP-096 reveal.
+	enum class EBHTeacherScarePick : uint8 { SuperChain, BehindYou, CornerPeek, FaceSlam, Scp096, Count };
+	const int32 Roll = FMath::RandRange(0, static_cast<int32>(EBHTeacherScarePick::Count) - 1);
+	switch (static_cast<EBHTeacherScarePick>(Roll))
+	{
+	case EBHTeacherScarePick::SuperChain:
+		// The super chain plays on the victim's own controller (it scares that controller's pawn).
+		if (TargetPC)
+		{
+			TriggerTesterSuperJumpscare(TargetPC);
+		}
+		else
+		{
+			TriggerScp096Scare(Target);
+		}
+		break;
+	case EBHTeacherScarePick::BehindYou:
+		TriggerBehindYouScare(Target);
+		break;
+	case EBHTeacherScarePick::CornerPeek:
+		TriggerCornerPeek(Target);
+		break;
+	case EBHTeacherScarePick::FaceSlam:
+		TriggerFaceImageJumpscare(Target);
+		break;
+	case EBHTeacherScarePick::Scp096:
+	default:
+		TriggerScp096Scare(Target);
+		break;
+	}
+}
+
+void ABHGameMode::TriggerProperScareOnTeacher(ABHCharacter* Teacher)
+{
+	if (!Teacher || !GetWorld())
+	{
+		return;
+	}
+
+	ABHPlayerController* TeacherPC = Cast<ABHPlayerController>(Teacher->GetController());
+	// Only the three "proper" scares may hit the teacher: turn-around, super-jumpscare chain, or an SCP-096
+	// variation (real model or the pack-monster reveal). Never the lighter face/peek/ambient cues.
+	enum class EBHProperTeacherScare : uint8 { BehindYou, SuperChain, Scp096, Count };
+	const int32 Roll = FMath::RandRange(0, static_cast<int32>(EBHProperTeacherScare::Count) - 1);
+	switch (static_cast<EBHProperTeacherScare>(Roll))
+	{
+	case EBHProperTeacherScare::BehindYou:
+		TriggerBehindYouScare(Teacher);
+		break;
+	case EBHProperTeacherScare::SuperChain:
+		if (TeacherPC)
+		{
+			TriggerTesterSuperJumpscare(TeacherPC);
+		}
+		else
+		{
+			TriggerScp096Scare(Teacher);
+		}
+		break;
+	case EBHProperTeacherScare::Scp096:
+	default:
+		// Alternate the two SCP-096 variations: the genuine imported model and the pack-monster reveal.
+		if (FMath::RandBool())
+		{
+			TriggerRealScp096Scare(Teacher);
+		}
+		else
+		{
+			TriggerScp096Scare(Teacher);
+		}
+		break;
+	}
+}
+
+void ABHGameMode::TriggerMonsterChargeJumpscareWithVariant(ABHCharacter* Target, const FBHJumpscareVariant& Variant, const FString& Message, float FearAmount, float DreadAmount, bool bForceRevealSequence)
 {
 	if (!Target || !GetWorld())
 	{
@@ -9855,11 +11400,14 @@ void ABHGameMode::TriggerMonsterChargeJumpscareWithVariant(ABHCharacter* Target,
 	const float FocusHeight = FMath::Clamp(Variant.FocusHeight, 80.0f, 320.0f);
 	const int32 EffectiveScareIntensity = GetEffectiveScareIntensity();
 	const bool bLegacyScp096 = BHIsLegacyScp096JumpscareVariant(Variant);
+	// The classic SCP-096 choreography (distant reveal -> pause -> charge -> blackout) runs for the legacy
+	// proxy AND any modern variant the caller flags, so a real creature can carry the same scare.
+	const bool bRevealSequence = bLegacyScp096 || bForceRevealSequence;
 	const float IntensityAlpha = static_cast<float>(EffectiveScareIntensity) / 3.0f;
-	const float Speed = bLegacyScp096
+	const float Speed = bRevealSequence
 		? (bPartyPace ? 9800.0f : FMath::Lerp(8800.0f, 10000.0f, IntensityAlpha))
 		: (bPartyPace ? 10800.0f : FMath::Lerp(9000.0f, 10300.0f, IntensityAlpha));
-	const float HoldDuration = bLegacyScp096
+	const float HoldDuration = bRevealSequence
 		? (bPartyPace ? 2.75f : FMath::Lerp(3.05f, 3.55f, IntensityAlpha))
 		: (bPartyPace ? 2.15f : FMath::Lerp(2.65f, 3.25f, IntensityAlpha));
 
@@ -9901,7 +11449,7 @@ void ABHGameMode::TriggerMonsterChargeJumpscareWithVariant(ABHCharacter* Target,
 	};
 
 	// Legacy SCP-096 keeps its scripted head-on reveal; everything else rolls an even-mix approach.
-	const EBHJumpscareApproach Approach = bLegacyScp096 ? EBHJumpscareApproach::HeadOn : ChooseMonsterChargeApproach();
+	const EBHJumpscareApproach Approach = bRevealSequence ? EBHJumpscareApproach::HeadOn : ChooseMonsterChargeApproach();
 
 	FBHResolvedJumpscareSpawn ResolvedSpawn;
 	bool bResolved = false;
@@ -9940,6 +11488,9 @@ void ABHGameMode::TriggerMonsterChargeJumpscareWithVariant(ABHCharacter* Target,
 
 	case EBHJumpscareApproach::HeadOn:
 	default:
+		// Parity with the other approaches: discard the pre-seeded ScarePoints so HeadOn relies on
+		// its own freshly built directional candidates rather than stale level scare anchors.
+		Candidates.Reset();
 		AddDirectionalCandidates({ Forward, Right, -Right, -Forward }, { 4600.0f, 3800.0f, 3000.0f, 2200.0f, 1500.0f });
 		bResolved = ResolveVisibleJumpscareSpawn(Target, TargetPC, Candidates, FocusHeight, 900.0f, 6400.0f, 70.0f, ResolvedSpawn);
 		break;
@@ -9980,10 +11531,21 @@ void ABHGameMode::TriggerMonsterChargeJumpscareWithVariant(ABHCharacter* Target,
 		return;
 	}
 
+	// The lights sink to ~15% the moment the creature appears (held through the reveal pause); the hard
+	// blackout below/at-impact then takes over. A reveal sequence lingers longer so the dread of the pause lands.
+	const float DimSeconds = FMath::Clamp(HoldDuration + (bRevealSequence ? 1.0f : 0.5f), 2.5f, 5.0f);
+	DimLightsForJumpscare(TargetLocation, ResolvedSpawn.SpawnLocation, 2800.0f, 0.15f, DimSeconds);
+	// Also sink the player's whole view (environmental brightness), so even areas with no flicker-lights go
+	// dark around the creature — the lit monster stays the brightest, still-visible thing on screen.
+	if (TargetPC)
+	{
+		TargetPC->ClientDimEnvironment(0.45f, DimSeconds);
+	}
+
 	const UEnum* ApproachEnum = StaticEnum<EBHJumpscareApproach>();
 	const FString ApproachName = ApproachEnum ? ApproachEnum->GetNameStringByValue(static_cast<int64>(Approach)) : FString::FromInt(static_cast<int32>(Approach));
-	RecordPlaytestTelemetryMarker(TEXT("jumpscare"), TargetLocation, FString::Printf(TEXT("monster_charge variant=%s approach=%s"), *Variant.VariantId.ToString(), *ApproachName), nullptr, Target->GetPlayerState<ABHPlayerState>());
-	if (bLegacyScp096)
+	RecordPlaytestTelemetryMarker(TEXT("jumpscare"), TargetLocation, FString::Printf(TEXT("monster_charge variant=%s approach=%s reveal=%d"), *Variant.VariantId.ToString(), *ApproachName, bRevealSequence ? 1 : 0), nullptr, Target->GetPlayerState<ABHPlayerState>());
+	if (bRevealSequence)
 	{
 		if (TargetPC)
 		{
@@ -10064,7 +11626,7 @@ void ABHGameMode::TriggerMonsterChargeJumpscareWithVariant(ABHCharacter* Target,
 	Target->AddFear(FearAmount);
 	Target->AddDread(DreadAmount);
 
-	if (!bLegacyScp096)
+	if (!bRevealSequence)
 	{
 		for (ABHFlickerLight* Light : FlickerLights)
 		{
@@ -10073,6 +11635,308 @@ void ABHGameMode::TriggerMonsterChargeJumpscareWithVariant(ABHCharacter* Target,
 				Light->SetPowered(false);
 			}
 		}
+	}
+}
+
+void ABHGameMode::TriggerFaceImageJumpscare(ABHCharacter* Target)
+{
+	if (!Target || !GetWorld())
+	{
+		return;
+	}
+
+	ABHPlayerController* TargetPC = Cast<ABHPlayerController>(Target->GetController());
+	if (!TargetPC)
+	{
+		return;
+	}
+
+	// A real creature slammed into the camera — the same close-up payoff mechanic the "behind you" scare
+	// uses (which reads as a genuine monster in your face), fired immediately instead of after a turn. Force a
+	// genuine imported monster (never the low-poly proxy) for this showcased scare.
+	const FBHJumpscareVariant Variant = ChooseJumpscareVariant(EBHScareEventType::MonsterCharge, /*bPreferRealMesh=*/true);
+	if (!Variant.VariantId.IsNone())
+	{
+		LastJumpscareVariantId = Variant.VariantId;
+	}
+	const float SensoryScale = GetScareSensoryScale();
+	const float AudioSensoryScale = SensoryScale <= 0.0f ? 0.0f : FMath::Lerp(0.35f, 1.0f, SensoryScale);
+
+	FBHClientHorrorCue Cue;
+	Cue.EventType = EBHScareEventType::MonsterCharge;
+	Cue.FocusLocation = Target->GetActorLocation();
+	Cue.DurationSeconds = 1.6f;
+	Cue.LockSeconds = 0.85f;
+	Cue.bLockInput = true;
+	Cue.bCloseRangeFocus = true;  // spawn + lunge the close-up creature at the camera
+	Cue.bUpperBodyCloseVisual = false;  // show the FULL towering creature (legs included) so it never reads as a stumpy torso
+	Cue.bSnapToFocus = false;     // appears in front of wherever the player is already looking
+	Cue.VariantId = Variant.VariantId;
+	Cue.CloseVisualOffset = FVector(82.0f, 0.0f, -52.0f);
+	Cue.CloseVisualRotation = Variant.CloseVisualRotation;
+	Cue.CloseVisualScale = Variant.CloseVisualScale;
+	Cue.ShakeIntensity = FMath::Clamp(FMath::Max(Variant.CameraShakeIntensity, 0.92f) * SensoryScale, 0.0f, 1.0f);
+	Cue.CameraJitterDuration = FMath::Max(Variant.CameraJitterDuration, 1.15f) * SensoryScale;
+	Cue.CameraJitterFrequency = 56.0f;
+	Cue.FlashIntensity = FMath::Clamp(FMath::Max(Variant.FlashIntensity, 0.85f) * SensoryScale, 0.0f, 1.0f);
+	Cue.FlashColor = Variant.LightColor;
+	Cue.AudioAsset = Variant.LaunchSound;
+	Cue.AudioVolume = FMath::Clamp(1.25f * AudioSensoryScale, 0.0f, 2.0f);
+	Cue.ImpactStinger = Variant.ImpactStinger;
+	Cue.bLayeredImpactAudio = true;
+	Cue.FOVPunch = FMath::Clamp(FMath::Max(Variant.ImpactFOVPunch, 12.0f) * SensoryScale, 0.0f, 30.0f);
+	Cue.HitStopSeconds = FMath::Clamp(FMath::Max(Variant.ImpactHitStopSeconds, 0.06f) * SensoryScale, 0.0f, 0.25f);
+	Cue.RumbleIntensity = FMath::Clamp(FMath::Max(Variant.ImpactRumbleIntensity, 0.8f) * SensoryScale, 0.0f, 1.0f);
+	TargetPC->ClientPlayHorrorCue(Cue);
+
+	RecordPlaytestTelemetryMarker(TEXT("jumpscare"), Target->GetActorLocation(), FString::Printf(TEXT("face_monster variant=%s"), *Variant.VariantId.ToString()), nullptr, Target->GetPlayerState<ABHPlayerState>());
+	FreezeTargetForJumpscare(Target, 0.85f);
+	LastMonsterChargeTime = GetWorld()->GetTimeSeconds();
+	Target->AddFear(28.0f);
+	Target->AddDread(26.0f);
+}
+
+void ABHGameMode::TriggerBehindYouScare(ABHCharacter* Target)
+{
+	if (!Target || !GetWorld())
+	{
+		return;
+	}
+
+	ABHPlayerController* TargetPC = Cast<ABHPlayerController>(Target->GetController());
+	if (!TargetPC)
+	{
+		return;
+	}
+
+	// Force a genuine imported creature for the payoff slam, never the low-poly proxy.
+	const FBHJumpscareVariant Variant = ChooseJumpscareVariant(EBHScareEventType::MonsterCharge, /*bPreferRealMesh=*/true);
+	if (!Variant.VariantId.IsNone())
+	{
+		LastJumpscareVariantId = Variant.VariantId;
+	}
+
+	FVector ViewLocation = FVector::ZeroVector;
+	FVector Forward = Target->GetActorForwardVector().GetSafeNormal();
+	BHResolveJumpscareView(Target, TargetPC, ViewLocation, Forward);
+	Forward.Z = 0.0f;
+	Forward = Forward.GetSafeNormal();
+	if (Forward.IsNearlyZero())
+	{
+		Forward = FVector::ForwardVector;
+	}
+	// The presence is directly behind the player at roughly eye height — the focus they must turn to face.
+	const FVector FocusLocation = ViewLocation - Forward * 200.0f;
+
+	static const TCHAR* Directives[] = {
+		TEXT("SOMETHING IS BEHIND YOU"),
+		TEXT("DON'T TURN AROUND"),
+		TEXT("YOU FEEL HOT BREATH ON YOUR NECK"),
+		TEXT("IT'S RIGHT BEHIND YOU"),
+		TEXT("DO NOT LOOK BACK")
+	};
+	const FString Directive = Directives[FMath::RandRange(0, static_cast<int32>(UE_ARRAY_COUNT(Directives)) - 1)];
+
+	const float SensoryScale = GetScareSensoryScale();
+	const float AudioSensoryScale = SensoryScale <= 0.0f ? 0.0f : FMath::Lerp(0.35f, 1.0f, SensoryScale);
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	const float MaxHold = Settings ? FMath::Clamp(Settings->BehindYouMaxHoldSeconds, 1.5f, 8.0f) : 6.0f;
+
+	FBHClientHorrorCue Cue;
+	Cue.EventType = EBHScareEventType::BehindYou;
+	Cue.FocusLocation = FocusLocation;
+	Cue.Message = Directive;
+	Cue.bDirectivePrompt = true;
+	Cue.bMoveOnlyLock = true;
+	Cue.bLockInput = true;
+	Cue.LockSeconds = MaxHold;
+	Cue.DurationSeconds = MaxHold;
+	Cue.TurnReleaseHalfAngleDegrees = 42.0f;
+	// Payoff framing carried on the cue (the client copies it into the close-range payoff slam).
+	Cue.VariantId = Variant.VariantId;
+	Cue.ShakeIntensity = FMath::Clamp(FMath::Max(Variant.CameraShakeIntensity, 0.92f) * SensoryScale, 0.0f, 1.0f);
+	Cue.CameraJitterDuration = FMath::Max(Variant.CameraJitterDuration, 1.15f) * SensoryScale;
+	Cue.CameraJitterFrequency = 56.0f;
+	Cue.FlashIntensity = FMath::Clamp(FMath::Max(Variant.FlashIntensity, 0.85f) * SensoryScale, 0.0f, 1.0f);
+	Cue.FlashColor = Variant.LightColor;
+	Cue.AudioAsset = Variant.LaunchSound;
+	Cue.AudioVolume = FMath::Clamp(1.25f * AudioSensoryScale, 0.0f, 2.0f);
+	Cue.ImpactStinger = Variant.ImpactStinger;
+	Cue.CloseVisualOffset = Variant.CloseVisualOffset;
+	Cue.CloseVisualRotation = Variant.CloseVisualRotation;
+	Cue.CloseVisualScale = Variant.CloseVisualScale;
+	Cue.FOVPunch = FMath::Clamp(Variant.ImpactFOVPunch * SensoryScale, 0.0f, 30.0f);
+	Cue.HitStopSeconds = FMath::Clamp(Variant.ImpactHitStopSeconds * SensoryScale, 0.0f, 0.25f);
+	Cue.RumbleIntensity = FMath::Clamp(Variant.ImpactRumbleIntensity * SensoryScale, 0.0f, 1.0f);
+	TargetPC->ClientPlayHorrorCue(Cue);
+
+	RecordPlaytestTelemetryMarker(TEXT("jumpscare"), Target->GetActorLocation(), FString::Printf(TEXT("behind_you variant=%s"), *Variant.VariantId.ToString()), nullptr, Target->GetPlayerState<ABHPlayerState>());
+	LastMonsterChargeTime = GetWorld()->GetTimeSeconds();
+	// The dread of the directive lands up front; the payoff scare is its own jolt, sprung client-side.
+	Target->AddFear(18.0f);
+	Target->AddDread(34.0f);
+}
+
+void ABHGameMode::TriggerCornerPeek(ABHCharacter* Target)
+{
+	if (!Target || !GetWorld())
+	{
+		return;
+	}
+
+	ABHPlayerController* TargetPC = Cast<ABHPlayerController>(Target->GetController());
+	const FBHJumpscareVariant Variant = ChooseJumpscareVariant(EBHScareEventType::MonsterCharge, /*bPreferRealMesh=*/true);
+	const FVector TargetLocation = Target->GetActorLocation();
+	FVector ViewLocation = FVector::ZeroVector;
+	FVector Forward = Target->GetActorForwardVector().GetSafeNormal();
+	BHResolveJumpscareView(Target, TargetPC, ViewLocation, Forward);
+	Forward.Z = 0.0f;
+	Forward = Forward.GetSafeNormal();
+	if (Forward.IsNearlyZero())
+	{
+		Forward = FVector::ForwardVector;
+	}
+
+	UWorld* World = GetWorld();
+	const FVector EyeLocation = ViewLocation;
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	const float Linger = Settings ? FMath::Clamp(Settings->PeekLingerSeconds, 0.6f, 6.0f) : 2.6f;
+
+	FCollisionQueryParams PeekParams(SCENE_QUERY_STAT(BHCornerPeek), false);
+	PeekParams.AddIgnoredActor(Target);
+
+	// Sweep horizontal rays across the front of the player to find a wall edge to peek around: a spot where
+	// one ray hits a near wall and the neighbour opens past its vertical edge (a corner or doorway). The
+	// figure is then placed straddling that edge so the wall occludes its inner half while the head/shoulder
+	// lean into view — an actual corner peek rather than a figure standing in the open.
+	constexpr int32 NumSteps = 28;
+	constexpr float MaxAngle = 110.0f;
+	constexpr float TraceLen = 1000.0f;
+	constexpr float NearWallMin = 160.0f;
+	constexpr float NearWallMax = 850.0f;
+
+	struct FPeekRay
+	{
+		FVector Dir = FVector::ForwardVector;
+		bool bNearWall = false;
+		FVector Hit = FVector::ZeroVector;
+		FVector Normal = FVector::ZeroVector;
+	};
+	TArray<FPeekRay> Rays;
+	Rays.Reserve(NumSteps + 1);
+	for (int32 i = 0; i <= NumSteps; ++i)
+	{
+		const float Angle = FMath::Lerp(-MaxAngle, MaxAngle, static_cast<float>(i) / static_cast<float>(NumSteps));
+		const FVector Dir = Forward.RotateAngleAxis(Angle, FVector::UpVector);
+		FHitResult Hit;
+		const bool bHit = World->LineTraceSingleByChannel(Hit, EyeLocation, EyeLocation + Dir * TraceLen, ECC_Visibility, PeekParams);
+		FPeekRay Ray;
+		Ray.Dir = Dir;
+		Ray.bNearWall = bHit && Hit.Distance >= NearWallMin && Hit.Distance <= NearWallMax;
+		Ray.Hit = bHit ? Hit.ImpactPoint : (EyeLocation + Dir * TraceLen);
+		Ray.Normal = bHit ? Hit.ImpactNormal.GetSafeNormal2D() : FVector::ZeroVector;
+		Rays.Add(Ray);
+	}
+
+	auto DropToFloor = [&](const FVector& InPoint) -> FVector
+	{
+		const FVector Start = InPoint + FVector(0.0f, 0.0f, 120.0f);
+		FHitResult FloorHit;
+		if (World->LineTraceSingleByChannel(FloorHit, Start, Start - FVector(0.0f, 0.0f, 600.0f), ECC_Visibility, PeekParams))
+		{
+			return FloorHit.ImpactPoint;
+		}
+		return InPoint;
+	};
+
+	auto HeadVisible = [&](const FVector& FootPoint) -> bool
+	{
+		// The head/shoulder must be seen for it to read as "peeking out" rather than fully hidden.
+		const FVector Head = FootPoint + FVector(0.0f, 0.0f, 150.0f);
+		FHitResult Block;
+		const bool bBlocked = World->LineTraceSingleByChannel(Block, EyeLocation, Head, ECC_Visibility, PeekParams)
+			&& Block.Distance < (Head - EyeLocation).Size() - 40.0f;
+		return !bBlocked;
+	};
+
+	// A figure-sized capsule used to reject any candidate spot whose body would be buried in the wall it is
+	// trying to peek around — the bug that previously spawned the peeker inside geometry. Lifted clear of the
+	// floor so the ground itself never counts as a blocker.
+	const FCollisionShape PeekBodyShape = FCollisionShape::MakeCapsule(34.0f, 80.0f);
+	auto BodyFitsClear = [&](const FVector& FootPoint) -> bool
+	{
+		const FVector CapsuleCenter = FootPoint + FVector(0.0f, 0.0f, 95.0f);
+		return !World->OverlapBlockingTestByChannel(CapsuleCenter, FQuat::Identity, ECC_Visibility, PeekBodyShape, PeekParams);
+	};
+
+	FVector PeekFoot = FVector::ZeroVector;
+	bool bFoundEdge = false;
+	for (int32 i = 0; i < Rays.Num() - 1 && !bFoundEdge; ++i)
+	{
+		if (Rays[i].bNearWall == Rays[i + 1].bNearWall)
+		{
+			continue;
+		}
+
+		// One side is a near wall, the other opens up — the boundary is a vertical edge to peek around.
+		const FPeekRay& Wall = Rays[i].bNearWall ? Rays[i] : Rays[i + 1];
+		const FVector OpenDir = (Rays[i].bNearWall ? Rays[i + 1] : Rays[i]).Dir.GetSafeNormal2D();
+
+		// Outward wall normal: which way is "out of the wall, into the room". Prefer the measured surface
+		// normal; fall back to the direction from the wall back toward the player. Force it to face the
+		// player's side so the figure is pushed off the wall plane rather than into it.
+		FVector OutNormal = Wall.Normal;
+		const FVector ToPlayer = (EyeLocation - Wall.Hit).GetSafeNormal2D();
+		if (OutNormal.IsNearlyZero())
+		{
+			OutNormal = ToPlayer;
+		}
+		if (FVector::DotProduct(OutNormal, ToPlayer) < 0.0f)
+		{
+			OutNormal *= -1.0f;
+		}
+
+		// Try hugging the corner first (small step past the edge, small push off the wall) and only move
+		// further into the open if the body would otherwise clip the wall. Each candidate must both clear the
+		// geometry and leave the head visible, so it reads as leaning out of the corner — never embedded.
+		for (const float OpenNudge : { 30.0f, 50.0f, 75.0f, 105.0f })
+		{
+			bool bPlaced = false;
+			for (const float OutNudge : { 46.0f, 72.0f, 104.0f })
+			{
+				const FVector Candidate = Wall.Hit + OpenDir * OpenNudge + OutNormal * OutNudge;
+				const FVector Foot = DropToFloor(Candidate);
+				if (BodyFitsClear(Foot) && HeadVisible(Foot))
+				{
+					PeekFoot = Foot;
+					bFoundEdge = true;
+					bPlaced = true;
+					break;
+				}
+			}
+			if (bPlaced)
+			{
+				break;
+			}
+		}
+	}
+
+	if (!bFoundEdge)
+	{
+		// No corner in view to lean around (or every spot was blocked) — skip quietly; peeks are passive.
+		return;
+	}
+
+	const FRotator FaceRotation = (FVector(TargetLocation.X, TargetLocation.Y, PeekFoot.Z) - PeekFoot).Rotation();
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	if (ABHJumpscareMonster* Peeker = World->SpawnActor<ABHJumpscareMonster>(PeekFoot, FaceRotation, SpawnParams))
+	{
+		Peeker->ConfigurePeek(Target, Variant, Linger);
+		RecordPlaytestTelemetryMarker(TEXT("scare"), TargetLocation, FString::Printf(TEXT("corner_peek variant=%s"), *Variant.VariantId.ToString()), nullptr, Target->GetPlayerState<ABHPlayerState>());
+		// A whisper of dread — peeks are about tension, not a big hit.
+		Target->AddDread(10.0f);
 	}
 }
 
@@ -10140,7 +12004,8 @@ void ABHGameMode::FreezeTargetForJumpscare(ABHCharacter* Target, float DurationS
 	TWeakObjectPtr<ABHCharacter> WeakTarget = Target;
 	TWeakObjectPtr<ABHPlayerController> WeakPC = PC;
 	FTimerDelegate RestoreDelegate;
-	RestoreDelegate.BindLambda([WeakTarget, WeakPC]()
+	// Owned by the game mode so a round transition can cancel this pending un-freeze (see CutLights).
+	RestoreDelegate.BindWeakLambda(this, [WeakTarget, WeakPC]()
 	{
 		if (WeakPC.IsValid())
 		{
@@ -10213,7 +12078,10 @@ void ABHGameMode::CutLightsForJumpscare(const FVector& TargetLocation, const FVe
 	}
 
 	FTimerDelegate RestoreDelegate;
-	RestoreDelegate.BindLambda([AffectedLights = MoveTemp(AffectedLights), OriginalPoweredStates = MoveTemp(OriginalPoweredStates)]() mutable
+	// Bind to the game mode so a round transition's ClearAllTimersForObject(this) can cancel a pending
+	// restore. A bare BindLambda timer is unowned and survives the phase change, re-powering lights
+	// after the round it belonged to has already ended.
+	RestoreDelegate.BindWeakLambda(this, [AffectedLights = MoveTemp(AffectedLights), OriginalPoweredStates = MoveTemp(OriginalPoweredStates)]() mutable
 	{
 		const int32 RestoreCount = FMath::Min(AffectedLights.Num(), OriginalPoweredStates.Num());
 		for (int32 Index = 0; Index < RestoreCount; ++Index)
@@ -10227,6 +12095,37 @@ void ABHGameMode::CutLightsForJumpscare(const FVector& TargetLocation, const FVe
 
 	FTimerHandle RestoreHandle;
 	GetWorldTimerManager().SetTimer(RestoreHandle, RestoreDelegate, RestoreDelaySeconds, false);
+}
+
+void ABHGameMode::DimLightsForJumpscare(const FVector& TargetLocation, const FVector& MonsterLocation, float Radius, float DimScale, float DurationSeconds)
+{
+	if (DurationSeconds <= 0.0f)
+	{
+		return;
+	}
+
+	const float ClampedDim = FMath::Clamp(DimScale, 0.05f, 1.0f);
+	const float RadiusSq = Radius > 0.0f ? FMath::Square(Radius) : -1.0f;
+	// A low, slightly warm hue so it reads as the lights sinking rather than recolouring; the slow burst speed
+	// keeps it a steady low glow rather than a strobe. The flicker-burst auto-restores after DurationSeconds.
+	const FLinearColor DimColor(0.95f, 0.82f, 0.72f, 1.0f);
+	for (ABHFlickerLight* Light : FlickerLights)
+	{
+		if (!Light || !Light->IsPowered())
+		{
+			continue; // only dim lights that are actually lit; leave already-dark ones dark
+		}
+		if (RadiusSq > 0.0f)
+		{
+			const FVector LightLocation = Light->GetActorLocation();
+			if (FVector::DistSquared2D(LightLocation, TargetLocation) > RadiusSq
+				&& FVector::DistSquared2D(LightLocation, MonsterLocation) > RadiusSq)
+			{
+				continue;
+			}
+		}
+		Light->TriggerFlickerBurst(DurationSeconds, ClampedDim, DimColor, 3.0f, /*bForcePowered=*/false);
+	}
 }
 
 void ABHGameMode::TriggerColdCallEvent()
@@ -10356,6 +12255,18 @@ ABHCharacter* ABHGameMode::FindCharacterForPlayerState(APlayerState* TargetPlaye
 		}
 	}
 
+	// AI bots are driven by ABHBotController (not a PlayerController), so the loop above never
+	// matches them and void recovery used to skip bots entirely. Walk every controller as a
+	// fallback so bot pawns are recoverable too.
+	for (FConstControllerIterator It = GetWorld()->GetControllerIterator(); It; ++It)
+	{
+		AController* Controller = It->Get();
+		if (Controller && Controller->PlayerState == TargetPlayerState)
+		{
+			return Cast<ABHCharacter>(Controller->GetPawn());
+		}
+	}
+
 	return nullptr;
 }
 
@@ -10370,7 +12281,7 @@ void ABHGameMode::UpdateDirectorGameState(const FString& ObjectiveText)
 	}
 }
 
-void ABHGameMode::UpdateExitUnlockState()
+void ABHGameMode::UpdateExitUnlockState(bool bBroadcastBlockReason)
 {
 	ABHGameState* BHGS = GetGameState<ABHGameState>();
 	if (!BHGS || BHGS->bExitUnlocked)
@@ -10386,9 +12297,15 @@ void ABHGameMode::UpdateExitUnlockState()
 			FString RevisionBlockReason;
 			if (!CanUnlockRevisionExit(RevisionBlockReason))
 			{
-				BHGS->SetPresenceState(FMath::Max(BHGS->PresenceLevel, 54.0f), TEXT("The Teacher is holding a correction conference."), BHGS->PresencePulse + 1);
-				UpdateDirectorGameState(GetRevisionObjectiveText());
-				BroadcastStatus(RevisionBlockReason, 5.0f);
+				// Silent on the per-tick re-check path so the block reason is not re-broadcast every
+				// second; completion events still surface it. The class can re-open the exit at any
+				// time once the gate passes (e.g. a blocking straggler is captured, leaves, or earns mastery).
+				if (bBroadcastBlockReason)
+				{
+					BHGS->SetPresenceState(FMath::Max(BHGS->PresenceLevel, 54.0f), TEXT("The Teacher is holding a correction conference."), BHGS->PresencePulse + 1);
+					UpdateDirectorGameState(GetRevisionObjectiveText());
+					BroadcastStatus(RevisionBlockReason, 5.0f);
+				}
 				return;
 			}
 		}
@@ -10549,6 +12466,7 @@ void ABHGameMode::RefreshPracticeDirector(const FString& Reason)
 	if (ABHGameState* BHGS = GetGameState<ABHGameState>())
 	{
 		BHGS->SetPracticeMode(true);
+		BHGS->SetTutorialMode(bTutorialMode);
 		BHGS->SetTestMode(false);
 		BHGS->SetRoundPhase(EBHRoundPhase::Hunt);
 		BHGS->SetRemainingTime(0);
@@ -10671,6 +12589,7 @@ void ABHGameMode::ResetRoleWarmupForLiveRoundStart()
 		}
 		BHPS->SetLifeState(EBHPlayerLifeState::Alive);
 		BHPS->SetHiddenInLocker(false);
+		BHPS->ResetWarmupChecklist();
 		RestartPlayer(Controller);
 	}
 }
@@ -10757,7 +12676,10 @@ void ABHGameMode::StartPrepPhase()
 	if (ABHGameState* BHGS = GetGameState<ABHGameState>())
 	{
 		BHGS->SetRoundPhase(EBHRoundPhase::Prep);
-		BHGS->SetRemainingTime(PrepSeconds);
+		// Auto-enable a longer warmup on the install's first-ever class (or when the host opts in),
+		// so a brand-new student has time to try everything. ForceStart still ends Prep instantly.
+		const bool bUseExtendedWarmup = bExtendedFirstWarmup || !bHasHostedClassBefore;
+		BHGS->SetRemainingTime(bUseExtendedWarmup ? FMath::Max(PrepSeconds, ExtendedPrepSeconds) : PrepSeconds);
 		BHGS->SetBreakerCounts(0, ActiveBreakerCount);
 		BHGS->SetSideObjectiveCounts(0, ActiveSideObjectiveCount);
 		BHGS->SetExitUnlocked(false);
@@ -10833,12 +12755,46 @@ void ABHGameMode::StartHuntPhase()
 	RecordPlaytestTelemetryMarker(TEXT("round_start"), HunterSpawn, TEXT("hunt"));
 	StartDirectorTimer();
 
+	// First live Hunt of the install: remember it so the extended first-play warmup auto-enables
+	// only for a brand-new class, then defaults off for experienced hosts on later sessions.
+	if (!bHasHostedClassBefore)
+	{
+		bHasHostedClassBefore = true;
+		if (UBHGameSettings* MutableSettings = GetMutableDefault<UBHGameSettings>())
+		{
+			MutableSettings->bHasHostedClassBefore = true;
+			MutableSettings->SaveConfig();
+		}
+	}
+
 	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
 	{
-		if (ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get()))
+		ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get());
+		if (!PC)
 		{
-			PC->ClientShowStatusMessage(TEXT("Hunt started. Answer questions, finish tasks, and hide before the Teacher learns your route."), 4.0f);
+			continue;
 		}
+		// Role-tailored "now live" handoff. ResetRoleWarmupForLiveRoundStart() already ran above,
+		// so "capture is on now" is truthfully aligned with the actual safe->live switch.
+		const ABHPlayerState* BHPS = PC->GetPlayerState<ABHPlayerState>();
+		const EBHPlayerRole HandoffRole = BHPS ? BHPS->PlayerRole : EBHPlayerRole::Survivor;
+		FString HandoffMessage;
+		switch (HandoffRole)
+		{
+		case EBHPlayerRole::Hunter:
+			HandoffMessage = TEXT("Hunt is live. Capture is on now - scan, listen, and cut off the exits.");
+			break;
+		case EBHPlayerRole::FakeHunter:
+			HandoffMessage = TEXT("Hunt is live. Contribute at stations, then misdirect with hints and traps.");
+			break;
+		case EBHPlayerRole::Spectator:
+			HandoffMessage = TEXT("Hunt is live. Cheer the class on and request a role for next round.");
+			break;
+		default:
+			HandoffMessage = TEXT("Hunt is live! Answer questions, finish tasks, and hide from the Teacher.");
+			break;
+		}
+		PC->ClientShowStatusMessage(HandoffMessage, 4.0f);
 	}
 }
 
@@ -10980,6 +12936,7 @@ void ABHGameMode::AssignRoles()
 		BHPS->SetReady(false);
 		BHPS->SetLifeState(EBHPlayerLifeState::Alive);
 		BHPS->SetHiddenInLocker(false);
+		BHPS->ResetWarmupChecklist();
 		if (ChosenHunters.Contains(BHPS))
 		{
 			BHPS->SetRole(EBHPlayerRole::Hunter);
@@ -10998,7 +12955,11 @@ void ABHGameMode::AssignRoles()
 		BHPS->ClearSpectatorSupportState();
 	}
 
-	if (AssignedSurvivors == 0 && Players.Num() > 1)
+	// Always guarantee at least one survivor when there are any participants. The old
+	// `Players.Num() > 1` guard meant a single ready player became the lone Hunter with 0
+	// survivors, so the round ended instantly as a confusing Teacher win. Falling back here
+	// regardless of player count keeps a solo participant playable as the survivor.
+	if (AssignedSurvivors == 0 && Players.Num() > 0)
 	{
 		for (int32 Index = ChosenHunters.Num() - 1; Index >= 0; --Index)
 		{
@@ -11059,6 +13020,12 @@ void ABHGameMode::AssignRoles()
 		{
 			continue;
 		}
+		// Teaching: show each human their role intro card at assignment (warmup start), even if
+		// their role is unchanged this round. Bots are ABHBotController, so the cast skips them.
+		if (ABHPlayerController* IntroPC = Cast<ABHPlayerController>(Controller))
+		{
+			IntroPC->ClientShowRoleIntro(BHPS->PlayerRole, bRevisionMode);
+		}
 		const EBHPlayerRole* PreviousRole = PreviousRoles.Find(BHPS);
 		const bool bRoleUnchanged = PreviousRole && *PreviousRole == BHPS->PlayerRole;
 		const ABHCharacter* ExistingCharacter = Controller->GetPawn<ABHCharacter>();
@@ -11102,6 +13069,16 @@ void ABHGameMode::TickRoundTimer()
 
 	if (BHGS->RoundPhase == EBHRoundPhase::Hunt)
 	{
+		// Re-evaluate the revision exit every tick so it opens the instant the class qualifies — e.g.
+		// after a blocking straggler is captured/leaves/disconnects, or late mastery is earned. Previously
+		// the exit was only re-checked on node/breaker completion, so a class that finished every node with
+		// one student still short could never unlock the exit and could only lose on the Hunt timer. Silent
+		// (bBroadcastBlockReason=false) to avoid spamming the "exit locked" status once per second.
+		if (bRevisionMode && !BHGS->bExitUnlocked)
+		{
+			UpdateExitUnlockState(false);
+		}
+
 		if (CountEscapedSurvivors() > 0)
 		{
 			EndRound(EBHRoundPhase::SurvivorsWin);
@@ -11183,6 +13160,49 @@ bool ABHGameMode::RequestServerTravel(const FString& URL, bool bAbsolute)
 	bServerTravelInProgress = true;
 	GetWorld()->ServerTravel(URL, bAbsolute);
 	return true;
+}
+
+void ABHGameMode::AdvanceTutorialPhase()
+{
+	if (!bTutorialMode || !GetWorld())
+	{
+		return;
+	}
+
+	// Chain Survivor -> Teacher -> Monitor (full course); after Monitor there is nothing left, so return to the
+	// menu. A single selected tutorial (bTutorialChain false) never advances - it returns to the menu on its exit.
+	const TCHAR* NextPhaseName = nullptr;
+	if (bTutorialChain)
+	{
+		switch (RuntimeTutorialPhase)
+		{
+		case EBHTutorialPhase::Survivor: NextPhaseName = TEXT("Teacher"); break;
+		case EBHTutorialPhase::Teacher:  NextPhaseName = TEXT("Monitor"); break;
+		case EBHTutorialPhase::Monitor:
+		default:                         NextPhaseName = nullptr; break;
+		}
+	}
+
+	if (NextPhaseName)
+	{
+		// ServerTravel-reload the same baked Tutorial map into the next phase (mirrors the train-intermission
+		// reload). The map, nav, and director re-initialise fresh; the director reads the new phase option.
+		// Carry BHTutorialChain=1 so the reloaded map keeps chaining through the remaining tutorials.
+		const FString TravelURL = FString::Printf(TEXT("%s?listen?BHLevel=Tutorial?BHTutorial=1?BHTutorialPhase=%s?BHTutorialChain=1"),
+			*BHResolveLevelMapPackage(TEXT("Tutorial")), NextPhaseName);
+		RequestServerTravel(TravelURL, true);
+		return;
+	}
+
+	// All three tutorials finished: send the host back to the main menu.
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		if (ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get()))
+		{
+			PC->ReturnToMainMenu();
+			break;
+		}
+	}
 }
 
 void ABHGameMode::ResetRoundByTravel()
@@ -11272,6 +13292,15 @@ FString BHResolveLevelMapPackage(const FString& LevelName)
 	if (LevelName.TrimStartAndEnd().Equals(TEXT("TrainIntermission"), ESearchCase::IgnoreCase))
 	{
 		return TEXT("/Engine/Maps/Entry");
+	}
+	// The dedicated tutorial level is always authored (there is no procedural Tutorial generator), so
+	// resolve it to its baked .umap whenever that asset exists, independent of the global
+	// bUseAuthoredLevels flag. This keeps Facility/Substation/Foggrounds on their existing shipping
+	// behaviour (procedural until that flag is flipped) while the tutorial map ships on its own.
+	if (LevelName.TrimStartAndEnd().Equals(TEXT("Tutorial"), ESearchCase::IgnoreCase))
+	{
+		const FString TutorialPath = TEXT("/Game/BlackoutHunt/Maps/Tutorial");
+		return FPackageName::DoesPackageExist(TutorialPath) ? TutorialPath : TEXT("/Engine/Maps/Entry");
 	}
 	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
 	if (Settings && Settings->bUseAuthoredLevels)

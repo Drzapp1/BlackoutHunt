@@ -42,6 +42,7 @@ public:
 	ABHGameMode();
 
 	virtual void BeginPlay() override;
+	virtual FString InitNewPlayer(APlayerController* NewPlayerController, const FUniqueNetIdRepl& UniqueId, const FString& Options, const FString& Portal) override;
 	virtual void PostLogin(APlayerController* NewPlayer) override;
 	virtual void Logout(AController* Exiting) override;
 	virtual void RestartPlayer(AController* NewPlayer) override;
@@ -52,6 +53,21 @@ public:
 	// gameplay actors into the current world with no round/timer/atmosphere state, so the result can be
 	// saved as an authored /Game/BlackoutHunt/Maps/<Level>.umap seed. Not used at runtime.
 	void BuildLevelForExport(const FString& InLevelName);
+
+	// Authored-export bake. Set only for the duration of BuildLevelForExport. When true, AddStaticBlock and
+	// SpawnRuntimeMeshProp emit real, hard-referenced AStaticMeshActors (Static mobility) instead of the
+	// runtime ABHStaticBlockField specs / replicated prop actors, so the saved .umap holds visible, editable,
+	// auto-cooking geometry artists can polish in place (the runtime block field is invisible until BeginPlay).
+	// Never set at runtime, so the procedural generator is byte-for-byte unchanged.
+	bool bAuthoringExport = false;
+	class AStaticMeshActor* SpawnAuthoredBlockActor(const FVector& Location, const FVector& Scale, const FLinearColor& Tint, const FRotator& Rotation, bool bCollides, EBHBlockMaterial Material, bool bStartHidden);
+	class AStaticMeshActor* SpawnAuthoredMeshActor(const FVector& Location, const FRotator& Rotation, const FString& MeshAssetPath, const FString& MaterialAssetPath, const FVector& MeshScale, bool bCollides);
+	void SpawnAuthoredPlayerStarts();
+	// v2 industrial look (Facility/Substation): lay ContainersHouseCH modular metal wall panels over a
+	// wall-shaped blockout block, on both faces, as NON-collision visual cladding. Additive and fail-safe:
+	// the cube wall keeps collision/nav, so a missing kit or a wrong orientation can only fail to ADD metal,
+	// never break the map. Tiled from the catalog dimensions (SM_Wall_Metal_6m = 600x8.5x230, end pivot).
+	void CladAuthoredWall(const FVector& Center, const FVector& Scale, const FRotator& Rotation);
 #endif
 
 	void SetPlayerReady(ABHPlayerController* Controller, bool bReady);
@@ -71,7 +87,10 @@ public:
 	bool TriggerBlackoutPulse(const FVector& Location, float Radius, float DurationSeconds);
 	bool TriggerManualScare(ABHCharacter* Target, EBHScareEventType ScareType);
 	bool TriggerStudentScareSwitch(ABHCharacter* Activator, const FVector& SourceLocation, const FString& ScareTitle, int32 Severity);
-	FBHJumpscareVariant ChooseJumpscareVariant(EBHScareEventType EventType) const;
+	// bPreferRealMesh restricts the pick to imported creature meshes (never the procedural "simple render"
+	// proxies) when at least one is eligible — used by the showcased close-up scares (in-your-face, behind-you,
+	// corner peek, SCP-096) so they always present a genuine monster.
+	FBHJumpscareVariant ChooseJumpscareVariant(EBHScareEventType EventType, bool bPreferRealMesh = false) const;
 	float GetScareSensoryScale() const;
 	void TestJumpscareVariant(ABHPlayerController* RequestingController, const FString& VariantToken);
 	FString GetJumpscareVariantTestReport() const;
@@ -96,20 +115,56 @@ public:
 	void TriggerPracticeJumpscare(ABHPlayerController* RequestingController);
 	void TriggerTargetedJumpscare(ABHPlayerController* RequestingController, APlayerState* TargetPlayerState);
 	void TriggerHunterBlackout(const FVector& SourceLocation, int32 SurgeCharges = 0);
-	void CompleteTrainIntermission(const FString& NextMapName, bool bFinalRecap);
+	// Returns true if a travel was initiated (or one is already pending); false if it could not act
+	// (no authority/world) so the caller can retry instead of leaving the session stuck at the train.
+	bool CompleteTrainIntermission(const FString& NextMapName, bool bFinalRecap);
+
+	// Final stage: instead of travelling onward, the train arrives at its terminal and the game ends in place.
+	// Posts the top-5 leaderboard + class summary to the carriage boards, exports the class CSV + a per-student
+	// status file (and logs both), and holds here so the host can review results before returning to the lobby.
+	void EnterFinalResultsHold();
+	bool bFinalResultsHold = false;
+	// Top-5 students by combined score (question mastery + hunter/capture points + a survival bonus), plus a
+	// short class summary line, formatted for the carriage leaderboard board.
+	FString BuildFinalLeaderboardText() const;
+	// Writes the class telemetry CSV (via the GameInstance) and one per-student status file to Saved/ClassResults.
+	// Fills OutSummary with a human-readable result and logs every file written.
+	void ExportFinalClassResults(FString& OutSummary);
+
 	void NotifyFinalEscapeExpired();
 	// Issue a discretionary ServerTravel (tester shortcuts, bot soak) only if no round-end/other
 	// travel is already committed. Returns false (and does nothing) if a travel is already in flight,
 	// preventing a second travel from overwriting the pending post-round destination.
 	bool RequestServerTravel(const FString& URL, bool bAbsolute = false);
+	// Which solo tutorial is running (the map-baked ABHTutorialDirector reads this on activation).
+	EBHTutorialPhase GetTutorialPhase() const { return RuntimeTutorialPhase; }
+	// True when the tutorials chain Survivor -> Teacher -> Monitor on reaching each exit (the full course);
+	// false when the player selected a single tutorial, which returns to the menu when its exit is reached.
+	bool IsTutorialChained() const { return bTutorialChain; }
+	// Called by ABHTutorialDirector when the student reaches the exit: ServerTravel-reload the Tutorial map
+	// into the next phase (Survivor -> Teacher -> Monitor), or return to the main menu after Monitor.
+	void AdvanceTutorialPhase();
 	void SetBotCount(ABHPlayerController* RequestingController, int32 NewBotCount);
 	void SetBotDifficulty(ABHPlayerController* RequestingController, EBHBotDifficulty NewDifficulty);
+	// Top up the bot roster so humans + bots fill every slot (MaxPlayers). Bots still yield
+	// slots as more humans join, so a full lobby naturally makes room for late arrivals.
+	void FillBotsToCapacity(ABHPlayerController* RequestingController);
 	bool IsRevisionMode() const;
 	EBHRevisionDifficultyMix GetRevisionDifficultyMix() const;
 	TArray<EBHPhysicsTopic> GetRevisionWeakTopics() const;
 	int32 GetRevisionQuestionTargetPerNode() const;
 	int32 GetRevisionAnswerTeamTargetSize() const;
+	// Returns the FROZEN per-round hall-monitor contribution gate target (the snapshot in
+	// RevisionContributionGateTarget). Stable for the whole round; recomputed only by
+	// RefreshRevisionContributionGateTarget at round start and on intentional admin changes.
 	int32 GetRevisionMinimumContributionTarget() const;
+	// Live formula for the contribution gate target (derived from the current active-student count and
+	// stage). Only RefreshRevisionContributionGateTarget should call this to take a fresh snapshot.
+	int32 ComputeLiveRevisionContributionTarget() const;
+	// Recompute the frozen contribution gate target from current live state and push it to the replicated
+	// ABHGameState::RevisionContributionTarget. Call at round start and whenever an admin intentionally
+	// changes inputs that affect the target.
+	void RefreshRevisionContributionGateTarget();
 	bool CanUseHallMonitorTools(const ABHPlayerState* PlayerState, FString& OutBlockReason) const;
 	static bool IsRevisionParticipantRole(EBHPlayerRole Role);
 	static bool IsValidSpectatorRolePreference(EBHPlayerRole Role);
@@ -178,8 +233,18 @@ protected:
 	// Procedural geometry/actor builders, one per logical level. Each is self-contained (sets spawns and
 	// spawns all gameplay actors); BuildRuntimeFacility() parses travel options then dispatches to one.
 	void BuildFacilityLevel();
+	// Whole-map "dark liminal backrooms" layout for the Facility: a connected maze of tight rooms (randomized
+	// DFS spanning tree + extra loops, so every room is reachable), sparse dim lighting, mono concrete, with
+	// objectives/breakers/spawns/one exit distributed across the grid. Replaces the legacy hand-authored
+	// industrial layout when bBuildBackroomsFacility is set.
+	void BuildBackroomsFacility();
+	bool bBuildBackroomsFacility = true;
 	void BuildSubstationLevel();
 	void BuildFoggroundsLevel();
+	// Compact, multi-room greybox for the self-serve solo tutorial. Authored-only (no procedural runtime
+	// fallback path needs it): baked to /Game/BlackoutHunt/Maps/Tutorial.umap via the export commandlet,
+	// and it bakes in an ABHTutorialDirector that drives the guided lesson at runtime.
+	void BuildTutorialLevel();
 	void BuildFoggroundsFinalStation();
 	void BuildMapSubwayExitStation(const FVector& GateLocation, float DirectionSign, const FString& StationName, const FString& DestinationText);
 	void BuildRuntimeNavigation();
@@ -233,11 +298,42 @@ protected:
 	// nothing. Makes the real scares land harder. Returns true if a fake-out was emitted this tick.
 	bool TriggerFakeOutTensionCue(ABHCharacter* Target);
 	void TriggerMonsterChargeJumpscare(ABHCharacter* Target);
-	void TriggerMonsterChargeJumpscareWithVariant(ABHCharacter* Target, const FBHJumpscareVariant& Variant, const FString& Message, float FearAmount, float DreadAmount);
+	// bForceRevealSequence runs the classic SCP-096 choreography (spawn far with a faint red glow, hold/pause,
+	// then sprint in with audio and cut the lights afterwards) even for a modern imported monster variant.
+	void TriggerMonsterChargeJumpscareWithVariant(ABHCharacter* Target, const FBHJumpscareVariant& Variant, const FString& Message, float FearAmount, float DreadAmount, bool bForceRevealSequence = false);
+	// The classic distant-reveal -> pause -> charge -> blackout scare, now driven by a real creature mesh.
+	void TriggerScp096Scare(ABHCharacter* Target);
+	// Same flow as above but driven by the genuine imported SCP-096 model (its own mesh/skeleton/anims). A
+	// standalone scare layered on the shared flow — does not modify TriggerScp096Scare or any other scare.
+	void TriggerRealScp096Scare(ABHCharacter* Target);
+	// A teacher-initiated scare picks at random from the showcased set (super chain, behind-you, corner peek,
+	// in-your-face slam, SCP-096) so "the Teacher chose you" never feels the same twice.
+	void TriggerTeacherChosenScare(ABHCharacter* Target, ABHPlayerController* TargetPC);
+	// Scares aimed AT the teacher (student-triggered or the periodic beat) are restricted to the three "proper"
+	// scares only: the turn-around (behind-you), the super-jumpscare chain, or an SCP-096 variation. Never the
+	// lighter face/peek/ambient cues.
+	void TriggerProperScareOnTeacher(ABHCharacter* Teacher);
+	// True if a Teacher/Hunter pawn is within Radius of Location. Ambient/director jumpscares are suppressed
+	// near the teacher so their own approach is not stepped on by a random monster; deliberate teacher scares
+	// and test-menu scares bypass this.
+	bool IsTeacherNearby(const FVector& Location, float Radius = 1800.0f) const;
+	// Slams a random full-screen "face" still into the player's view with a scream/flash (the "PNG in your
+	// face" scare). No 3D actor is spawned; the image + impact are delivered as a client horror cue.
+	void TriggerFaceImageJumpscare(ABHCharacter* Target);
+	// "Something is behind you": a directive prompt + movement-only lock that springs the payoff jumpscare
+	// when the player turns to face the presence (handled client-side via the BehindYou cue).
+	void TriggerBehindYouScare(ABHCharacter* Target);
+	// Passive corner-peek: spawns a figure leaning out at a wall edge in the player's periphery that
+	// retreats when looked at or after a short linger. Tension, not a contact scare.
+	void TriggerCornerPeek(ABHCharacter* Target);
 	bool ChooseWhisperJumpscareVariant(FBHJumpscareVariant& OutVariant) const;
 	void TriggerTeacherFlatScare(ABHCharacter* Target, const FVector& FocusLocation, const FString& Message, float LockSeconds = 1.65f);
 	void FreezeTargetForJumpscare(ABHCharacter* Target, float DurationSeconds);
 	void CutLightsForJumpscare(const FVector& TargetLocation, const FVector& MonsterLocation, float Radius, float RestoreDelaySeconds = 9.5f);
+	// Dims (does not kill) lit flicker-lights near the target/monster down to DimScale (e.g. 0.15 = 15%) for a
+	// few seconds when the creature appears — the eerie "lights sink low as it manifests" beat, distinct from
+	// the hard blackout CutLightsForJumpscare does on the final impact.
+	void DimLightsForJumpscare(const FVector& TargetLocation, const FVector& MonsterLocation, float Radius, float DimScale, float DurationSeconds);
 	int32 GetEffectiveScareIntensity() const;
 	bool ResolveJumpscareVariantToken(const FString& VariantToken, FBHJumpscareVariant& OutVariant, int32& OutVariantIndex, FString& OutError) const;
 	void TriggerTesterJumpscareVariant(ABHPlayerController* RequestingController, const FBHJumpscareVariant& Variant, const FString& TestLabel);
@@ -271,7 +367,9 @@ protected:
 	void PublishDangerObjectiveBeat(const FVector& Location, const FString& Label);
 	void BroadcastStatus(const FString& Message, float DurationSeconds = 3.0f) const;
 	void UpdateDirectorGameState(const FString& ObjectiveText);
-	void UpdateExitUnlockState();
+	// bBroadcastBlockReason=false performs a silent re-check (used on the per-tick path) so the
+	// "exit locked" status is not re-broadcast every second; completion events keep the default.
+	void UpdateExitUnlockState(bool bBroadcastBlockReason = true);
 	void RefreshNextLevelFromVotes();
 	void StartPracticeMode(ABHPlayerController* RequestingController);
 	void RefreshPracticeDirector(const FString& Reason);
@@ -348,6 +446,17 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Rules")
 	int32 PrepSeconds;
 
+	// Teaching: longer first-play warmup. Effective warmup length uses ExtendedPrepSeconds when
+	// bExtendedFirstWarmup is set OR this install has never hosted a class (auto-enable first session).
+	UPROPERTY(EditDefaultsOnly, Category = "Rules")
+	bool bExtendedFirstWarmup;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Rules")
+	int32 ExtendedPrepSeconds;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Rules")
+	bool bHasHostedClassBefore;
+
 	UPROPERTY(EditDefaultsOnly, Category = "Rules")
 	int32 HuntSeconds;
 
@@ -406,6 +515,14 @@ protected:
 	bool bInfectionMode;
 	bool bPartyPace;
 	bool bPracticeMode;
+	// The solo guided tutorial rides on the practice sandbox but additionally hands beat ownership to the
+	// map-baked ABHTutorialDirector, which points a single marker at the one next object the lesson needs.
+	bool bTutorialMode;
+	// Which tutorial the director runs (Survivor -> Teacher -> Monitor). Parsed from ?BHTutorialPhase=.
+	EBHTutorialPhase RuntimeTutorialPhase = EBHTutorialPhase::Survivor;
+	// Whether to chain to the next tutorial on reaching the exit (full course) or return to the menu (single
+	// selected tutorial). Parsed from ?BHTutorialChain= (default true). Preserved across the chaining travels.
+	bool bTutorialChain = true;
 	bool bTestMode;
 	EBHRevisionMode RevisionMode;
 	bool bRevisionMode;
@@ -433,6 +550,8 @@ protected:
 	float LastWhisperJumpscareTime;
 	float LastPresenceSpikeTime;
 	float LastTeacherCounterScareTime;
+	// Cooldown clock for the occasional "scare the Teacher too" beat (a proper scare on a random alive hunter).
+	float LastTeacherProperScareTime = -999.0f;
 	float LastObjectiveDangerBeatTime;
 	float LastSpectatorEncouragementTime;
 	FVector LastBotNoiseLocation;
@@ -440,6 +559,11 @@ protected:
 	bool bRuntimeNavigationReady;
 	bool bTrainIntermissionLevel;
 	int32 RuntimeStageIndex;
+	// Hall-monitor contribution gate target, FROZEN once per round (see RefreshRevisionContributionGateTarget).
+	// The enforced gate (CanUseHallMonitorTools) and the displayed/replicated requirement both read this single
+	// snapshot so the threshold cannot drift mid-round when students join/leave. Per-node question targets
+	// (GetRevisionQuestionTargetPerNode) deliberately stay live — that is a different concept.
+	int32 RevisionContributionGateTarget;
 	EBHRoundPhase PendingIntermissionResult;
 	UPROPERTY(Transient)
 	TObjectPtr<ANavMeshBoundsVolume> RuntimeNavBounds;
@@ -449,6 +573,10 @@ protected:
 	TArray<FBHBotObjectiveClaim> BotObjectiveClaims;
 	TArray<FBHBotTargetCooldown> BotTargetCooldowns;
 	TMap<TObjectKey<APlayerState>, float> SpectatorEncouragementTimes;
+	// Last server time a host-admin denial reply was sent to each controller, so a misbehaving
+	// client spamming host-only Server RPCs can't make us flood it with reliable status messages.
+	// Mutable because RequireHostAdmin is const but needs to record the throttle timestamp.
+	mutable TMap<TObjectKey<APlayerController>, float> HostAdminDenialReplyTimes;
 	TSet<FString> LoggedBotTacticalWarnings;
 	TSet<FString> TelemetryUsedLockerKeys;
 	TSet<FString> TelemetryStartedObjectiveKeys;
