@@ -192,3 +192,15 @@ Linux runtime logs are written under:
 ## Twinmotion
 
 Twinmotion is installed at `D:\Twinmotion2026.1`. The project has Datasmith import support enabled for the editor; see `Docs\TWINMOTION.md` for the visual pass workflow.
+
+## License
+
+Blackout Hunt is **source-available, all rights reserved** — see [`LICENSE`](LICENSE). You may view, clone, and download the project for personal, non-commercial evaluation and educational use only. Any other use (including reuse, modification, redistribution, or commercial use) requires prior written permission from the copyright holder.
+
+Third-party assets and dependencies (e.g. CC0 PBR materials, the KayKit asset packs referenced as submodules, and other contents of `ThirdParty/` and `Downloaded/` directories) are licensed under their own respective terms, not under this project's license.
+
+## License
+
+Blackout Hunt is **source-available, all rights reserved** — see [`LICENSE`](LICENSE). You may view, clone, and download the project for personal, non-commercial evaluation and educational use only. Any other use (including reuse, modification, redistribution, or commercial use) requires prior written permission from the copyright holder.
+
+Third-party assets and dependencies (e.g. CC0 PBR materials, the KayKit asset packs referenced as submodules, and other contents of `ThirdParty/` and `Downloaded/` directories) are licensed under their own respective terms, not under this project's license.

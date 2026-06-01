@@ -1,4 +1,9 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #include "BHBlockActor.h"
+#include "Async/Async.h"
 #include "Components/StaticMeshComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
@@ -205,6 +210,22 @@ void ABHBlockActor::ApplyVisualStyle()
 {
 	if (!Mesh)
 	{
+		return;
+	}
+
+	// A block placed in a cooked .umap is constructed on the async loading thread; creating/mutating the
+	// fog dynamic-material instance there asserts (must be game thread). Defer to the game thread when we are
+	// off it, then re-run. Game-thread construction (procedural spawns, CDOs) and runtime calls run inline.
+	if (!IsInGameThread())
+	{
+		TWeakObjectPtr<ABHBlockActor> WeakThis(this);
+		AsyncTask(ENamedThreads::GameThread, [WeakThis]()
+		{
+			if (ABHBlockActor* GameThreadActor = WeakThis.Get())
+			{
+				GameThreadActor->ApplyVisualStyle();
+			}
+		});
 		return;
 	}
 

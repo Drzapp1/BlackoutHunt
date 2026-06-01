@@ -1,5 +1,10 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #include "BHPropVisuals.h"
 
+#include "Async/Async.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/TextRenderComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -116,6 +121,24 @@ void TintPart(UStaticMeshComponent* Component, const FLinearColor& Color, float 
 {
 	if (!Component)
 	{
+		return;
+	}
+
+	// Creating/mutating a dynamic material instance touches render resources and asserts it is on the game
+	// thread. Actors placed in a cooked .umap are constructed on the async loading thread, so a prop that
+	// tints itself from its constructor would crash the whole load (RendererScene.cpp IsInGameThread check).
+	// When we are off the game thread, defer the tint to the game thread; it re-applies correctly once the
+	// component is live. (Procedurally spawned props and CDOs construct on the game thread and run inline.)
+	if (!IsInGameThread())
+	{
+		TWeakObjectPtr<UStaticMeshComponent> WeakComponent(Component);
+		AsyncTask(ENamedThreads::GameThread, [WeakComponent, Color, EmissiveStrength]()
+		{
+			if (UStaticMeshComponent* GameThreadComponent = WeakComponent.Get())
+			{
+				TintPart(GameThreadComponent, Color, EmissiveStrength);
+			}
+		});
 		return;
 	}
 
