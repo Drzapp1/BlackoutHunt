@@ -28,7 +28,20 @@ public:
 	static bool FindQuestion(const FString& Id, FBHRevisionQuestion& OutQuestion);
 	static bool SelectQuestion(EBHPhysicsTopic Topic, EBHRevisionDifficultyMix DifficultyMix, int32 Seed, const TArray<EBHPhysicsTopic>& WeakTopics, FBHRevisionQuestion& OutQuestion);
 	static bool SelectQuestionByDifficulty(EBHPhysicsTopic Topic, EBHQuestionDifficulty Difficulty, int32 Seed, FBHRevisionQuestion& OutQuestion);
+	// Pick a "proper" (non-multiple-choice) drag question -- DragDropMatching or Ordering -- for a
+	// topic, preferring PreferredDifficulty but falling back to any difficulty. Used to mix proper
+	// questions into both revision and standard Hunt nodes. Returns false if the topic has none.
+	static bool SelectDragQuestion(EBHPhysicsTopic Topic, EBHQuestionDifficulty PreferredDifficulty, int32 Seed, FBHRevisionQuestion& OutQuestion);
 	static EBHPhysicsTopic TopicForStationType(EBHObjectiveStationType StationType);
+
+	// Parse a matching/ordering choice string into the player-facing slots (fixed drop targets /
+	// positions) and the canonical pieces (the correct content for each slot, in slot order). Drives
+	// both the interactive drag task and server-side grading of an arrangement. Returns false unless
+	// it parses into >= 2 slots with a matching number of pieces.
+	//   Ordering ("a -> b -> c"):           slots = ["1.","2.","3."],  pieces = ["a","b","c"]
+	//   Matching ("Key1: v1; Key2 -> v2"):  slots = ["Key1","Key2"],   pieces = ["v1","v2"]
+	// Matching tolerates either ": " or " -> " inside a pair and "; " between pairs.
+	static bool ParseArrangementChoice(const FString& ChoiceText, EBHQuestionType Type, TArray<FString>& OutSlots, TArray<FString>& OutPieces);
 	static FString TopicToString(EBHPhysicsTopic Topic);
 	static FString QuestionTypeToString(EBHQuestionType Type);
 	static FString DifficultyToString(EBHQuestionDifficulty Difficulty);

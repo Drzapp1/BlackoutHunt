@@ -583,7 +583,7 @@ void BuildElectricityExtension(TArray<FBHRevisionQuestion>& Bank)
 		{TEXT("Equations"), TEXT("Choose the correct matching pair."), {TEXT("Current -> I = Q / t; power -> P = IV"), TEXT("Current -> P = IV; power -> V = E / Q"), TEXT("Resistance -> Q = It; charge -> R = V / I"), TEXT("Energy -> p = mv; voltage -> F = ma")}, 0, TEXT("Match each quantity to the equation that defines it."), TEXT("Use symbols carefully."), TEXT("Current is charge per time; electrical power is current times potential difference."), EBHDiagramType::Circuit, TEXT("I = Q/t, P = IV"), 0.0f, 0.0f},
 		{TEXT("Circuit rules"), TEXT("Match the circuit type to the rule."), {TEXT("Series -> same current; parallel -> same potential difference"), TEXT("Series -> same potential difference; parallel -> same current"), TEXT("Series -> no resistance; parallel -> no voltage"), TEXT("Series -> branches; parallel -> one path only")}, 0, TEXT("Series has one path; parallel has branches."), TEXT("Trace current and compare p.d."), TEXT("Series circuits have the same current; parallel branches share the same p.d."), EBHDiagramType::Circuit, TEXT("series I, parallel V"), 0.0f, 0.0f, {.LabelA=TEXT("series"), .LabelC=TEXT("parallel"), .ShapeVariant=1}},
 		{TEXT("Components"), TEXT("Match the component to its behaviour."), {TEXT("Diode -> one-way current; fuse -> melts when current is too high"), TEXT("Diode -> stores energy; fuse -> measures voltage"), TEXT("LDR -> current only one way; ammeter -> parallel only"), TEXT("Cell -> protects earth wire; switch -> increases resistance only when hot")}, 0, TEXT("Think function, not symbol shape only."), TEXT("Use the safety role of a fuse."), TEXT("A diode controls current direction; a fuse protects by melting at high current."), EBHDiagramType::Circuit, TEXT("component functions"), 0.0f, 0.0f, {.LabelA=TEXT("diode"), .LabelC=TEXT("fuse"), .ShapeVariant=0}},
-		{TEXT("Static charge"), TEXT("Match the charge interaction."), {TEXT("Like charges repel; unlike charges attract"), TEXT("Like charges attract; unlike charges repel"), TEXT("Positive and neutral always repel"), TEXT("Negative charge is the same as no charge")}, 0, TEXT("Use like and unlike charge rules."), TEXT("Do not confuse neutral with negative."), TEXT("Like charges repel and unlike charges attract."), EBHDiagramType::StaticCharge, TEXT("charge rules"), 0.0f, 0.0f}
+		{TEXT("Static charge"), TEXT("Match the charge interaction."), {TEXT("Like charges: repel; unlike charges: attract"), TEXT("Like charges attract; unlike charges repel"), TEXT("Positive and neutral always repel"), TEXT("Negative charge is the same as no charge")}, 0, TEXT("Use like and unlike charge rules."), TEXT("Do not confuse neutral with negative."), TEXT("Like charges repel and unlike charges attract."), EBHDiagramType::StaticCharge, TEXT("charge rules"), 0.0f, 0.0f}
 	};
 	static const FRevisionSpec Order[] = {
 		{TEXT("Resistance method"), TEXT("Order a resistance calculation."), {TEXT("Write R = V / I -> substitute voltage and current -> divide -> add ohms"), TEXT("Write P = IV -> add current and voltage -> divide by mass -> add W"), TEXT("Write Q = It -> subtract time -> add volts -> multiply"), TEXT("Draw a wave -> count crests -> divide by wavelength -> add ohms")}, 0, TEXT("Resistance is voltage divided by current."), TEXT("Keep the unit as ohms."), TEXT("Use R = V / I, substitute, divide, and give the answer in ohms."), EBHDiagramType::IVGraph, TEXT("R = V / I"), 0.0f, 0.0f, {.XAxis=TEXT("V / V"), .YAxis=TEXT("I / A"), .ShapeVariant=0}},
@@ -865,8 +865,28 @@ int32 JsonInt(const TSharedPtr<FJsonObject>& Obj, const TCHAR* Field, int32 Defa
 	return Obj.IsValid() ? static_cast<int32>(FMath::RoundToInt(JsonNum(Obj, Field, Default))) : Default;
 }
 
+// Answer-safety: a multiple-choice question whose four options are not mutually distinct is ambiguous
+// or unfair (worst case the "correct" string is duplicated, so two buttons are both right). Compared
+// trimmed so trailing/leading whitespace cannot smuggle a visual duplicate past the guard.
+bool HasDistinctChoices(const FBHRevisionQuestion& Question)
+{
+	TSet<FString> SeenChoices;
+	SeenChoices.Reserve(Question.Answer.Choices.Num());
+	for (const FString& Choice : Question.Answer.Choices)
+	{
+		bool bAlreadyPresent = false;
+		SeenChoices.Add(Choice.TrimStartAndEnd(), &bAlreadyPresent);
+		if (bAlreadyPresent)
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
 // Structural validation shared by the active-bank Validate() and the override loader: well-formed
-// questions, unique ids, and every physics topic represented (so each station type can pull one).
+// questions, unique ids, distinct answer options, and every physics topic represented (so each
+// station type can pull one).
 bool ValidateQuestionSet(const TArray<FBHRevisionQuestion>& Bank, FString& OutSummary)
 {
 	int32 TopicCounts[4] = {0, 0, 0, 0};
@@ -874,7 +894,7 @@ bool ValidateQuestionSet(const TArray<FBHRevisionQuestion>& Bank, FString& OutSu
 	bool bValid = Bank.Num() > 0;
 	for (const FBHRevisionQuestion& Question : Bank)
 	{
-		if (Question.Id.IsEmpty() || Ids.Contains(Question.Id) || Question.Prompt.IsEmpty() || Question.Hint.IsEmpty() || Question.Explanation.IsEmpty() || Question.Answer.Choices.Num() != 4 || !Question.Answer.Choices.IsValidIndex(Question.Answer.CorrectChoiceIndex))
+		if (Question.Id.IsEmpty() || Ids.Contains(Question.Id) || Question.Prompt.IsEmpty() || Question.Hint.IsEmpty() || Question.Explanation.IsEmpty() || Question.Answer.Choices.Num() != 4 || !Question.Answer.Choices.IsValidIndex(Question.Answer.CorrectChoiceIndex) || !HasDistinctChoices(Question))
 		{
 			bValid = false;
 		}
@@ -953,7 +973,7 @@ bool FBHRevisionQuestionBank::ValidateBuiltInDistribution(FString& OutSummary)
 	bool bValid = Bank.Num() == 376;
 	for (const FBHRevisionQuestion& Question : Bank)
 	{
-		if (Question.Id.IsEmpty() || Ids.Contains(Question.Id) || Question.Prompt.IsEmpty() || Question.Hint.IsEmpty() || Question.Explanation.IsEmpty() || Question.Answer.Choices.Num() != 4 || !Question.Answer.Choices.IsValidIndex(Question.Answer.CorrectChoiceIndex))
+		if (Question.Id.IsEmpty() || Ids.Contains(Question.Id) || Question.Prompt.IsEmpty() || Question.Hint.IsEmpty() || Question.Explanation.IsEmpty() || Question.Answer.Choices.Num() != 4 || !Question.Answer.Choices.IsValidIndex(Question.Answer.CorrectChoiceIndex) || !HasDistinctChoices(Question))
 		{
 			bValid = false;
 		}
@@ -1080,6 +1100,38 @@ bool FBHRevisionQuestionBank::SelectQuestionByDifficulty(EBHPhysicsTopic Topic, 
 	return true;
 }
 
+bool FBHRevisionQuestionBank::SelectDragQuestion(EBHPhysicsTopic Topic, EBHQuestionDifficulty PreferredDifficulty, int32 Seed, FBHRevisionQuestion& OutQuestion)
+{
+	const TArray<FBHRevisionQuestion>& Bank = GetQuestions();
+	TArray<int32> PreferredMatches;
+	TArray<int32> AnyMatches;
+	for (int32 Index = 0; Index < Bank.Num(); ++Index)
+	{
+		const FBHRevisionQuestion& Question = Bank[Index];
+		if (Question.Topic != Topic)
+		{
+			continue;
+		}
+		if (Question.Type != EBHQuestionType::DragDropMatching && Question.Type != EBHQuestionType::Ordering)
+		{
+			continue;
+		}
+		AnyMatches.Add(Index);
+		if (Question.Difficulty == PreferredDifficulty)
+		{
+			PreferredMatches.Add(Index);
+		}
+	}
+	const TArray<int32>& Pool = PreferredMatches.Num() > 0 ? PreferredMatches : AnyMatches;
+	if (Pool.Num() == 0)
+	{
+		return false;
+	}
+	const int32 Pick = Pool[FMath::Abs(Seed) % Pool.Num()];
+	OutQuestion = Bank[Pick];
+	return true;
+}
+
 EBHPhysicsTopic FBHRevisionQuestionBank::TopicForStationType(EBHObjectiveStationType StationType)
 {
 	switch (StationType)
@@ -1095,6 +1147,73 @@ EBHPhysicsTopic FBHRevisionQuestionBank::TopicForStationType(EBHObjectiveStation
 	default:
 		return EBHPhysicsTopic::ForcesAndMotion;
 	}
+}
+
+bool FBHRevisionQuestionBank::ParseArrangementChoice(const FString& ChoiceText, EBHQuestionType Type, TArray<FString>& OutSlots, TArray<FString>& OutPieces)
+{
+	OutSlots.Reset();
+	OutPieces.Reset();
+	const FString Text = ChoiceText.TrimStartAndEnd();
+	if (Text.IsEmpty())
+	{
+		return false;
+	}
+
+	if (Type == EBHQuestionType::Ordering)
+	{
+		// "see hazard -> react -> brakes act -> vehicle stops" -> ordered steps the player sequences.
+		TArray<FString> Items;
+		Text.ParseIntoArray(Items, TEXT(" -> "), true);
+		if (Items.Num() < 2)
+		{
+			return false;
+		}
+		for (int32 Index = 0; Index < Items.Num(); ++Index)
+		{
+			const FString Item = Items[Index].TrimStartAndEnd();
+			if (Item.IsEmpty())
+			{
+				return false;
+			}
+			OutSlots.Add(FString::Printf(TEXT("%d."), Index + 1));
+			OutPieces.Add(Item);
+		}
+		return true;
+	}
+
+	if (Type == EBHQuestionType::DragDropMatching)
+	{
+		// "Vector: force; Scalar: time" or "Tiredness -> thinking; icy road -> braking".
+		// Pairs split on "; "; each pair's key/value on the first " -> " or ": ".
+		TArray<FString> Pairs;
+		Text.ParseIntoArray(Pairs, TEXT("; "), true);
+		if (Pairs.Num() < 2)
+		{
+			return false;
+		}
+		for (const FString& RawPair : Pairs)
+		{
+			const FString Pair = RawPair.TrimStartAndEnd();
+			FString Key;
+			FString Value;
+			if (!Pair.Split(TEXT(" -> "), &Key, &Value, ESearchCase::CaseSensitive, ESearchDir::FromStart)
+				&& !Pair.Split(TEXT(": "), &Key, &Value, ESearchCase::CaseSensitive, ESearchDir::FromStart))
+			{
+				return false;
+			}
+			Key = Key.TrimStartAndEnd();
+			Value = Value.TrimStartAndEnd();
+			if (Key.IsEmpty() || Value.IsEmpty())
+			{
+				return false;
+			}
+			OutSlots.Add(Key);
+			OutPieces.Add(Value);
+		}
+		return true;
+	}
+
+	return false;
 }
 
 FString FBHRevisionQuestionBank::TopicToString(EBHPhysicsTopic Topic)
