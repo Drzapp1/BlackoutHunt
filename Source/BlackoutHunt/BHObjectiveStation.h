@@ -26,11 +26,26 @@ public:
 	void Configure(EBHObjectiveStationType NewStationType);
 	void ConfigureRevisionCounterNode(EBHRevisionCounterNodeType NewCounterType);
 	void ConfigureTeacherMirrorTrapNode();
+	// Tutorial: present a fixed, self-contained visual (diagram) multiple-choice question so the guided
+	// lesson can teach reading a diagram and answering it by clicking the choices - with no revision-mode or
+	// question-bank dependency. Safe to call after Configure() to override whatever question it picked.
+	void ConfigureTutorialVisualQuestion();
+	// Tutorial: present a fixed, self-contained INTERACTIVE drag-drop matching question (drag units onto
+	// quantities, then Submit), so the lesson can teach the hands-on pointer answer flow. Self-contained too.
+	void ConfigureTutorialInteractiveQuestion();
 	void SetDirectorActive(bool bNewActive);
-	bool SubmitAnswer(ABHCharacter* Character, int32 AnswerIndex);
+	// bVisualAnswer = the answer was given via the interactive visual method (drag arrangement, or
+	// clicking a diagram element) rather than picking a multiple-choice option; visual answers earn
+	// extra mastery (see FinalizeRevisionAnswer). Keyboard/choice-row/bot answers pass false.
+	bool SubmitAnswer(ABHCharacter* Character, int32 AnswerIndex, bool bVisualAnswer = false);
 	// Typed-numeric answer path for Calculation questions: validates the value against
 	// the question's NumericAnswer +/- tolerance, then shares the choice path's result handling.
 	bool SubmitNumericAnswer(ABHCharacter* Character, float Value);
+	// Drag/drop answer path for DragDropMatching + Ordering questions. SlotToPiece[slot] is the
+	// index (into GetInteractivePieces) of the piece the player dropped on that slot. Graded
+	// server-side against the correct choice, then mapped to a synthetic choice index so it shares
+	// the exact same evaluation pipeline (team voting, anti-gaming hold, feedback) as SubmitAnswer.
+	bool SubmitArrangement(ABHCharacter* Character, const TArray<int32>& SlotToPiece);
 
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt")
 	bool IsDirectorActive() const;
@@ -115,10 +130,27 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Question")
 	bool IsReviewQuestion() const;
 
+	// Interactive drag/drop data for DragDropMatching + Ordering questions. Pieces are the draggable
+	// chips (matching values / ordering steps) SHUFFLED so the on-screen order never reveals the
+	// answer; Slots are the fixed drop targets (matching keys / "1.","2." positions). Both empty for
+	// every other question type. Carries no answer (grading re-derives the correct pairing server-side).
+	const TArray<FString>& GetInteractivePieces() const { return InteractivePieces; }
+	const TArray<FString>& GetInteractiveSlots() const { return InteractiveSlots; }
+	bool HasInteractiveArrangement() const { return InteractiveSlots.Num() > 0 && InteractivePieces.Num() == InteractiveSlots.Num(); }
+
 protected:
 	void CompleteObjective();
 	void ConfigureQuestion();
-	bool FinalizeRevisionAnswer(ABHCharacter* Character, ABHPlayerController* PC, bool bCorrect, const FString& EvaluatedSelectedAnswer, TArray<ABHCharacter*>& RevisionParticipants, bool bActiveRevisionMode);
+	// Apply a bank question (revision selection, or a drag question mixed into standard Hunt) onto the
+	// station's replicated fields: rotates choices, sets type/diagram/hint/etc., and builds the drag
+	// tray for matching/ordering. Seed drives the choice rotation + piece shuffle.
+	void ApplyRevisionQuestion(const FBHRevisionQuestion& Selected, int32 Seed);
+	// Rebuild InteractivePieces/InteractiveSlots from the current question's correct choice for
+	// DragDropMatching/Ordering (no-op otherwise). Pieces are shuffled deterministically from Seed.
+	void BuildInteractiveArrangement(int32 Seed);
+	// Server-side grade of a drag arrangement: true iff every slot holds its canonically-correct piece.
+	bool GradeArrangement(const TArray<int32>& SlotToPiece) const;
+	bool FinalizeRevisionAnswer(ABHCharacter* Character, ABHPlayerController* PC, bool bCorrect, const FString& EvaluatedSelectedAnswer, TArray<ABHCharacter*>& RevisionParticipants, bool bActiveRevisionMode, bool bVisualAnswer = false);
 	void QueueAdaptiveQuestionForParticipants(const TArray<ABHCharacter*>& Participants, bool bLastAnswerCorrect);
 	int32 ResolveRevisionQuestionTarget() const;
 	FString GetActionVerb() const;
@@ -204,6 +236,15 @@ protected:
 	// values (answer-safe: givens only). Empty => generic schematic.
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Question")
 	FBHDiagramParams QuestionDiagram;
+
+	// Shuffled draggable pieces + fixed drop-target slots for interactive matching/ordering. Display
+	// data only (no answer): the shuffle hides the order, and grading re-parses the server-only
+	// correct choice. Empty for non-arrangement questions.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Question")
+	TArray<FString> InteractivePieces;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Question")
+	TArray<FString> InteractiveSlots;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Question")
 	FString QuestionSubtopic;

@@ -11,7 +11,39 @@
 #include "Materials/MaterialInterface.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
+#include "Math/RandomStream.h"
+#include "HAL/IConsoleManager.h"
 #include "Net/UnrealNetwork.h"
+
+// Share of objective-station questions that become a "proper" drag matching/ordering task instead of
+// multiple choice, in BOTH revision and standard Hunt modes. 0 = always MC (old behaviour), 1 = always
+// drag. Tunable live; keyboard players can still answer a drag question by picking the correct
+// arrangement string with 1-4, so this never strands non-mouse input.
+static TAutoConsoleVariable<float> CVarBHDragQuestionFrequency(
+	TEXT("bh.Questions.DragFrequency"), 0.4f,
+	TEXT("Probability [0..1] an objective-station question is a drag matching/ordering question instead of multiple choice."),
+	ECVF_Default);
+
+// Mastery multiplier for answering a question via the interactive visual method (drag arrangement /
+// clicking a diagram element) instead of picking a multiple-choice option. 1.0 = no bonus; 1.5 =
+// visual answers build 50% more mastery for the same question. Clamped [1..2] on use.
+static TAutoConsoleVariable<float> CVarBHVisualMasteryMultiplier(
+	TEXT("bh.Questions.VisualMasteryMultiplier"), 1.5f,
+	TEXT("Mastery multiplier for a visually/interactively answered question vs a multiple-choice pick (1..2)."),
+	ECVF_Default);
+
+namespace
+{
+	bool BHWantsDragQuestion()
+	{
+		const float Frequency = FMath::Clamp(CVarBHDragQuestionFrequency.GetValueOnGameThread(), 0.0f, 1.0f);
+		if (Frequency <= 0.0f)
+		{
+			return false;
+		}
+		return FMath::FRand() < Frequency;
+	}
+}
 
 namespace
 {
@@ -419,7 +451,13 @@ void ABHObjectiveStation::Tick(float DeltaSeconds)
 
 	for (auto It = Workers.CreateIterator(); It; ++It)
 	{
-		if (!It->IsValid())
+		// Drop workers who are gone OR no longer an alive survivor. MarkCaptured() hides the pawn and sets
+		// bOutOfPlay but neither destroys it nor calls EndInteract, so an IsValid()-only prune let a student
+		// captured mid-repair keep driving the objective to completion (an infection-mode flip to Hunter
+		// would too). Only an alive survivor contributes work, mirroring the CanInteract entry gate.
+		const ABHCharacter* Worker = It->Get();
+		const ABHPlayerState* WorkerPS = Worker ? Worker->GetBHPlayerState() : nullptr;
+		if (!WorkerPS || !WorkerPS->IsAliveSurvivor())
 		{
 			It.RemoveCurrent();
 		}
@@ -468,6 +506,8 @@ void ABHObjectiveStation::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	DOREPLIFETIME(ABHObjectiveStation, QuestionDifficulty);
 	DOREPLIFETIME(ABHObjectiveStation, QuestionDiagramType);
 	DOREPLIFETIME(ABHObjectiveStation, QuestionDiagram);
+	DOREPLIFETIME(ABHObjectiveStation, InteractivePieces);
+	DOREPLIFETIME(ABHObjectiveStation, InteractiveSlots);
 	DOREPLIFETIME(ABHObjectiveStation, QuestionSubtopic);
 	DOREPLIFETIME(ABHObjectiveStation, QuestionFormula);
 	DOREPLIFETIME_CONDITION(ABHObjectiveStation, QuestionNumericAnswer, COND_Never);
@@ -682,6 +722,98 @@ void ABHObjectiveStation::Configure(EBHObjectiveStationType NewStationType)
 	ApplyStationVisuals();
 }
 
+void ABHObjectiveStation::ConfigureTutorialVisualQuestion()
+{
+	// A deliberately easy, fully self-contained diagram question: a straight, rising distance-time line
+	// (MotionGraph ShapeVariant 1 = constant velocity). The HUD renders the graph above clickable choices,
+	// so the student practises reading a diagram and answering it by pointing - the visual-question core.
+	bRevisionReviewQuestion = false;
+	InteractivePieces.Reset();
+	InteractiveSlots.Reset();
+
+	RevisionQuestionId = TEXT("");
+	RevisionQuestionsSolved = 0;
+	RevisionQuestionsRequired = 1;
+	RevisionQuestionStep = 0;
+	QuestionTopic = TEXT("Motion");
+	QuestionSubtopic = TEXT("Distance-time graphs");
+	QuestionType = EBHQuestionType::MultipleChoice;
+	QuestionDifficulty = EBHQuestionDifficulty::Easy;
+
+	QuestionDiagramType = EBHDiagramType::MotionGraph;
+	FBHDiagramParams Diagram;
+	Diagram.ShapeVariant = 1; // constant velocity (straight rising line)
+	Diagram.XAxis = TEXT("Time");
+	Diagram.YAxis = TEXT("Distance");
+	QuestionDiagram = Diagram;
+
+	QuestionPrompt = TEXT("Read the distance-time graph. How is this object moving?");
+	QuestionChoices.Reset();
+	QuestionChoices.Add(TEXT("At a steady speed"));
+	QuestionChoices.Add(TEXT("Speeding up"));
+	QuestionChoices.Add(TEXT("Slowing down"));
+	QuestionChoices.Add(TEXT("Not moving at all"));
+	CorrectAnswerIndex = 0;
+
+	bQuestionSolved = false;
+	QuestionHint = TEXT("A straight line that keeps rising means equal distance every second.");
+	QuestionFormula = TEXT("");
+	QuestionNumericAnswer = 0.0f;
+	QuestionNumericTolerance = 0.0f;
+	QuestionExplanation = TEXT("A straight, steadily rising distance-time line means constant (steady) speed.");
+	QuestionFeedback = TEXT("");
+	bQuestionFeedbackCorrect = false;
+	RevisionTeamSummary = TEXT("");
+
+	ApplyStationVisuals();
+}
+
+void ABHObjectiveStation::ConfigureTutorialInteractiveQuestion()
+{
+	// A hands-on drag-drop matching question: the student drags each unit onto the quantity it measures,
+	// then presses Submit. The question-pointer system renders the pieces/slots/submit and grades it via
+	// SubmitArrangement, so this teaches the interactive answer flow - distinct from clicking a fixed choice.
+	bRevisionReviewQuestion = false;
+	InteractivePieces.Reset();
+	InteractiveSlots.Reset();
+
+	RevisionQuestionId = TEXT("");
+	RevisionQuestionsSolved = 0;
+	RevisionQuestionsRequired = 1;
+	RevisionQuestionStep = 0;
+	QuestionTopic = TEXT("Units");
+	QuestionSubtopic = TEXT("Quantities and units");
+	QuestionType = EBHQuestionType::DragDropMatching;
+	QuestionDifficulty = EBHQuestionDifficulty::Easy;
+	QuestionDiagramType = EBHDiagramType::None;
+	QuestionDiagram = FBHDiagramParams();
+
+	QuestionPrompt = TEXT("Drag each unit onto the quantity it measures, then press Submit.");
+	QuestionChoices.Reset();
+	// QuestionChoices[CorrectAnswerIndex] is the canonical arrangement ("slot -> piece" pairs, ';'-separated);
+	// the second entry is a decoy so the wrong-answer synthetic-MC mapping in SubmitArrangement stays in range.
+	QuestionChoices.Add(TEXT("Speed -> m/s; Force -> N; Mass -> kg"));
+	QuestionChoices.Add(TEXT("Speed -> kg; Force -> m/s; Mass -> N"));
+	CorrectAnswerIndex = 0;
+
+	// Populate the (deterministically shuffled) draggable pieces + drop slots from the correct arrangement.
+	const FVector Location = GetActorLocation();
+	const int32 Seed = FMath::Max(1, FMath::Abs(FMath::RoundToInt(Location.X * 0.17f + Location.Y * 0.11f)));
+	BuildInteractiveArrangement(Seed);
+
+	bQuestionSolved = false;
+	QuestionHint = TEXT("Speed is metres per second, force is newtons, mass is kilograms.");
+	QuestionFormula = TEXT("");
+	QuestionNumericAnswer = 0.0f;
+	QuestionNumericTolerance = 0.0f;
+	QuestionExplanation = TEXT("Speed = m/s, Force = N (newtons), Mass = kg.");
+	QuestionFeedback = TEXT("");
+	bQuestionFeedbackCorrect = false;
+	RevisionTeamSummary = TEXT("");
+
+	ApplyStationVisuals();
+}
+
 void ABHObjectiveStation::ConfigureRevisionCounterNode(EBHRevisionCounterNodeType NewCounterType)
 {
 	RevisionCounterType = NewCounterType;
@@ -703,6 +835,8 @@ void ABHObjectiveStation::ConfigureTeacherMirrorTrapNode()
 	bCompleted = false;
 	bQuestionSolved = true;
 	QuestionChoices.Reset();
+	InteractivePieces.Reset();
+	InteractiveSlots.Reset();
 	QuestionTopic = TEXT("Class Relay");
 	QuestionSubtopic = TEXT("Hidden module");
 	QuestionPrompt = TEXT("A hidden relay the class can arm for a counter-scare.");
@@ -760,7 +894,7 @@ void ABHObjectiveStation::SetDirectorActive(bool bNewActive)
 	ApplyStationVisuals();
 }
 
-bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerIndex)
+bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerIndex, bool bVisualAnswer)
 {
 	if (!HasAuthority())
 	{
@@ -813,6 +947,13 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 
 	if (bRoleWarmup)
 	{
+		if (Character)
+		{
+			if (ABHPlayerState* WarmupPS = Character->GetPlayerState<ABHPlayerState>())
+			{
+				WarmupPS->MarkWarmupStep(EBHWarmupStep::Question);
+			}
+		}
 		const bool bCorrect = AnswerIndex == CorrectAnswerIndex;
 		if (bCorrect)
 		{
@@ -950,13 +1091,13 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 
 	const bool bCorrect = EvaluatedAnswerIndex == CorrectAnswerIndex;
 	const FString EvaluatedSelectedAnswer = QuestionChoices.IsValidIndex(EvaluatedAnswerIndex) ? QuestionChoices[EvaluatedAnswerIndex] : FString();
-	return FinalizeRevisionAnswer(Character, PC, bCorrect, EvaluatedSelectedAnswer, RevisionParticipants, bActiveRevisionMode);
+	return FinalizeRevisionAnswer(Character, PC, bCorrect, EvaluatedSelectedAnswer, RevisionParticipants, bActiveRevisionMode, bVisualAnswer);
 }
 
 // Shared post-evaluation path for both multiple-choice and typed-numeric answers.
 // Records the result (using the actual chosen/typed answer text for distractor
 // analytics), advances the revision node, applies feedback, and handles the wrong path.
-bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPlayerController* PC, bool bCorrect, const FString& EvaluatedSelectedAnswer, TArray<ABHCharacter*>& RevisionParticipants, bool bActiveRevisionMode)
+bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPlayerController* PC, bool bCorrect, const FString& EvaluatedSelectedAnswer, TArray<ABHCharacter*>& RevisionParticipants, bool bActiveRevisionMode, bool bVisualAnswer)
 {
 	if (bCorrect)
 	{
@@ -982,6 +1123,13 @@ bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPla
 				// A correct answer counts as a correction when the loaded question was itself a
 				// re-surfaced review (a question the targeted student had previously missed).
 				const bool bCorrection = bRevisionReviewQuestion;
+				// Reward the interactive visual answer (drag arrangement / clicked diagram element) with
+				// more mastery than a multiple-choice pick of the same question. RecordRevisionAnswer's
+				// clamp ceiling is raised so this scaled weight is not clipped.
+				if (bVisualAnswer)
+				{
+					RevisionQuestion.MasteryWeight *= FMath::Clamp(CVarBHVisualMasteryMultiplier.GetValueOnGameThread(), 1.0f, 2.0f);
+				}
 				for (ABHCharacter* Participant : RevisionParticipants)
 				{
 					BHGM->RecordRevisionAnswer(Participant, RevisionQuestion, true, bCorrection, EvaluatedSelectedAnswer, RevisionTeamSummary);
@@ -1237,6 +1385,144 @@ bool ABHObjectiveStation::SubmitNumericAnswer(ABHCharacter* Character, float Val
 	return FinalizeRevisionAnswer(Character, PC, bWithinTolerance, TypedAnswer, RevisionParticipants, true);
 }
 
+void ABHObjectiveStation::BuildInteractiveArrangement(int32 Seed)
+{
+	InteractivePieces.Reset();
+	InteractiveSlots.Reset();
+	if (QuestionType != EBHQuestionType::DragDropMatching && QuestionType != EBHQuestionType::Ordering)
+	{
+		return;
+	}
+	if (!QuestionChoices.IsValidIndex(CorrectAnswerIndex))
+	{
+		return;
+	}
+
+	TArray<FString> Slots;
+	TArray<FString> CanonicalPieces;
+	if (!FBHRevisionQuestionBank::ParseArrangementChoice(QuestionChoices[CorrectAnswerIndex], QuestionType, Slots, CanonicalPieces))
+	{
+		return;
+	}
+	if (Slots.Num() < 2 || Slots.Num() != CanonicalPieces.Num())
+	{
+		return;
+	}
+
+	InteractiveSlots = Slots;
+
+	// Shuffle the pieces so the tray never shows the answer order. Deterministic from Seed (the
+	// station's LocationSeed) so the replicated snapshot is stable; no Rand()/Date use.
+	TArray<int32> Perm;
+	Perm.Reserve(CanonicalPieces.Num());
+	for (int32 Index = 0; Index < CanonicalPieces.Num(); ++Index)
+	{
+		Perm.Add(Index);
+	}
+	FRandomStream Stream(Seed != 0 ? Seed : 1);
+	for (int32 Index = Perm.Num() - 1; Index > 0; --Index)
+	{
+		const int32 SwapIndex = Stream.RandRange(0, Index);
+		Perm.Swap(Index, SwapIndex);
+	}
+	// Guard against the identity permutation, which would line each piece up under its correct slot
+	// and hand over the answer; swapping the first two guarantees a non-trivial start for N >= 2.
+	bool bIdentity = true;
+	for (int32 Index = 0; Index < Perm.Num(); ++Index)
+	{
+		if (Perm[Index] != Index)
+		{
+			bIdentity = false;
+			break;
+		}
+	}
+	if (bIdentity && Perm.Num() >= 2)
+	{
+		Perm.Swap(0, 1);
+	}
+
+	InteractivePieces.Reserve(CanonicalPieces.Num());
+	for (int32 Index = 0; Index < Perm.Num(); ++Index)
+	{
+		InteractivePieces.Add(CanonicalPieces[Perm[Index]]);
+	}
+}
+
+bool ABHObjectiveStation::GradeArrangement(const TArray<int32>& SlotToPiece) const
+{
+	if (!QuestionChoices.IsValidIndex(CorrectAnswerIndex))
+	{
+		return false;
+	}
+	TArray<FString> Slots;
+	TArray<FString> CanonicalPieces;
+	if (!FBHRevisionQuestionBank::ParseArrangementChoice(QuestionChoices[CorrectAnswerIndex], QuestionType, Slots, CanonicalPieces))
+	{
+		return false;
+	}
+	if (CanonicalPieces.Num() != InteractiveSlots.Num() || SlotToPiece.Num() != InteractiveSlots.Num())
+	{
+		return false;
+	}
+	for (int32 Slot = 0; Slot < SlotToPiece.Num(); ++Slot)
+	{
+		const int32 PieceIndex = SlotToPiece[Slot];
+		if (!InteractivePieces.IsValidIndex(PieceIndex))
+		{
+			return false;
+		}
+		// The shuffled piece dropped on this slot must equal the slot's canonically-correct piece.
+		if (!InteractivePieces[PieceIndex].Equals(CanonicalPieces[Slot], ESearchCase::CaseSensitive))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+bool ABHObjectiveStation::SubmitArrangement(ABHCharacter* Character, const TArray<int32>& SlotToPiece)
+{
+	if (!HasAuthority())
+	{
+		return false;
+	}
+	// Only matching/ordering questions that actually built a tray accept arrangements.
+	if (InteractiveSlots.Num() == 0 || (QuestionType != EBHQuestionType::DragDropMatching && QuestionType != EBHQuestionType::Ordering))
+	{
+		return false;
+	}
+	ABHPlayerController* PC = Character ? Cast<ABHPlayerController>(Character->GetController()) : nullptr;
+	if (bQuestionSolved)
+	{
+		return true;
+	}
+	// Require a complete one-piece-per-slot assignment; reject malformed/partial client input.
+	if (SlotToPiece.Num() != InteractiveSlots.Num())
+	{
+		if (PC)
+		{
+			PC->ClientShowStatusMessage(TEXT("Place a piece on every slot before submitting."), 2.0f);
+		}
+		return false;
+	}
+	TSet<int32> Used;
+	for (const int32 PieceIndex : SlotToPiece)
+	{
+		if (!InteractivePieces.IsValidIndex(PieceIndex) || Used.Contains(PieceIndex))
+		{
+			return false;
+		}
+		Used.Add(PieceIndex);
+	}
+
+	const bool bCorrect = GradeArrangement(SlotToPiece);
+	// Map onto a synthetic choice index so the whole SubmitAnswer pipeline (validity checks,
+	// per-player throttle, team voting, anti-gaming correction hold, FinalizeRevisionAnswer and the
+	// feedback/visuals) treats an arrangement exactly like a clicked multiple-choice answer.
+	const int32 SyntheticIndex = bCorrect ? CorrectAnswerIndex : ((CorrectAnswerIndex == 0) ? 1 : 0);
+	return SubmitAnswer(Character, SyntheticIndex, /*bVisualAnswer=*/true);
+}
+
 bool ABHObjectiveStation::IsDirectorActive() const
 {
 	return bDirectorActive;
@@ -1436,39 +1722,107 @@ void ABHObjectiveStation::QueueAdaptiveQuestionForParticipants(const TArray<ABHC
 		return;
 	}
 
-	float LowestMastery = TNumericLimits<float>::Max();
-	bool bFoundPlan = false;
 	PendingReviewQuestionId.Reset();
+	bUseAdaptiveQuestionOverride = false;
+
+	// The station shows ONE shared question, so we must pick whose profile it targets. Always
+	// serving the single weakest student starves everyone else of questions tuned to THEIR gaps,
+	// so instead rotate the spotlight across the eligible participants by question step: over a
+	// run of questions every individual periodically gets one calibrated to their own weakest
+	// topic + mastery. A solo node (one participant) collapses to "always them".
+	TArray<const ABHPlayerState*> Eligible;
 	for (ABHCharacter* Participant : Participants)
 	{
 		const ABHPlayerState* ParticipantPS = Participant ? Participant->GetPlayerState<ABHPlayerState>() : nullptr;
-		if (!ParticipantPS || !ABHGameMode::IsRevisionParticipantRole(ParticipantPS->PlayerRole))
+		if (ParticipantPS && ABHGameMode::IsRevisionParticipantRole(ParticipantPS->PlayerRole))
 		{
-			continue;
-		}
-
-		EBHPhysicsTopic CandidateTopic = EBHPhysicsTopic::ForcesAndMotion;
-		EBHQuestionDifficulty CandidateDifficulty = EBHQuestionDifficulty::Easy;
-		FString CandidateReason;
-		BHGM->GetAdaptiveRevisionPlan(ParticipantPS, bLastAnswerCorrect, CandidateTopic, CandidateDifficulty, CandidateReason);
-		const float CandidateMastery = ParticipantPS->RevisionStats.MasteryPercent;
-		if (!bFoundPlan || CandidateMastery < LowestMastery)
-		{
-			bFoundPlan = true;
-			LowestMastery = CandidateMastery;
-			AdaptiveQuestionTopic = CandidateTopic;
-			AdaptiveQuestionDifficulty = CandidateDifficulty;
-			// Re-test the player who most needs help on a question they missed.
-			PendingReviewQuestionId = ParticipantPS->PeekRevisionReview();
+			Eligible.Add(ParticipantPS);
 		}
 	}
+	if (Eligible.IsEmpty())
+	{
+		return;
+	}
 
-	bUseAdaptiveQuestionOverride = bFoundPlan;
+	// Stable order so the rotation is deterministic across questions regardless of array churn.
+	Eligible.Sort([](const ABHPlayerState& A, const ABHPlayerState& B)
+	{
+		return A.GetPlayerId() < B.GetPlayerId();
+	});
+
+	// RevisionQuestionStep is still the current step here (callers increment it after this returns),
+	// so each successive question advances the target by one participant.
+	const int32 TargetIndex = FMath::Max(0, RevisionQuestionStep) % Eligible.Num();
+	const ABHPlayerState* TargetPS = Eligible[TargetIndex];
+
+	EBHPhysicsTopic PlanTopic = EBHPhysicsTopic::ForcesAndMotion;
+	EBHQuestionDifficulty PlanDifficulty = EBHQuestionDifficulty::Easy;
+	FString PlanReason;
+	BHGM->GetAdaptiveRevisionPlan(TargetPS, bLastAnswerCorrect, PlanTopic, PlanDifficulty, PlanReason);
+	AdaptiveQuestionTopic = PlanTopic;
+	AdaptiveQuestionDifficulty = PlanDifficulty;
+	// Re-test the targeted player on a question they previously missed (spaced repetition).
+	PendingReviewQuestionId = TargetPS->PeekRevisionReview();
+	bUseAdaptiveQuestionOverride = true;
+}
+
+void ABHObjectiveStation::ApplyRevisionQuestion(const FBHRevisionQuestion& Selected, int32 Seed)
+{
+	RevisionQuestionId = Selected.Id;
+	QuestionTopic = Selected.TopicName;
+	QuestionSubtopic = Selected.Subtopic;
+	QuestionType = Selected.Type;
+	QuestionDifficulty = Selected.Difficulty;
+	QuestionDiagramType = Selected.DiagramType;
+	QuestionDiagram = Selected.Diagram;
+	QuestionPrompt = Selected.Prompt;
+	QuestionChoices.Reset();
+	CorrectAnswerIndex = 0;
+	const int32 ChoiceCount = Selected.Answer.Choices.Num();
+	if (ChoiceCount > 0)
+	{
+		const int32 ChoiceRotation = Seed % ChoiceCount;
+		bool bFoundCorrect = false;
+		for (int32 Index = 0; Index < ChoiceCount; ++Index)
+		{
+			const int32 SourceIndex = (Index + ChoiceCount - ChoiceRotation) % ChoiceCount;
+			QuestionChoices.Add(Selected.Answer.Choices[SourceIndex]);
+			if (SourceIndex == Selected.Answer.CorrectChoiceIndex)
+			{
+				CorrectAnswerIndex = Index;
+				bFoundCorrect = true;
+			}
+		}
+		if (!bFoundCorrect)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[BHObjectiveStation] Question '%s' has CorrectChoiceIndex %d out of range [0,%d); clamping."), *Selected.Id, Selected.Answer.CorrectChoiceIndex, ChoiceCount);
+			const int32 ClampedSource = FMath::Clamp(Selected.Answer.CorrectChoiceIndex, 0, ChoiceCount - 1);
+			CorrectAnswerIndex = (ClampedSource + ChoiceRotation) % ChoiceCount;
+		}
+	}
+	// Build the interactive drag tray for matching/ordering questions (no-op otherwise).
+	BuildInteractiveArrangement(Seed);
+	bQuestionSolved = false;
+	QuestionHint = Selected.Hint;
+	QuestionFormula = Selected.Answer.Formula;
+	QuestionNumericAnswer = Selected.Answer.NumericAnswer;
+	QuestionNumericTolerance = Selected.Answer.NumericTolerance;
+	QuestionExplanation = Selected.Explanation;
+	QuestionFeedback = TEXT("");
+	bQuestionFeedbackCorrect = false;
+	RevisionTeamVotes.Reset();
+	RevisionTeamPlayerIds.Reset();
+	RevisionTeamSummary = TEXT("");
+	PendingCorrectionCharacters.Reset();
 }
 
 void ABHObjectiveStation::ConfigureQuestion()
 {
 	bRevisionReviewQuestion = false;
+	// Cleared up front so a stale matching/ordering tray never lingers onto a non-arrangement
+	// question; rebuilt below only when a DragDropMatching/Ordering revision question loads.
+	InteractivePieces.Reset();
+	InteractiveSlots.Reset();
 	if (ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
 	{
 		if (BHGM->IsRevisionMode())
@@ -1490,9 +1844,19 @@ void ABHObjectiveStation::ConfigureQuestion()
 			else
 			{
 				const EBHPhysicsTopic Topic = bUseAdaptiveQuestionOverride ? AdaptiveQuestionTopic : FBHRevisionQuestionBank::TopicForStationType(StationType);
-				bSelected = bUseAdaptiveQuestionOverride
-					? FBHRevisionQuestionBank::SelectQuestionByDifficulty(Topic, AdaptiveQuestionDifficulty, LocationSeed, Selected)
-					: FBHRevisionQuestionBank::SelectQuestion(Topic, BHGM->GetRevisionDifficultyMix(), LocationSeed, BHGM->GetRevisionWeakTopics(), Selected);
+				const EBHQuestionDifficulty PreferredDifficulty = bUseAdaptiveQuestionOverride ? AdaptiveQuestionDifficulty : EBHQuestionDifficulty::Medium;
+				// Bias a share of nodes toward "proper" drag matching/ordering questions; otherwise (or if
+				// the topic has no drag question) fall back to the normal difficulty/weakness-adaptive pick.
+				if (BHWantsDragQuestion() && FBHRevisionQuestionBank::SelectDragQuestion(Topic, PreferredDifficulty, LocationSeed, Selected))
+				{
+					bSelected = true;
+				}
+				else
+				{
+					bSelected = bUseAdaptiveQuestionOverride
+						? FBHRevisionQuestionBank::SelectQuestionByDifficulty(Topic, AdaptiveQuestionDifficulty, LocationSeed, Selected)
+						: FBHRevisionQuestionBank::SelectQuestion(Topic, BHGM->GetRevisionDifficultyMix(), LocationSeed, BHGM->GetRevisionWeakTopics(), Selected);
+				}
 			}
 			bRevisionReviewQuestion = bReviewSelected;
 			PendingReviewQuestionId.Reset();
@@ -1516,6 +1880,7 @@ void ABHObjectiveStation::ConfigureQuestion()
 				if (ChoiceCount > 0)
 				{
 					const int32 ChoiceRotation = LocationSeed % ChoiceCount;
+					bool bFoundCorrect = false;
 					for (int32 Index = 0; Index < ChoiceCount; ++Index)
 					{
 						const int32 SourceIndex = (Index + ChoiceCount - ChoiceRotation) % ChoiceCount;
@@ -1523,9 +1888,21 @@ void ABHObjectiveStation::ConfigureQuestion()
 						if (SourceIndex == Selected.Answer.CorrectChoiceIndex)
 						{
 							CorrectAnswerIndex = Index;
+							bFoundCorrect = true;
 						}
 					}
+					// Defensive: the question-bank validator keeps CorrectChoiceIndex in range, but a future
+					// content/validator change must not silently mark shuffled choice 0 as correct. If the
+					// source index never matched, warn and clamp to a valid (rotated) index instead of trusting 0.
+					if (!bFoundCorrect)
+					{
+						UE_LOG(LogTemp, Warning, TEXT("[BHObjectiveStation] Question '%s' has CorrectChoiceIndex %d out of range [0,%d); clamping."), *Selected.Id, Selected.Answer.CorrectChoiceIndex, ChoiceCount);
+						const int32 ClampedSource = FMath::Clamp(Selected.Answer.CorrectChoiceIndex, 0, ChoiceCount - 1);
+						CorrectAnswerIndex = (ClampedSource + ChoiceRotation) % ChoiceCount;
+					}
 				}
+				// Build the interactive drag tray for matching/ordering questions (no-op otherwise).
+				BuildInteractiveArrangement(LocationSeed);
 				bQuestionSolved = false;
 				QuestionHint = Selected.Hint;
 				QuestionFormula = Selected.Answer.Formula;
@@ -1540,6 +1917,24 @@ void ABHObjectiveStation::ConfigureQuestion()
 				PendingCorrectionCharacters.Reset();
 				return;
 			}
+		}
+	}
+
+	// Proper (drag) questions in standard Hunt too: with some probability pull a matching/ordering
+	// question from the full bank for this station's topic instead of the fixed multiple-choice set.
+	// (Revision mode already biased its own pick above and returned.)
+	if (BHWantsDragQuestion())
+	{
+		const FVector DragLocation = GetActorLocation();
+		const int32 DragSeed = FMath::Abs(FMath::RoundToInt(DragLocation.X * 0.13f + DragLocation.Y * 0.07f + static_cast<int32>(StationType) * 71.0f));
+		FBHRevisionQuestion DragSelected;
+		if (FBHRevisionQuestionBank::SelectDragQuestion(FBHRevisionQuestionBank::TopicForStationType(StationType), EBHQuestionDifficulty::Easy, DragSeed, DragSelected))
+		{
+			RevisionQuestionsSolved = 0;
+			RevisionQuestionsRequired = 1;
+			RevisionQuestionStep = 0;
+			ApplyRevisionQuestion(DragSelected, DragSeed);
+			return;
 		}
 	}
 
@@ -1604,16 +1999,27 @@ void ABHObjectiveStation::ConfigureQuestion()
 	QuestionDiagram = FBHDiagramParams();
 	QuestionPrompt = Selected.Prompt;
 	QuestionChoices.Reset();
-	const int32 ChoiceRotation = LocationSeed % UE_ARRAY_COUNT(Selected.Choices);
+	const int32 StandardChoiceCount = UE_ARRAY_COUNT(Selected.Choices);
+	const int32 ChoiceRotation = LocationSeed % StandardChoiceCount;
 	CorrectAnswerIndex = 0;
-	for (int32 Index = 0; Index < UE_ARRAY_COUNT(Selected.Choices); ++Index)
+	bool bFoundStandardCorrect = false;
+	for (int32 Index = 0; Index < StandardChoiceCount; ++Index)
 	{
-		const int32 SourceIndex = (Index + UE_ARRAY_COUNT(Selected.Choices) - ChoiceRotation) % UE_ARRAY_COUNT(Selected.Choices);
+		const int32 SourceIndex = (Index + StandardChoiceCount - ChoiceRotation) % StandardChoiceCount;
 		QuestionChoices.Add(Selected.Choices[SourceIndex]);
 		if (SourceIndex == Selected.CorrectIndex)
 		{
 			CorrectAnswerIndex = Index;
+			bFoundStandardCorrect = true;
 		}
+	}
+	// Defensive: never silently mark shuffled choice 0 as correct if CorrectIndex falls out of the
+	// fixed choice array; warn and clamp to a valid (rotated) index instead.
+	if (!bFoundStandardCorrect)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[BHObjectiveStation] Standard question '%s' has CorrectIndex %d out of range [0,%d); clamping."), Selected.Prompt, Selected.CorrectIndex, StandardChoiceCount);
+		const int32 ClampedSource = FMath::Clamp(Selected.CorrectIndex, 0, StandardChoiceCount - 1);
+		CorrectAnswerIndex = (ClampedSource + ChoiceRotation) % StandardChoiceCount;
 	}
 	bQuestionSolved = false;
 	QuestionHint = Selected.Hint;
