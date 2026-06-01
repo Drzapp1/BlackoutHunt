@@ -50,6 +50,13 @@ public:
 	void HostPracticeGame();
 
 	UFUNCTION(Exec)
+	void HostTutorialGame();
+
+	// Launch one specific tutorial. bChain=true continues Survivor -> Teacher -> Monitor on reaching each exit
+	// (the full course); false plays just StartPhase and returns to the menu when its exit is reached.
+	void HostTutorialPhase(EBHTutorialPhase StartPhase, bool bChain);
+
+	UFUNCTION(Exec)
 	void HostTestRound();
 
 	UFUNCTION(Exec)
@@ -304,12 +311,18 @@ public:
 	void ShowMainMenu();
 	void HideMainMenu();
 	void ToggleMainMenu();
+	// Show/hide the mouse cursor for answering a question panel with the mouse. Uses GameAndUI input
+	// so clicks reach the HUD-canvas hit regions and the camera stops turning; restores gameplay input
+	// on disable unless a real UI (menu/console/loading) still needs the cursor.
+	void SetQuestionCursorMode(bool bEnable);
 	void ReturnToMainMenu();
 	void QuitGame();
 	void ShowTravelLoadingScreen(const FString& Title, const FString& Detail);
 	void HideTravelLoadingScreen();
 	bool HostOnlineGameForMenu(const FString& LevelName, FString& OutMessage);
 	bool HostPracticeGameForMenu(FString& OutMessage);
+	bool HostTutorialGameForMenu(FString& OutMessage);
+	bool HostTutorialPhaseForMenu(EBHTutorialPhase StartPhase, bool bChain, FString& OutMessage);
 	bool HostTestRoundForMenu(const FString& LevelName, FString& OutMessage);
 	bool HostPhysicsClassroomForMenu(FString& OutMessage);
 	bool HostLiveClassroomForMenu(FString& OutMessage);
@@ -359,6 +372,7 @@ public:
 	bool SetObjectiveIntensityForMenu(int32 Intensity, FString& OutMessage);
 	bool SetBotCountForMenu(int32 BotCount, FString& OutMessage);
 	bool SetBotDifficultyForMenu(EBHBotDifficulty Difficulty, FString& OutMessage);
+	bool FillBotsForMenu(FString& OutMessage);
 	bool ToggleInfectionModeForMenu(FString& OutMessage);
 	bool TogglePaceModeForMenu(FString& OutMessage);
 	bool SetPracticeRoleForMenu(EBHPlayerRole NewRole, FString& OutMessage);
@@ -437,6 +451,11 @@ public:
 	const FString& GetStatusMessage() const;
 	bool HasActiveStatusMessage() const;
 	float GetStatusMessageAlpha() const;
+	// Role intro card shown briefly at role assignment / warmup start (teaching onboarding).
+	bool HasActiveRoleIntro() const;
+	float GetRoleIntroAlpha() const;
+	EBHPlayerRole GetRoleIntroRole() const;
+	bool IsRoleIntroRevisionMode() const;
 	bool HasActiveCCTVReveal() const;
 	float GetCCTVRevealAlpha() const;
 	const FVector& GetCCTVRevealLocation() const;
@@ -454,6 +473,9 @@ public:
 	bool AreCaptionsEnabled() const;
 	bool IsHighContrastHudEnabled() const;
 	bool IsReducedFlashEnabled() const;
+	// True when this local player has Reduced Jumpscares ("safe mode") on — jumpscare monsters then render as
+	// the gentle abstract proxy instead of the realistic creatures.
+	bool IsReducedJumpscaresEnabled() const;
 	// HUD customization preferences (local-only, persisted to the Comfort config section).
 	float GetHudScale() const;
 	float GetHudPanelOpacity() const;
@@ -471,6 +493,12 @@ public:
 	FLinearColor GetHorrorCueFlashColor() const;
 	// Near-opaque black "blink" overlay alpha, fired at the instant of a strong jumpscare impact.
 	float GetHorrorCueBlinkAlpha() const;
+	// Full-screen "PNG in your face" still: the resolved texture (or null) and its current draw alpha.
+	class UTexture2D* GetHorrorCueFaceImage() const;
+	float GetHorrorCueFaceImageAlpha() const;
+	// Large centered directive banner (e.g. "DON'T TURN AROUND") driven by directive/behind-you cues.
+	FString GetHorrorDirectiveText() const;
+	float GetHorrorDirectiveAlpha() const;
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetReady(bool bReady);
@@ -528,6 +556,9 @@ public:
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetBotDifficulty(EBHBotDifficulty Difficulty);
+
+	UFUNCTION(Server, Reliable)
+	void ServerFillBots();
 
 	UFUNCTION(Server, Reliable)
 	void ServerBotStatus();
@@ -625,6 +656,15 @@ public:
 	UFUNCTION(Client, Reliable)
 	void ClientShowStatusMessage(const FString& Message, float DurationSeconds);
 
+	// Server pushes this client's secret reconnect token (owner-only); the client stores it in the
+	// GameInstance and echoes it in the JoinGame URL on a later rejoin so a mid-round reconnect is matched
+	// by the token, not the spoofable display name (Bug-9 secure reconnect).
+	UFUNCTION(Client, Reliable)
+	void ClientReceiveReconnectToken(const FString& Token);
+
+	UFUNCTION(Client, Reliable)
+	void ClientShowRoleIntro(EBHPlayerRole InRole, bool bRevisionMode);
+
 	UFUNCTION(Client, Unreliable)
 	void ClientShowCCTVReveal(ABHCharacter* RevealTarget, const FVector& RevealLocation, const FString& TargetName, float DurationSeconds);
 
@@ -637,6 +677,12 @@ public:
 	UFUNCTION(Client, Reliable)
 	void ClientPlayHorrorCue(const FBHClientHorrorCue& Cue);
 
+	// Temporarily darkens the player's whole view (environmental brightness sinks) for DurationSeconds, easing
+	// back up afterwards. Applied as a camera-manager colour scale so the self-lit creature stays the brightest
+	// thing on screen and remains visible while the surroundings go dark. DimScale is the floor (e.g. 0.45).
+	UFUNCTION(Client, Reliable)
+	void ClientDimEnvironment(float DimScale, float DurationSeconds);
+
 	UFUNCTION(Client, Unreliable)
 	void ClientPlayGameplayAudioCue(const FBHGameplayAudioCue& Cue);
 
@@ -647,6 +693,17 @@ private:
 	void RemoveMainMenuWidget();
 	void RemoveAtmosphereConsoleWidget();
 	void ApplyGameplayInputMode();
+	// Locks move/look input for a jumpscare and arms a self-restoring safety timer so the
+	// owning client always frees itself even if the explicit unlock RPC is dropped/reordered.
+	// bLockLook=false locks movement only and leaves look/turn free (the "behind you" scare).
+	void LockJumpscareInput(float SafetySeconds, bool bLockLook = true);
+	// Clears the jumpscare input lock immediately (also cancels the safety timer).
+	void ReleaseJumpscareInput();
+	// "Behind you" directive scare: arm the held directive + movement-only lock; TickHorrorCueEffects fires
+	// the payoff once the player turns to face the presence (or the safety hold elapses). The payoff replays
+	// a close-range cue through ClientPlayHorrorCue so it reuses the full impact path.
+	void BeginBehindYouScare(const FBHClientHorrorCue& Cue);
+	void TriggerBehindYouPayoff();
 	void EnsureAudioPreferencesLoaded();
 	void SaveAudioPreference(const TCHAR* Key, float Value) const;
 	void EnsureComfortPreferencesLoaded();
@@ -656,6 +713,7 @@ private:
 	void SaveGraphicsPreference(const TCHAR* Key, int32 Value) const;
 	void SaveGraphicsPreference(const TCHAR* Key, bool bValue) const;
 	void ApplyStartupGraphicsSettings();
+	void MaybeShowWeakDeviceNotice();
 	bool ApplyGraphicsPresetInternal(int32 Quality, bool bSaveAsManualChoice, FString& OutMessage);
 	void ApplySavedManualGraphicsTuning();
 	void ApplySavedGraphicsResolution();
@@ -708,12 +766,22 @@ private:
 	float StatusMessageStartTime = 0.0f;
 	float StatusMessageEndTime = 0.0f;
 	float StatusMessageDuration = 0.0f;
+	EBHPlayerRole RoleIntroRole = EBHPlayerRole::Unassigned;
+	bool bRoleIntroRevisionMode = false;
+	float RoleIntroStartTime = 0.0f;
+	float RoleIntroEndTime = 0.0f;
 	FVector CCTVRevealLocation = FVector::ZeroVector;
 	FString CCTVRevealTargetName;
 	TWeakObjectPtr<ABHCharacter> CCTVRevealTarget;
 	float CCTVRevealStartTime = 0.0f;
 	float CCTVRevealEndTime = 0.0f;
 	float CCTVRevealDuration = 0.0f;
+public:
+	// Written by ABHCharacter when a routing marker is pinned (N key) and read by ABHHUD when drawing it,
+	// so these must be reachable across translation units. The rest of this block stays private.
+	FVector NodeMarkerLocation = FVector::ZeroVector;
+	float NodeMarkerUntilTime = 0.0f;
+private:
 	float MasterVolume = 1.0f;
 	float MusicVolume = 0.85f;
 	float UiVolume = 0.9f;
@@ -806,9 +874,38 @@ private:
 	FLinearColor HorrorCueFlashColor = FLinearColor(1.0f, 0.04f, 0.02f, 1.0f);
 	float HorrorCueBlinkStartTime = -1.0f;
 	float HorrorCueBlinkIntensity = 0.0f;
+	// Environmental screen-dim ("the lights of the world sink") driven onto PlayerCameraManager::ColorScale.
+	// Ramps in, holds, eases out across [Start,End]; DimScale is the darkest multiplier reached.
+	float HorrorEnvDimStartTime = -1.0f;
+	float HorrorEnvDimEndTime = -1.0f;
+	float HorrorEnvDimScale = 1.0f;
+	bool bHorrorEnvDimActive = false;
+	// Full-screen face image ("PNG in your face") scare state. Hard ref (UPROPERTY) so the freshly
+	// loaded texture is not garbage-collected before the HUD draws it.
+	UPROPERTY(Transient)
+	TObjectPtr<UTexture2D> HorrorCueFaceImage = nullptr;
+	float HorrorCueFaceImageStartTime = -1.0f;
+	float HorrorCueFaceImageEndTime = -1.0f;
+	float HorrorCueFaceImageIntensity = 0.0f;
+	// Large centered directive banner state ("DON'T TURN AROUND", "SOMETHING IS BEHIND YOU", ...).
+	FString HorrorDirectiveText;
+	float HorrorDirectiveStartTime = -1.0f;
+	float HorrorDirectiveEndTime = -1.0f;
+	// "Behind you" held-scare state (client-local turn detection toward the presence behind the player).
+	bool bBehindYouActive = false;
+	FVector BehindYouFocusLocation = FVector::ZeroVector;
+	float BehindYouArmTime = -1.0f;
+	float BehindYouDeadline = -1.0f;
+	float BehindYouTurnCosThreshold = 0.74f;
+	FBHClientHorrorCue BehindYouPayoffCue;
+	// Guards so the engine's counted SetIgnoreMoveInput/LookInput flags are pushed/popped exactly once
+	// across overlapping jumpscare locks (prevents the "stuck, only jump works" state after a scare).
+	bool bJumpscareMoveInputLocked = false;
+	bool bJumpscareLookInputLocked = false;
 	FDynamicForceFeedbackHandle HorrorCueRumbleHandle = 0;
 	FTimerHandle HorrorCueHitStopHandle;
 	FTimerHandle HorrorCueDuckHandle;
+	FTimerHandle JumpscareInputRestoreHandle;
 	FTimerHandle AutomationStartupTimerHandle;
 	FTimerHandle AutomationQuitTimerHandle;
 	FTimerHandle ClassroomPreflightTimerHandle;

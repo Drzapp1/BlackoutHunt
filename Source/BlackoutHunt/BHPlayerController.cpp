@@ -13,6 +13,7 @@
 #include "BHLessonPreset.h"
 #include "BHNetworkSupport.h"
 #include "BHPlayerState.h"
+#include "Camera/PlayerCameraManager.h"
 #include "Components/AudioComponent.h"
 #include "Components/DirectionalLightComponent.h"
 #include "Components/ExponentialHeightFogComponent.h"
@@ -28,6 +29,7 @@
 #include "Engine/LocalFogVolume.h"
 #include "Engine/PostProcessVolume.h"
 #include "Engine/SkyLight.h"
+#include "Engine/Texture2D.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/InputSettings.h"
@@ -38,7 +40,9 @@
 #include "HAL/PlatformMemory.h"
 #include "HAL/PlatformTime.h"
 #include "Kismet/GameplayStatics.h"
+#include "Misc/App.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/MessageDialog.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "SBHClassroomBoard.h"
@@ -309,7 +313,13 @@ FBHGraphicsHardwareProfile BHScanGraphicsHardwareProfile()
 	const bool bModerateVideoMemory = Profile.DedicatedVideoMemoryGB > 0.0f && Profile.DedicatedVideoMemoryGB <= 6.25f;
 	const bool bStrongVideoMemory = Profile.DedicatedVideoMemoryGB >= 7.5f;
 	const bool bVeryStrongVideoMemory = Profile.DedicatedVideoMemoryGB >= 10.5f;
-	const bool bIntegratedOrUnknownGpuNeedsLow = Profile.bLikelyIntegratedGpu || (Profile.GpuBrand.IsEmpty() && bUnknownVideoMemory);
+	// A machine with plenty of system RAM (>=16 GB) and a real multi-core CPU is not a "Low 4GB" box even
+	// if its GPU brand looks integrated - route it to at least Medium (which keeps Lumen OFF) instead of
+	// the floor. Discrete GPUs still reach High/Ultra below; software GPUs and low-RAM/low-VRAM boxes are
+	// unaffected and still drop to Low.
+	const bool bAbundantSystemMemory = Profile.SystemMemoryGB >= 15.5f && Profile.PhysicalCores >= 6;
+	const bool bIntegratedOrUnknownGpuNeedsLow = (Profile.bLikelyIntegratedGpu || (Profile.GpuBrand.IsEmpty() && bUnknownVideoMemory))
+		&& !bAbundantSystemMemory;
 
 	if (Profile.bLikelySoftwareGpu || bIntegratedOrUnknownGpuNeedsLow || bVeryLowSystemMemory || bKnownLowVideoMemory)
 	{
@@ -564,6 +574,10 @@ FString BHNormalizeRuntimeLevelName(FString LevelName)
 	if (LevelName.Equals(TEXT("Foggrounds"), ESearchCase::IgnoreCase) || LevelName.Equals(TEXT("Fog"), ESearchCase::IgnoreCase))
 	{
 		return TEXT("Foggrounds");
+	}
+	if (LevelName.Equals(TEXT("Tutorial"), ESearchCase::IgnoreCase))
+	{
+		return TEXT("Tutorial");
 	}
 	return LevelName.Equals(TEXT("Substation"), ESearchCase::IgnoreCase) ? TEXT("Substation") : TEXT("Facility");
 }
@@ -1402,6 +1416,7 @@ void ABHPlayerController::BeginPlay()
 		EnsureComfortPreferencesLoaded();
 		EnsureGraphicsPreferencesLoaded();
 		ApplyStartupGraphicsSettings();
+		MaybeShowWeakDeviceNotice();
 		ApplyVirtualBoxSafeModeIfNeeded();
 		BindGameWindowCloseOverride();
 		PushLocalCosmeticsToServer(false);
@@ -1577,6 +1592,32 @@ void ABHPlayerController::HostPracticeGame()
 	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(TEXT("Facility"))), true, TEXT("listen?BHLevel=Facility?BHPractice=1"));
 }
 
+void ABHPlayerController::HostTutorialGame()
+{
+	// The plain entry point (console + default menu button) is the full course: start at Survivor and chain
+	// Survivor -> Teacher -> Monitor.
+	HostTutorialPhase(EBHTutorialPhase::Survivor, true);
+}
+
+void ABHPlayerController::HostTutorialPhase(EBHTutorialPhase StartPhase, bool bChain)
+{
+	HideMainMenu();
+	ShowTravelLoadingScreen(TEXT("TUTORIAL"), TEXT("Loading the guided practice tutorial."));
+	// Resolves to the baked Tutorial.umap (BHResolveLevelMapPackage special-cases Tutorial); ?BHTutorial=1
+	// rides on the practice sandbox and the map-baked ABHTutorialDirector drives the selected lesson.
+	const TCHAR* PhaseName = TEXT("Survivor");
+	switch (StartPhase)
+	{
+	case EBHTutorialPhase::Teacher: PhaseName = TEXT("Teacher"); break;
+	case EBHTutorialPhase::Monitor: PhaseName = TEXT("Monitor"); break;
+	case EBHTutorialPhase::Survivor:
+	default:                        PhaseName = TEXT("Survivor"); break;
+	}
+	const FString Options = FString::Printf(TEXT("listen?BHLevel=Tutorial?BHTutorial=1?BHTutorialPhase=%s?BHTutorialChain=%d"),
+		PhaseName, bChain ? 1 : 0);
+	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(TEXT("Tutorial"))), true, Options);
+}
+
 void ABHPlayerController::HostTestRound()
 {
 	FString Message;
@@ -1628,9 +1669,23 @@ void ABHPlayerController::JoinGame(const FString& Address)
 		return;
 	}
 
+	// Echo this client's server-issued reconnect token (Bug-9 secure reconnect) so a mid-round rejoin is
+	// matched by the secret token, not the spoofable display name. THIS is the path the menu JOIN button
+	// uses (UBHGameInstance::JoinGame is only an Exec console command and does the same append), so the
+	// token must be added here too or a dropped student rejoins tokenless and loses their role/points.
+	FString TravelAddress = NormalizedAddress;
+	if (const UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
+	{
+		const FString& ReconnectToken = BHGI->GetClientReconnectToken();
+		if (!ReconnectToken.IsEmpty())
+		{
+			TravelAddress += FString::Printf(TEXT("?BHReconnect=%s"), *ReconnectToken);
+		}
+	}
+
 	HideMainMenu();
 	ShowTravelLoadingScreen(TEXT("JOINING GAME"), FString::Printf(TEXT("Connecting to %s."), *NormalizedAddress));
-	ClientTravel(NormalizedAddress, TRAVEL_Absolute);
+	ClientTravel(TravelAddress, TRAVEL_Absolute);
 }
 
 void ABHPlayerController::HostOnlineGame()
@@ -2365,6 +2420,31 @@ bool ABHPlayerController::HostPracticeGameForMenu(FString& OutMessage)
 	return true;
 }
 
+bool ABHPlayerController::HostTutorialGameForMenu(FString& OutMessage)
+{
+	OutMessage = TEXT("Starting the tutorial.");
+	ShowLocalStatusMessage(OutMessage, 2.5f);
+	HostTutorialGame();
+	return true;
+}
+
+bool ABHPlayerController::HostTutorialPhaseForMenu(EBHTutorialPhase StartPhase, bool bChain, FString& OutMessage)
+{
+	const TCHAR* Label = TEXT("Survivor");
+	switch (StartPhase)
+	{
+	case EBHTutorialPhase::Teacher: Label = TEXT("Teacher"); break;
+	case EBHTutorialPhase::Monitor: Label = TEXT("Hall Monitor"); break;
+	case EBHTutorialPhase::Survivor:
+	default:                        Label = TEXT("Survivor"); break;
+	}
+	OutMessage = bChain ? FString(TEXT("Starting the full tutorial course."))
+		: FString::Printf(TEXT("Starting the %s tutorial."), Label);
+	ShowLocalStatusMessage(OutMessage, 2.5f);
+	HostTutorialPhase(StartPhase, bChain);
+	return true;
+}
+
 bool ABHPlayerController::HostTestRoundForMenu(const FString& LevelName, FString& OutMessage)
 {
 	const FString NormalizedLevel = BHNormalizeRuntimeLevelName(LevelName);
@@ -2448,10 +2528,10 @@ bool ABHPlayerController::HostBotGameForMenu(const FString& LevelName, FString& 
 		BotCount,
 		*BHBotDifficultyToString(Difficulty)));
 
-	OutMessage = FString::Printf(TEXT("Starting Bot %s with %d %s bots."), *NormalizedLevel, BotCount, *BHBotDifficultyToString(Difficulty));
+	OutMessage = FString::Printf(TEXT("Starting Bot %s with %d %s bots. Friends can still join."), *NormalizedLevel, BotCount, *BHBotDifficultyToString(Difficulty));
 	ShowLocalStatusMessage(OutMessage, 2.5f);
 	HideMainMenu();
-	ShowTravelLoadingScreen(FString::Printf(TEXT("BOT %s"), *NormalizedLevel.ToUpper()), TEXT("Spawning offline bot route."));
+	ShowTravelLoadingScreen(FString::Printf(TEXT("BOT %s"), *NormalizedLevel.ToUpper()), TEXT("Opening a bot lobby others can join."));
 	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(NormalizedLevel)), true, Options);
 	return true;
 }
@@ -3317,8 +3397,15 @@ bool ABHPlayerController::SetObjectiveIntensityForMenu(int32 Intensity, FString&
 
 bool ABHPlayerController::SetBotCountForMenu(int32 BotCount, FString& OutMessage)
 {
-	ServerSetBotCount(BotCount);
-	OutMessage = FString::Printf(TEXT("Bot count request sent: %d."), FMath::Clamp(BotCount, 0, 11));
+	const int32 ClampedCount = FMath::Clamp(BotCount, 0, 11);
+	ServerSetBotCount(ClampedCount);
+	if (UBHGameSettings* Settings = GetMutableDefault<UBHGameSettings>())
+	{
+		// Remember the host's last choice so the next "Bot <Map>" launch defaults to it.
+		Settings->DefaultBotCount = ClampedCount;
+		Settings->SaveConfig();
+	}
+	OutMessage = FString::Printf(TEXT("Bot count request sent: %d."), ClampedCount);
 	ShowLocalStatusMessage(OutMessage, 3.0f);
 	return true;
 }
@@ -3326,7 +3413,21 @@ bool ABHPlayerController::SetBotCountForMenu(int32 BotCount, FString& OutMessage
 bool ABHPlayerController::SetBotDifficultyForMenu(EBHBotDifficulty Difficulty, FString& OutMessage)
 {
 	ServerSetBotDifficulty(Difficulty);
+	if (UBHGameSettings* Settings = GetMutableDefault<UBHGameSettings>())
+	{
+		// Persist alongside DefaultBotCount so a fresh bot host reuses the last difficulty too.
+		Settings->DefaultBotDifficulty = Difficulty;
+		Settings->SaveConfig();
+	}
 	OutMessage = FString::Printf(TEXT("Bot difficulty request sent: %s."), *BHBotDifficultyToString(Difficulty));
+	ShowLocalStatusMessage(OutMessage, 3.0f);
+	return true;
+}
+
+bool ABHPlayerController::FillBotsForMenu(FString& OutMessage)
+{
+	ServerFillBots();
+	OutMessage = TEXT("Fill request sent: topping the lobby up with bots.");
 	ShowLocalStatusMessage(OutMessage, 3.0f);
 	return true;
 }
@@ -4619,6 +4720,45 @@ void ABHPlayerController::ApplyStartupGraphicsSettings()
 	}
 }
 
+void ABHPlayerController::MaybeShowWeakDeviceNotice()
+{
+	// One native pop-up per process on genuinely low-spec machines. Graphics are already auto-set low by
+	// EnsureGraphicsPreferencesLoaded(); this makes the "free up resources / don't host here" guidance
+	// unmissable on the lab's 4GB boxes. Keyed on SYSTEM RAM (the real constraint here) so the capable
+	// 16GB machines are never nagged. Memory presets don't shrink the CPU-side working set, so closing
+	// other apps is the single biggest thing a 4GB student can do for a smooth round.
+	static bool bWeakDeviceNoticeShown = false;
+	if (bWeakDeviceNoticeShown || !IsLocalController())
+	{
+		return;
+	}
+
+	// Never block an automated / headless / dedicated run on a modal dialog (tests, soak, auto-host all
+	// run unattended with NullRHI). FApp::CanEverRender() is false on a server with no RHI.
+	if (FApp::IsUnattended() || IsRunningCommandlet() || !FApp::CanEverRender())
+	{
+		return;
+	}
+
+	const bool bLowSystemMemory = GraphicsSystemMemoryGB > 0.0f && GraphicsSystemMemoryGB <= 8.5f;
+	if (!bLowSystemMemory && !bGraphicsLikelySoftwareGpu)
+	{
+		return;
+	}
+
+	bWeakDeviceNoticeShown = true;
+
+	const FText Title = NSLOCTEXT("BlackoutHunt", "WeakDeviceNoticeTitle", "Blackout Hunt - this computer needs a little help");
+	const FText Body = NSLOCTEXT("BlackoutHunt", "WeakDeviceNoticeBody",
+		"This computer has limited memory, so graphics were turned down automatically (Low preset, 720p windowed) for a smoother game.\n\n"
+		"For the best experience, before you play:\n\n"
+		"  - Close all other apps first - especially web browsers (Chrome / Edge), YouTube or video, and Teams.\n"
+		"  - Do NOT host the game on this computer - join the teacher's / host's address instead.\n"
+		"  - If it still stutters, open Settings and keep graphics on \"Low 4GB\".\n\n"
+		"You can change graphics any time in Settings. Click OK to continue.");
+	FMessageDialog::Open(EAppMsgType::Ok, Body, Title);
+}
+
 void ABHPlayerController::ApplySavedManualGraphicsTuning()
 {
 	if (!IsLocalController())
@@ -4844,7 +4984,11 @@ void ABHPlayerController::TickAdaptiveGraphics(float DeltaSeconds)
 		GraphicsAverageFrameTimeMs = 0.0f;
 		GraphicsAdaptiveEvaluationSeconds = -0.5f;
 		const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
-		if (Now - GraphicsLastAdaptiveMessageTime > 12.0f)
+		// The adaptive scaling still happens; we just suppress the on-screen prompt during the guided
+		// tutorial so it never steals the status line from a teaching instruction.
+		const ABHGameState* AdaptiveBHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+		const bool bTutorialActive = AdaptiveBHGS && AdaptiveBHGS->bTutorialMode;
+		if (!bTutorialActive && Now - GraphicsLastAdaptiveMessageTime > 12.0f)
 		{
 			GraphicsLastAdaptiveMessageTime = Now;
 			ShowLocalStatusMessage(FString::Printf(TEXT("Adaptive graphics adjusted toward %d FPS after %.0f FPS average."), SafeGoal, AverageFps), 2.5f);
@@ -5653,6 +5797,42 @@ float ABHPlayerController::GetStatusMessageAlpha() const
 	return FMath::Min(FadeInAlpha, FadeOutAlpha);
 }
 
+bool ABHPlayerController::HasActiveRoleIntro() const
+{
+	const UWorld* World = GetWorld();
+	return RoleIntroRole != EBHPlayerRole::Unassigned && World && World->GetTimeSeconds() < RoleIntroEndTime;
+}
+
+float ABHPlayerController::GetRoleIntroAlpha() const
+{
+	const UWorld* World = GetWorld();
+	if (RoleIntroRole == EBHPlayerRole::Unassigned || !World)
+	{
+		return 0.0f;
+	}
+
+	const float Now = World->GetTimeSeconds();
+	const float Remaining = RoleIntroEndTime - Now;
+	if (Remaining <= 0.0f)
+	{
+		return 0.0f;
+	}
+
+	const float FadeIn = FMath::Clamp((Now - RoleIntroStartTime) / 0.25f, 0.0f, 1.0f);
+	const float FadeOut = FMath::Clamp(Remaining / 0.5f, 0.0f, 1.0f);
+	return FMath::Min(FadeIn, FadeOut);
+}
+
+EBHPlayerRole ABHPlayerController::GetRoleIntroRole() const
+{
+	return RoleIntroRole;
+}
+
+bool ABHPlayerController::IsRoleIntroRevisionMode() const
+{
+	return bRoleIntroRevisionMode;
+}
+
 bool ABHPlayerController::HasActiveCCTVReveal() const
 {
 	const UWorld* World = GetWorld();
@@ -5749,6 +5929,76 @@ float ABHPlayerController::GetHorrorCueBlinkAlpha() const
 	// Instant onset, fast linear fade — reads as a hard blink right on the hit.
 	const float Alpha = 1.0f - (Age / BlinkDuration);
 	return FMath::Clamp(HorrorCueBlinkIntensity * Alpha, 0.0f, 1.0f);
+}
+
+UTexture2D* ABHPlayerController::GetHorrorCueFaceImage() const
+{
+	const UWorld* World = GetWorld();
+	if (!World || !HorrorCueFaceImage || HorrorCueFaceImageEndTime <= HorrorCueFaceImageStartTime)
+	{
+		return nullptr;
+	}
+
+	const float Now = World->GetTimeSeconds();
+	if (Now < HorrorCueFaceImageStartTime || Now >= HorrorCueFaceImageEndTime)
+	{
+		return nullptr;
+	}
+
+	return HorrorCueFaceImage;
+}
+
+float ABHPlayerController::GetHorrorCueFaceImageAlpha() const
+{
+	const UWorld* World = GetWorld();
+	if (!World || HorrorCueFaceImageIntensity <= 0.0f || HorrorCueFaceImageEndTime <= HorrorCueFaceImageStartTime)
+	{
+		return 0.0f;
+	}
+
+	const float Now = World->GetTimeSeconds();
+	if (Now < HorrorCueFaceImageStartTime || Now >= HorrorCueFaceImageEndTime)
+	{
+		return 0.0f;
+	}
+
+	// Snap in almost instantly, hold, then ease out over the back third — a hard "slam" onto the screen.
+	const float Duration = HorrorCueFaceImageEndTime - HorrorCueFaceImageStartTime;
+	const float Age = Now - HorrorCueFaceImageStartTime;
+	const float FadeIn = FMath::Clamp(Age / FMath::Max(0.04f, Duration * 0.08f), 0.0f, 1.0f);
+	const float FadeOut = FMath::Clamp((HorrorCueFaceImageEndTime - Now) / FMath::Max(0.08f, Duration * 0.34f), 0.0f, 1.0f);
+	return FMath::Clamp(HorrorCueFaceImageIntensity * FMath::Min(FadeIn, FadeOut), 0.0f, 1.0f);
+}
+
+FString ABHPlayerController::GetHorrorDirectiveText() const
+{
+	const UWorld* World = GetWorld();
+	if (!World || HorrorDirectiveText.IsEmpty() || World->GetTimeSeconds() >= HorrorDirectiveEndTime)
+	{
+		return FString();
+	}
+	return HorrorDirectiveText;
+}
+
+float ABHPlayerController::GetHorrorDirectiveAlpha() const
+{
+	const UWorld* World = GetWorld();
+	if (!World || HorrorDirectiveText.IsEmpty() || HorrorDirectiveEndTime <= HorrorDirectiveStartTime)
+	{
+		return 0.0f;
+	}
+
+	const float Now = World->GetTimeSeconds();
+	if (Now < HorrorDirectiveStartTime || Now >= HorrorDirectiveEndTime)
+	{
+		return 0.0f;
+	}
+
+	// Quick fade in, steady hold, short fade out so the directive reads clearly while it is active.
+	const float Age = Now - HorrorDirectiveStartTime;
+	const float FadeIn = FMath::Clamp(Age / 0.25f, 0.0f, 1.0f);
+	const float FadeOut = FMath::Clamp((HorrorDirectiveEndTime - Now) / 0.35f, 0.0f, 1.0f);
+	return FMath::Min(FadeIn, FadeOut);
 }
 
 void ABHPlayerController::PlayJumpscareImpactAudio(const FBHClientHorrorCue& Cue, float VolumeScale)
@@ -5856,6 +6106,34 @@ void ABHPlayerController::ApplyGameplayInputMode()
 	FInputModeGameOnly InputMode;
 	SetInputMode(InputMode);
 	bShowMouseCursor = false;
+}
+
+void ABHPlayerController::SetQuestionCursorMode(bool bEnable)
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+	// A real UI (menu / atmosphere console / travel loading) owns the cursor; never override it.
+	if (bEnable && (MainMenuWidget.IsValid() || AtmosphereConsoleWidget.IsValid() || TravelLoadingScreenWidget.IsValid()))
+	{
+		return;
+	}
+	if (bEnable)
+	{
+		// GameAndUI without a focused Slate widget: mouse moves the cursor (camera stops turning) and
+		// clicks fall through to the game InputComponent, so the character's LMB bind hit-tests the
+		// HUD-canvas question regions. No widget rebuild -- the panel stays the existing canvas draw.
+		FInputModeGameAndUI InputMode;
+		InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+		InputMode.SetHideCursorDuringCapture(false);
+		SetInputMode(InputMode);
+		bShowMouseCursor = true;
+	}
+	else if (!MainMenuWidget.IsValid() && !AtmosphereConsoleWidget.IsValid() && !TravelLoadingScreenWidget.IsValid())
+	{
+		ApplyGameplayInputMode();
+	}
 }
 
 void ABHPlayerController::HandleRoundPhaseUiState()
@@ -6407,6 +6685,11 @@ bool ABHPlayerController::IsReducedFlashEnabled() const
 	return bReducedFlash;
 }
 
+bool ABHPlayerController::IsReducedJumpscaresEnabled() const
+{
+	return bReducedJumpscares;
+}
+
 float ABHPlayerController::GetHudScale() const
 {
 	return HudScale;
@@ -6620,6 +6903,74 @@ void ABHPlayerController::TickHorrorCueEffects(float DeltaSeconds)
 	}
 
 	const float Now = World->GetTimeSeconds();
+
+	// Environmental screen-dim: ease the player's whole view down to a low brightness while the creature
+	// looms, then back up. Driven onto the camera-manager colour scale, so the self-lit monster stays the
+	// brightest thing on screen and remains visible while the surroundings sink into the dark. Runs before the
+	// jitter block below (which can early-return), so it ticks every frame until it expires.
+	if (bHorrorEnvDimActive)
+	{
+		APlayerCameraManager* CamMgr = PlayerCameraManager;
+		if (!CamMgr || Now >= HorrorEnvDimEndTime)
+		{
+			if (CamMgr)
+			{
+				CamMgr->ColorScale = FVector::OneVector;
+				CamMgr->bEnableColorScaling = false;
+			}
+			bHorrorEnvDimActive = false;
+		}
+		else
+		{
+			const float Total = FMath::Max(0.05f, HorrorEnvDimEndTime - HorrorEnvDimStartTime);
+			const float Elapsed = FMath::Max(0.0f, Now - HorrorEnvDimStartTime);
+			constexpr float RampIn = 0.35f;
+			constexpr float RampOut = 0.6f;
+			float DimAlpha = 1.0f; // 0 = full brightness, 1 = fully dimmed
+			if (Elapsed < RampIn)
+			{
+				DimAlpha = Elapsed / RampIn;
+			}
+			else if (Elapsed > Total - RampOut)
+			{
+				DimAlpha = FMath::Clamp((Total - Elapsed) / RampOut, 0.0f, 1.0f);
+			}
+			// Comfort: a player with reduced flash gets a much gentler dim (never below 70%).
+			const float MinScale = bReducedFlash ? FMath::Max(HorrorEnvDimScale, 0.7f) : HorrorEnvDimScale;
+			const float ColorScaleValue = FMath::Lerp(1.0f, MinScale, DimAlpha);
+			CamMgr->bEnableColorScaling = true;
+			CamMgr->ColorScale = FVector(ColorScaleValue, ColorScaleValue, ColorScaleValue);
+		}
+	}
+
+	// "Behind you" held scare: spring the payoff once the player turns to face the presence, or when the
+	// safety hold elapses (so a player who refuses to turn is never stuck). A short minimum arm time keeps
+	// it from triggering instantly if they happened to already be facing that way when it armed.
+	if (bBehindYouActive)
+	{
+		bool bSpring = Now >= BehindYouDeadline;
+		if (!bSpring && Now >= BehindYouArmTime + 0.45f)
+		{
+			FVector ViewLocation = FVector::ZeroVector;
+			FRotator ViewRotation = FRotator::ZeroRotator;
+			GetPlayerViewPoint(ViewLocation, ViewRotation);
+			FVector ToFocus = BehindYouFocusLocation - ViewLocation;
+			if (!ToFocus.IsNearlyZero())
+			{
+				ToFocus.Normalize();
+				if (FVector::DotProduct(ViewRotation.Vector(), ToFocus) >= BehindYouTurnCosThreshold)
+				{
+					bSpring = true;
+				}
+			}
+		}
+
+		if (bSpring)
+		{
+			TriggerBehindYouPayoff();
+		}
+	}
+
 	if (HorrorCueJitterIntensity <= 0.0f || Now >= HorrorCueJitterEndTime)
 	{
 		return;
@@ -6639,6 +6990,20 @@ void ABHPlayerController::TickHorrorCueEffects(float DeltaSeconds)
 		FMath::FRandRange(-0.55f, 0.55f) * Shake,
 		FMath::FRandRange(-0.92f, 0.92f) * Shake,
 		0.0f));
+}
+
+void ABHPlayerController::ClientDimEnvironment_Implementation(float DimScale, float DurationSeconds)
+{
+	if (!IsLocalController() || DurationSeconds <= 0.0f)
+	{
+		return;
+	}
+	UWorld* World = GetWorld();
+	const float Now = World ? World->GetTimeSeconds() : 0.0f;
+	HorrorEnvDimStartTime = Now;
+	HorrorEnvDimEndTime = Now + FMath::Clamp(DurationSeconds, 0.3f, 8.0f);
+	HorrorEnvDimScale = FMath::Clamp(DimScale, 0.1f, 1.0f);
+	bHorrorEnvDimActive = true;
 }
 
 void ABHPlayerController::ScheduleAutomation()
@@ -7234,6 +7599,14 @@ void ABHPlayerController::ServerSetBotDifficulty_Implementation(EBHBotDifficulty
 	}
 }
 
+void ABHPlayerController::ServerFillBots_Implementation()
+{
+	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+	{
+		BHGM->FillBotsToCapacity(this);
+	}
+}
+
 void ABHPlayerController::ServerBotStatus_Implementation()
 {
 	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
@@ -7620,6 +7993,25 @@ void ABHPlayerController::ClientShowStatusMessage_Implementation(const FString& 
 	ShowLocalStatusMessage(Message, DurationSeconds);
 }
 
+void ABHPlayerController::ClientReceiveReconnectToken_Implementation(const FString& Token)
+{
+	// Store the server-issued reconnect token in the GameInstance, which survives a disconnect and
+	// return-to-menu within this process; UBHGameInstance::JoinGame echoes it in the rejoin URL.
+	if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
+	{
+		BHGI->SetClientReconnectToken(Token);
+	}
+}
+
+void ABHPlayerController::ClientShowRoleIntro_Implementation(EBHPlayerRole InRole, bool bRevisionMode)
+{
+	RoleIntroRole = InRole;
+	bRoleIntroRevisionMode = bRevisionMode;
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	RoleIntroStartTime = Now;
+	RoleIntroEndTime = Now + 5.5f;
+}
+
 void ABHPlayerController::ClientShowCCTVReveal_Implementation(ABHCharacter* RevealTarget, const FVector& RevealLocation, const FString& TargetName, float DurationSeconds)
 {
 	const UWorld* World = GetWorld();
@@ -7647,6 +8039,87 @@ void ABHPlayerController::ClientShowCCTVReveal_Implementation(ABHCharacter* Reve
 	CCTVRevealEndTime = NewEndTime;
 }
 
+void ABHPlayerController::LockJumpscareInput(float SafetySeconds, bool bLockLook)
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	if (MainMenuWidget.IsValid())
+	{
+		HideMainMenu();
+	}
+	if (AtmosphereConsoleWidget.IsValid())
+	{
+		HideAtmosphereConsole();
+	}
+	// SetIgnoreMoveInput/SetIgnoreLookInput are COUNTED in the engine (each true increments, each false
+	// decrements). Overlapping scares (a manual scare during the "behind you" hold, an organic director
+	// beat landing mid-payoff, ...) would otherwise push the counter past 1 while the single shared safety
+	// timer only releases once, stranding the player with movement+look locked (only jump free). Guard with
+	// our own booleans so we push each ignore flag at most once and always pop it exactly once.
+	if (!bJumpscareMoveInputLocked)
+	{
+		SetIgnoreMoveInput(true);
+		bJumpscareMoveInputLocked = true;
+	}
+	// The "behind you" scare locks movement but leaves look free so turning around is possible.
+	if (bLockLook && !bJumpscareLookInputLocked)
+	{
+		SetIgnoreLookInput(true);
+		bJumpscareLookInputLocked = true;
+	}
+	bShowMouseCursor = false;
+
+	// Always arm a self-restoring safety timer so input frees itself even if the explicit
+	// unlock RPC is dropped or reordered on a flaky connection. The fast-path unlock clears it.
+	const float SafetyDelay = FMath::Clamp(SafetySeconds, 0.0f, 8.0f);
+	if (UWorld* World = GetWorld())
+	{
+		TWeakObjectPtr<ABHPlayerController> WeakThis(this);
+		FTimerDelegate RestoreDelegate;
+		RestoreDelegate.BindLambda([WeakThis]()
+		{
+			if (WeakThis.IsValid())
+			{
+				WeakThis->ReleaseJumpscareInput();
+			}
+		});
+		World->GetTimerManager().SetTimer(JumpscareInputRestoreHandle, RestoreDelegate, FMath::Max(0.05f, SafetyDelay), false);
+	}
+}
+
+void ABHPlayerController::ReleaseJumpscareInput()
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(JumpscareInputRestoreHandle);
+	}
+
+	// Pop exactly what we pushed (guarded), so the engine's counted ignore flags return to zero no matter
+	// how many overlapping scares armed the lock.
+	if (bJumpscareMoveInputLocked)
+	{
+		SetIgnoreMoveInput(false);
+		bJumpscareMoveInputLocked = false;
+	}
+	if (bJumpscareLookInputLocked)
+	{
+		SetIgnoreLookInput(false);
+		bJumpscareLookInputLocked = false;
+	}
+	if (!MainMenuWidget.IsValid() && !AtmosphereConsoleWidget.IsValid())
+	{
+		ApplyGameplayInputMode();
+	}
+}
+
 void ABHPlayerController::ClientSetJumpscareInputLocked_Implementation(bool bLocked)
 {
 	if (!IsLocalController())
@@ -7656,26 +8129,12 @@ void ABHPlayerController::ClientSetJumpscareInputLocked_Implementation(bool bLoc
 
 	if (bLocked)
 	{
-		if (MainMenuWidget.IsValid())
-		{
-			HideMainMenu();
-		}
-		if (AtmosphereConsoleWidget.IsValid())
-		{
-			HideAtmosphereConsole();
-		}
-		SetIgnoreMoveInput(true);
-		SetIgnoreLookInput(true);
-		bShowMouseCursor = false;
+		// No explicit duration travels with this RPC, so cap the safety unlock at the max.
+		LockJumpscareInput(8.0f);
 		return;
 	}
 
-	SetIgnoreMoveInput(false);
-	SetIgnoreLookInput(false);
-	if (!MainMenuWidget.IsValid() && !AtmosphereConsoleWidget.IsValid())
-	{
-		ApplyGameplayInputMode();
-	}
+	ReleaseJumpscareInput();
 }
 
 void ABHPlayerController::PlayGameplayAudioCueLocal(const FBHGameplayAudioCue& Cue)
@@ -7786,7 +8245,10 @@ void ABHPlayerController::ClientPlayHorrorCue_Implementation(const FBHClientHorr
 	const float JumpscareScale = bReducedJumpscares ? 0.45f : 1.0f;
 	const float FlashScale = bReducedFlash ? 0.25f : 1.0f;
 	const float ShakeScale = bReducedCameraShake ? 0.25f : 1.0f;
-	const bool bSuppressCloseVisual = bReducedJumpscares && Cue.bCloseRangeFocus;
+	// Reduced Jumpscares ("safe mode") no longer hides the close-up entirely — it now shows the gentle
+	// abstract proxy in place of the realistic creature (ABHJumpscareMonster swaps itself to the proxy when the
+	// local viewer has the option on). The flash/shake/rumble are still toned down via the scales above.
+	const bool bSuppressCloseVisual = false;
 
 	if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
 	{
@@ -7804,7 +8266,23 @@ void ABHPlayerController::ClientPlayHorrorCue_Implementation(const FBHClientHorr
 		}
 	}
 
-	if (!Cue.Message.IsEmpty())
+	// "Behind you" cues arm a held directive + movement-only lock and defer the sensory impact until the
+	// player turns to face the presence (sprung from TickHorrorCueEffects). Everything else falls through
+	// to the immediate impact below.
+	if (Cue.EventType == EBHScareEventType::BehindYou)
+	{
+		BeginBehindYouScare(Cue);
+		return;
+	}
+
+	if (Cue.bDirectivePrompt && !Cue.Message.IsEmpty())
+	{
+		const float DirectiveNow = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+		HorrorDirectiveText = Cue.Message;
+		HorrorDirectiveStartTime = DirectiveNow;
+		HorrorDirectiveEndTime = DirectiveNow + FMath::Max(0.4f, Cue.DurationSeconds);
+	}
+	else if (!Cue.Message.IsEmpty())
 	{
 		ShowLocalStatusMessage(Cue.Message, FMath::Max(0.25f, Cue.DurationSeconds));
 	}
@@ -7814,6 +8292,28 @@ void ABHPlayerController::ClientPlayHorrorCue_Implementation(const FBHClientHorr
 	}
 
 	PlayJumpscareImpactAudio(Cue, JumpscareScale);
+
+	// Full-screen "PNG in your face" still image, drawn by the HUD over the view for the cue duration.
+	if (!Cue.FaceImage.IsNull())
+	{
+		const FSoftObjectPath FaceImagePath = Cue.FaceImage.ToSoftObjectPath();
+		if (BHPlayerControllerSoftObjectPathExists(FaceImagePath))
+		{
+			if (UTexture2D* FaceTexture = Cue.FaceImage.LoadSynchronous())
+			{
+				const float ImageNow = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+				HorrorCueFaceImage = FaceTexture;
+				HorrorCueFaceImageStartTime = ImageNow;
+				HorrorCueFaceImageEndTime = ImageNow + FMath::Clamp(Cue.DurationSeconds, 0.25f, 4.0f);
+				const float BaseImageIntensity = Cue.FlashIntensity > 0.0f ? Cue.FlashIntensity : 1.0f;
+				HorrorCueFaceImageIntensity = FMath::Clamp(BaseImageIntensity * JumpscareScale, 0.0f, 1.0f);
+			}
+		}
+		else
+		{
+			BHLogOptionalPlayerAssetFallbackOnce(FaceImagePath, TEXT("horror cue face image"), TEXT("missing"));
+		}
+	}
 
 	bool bSpawnedCueVisual = false;
 	if (!bSuppressCloseVisual && !Cue.VisualActorClass.IsNull())
@@ -7997,39 +8497,72 @@ void ABHPlayerController::ClientPlayHorrorCue_Implementation(const FBHClientHorr
 
 	if (Cue.bLockInput && Cue.LockSeconds > 0.0f)
 	{
-		if (MainMenuWidget.IsValid())
-		{
-			HideMainMenu();
-		}
-		if (AtmosphereConsoleWidget.IsValid())
-		{
-			HideAtmosphereConsole();
-		}
-		SetIgnoreMoveInput(true);
-		SetIgnoreLookInput(true);
-		bShowMouseCursor = false;
-
-		TWeakObjectPtr<ABHPlayerController> WeakThis(this);
-		FTimerDelegate RestoreDelegate;
-		RestoreDelegate.BindLambda([WeakThis]()
-		{
-			if (!WeakThis.IsValid())
-			{
-				return;
-			}
-
-			ABHPlayerController* PC = WeakThis.Get();
-			PC->SetIgnoreMoveInput(false);
-			PC->SetIgnoreLookInput(false);
-			if (!PC->MainMenuWidget.IsValid() && !PC->AtmosphereConsoleWidget.IsValid())
-			{
-				PC->ApplyGameplayInputMode();
-			}
-		});
-
-		FTimerHandle RestoreHandle;
-		GetWorldTimerManager().SetTimer(RestoreHandle, RestoreDelegate, Cue.LockSeconds, false);
+		// Clamp the lock to a sane max, matching the HitStopSeconds clamp style above.
+		// LockJumpscareInput arms the self-restoring safety timer so input always frees itself.
+		const float LockSeconds = FMath::Clamp(Cue.LockSeconds, 0.0f, 8.0f);
+		LockJumpscareInput(LockSeconds, !Cue.bMoveOnlyLock);
 	}
+}
+
+void ABHPlayerController::BeginBehindYouScare(const FBHClientHorrorCue& Cue)
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	const float Now = World ? World->GetTimeSeconds() : 0.0f;
+
+	// Hold the directive prompt and movement-only lock. The look axis stays free so the player can turn.
+	HorrorDirectiveText = Cue.Message.IsEmpty() ? TEXT("DON'T TURN AROUND") : Cue.Message;
+	HorrorDirectiveStartTime = Now;
+
+	const float MaxHold = FMath::Clamp(Cue.LockSeconds > 0.0f ? Cue.LockSeconds : Cue.DurationSeconds, 1.5f, 8.0f);
+	HorrorDirectiveEndTime = Now + MaxHold + 0.75f;
+
+	bBehindYouActive = true;
+	BehindYouFocusLocation = Cue.FocusLocation;
+	BehindYouArmTime = Now;
+	BehindYouDeadline = Now + MaxHold;
+	BehindYouTurnCosThreshold = FMath::Cos(FMath::DegreesToRadians(FMath::Clamp(Cue.TurnReleaseHalfAngleDegrees, 5.0f, 85.0f)));
+
+	// The payoff is a close-range slam that reuses the full impact path. Strip the directive/behind-you
+	// framing so it reads as an ordinary close jumpscare when it fires, and give it a short hard lock.
+	BehindYouPayoffCue = Cue;
+	BehindYouPayoffCue.EventType = EBHScareEventType::MonsterCharge;
+	BehindYouPayoffCue.bDirectivePrompt = false;
+	BehindYouPayoffCue.bMoveOnlyLock = false;
+	BehindYouPayoffCue.bCloseRangeFocus = true;
+	BehindYouPayoffCue.bUpperBodyCloseVisual = true;
+	// They turned to face it themselves, so don't yank the view; spawn the slam centred on where they
+	// now look, framed near eye level so the face fills the screen rather than spawning at their feet.
+	BehindYouPayoffCue.bSnapToFocus = false;
+	BehindYouPayoffCue.CloseVisualOffset = FVector(82.0f, 0.0f, -52.0f);
+	BehindYouPayoffCue.bLockInput = true;
+	BehindYouPayoffCue.LockSeconds = 0.85f;
+	// Punchy slam, independent of the (long) directive hold window.
+	BehindYouPayoffCue.DurationSeconds = 1.6f;
+	BehindYouPayoffCue.Message = FString();
+
+	// Movement-only lock with a safety unlock past the max hold, in case the payoff is somehow missed.
+	LockJumpscareInput(MaxHold + 1.5f, /*bLockLook=*/false);
+}
+
+void ABHPlayerController::TriggerBehindYouPayoff()
+{
+	if (!bBehindYouActive)
+	{
+		return;
+	}
+
+	bBehindYouActive = false;
+	HorrorDirectiveEndTime = FMath::Min(HorrorDirectiveEndTime, (GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f) + 0.18f);
+
+	// Free the held movement-only lock, then replay the payoff as a normal close-range cue so it runs the
+	// full impact path (scream, face slam, flash, blink, FOV punch, brief hard lock that self-restores).
+	ReleaseJumpscareInput();
+	ClientPlayHorrorCue_Implementation(BehindYouPayoffCue);
 }
 
 void ABHPlayerController::ClientRecordRoundResult_Implementation(EBHPlayerRole AccountRole, EBHPlayerLifeState LifeState, EBHRoundPhase ResultPhase)
