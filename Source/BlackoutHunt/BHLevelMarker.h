@@ -12,6 +12,27 @@
 // inert for the current /Engine/Maps/Entry runtime levels.
 //
 // See Docs/FACILITY_VERTICAL_SLICE.md ("Authored Map Pipeline") for the authoring workflow.
+
+// One crawl-space gate baked into an authored map. The export commandlet records the transform + box
+// extent of every ABHCrawlSpaceVolume the generator placed, so ABHGameMode::DiscoverAuthoredLevel can
+// rebuild the gates if a later hand-edit of the .umap (replacing blockout with meshes) drops the volume
+// actors. Without this, an authored map keeps the low crawl GEOMETRY (which only blocks standing pawns)
+// but loses the role gate, letting a prone Teacher follow survivors through.
+USTRUCT()
+struct FBHAuthoredCrawlGate
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FVector Location = FVector::ZeroVector;
+
+	UPROPERTY()
+	FRotator Rotation = FRotator::ZeroRotator;
+
+	UPROPERTY()
+	FVector Extent = FVector(320.0f, 125.0f, 155.0f);
+};
+
 UCLASS()
 class BLACKOUTHUNT_API ABHLevelMarker : public AActor
 {
@@ -38,4 +59,9 @@ public:
 	// Leave enabled until the authored map ships its own baked NavMeshBoundsVolume + RecastNavMesh.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Blackout Hunt|Level")
 	bool bRebuildRuntimeNavigation = true;
+
+	// Crawl-space gates recorded at bake time (see FBHAuthoredCrawlGate). DiscoverAuthoredLevel rebuilds
+	// these only when the loaded map has no ABHCrawlSpaceVolume of its own, so an intact bake is untouched.
+	UPROPERTY(EditAnywhere, Category = "Blackout Hunt|Level")
+	TArray<FBHAuthoredCrawlGate> CrawlGates;
 };

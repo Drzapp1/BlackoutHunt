@@ -25,10 +25,10 @@ if (-not (Test-Path $editorCmd)) {
     exit 1
 }
 
-$valid = @("Facility", "Substation", "Foggrounds")
+$valid = @("Facility", "Substation", "Foggrounds", "Tutorial")
 foreach ($level in $Levels) {
     if ($valid -notcontains $level) {
-        Write-Error "Invalid level '$level'. Use Facility, Substation, or Foggrounds."
+        Write-Error "Invalid level '$level'. Use Facility, Substation, Foggrounds, or Tutorial."
         exit 1
     }
 }
