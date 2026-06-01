@@ -604,6 +604,10 @@ namespace
 
 		TArray<FString> Tokens;
 		LogText.ParseIntoArrayWS(Tokens);
+		// Keep the LAST valid allocation in the log, not the first. The agent appends to (or rotates) this
+		// log, so after a tunnel restart the file still contains the OLD allocation earlier in the file;
+		// returning the first match would hand out a dead address. The newest line is the live one.
+		bool bFound = false;
 		for (FString Token : Tokens)
 		{
 			Token = StripLogTokenDelimiters(Token);
@@ -617,11 +621,11 @@ namespace
 			if (!Candidate.IsEmpty() && !IsLocalTunnelAddress(Candidate))
 			{
 				OutAddress = Candidate;
-				return true;
+				bFound = true;
 			}
 		}
 
-		return false;
+		return bFound;
 	}
 
 #endif
@@ -930,6 +934,15 @@ FBHInternetTunnelResult FBHNetworkSupport::StopInternetTunnel()
 	FPlatformProcess::CloseProc(PlayitAgentProcess);
 	PlayitAgentProcess.Reset();
 	PlayitAgentPath.Reset();
+
+	// Delete the agent log so a later GetInternetTunnelStatus can't parse the now-dead allocation address
+	// out of it and wrongly report "Tunnel ready", handing the host a BH1 join code for a tunnel that no
+	// longer exists (students would then hit connection-refused with no host-side warning).
+	const FString StoppedTunnelLogPath = GetPlayitLogPath();
+	if (!StoppedTunnelLogPath.IsEmpty())
+	{
+		IFileManager::Get().Delete(*StoppedTunnelLogPath, false, true, true);
+	}
 
 	Result.bSuccess = true;
 	Result.Message = TEXT("Game-launched internet tunnel agent stopped.");

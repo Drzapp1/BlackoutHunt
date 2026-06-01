@@ -48,7 +48,9 @@ namespace
 
 		if (!Url.Contains(TEXT("://")))
 		{
-			Url = FString(TEXT("http://")) + Url;
+			// Default to HTTPS: this base URL carries the bearer session token and player identity,
+			// so a scheme-less operator-entered host must not silently downgrade to cleartext.
+			Url = FString(TEXT("https://")) + Url;
 		}
 
 		return TrimTrailingSlash(Url);
@@ -473,7 +475,9 @@ namespace
 		return AtomicSaveStringToFile(JsonObjectToString(Root), Path);
 	}
 
-	bool LoadEncryptedCredentialFile(const FString& Path, FBHLocalCredentialRecord& OutRecord)
+	// Parse a single encrypted credential file: decode, verify the MAC, decrypt, and apply the record.
+	// Returns false if the file is missing/unreadable or fails any integrity/decrypt step.
+	bool TryLoadEncryptedCredentialFile(const FString& Path, FBHLocalCredentialRecord& OutRecord)
 	{
 		FString Input;
 		if (!FFileHelper::LoadFileToString(Input, *Path))
@@ -508,6 +512,26 @@ namespace
 
 		TSharedPtr<FJsonObject> CredentialJson;
 		return StringToJsonObject(Utf8BytesToString(Plaintext), CredentialJson) && ApplyLocalCredentialJson(CredentialJson, OutRecord);
+	}
+
+	// Read the encrypted credential file, falling back to its ".bak" rollback if the primary is
+	// missing or fails to load/verify. Mirrors the profile/progress backup-aware LoadJsonWithBackup,
+	// since SaveEncryptedCredentialFile also rotates a ".bak" via AtomicSaveStringToFile.
+	bool LoadEncryptedCredentialFile(const FString& Path, FBHLocalCredentialRecord& OutRecord)
+	{
+		if (TryLoadEncryptedCredentialFile(Path, OutRecord))
+		{
+			return true;
+		}
+
+		const FString BackupPath = Path + TEXT(".bak");
+		if (TryLoadEncryptedCredentialFile(BackupPath, OutRecord))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("BlackoutHunt local credentials: primary %s was unreadable; recovered from backup."), *Path);
+			return true;
+		}
+
+		return false;
 	}
 }
 
@@ -649,6 +673,7 @@ bool UBHAccountSubsystem::BeginProviderLogin(const FString& Provider, FString& O
 	Request->SetHeader(TEXT("Accept"), TEXT("application/json"));
 	Request->OnProcessRequestComplete().BindUObject(this, &UBHAccountSubsystem::HandleProviderHealthResponse);
 	bLoginStartRequestInFlight = true;
+	Request->SetTimeout(10.0f); // Bound flaky-Wi-Fi hangs; engine default is ~300s.
 	Request->ProcessRequest();
 
 	OutMessage = FString::Printf(TEXT("Checking %s account service..."), *PendingProvider);
@@ -680,6 +705,7 @@ bool UBHAccountSubsystem::PollProviderLogin(FString& OutMessage)
 	Request->SetHeader(TEXT("Accept"), TEXT("application/json"));
 	Request->OnProcessRequestComplete().BindUObject(this, &UBHAccountSubsystem::HandleLoginPollResponse);
 	bLoginRequestInFlight = true;
+	Request->SetTimeout(10.0f); // Bound flaky-Wi-Fi hangs; engine default is ~300s.
 	Request->ProcessRequest();
 
 	OutMessage = TEXT("Checking account login status...");
@@ -734,6 +760,7 @@ bool UBHAccountSubsystem::SyncProgress(FString& OutMessage)
 	Request->SetContentAsString(JsonObjectToString(Root));
 	Request->OnProcessRequestComplete().BindUObject(this, &UBHAccountSubsystem::HandleSyncResponse);
 	bSyncRequestInFlight = true;
+	Request->SetTimeout(10.0f); // Bound flaky-Wi-Fi hangs; engine default is ~300s.
 	Request->ProcessRequest();
 
 	OutMessage = TEXT("Syncing progress...");
@@ -876,10 +903,21 @@ bool UBHAccountSubsystem::ForgetLocalCredential(FString& OutMessage)
 {
 	StopLoginPolling();
 
-	const bool bHadCredential = IFileManager::Get().FileExists(*GetCredentialPath());
-	if (bHadCredential)
+	// Delete the base credential AND its atomic-write siblings (.bak/.tmp). LoadEncryptedCredentialFile
+	// deliberately falls back to the .bak, so a base-only delete left a working copy behind: on a shared
+	// school PC a "forgotten" account would still log in, and the salted password hash the user asked to
+	// erase would remain on disk.
+	IFileManager& FileManager = IFileManager::Get();
+	const TCHAR* const CredentialSuffixes[] = { TEXT(""), TEXT(".bak"), TEXT(".tmp") };
+	bool bHadCredential = false;
+	for (const TCHAR* Suffix : CredentialSuffixes)
 	{
-		IFileManager::Get().Delete(*GetCredentialPath(), false, true, true);
+		const FString CredentialFile = GetCredentialPath() + Suffix;
+		if (FileManager.FileExists(*CredentialFile))
+		{
+			bHadCredential = true;
+			FileManager.Delete(*CredentialFile, false, true, true);
+		}
 	}
 
 	if (Profile.Provider.Equals(TEXT("local"), ESearchCase::IgnoreCase))
@@ -910,8 +948,10 @@ bool UBHAccountSubsystem::ResetLocalClassroomData(FString& OutMessage)
 	{
 		FileManager.Delete(*(GetProfilePath() + Suffix), false, true, true);
 		FileManager.Delete(*(GetProgressPath() + Suffix), false, true, true);
+		// Include the credential's atomic-write siblings (.bak/.tmp): a base-only delete left a .bak that
+		// LoadEncryptedCredentialFile falls back to, so a "reset" PC could still authenticate the old account.
+		FileManager.Delete(*(GetCredentialPath() + Suffix), false, true, true);
 	}
-	FileManager.Delete(*GetCredentialPath(), false, true, true);
 
 	Profile = FBHAccountProfile();
 	Progress = FBHAccountProgress();
