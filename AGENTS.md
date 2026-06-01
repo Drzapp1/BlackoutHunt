@@ -22,7 +22,7 @@ These instructions apply to the whole repository. Use them as the first stop for
 ## Project Context
 
 - Blackout Hunt is an Unreal Engine 5.7 direct-IP multiplayer classroom horror hunt prototype.
-- Current beta target is `0.6.0` (matches `ProjectVersion` in `Config/DefaultGame.ini` and the latest GitHub release `v0.6.0`); classroom Windows packaging is the primary release path.
+- Current beta target is `0.7.0` (matches `ProjectVersion` in `Config/DefaultGame.ini` and the latest GitHub release `v0.7.0`); classroom Windows packaging is the primary release path, with an EOS-profile Windows package alongside it.
 - Main project paths:
   - `Source/BlackoutHunt`: native gameplay, UI, networking, automation tests, and module rules.
   - `Content`: imported assets, project art/audio, runtime maps, external actors, and package-sensitive content.

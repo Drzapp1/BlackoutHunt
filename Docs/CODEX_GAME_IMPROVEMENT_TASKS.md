@@ -658,7 +658,7 @@ Use this as the quick disambiguation layer when assigning work by existing backl
 - Project root: `D:\BlackoutHunt`
 - Engine: Unreal Engine 5
 - Game: multiplayer classroom horror hunt prototype
-- Current beta target: `0.6.0`
+- Current beta target: `0.7.0`
 - Core implementation style: native gameplay logic is mostly C++; keep new gameplay systems in C++ when extending existing systems.
 - Important docs:
   - `README.md`

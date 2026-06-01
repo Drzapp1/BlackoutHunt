@@ -34,7 +34,7 @@ It runs for **2–12 players** (32-player classroom cap) over LAN, a Wi-Fi hotsp
 - **Multiplayer:** direct-IP listen server (UDP 7777), `BH1:` join codes, Playit tunnel, EOS/Steam profiles
 - **Accounts:** local/guest by default (classroom-safe), optional Google/Microsoft OAuth + Node backend
 - **Platforms:** Windows (primary, D3D11), Linux (parity), macOS (groundwork)
-- **Version:** 0.6.0-beta.1 · current work on branch `feature/visual-questions`
+- **Version:** 0.7.0 · classroom + EOS Windows builds
 
 ## Want the full picture?
 The complete, every-system reference is in **[Docs/BLACKOUT_HUNT_COMPLETE_OVERVIEW.md](BLACKOUT_HUNT_COMPLETE_OVERVIEW.md)** — 33 sections covering every mechanic, system, config knob, tool, and the build pipeline.

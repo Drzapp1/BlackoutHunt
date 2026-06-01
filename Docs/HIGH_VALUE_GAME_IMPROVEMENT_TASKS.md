@@ -73,7 +73,7 @@ These tasks are intended to be higher value than generic content additions becau
 
 - Project root: `D:\BlackoutHunt`
 - Engine target: Unreal Engine 5.7
-- Current beta target in docs: `0.6.0`
+- Current beta target in docs: `0.7.0`
 - Primary release path: Windows classroom package
 - Core gameplay implementation: native C++ under `Source/BlackoutHunt`
 - UI implementation: Slate, especially `SBHMainMenu`, `BHHUD`, and `SBHClassroomBoard`
