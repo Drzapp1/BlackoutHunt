@@ -33,6 +33,10 @@ public:
 	void ConfigurePresentation(USkeletalMesh* NewSkeletalMesh, UAnimSequence* NewRunAnimation, UStaticMesh* NewStaticMesh, UMaterialInterface* NewMaterial, USoundBase* NewLaunchSound, const FLinearColor& NewLightColor, float NewFocusHeight);
 	void ConfigureVariant(const FBHJumpscareVariant& NewVariant);
 	void ConfigureCloseupPresentation(const FBHJumpscareVariant& NewVariant, float NewLifetime = 1.35f, bool bUpperBodyOnly = true);
+	// Passive "corner peek": the entity stands at a wall edge facing the target, plays no charge, and
+	// retreats (destroys) when the player looks straight at it or after LingerSeconds. Builds tension
+	// without a contact jumpscare.
+	void ConfigurePeek(ABHCharacter* NewTarget, const FBHJumpscareVariant& NewVariant, float LingerSeconds = 2.6f);
 	float GetCameraFocusHeight() const { return CameraFocusHeight; }
 	FName GetJumpscareVariantId() const { return JumpscareVariantId; }
 	// When set, the homing charge moves in full 3D toward the target (used for the ceiling-drop approach).
@@ -114,6 +118,10 @@ protected:
 	// Reduced flash enabled. Client-side only; cached once at BeginPlay (monster is short-lived).
 	float ComputeLocalReducedFlashScale() const;
 
+	// Comfort / "safe mode": true if the local viewer has Reduced Jumpscares enabled, in which case this
+	// monster renders as the abstract proxy instead of an imported photoreal creature. Client-side, per-player.
+	bool LocalViewerWantsProxyJumpscare() const;
+
 	TWeakObjectPtr<ABHCharacter> Target;
 	float ChargeSpeed;
 	float MaxLifetime;
@@ -122,6 +130,7 @@ protected:
 	bool bChargeStarted;
 	bool bContactJumpscareTriggered;
 	bool bUseScriptedPath;
+	bool bPeekMode;
 	bool bChargeDescend;
 	bool bPlayChargeEffects;
 	bool bScriptedFaceLookAtTarget;
@@ -129,6 +138,11 @@ protected:
 	int32 ScriptedPathIndex;
 	bool bUsingImportedVisual;
 	bool bCloseupPresentation;
+	// When a close-up only frames the upper body (e.g. the behind-you payoff), the whole mesh is fit to a
+	// short target so the visible torso fills the screen. When it shows the full creature (the in-your-face
+	// slam, the super-chain finale), it is fit to a taller target so the complete monster looms instead of
+	// reading as a stumpy legless torso.
+	bool bCloseupUpperBodyOnly = true;
 	float CloseupStartTime;
 	float CameraFocusHeight;
 	TWeakObjectPtr<AActor> ScriptedLookAtTarget;

@@ -28,8 +28,14 @@ constexpr float BHJumpscareProxyVisualRootScale = 0.62f;
 constexpr float BHJumpscareProxyCloseVisualRootScale = 0.40f;
 constexpr float BHJumpscareWorldTargetVisualHeight = 265.0f;
 constexpr float BHJumpscareCloseTargetVisualHeight = 165.0f;
+// A full-body close-up (the in-your-face slam, the super-chain finale) shows the creature head to toe, so it
+// is fit to a taller height than the upper-body framing — otherwise the whole mesh shrinks to fit a short
+// torso target and the complete monster reads as too small.
+constexpr float BHJumpscareCloseFullBodyTargetVisualHeight = 250.0f;
 constexpr float BHJumpscareMinVisualScaleAxis = 0.05f;
-constexpr float BHJumpscareMaxVisualScaleAxis = 2.0f;
+// High ceiling so a per-variant scale can compensate for a mesh imported at the wrong unit scale (e.g. the
+// SCP-096 FBX authored in metres needs ~100x). Normal creatures sit far below this; it only caps garbage.
+constexpr float BHJumpscareMaxVisualScaleAxis = 150.0f;
 
 FVector BHSanitizeJumpscareScale(const FVector& RawScale)
 {
@@ -296,6 +302,7 @@ ABHJumpscareMonster::ABHJumpscareMonster()
 	bChargeStarted = false;
 	bContactJumpscareTriggered = false;
 	bUseScriptedPath = false;
+	bPeekMode = false;
 	bChargeDescend = false;
 	bPlayChargeEffects = true;
 	bScriptedFaceLookAtTarget = false;
@@ -340,6 +347,23 @@ float ABHJumpscareMonster::ComputeLocalReducedFlashScale() const
 	}
 
 	return 1.0f;
+}
+
+bool ABHJumpscareMonster::LocalViewerWantsProxyJumpscare() const
+{
+	// True when the local viewer has Reduced Jumpscares on, so this monster should render as the gentle
+	// procedural proxy instead of an imported photoreal creature. Evaluated against the local player only,
+	// so it is correct per-client even when several players share the same replicated monster actor.
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return false;
+	}
+	if (const ABHPlayerController* LocalBHPC = Cast<ABHPlayerController>(World->GetFirstPlayerController()))
+	{
+		return LocalBHPC->IsReducedJumpscaresEnabled();
+	}
+	return false;
 }
 
 void ABHJumpscareMonster::BeginPlay()
@@ -390,7 +414,7 @@ void ABHJumpscareMonster::Tick(float DeltaSeconds)
 			}
 			else
 			{
-				const float RunAlpha = bHolding ? 0.0f : 1.0f;
+				const float RunAlpha = (bHolding || bPeekMode) ? 0.0f : 1.0f;
 				const float Bob = FMath::Sin(Age * 42.0f) * 8.0f * RunAlpha;
 				const float Roll = FMath::Sin(Age * 38.0f) * 4.5f * RunAlpha;
 				VisualRoot->SetRelativeLocation(FVector(0.0f, Bob * 0.35f, FMath::Abs(Bob) * 0.35f));
@@ -420,6 +444,48 @@ void ABHJumpscareMonster::Tick(float DeltaSeconds)
 
 	if (bContactJumpscareTriggered)
 	{
+		return;
+	}
+
+	if (bPeekMode)
+	{
+		if (!Target.IsValid() || !GetWorld())
+		{
+			Destroy();
+			return;
+		}
+
+		const float PeekNow = GetWorld()->GetTimeSeconds();
+		if (SpawnTime >= 0.0f && PeekNow - SpawnTime > MaxLifetime)
+		{
+			Destroy();
+			return;
+		}
+
+		// Keep facing the player while peeking out from the wall edge.
+		FVector PeekFaceDir = Target->GetActorLocation() - GetActorLocation();
+		PeekFaceDir.Z = 0.0f;
+		if (!PeekFaceDir.IsNearlyZero())
+		{
+			SetActorRotation(PeekFaceDir.Rotation());
+		}
+
+		// "Caught looking": once the player turns their view onto the peeker it ducks back out of sight.
+		// A short grace (>=0.4s alive) guarantees it is seen for a beat before it can retreat.
+		if (SpawnTime >= 0.0f && PeekNow - SpawnTime >= 0.4f)
+		{
+			if (const AController* TargetController = Target->GetController())
+			{
+				const FVector ViewForward = TargetController->GetControlRotation().Vector();
+				const FVector EyeLocation = Target->GetActorLocation() + FVector(0.0f, 0.0f, 80.0f);
+				const FVector DirToPeeker = (GetActorLocation() + FVector(0.0f, 0.0f, 60.0f) - EyeLocation).GetSafeNormal();
+				if (!DirToPeeker.IsNearlyZero() && FVector::DotProduct(ViewForward, DirToPeeker) > 0.96f)
+				{
+					Destroy();
+					return;
+				}
+			}
+		}
 		return;
 	}
 
@@ -632,6 +698,9 @@ void ABHJumpscareMonster::TriggerContactJumpscare()
 	SetActorLocation(CloseLocation);
 	SetActorRotation((ViewLocation - CloseLocation).Rotation());
 	bCloseupPresentation = true;
+	// Show the full towering creature on the contact slam (and thus the super-chain finale) so it never reads
+	// as a stumpy legless torso. The behind-you payoff is a separate path and keeps its tight upper-body framing.
+	bCloseupUpperBodyOnly = false;
 	CloseupStartTime = GetWorld()->GetTimeSeconds();
 	if (!ActiveVariant.VariantId.IsNone() || !JumpscareVariantId.IsNone())
 	{
@@ -642,7 +711,6 @@ void ABHJumpscareMonster::TriggerContactJumpscare()
 		UseProxyFallbackVisual();
 	}
 	SetActorScale3D(FVector::OneVector);
-	SetCloseupUpperBodyOnly();
 	ForceNetUpdate();
 
 	// Randomize timing slightly so repeated scares never feel mechanically identical.
@@ -676,7 +744,7 @@ void ABHJumpscareMonster::TriggerContactJumpscare()
 		Cue.bSnapToFocus = true;
 		Cue.bLockInput = true;
 		Cue.bCloseRangeFocus = true;
-		Cue.bUpperBodyCloseVisual = true;
+		Cue.bUpperBodyCloseVisual = false;  // full-body slam: show the complete, towering creature
 		Cue.FOVPunch = FMath::Clamp(ActiveVariant.ImpactFOVPunch, 0.0f, 30.0f);
 		Cue.HitStopSeconds = FMath::Clamp(ActiveVariant.ImpactHitStopSeconds, 0.0f, 0.25f);
 		Cue.RumbleIntensity = FMath::Clamp(ActiveVariant.ImpactRumbleIntensity, 0.0f, 1.0f);
@@ -817,6 +885,7 @@ void ABHJumpscareMonster::ConfigureCloseupPresentation(const FBHJumpscareVariant
 	bScriptedPlayChargeEffects = false;
 	bContactJumpscareTriggered = true;
 	bCloseupPresentation = true;
+	bCloseupUpperBodyOnly = bUpperBodyOnly;
 	CloseupStartTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	MaxLifetime = FMath::Clamp(NewLifetime, 0.2f, 5.0f);
 	HoldSeconds = 0.0f;
@@ -844,6 +913,53 @@ void ABHJumpscareMonster::ConfigureCloseupPresentation(const FBHJumpscareVariant
 	ForceNetUpdate();
 }
 
+void ABHJumpscareMonster::ConfigurePeek(ABHCharacter* NewTarget, const FBHJumpscareVariant& NewVariant, float LingerSeconds)
+{
+	Target = NewTarget;
+	ChargeSpeed = 0.0f;
+	HoldSeconds = 0.0f;
+	MaxLifetime = FMath::Clamp(LingerSeconds, 0.6f, 8.0f);
+	bContactJumpscareTriggered = false;
+	bUseScriptedPath = false;
+	bPeekMode = true;
+	bPlayChargeEffects = false; // passive: no charge scream or launch VFX
+	bScriptedFaceLookAtTarget = false;
+	bScriptedPlayChargeEffects = false;
+	bCloseupPresentation = false;
+	ScriptedLookAtTarget.Reset();
+	ScriptedPathPoints.Reset();
+	SetActorScale3D(FVector::OneVector);
+
+	ConfigureVariant(NewVariant);
+
+	// Passive prop: never block, trap, or overlap the player.
+	SetActorEnableCollision(false);
+	TArray<UPrimitiveComponent*> PeekPrimitives;
+	GetComponents<UPrimitiveComponent>(PeekPrimitives);
+	for (UPrimitiveComponent* PrimitiveComponent : PeekPrimitives)
+	{
+		if (PrimitiveComponent)
+		{
+			PrimitiveComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			PrimitiveComponent->SetGenerateOverlapEvents(false);
+		}
+	}
+
+	// Face the target so the figure is looking right at the player as it peeks out.
+	if (Target.IsValid())
+	{
+		FVector FaceDir = Target->GetActorLocation() - GetActorLocation();
+		FaceDir.Z = 0.0f;
+		if (!FaceDir.IsNearlyZero())
+		{
+			SetActorRotation(FaceDir.Rotation());
+		}
+	}
+
+	SetLifeSpan(MaxLifetime + 0.35f);
+	ForceNetUpdate();
+}
+
 void ABHJumpscareMonster::OnRep_JumpscareVariantId()
 {
 	if (FindJumpscareVariantById(JumpscareVariantId, ActiveVariant))
@@ -868,12 +984,20 @@ FVector ABHJumpscareMonster::GetEffectiveVariantVisualScale() const
 FVector ABHJumpscareMonster::FitVisualScaleToTargetHeight(const FVector& RequestedScale, float UnscaledHeight) const
 {
 	FVector Scale = BHSanitizeJumpscareScale(RequestedScale);
-	const float TargetHeight = bCloseupPresentation ? BHJumpscareCloseTargetVisualHeight : BHJumpscareWorldTargetVisualHeight;
 	const float RequestedHeight = UnscaledHeight * FMath::Max(Scale.Z, BHJumpscareMinVisualScaleAxis);
-	if (UnscaledHeight > KINDA_SMALL_NUMBER && RequestedHeight > TargetHeight)
+	if (UnscaledHeight <= KINDA_SMALL_NUMBER || RequestedHeight <= KINDA_SMALL_NUMBER)
 	{
-		Scale *= TargetHeight / RequestedHeight;
+		return Scale;
 	}
+
+	const float CloseTargetHeight = bCloseupUpperBodyOnly ? BHJumpscareCloseTargetVisualHeight : BHJumpscareCloseFullBodyTargetVisualHeight;
+	const float TargetHeight = bCloseupPresentation ? CloseTargetHeight : BHJumpscareWorldTargetVisualHeight;
+	// Shrink-only in every case: a mesh taller than the target is scaled down to fit, but a shorter one is left
+	// at its authored size. Upscaling world monsters toward a "looming" target broke the super-jumpscare chain
+	// (the inflated, foot-offset meshes sank/clipped at the tight peek/cross/corner spawn spots and vanished),
+	// so we never grow them now. A mesh imported at the wrong unit scale must fix that via its variant scale.
+	const float Fit = FMath::Min(TargetHeight / RequestedHeight, 1.0f);
+	Scale *= Fit;
 	return BHSanitizeJumpscareScale(Scale);
 }
 
@@ -963,6 +1087,19 @@ void ABHJumpscareMonster::ApplyConfiguredVariant()
 		LaunchSound = ResolvedLaunchSound;
 	}
 
+	// Comfort / "safe mode": a viewer with Reduced Jumpscares enabled sees the abstract procedural proxy
+	// instead of the realistic creature. ApplyConfiguredVariant runs per-client (via OnRep_JumpscareVariantId),
+	// so each player independently gets the proxy or the real monster based on their OWN setting — the scary
+	// audio/flash are still toned down elsewhere, but the menacing photoreal mesh is never shown to them.
+	if (LocalViewerWantsProxyJumpscare())
+	{
+		// Mirror the normal proxy-fallback path (UseProxyFallbackVisual + ApplyConfiguredPresentation) so the
+		// proxy still gets its light/eye presentation; just skip ever loading the realistic creature.
+		UseProxyFallbackVisual();
+		ApplyConfiguredPresentation();
+		return;
+	}
+
 	UMaterialInterface* ResolvedMaterial = !ActiveVariant.Material.IsNull() && BHSoftObjectPathExists(ActiveVariant.Material.ToSoftObjectPath())
 		? ActiveVariant.Material.LoadSynchronous()
 		: nullptr;
@@ -977,13 +1114,22 @@ void ABHJumpscareMonster::ApplyConfiguredVariant()
 			if (SkeletalMonsterMesh)
 			{
 				SkeletalMonsterMesh->SetSkeletalMesh(ResolvedSkeletalMesh);
-				if (!ActiveVariant.RunAnimation.IsNull() && BHSoftObjectPathExists(ActiveVariant.RunAnimation.ToSoftObjectPath()))
+				// Tight presentations (the close-up slam, the behind-you payoff, corner peeks) play the shared
+				// lunge-at-camera clip so every creature faces the player aggressively instead of holding a
+				// neutral idle/walk pose that reads as turned the wrong way. The charge across the room keeps
+				// its own locomotion clip.
+				const bool bWantsCloseUpPose = (bCloseupPresentation || bPeekMode)
+					&& !ActiveVariant.CloseUpAnimation.IsNull()
+					&& BHSoftObjectPathExists(ActiveVariant.CloseUpAnimation.ToSoftObjectPath());
+				const TSoftObjectPtr<UAnimSequence>& AnimationToPlay = bWantsCloseUpPose ? ActiveVariant.CloseUpAnimation : ActiveVariant.RunAnimation;
+				if (!AnimationToPlay.IsNull() && BHSoftObjectPathExists(AnimationToPlay.ToSoftObjectPath()))
 				{
-					if (UAnimSequence* ResolvedAnimation = ActiveVariant.RunAnimation.LoadSynchronous())
+					if (UAnimSequence* ResolvedAnimation = AnimationToPlay.LoadSynchronous())
 					{
 						SkeletalMonsterMesh->SetAnimationMode(EAnimationMode::AnimationSingleNode);
 						SkeletalMonsterMesh->SetAnimation(ResolvedAnimation);
-						SkeletalMonsterMesh->Play(true);
+						// The lunge is a one-shot that holds its final, scariest frame; locomotion loops.
+						SkeletalMonsterMesh->Play(!bWantsCloseUpPose);
 					}
 				}
 				if (ResolvedMaterial)

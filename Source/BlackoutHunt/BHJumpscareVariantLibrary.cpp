@@ -348,6 +348,43 @@ FBHJumpscareVariant MakeLegacyScp096ProxyJumpscareVariant()
 	return Variant;
 }
 
+FBHJumpscareVariant MakeRealScp096JumpscareVariant()
+{
+	// The genuine imported SCP-096 creature (its own skeleton/anims, NOT the shared Monster skeleton). Built in
+	// code and kept out of the shared JumpscareVariants pool so it only ever drives its own dedicated scare and
+	// never alters the existing face / behind-you / peek / super / ambient picks.
+	FBHJumpscareVariant Variant;
+	Variant.VariantId = TEXT("Scp096Real");
+	Variant.DisplayName = TEXT("SCP-096");
+	Variant.Weight = 0.0f; // never auto-selected by the weighted pool; only triggered explicitly
+	Variant.MinimumScareIntensity = 0;
+	Variant.SkeletalMesh = TSoftObjectPtr<USkeletalMesh>(FSoftObjectPath(TEXT("/Game/BlackoutHunt/Art/SCP096/Skeletal/SK_SCP096.SK_SCP096")));
+	// Charge clip drives the sprint; the swipe clip is the close-up kill pose (its own skeleton, so it cannot
+	// borrow the Monster_03 lunge). Both are bound to SK_SCP096_Skeleton.
+	Variant.RunAnimation = TSoftObjectPtr<UAnimSequence>(FSoftObjectPath(TEXT("/Game/BlackoutHunt/Art/SCP096/Skeletal/SK_SCP096C_096_AChrge_F.SK_SCP096C_096_AChrge_F")));
+	Variant.CloseUpAnimation = TSoftObjectPtr<UAnimSequence>(FSoftObjectPath(TEXT("/Game/BlackoutHunt/Art/SCP096/Skeletal/SK_SCP096C_096_ASwp1_F.SK_SCP096C_096_ASwp1_F")));
+	Variant.Material = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/BlackoutHunt/Art/SCP096/M_SCP096.M_SCP096")));
+	Variant.LaunchSound = TSoftObjectPtr<USoundBase>(FSoftObjectPath(TEXT("/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Sounds/SW_Jumpscare_01.SW_Jumpscare_01")));
+	Variant.VisualOffset = FVector(0.0f, 0.0f, -92.0f);
+	Variant.VisualRotation = FRotator(0.0f, -90.0f, 0.0f);
+	// The source FBX is authored in metres, so it imports ~100x too small (~2.83 units tall). Pre-scale it
+	// back to a real ~2.8 m creature; the height-fitter then normalises it to the looming target. Without this
+	// the upscale cap leaves it a few centimetres tall and effectively invisible.
+	Variant.VisualScale = FVector(100.0f);
+	Variant.CloseVisualOffset = FVector(82.0f, 0.0f, -52.0f);
+	Variant.CloseVisualRotation = FRotator::ZeroRotator;
+	Variant.CloseVisualScale = FVector(1.32f);
+	Variant.LightColor = FLinearColor(1.0f, 0.02f, 0.0f, 1.0f);
+	Variant.FocusHeight = 172.0f;
+	Variant.CameraShakeIntensity = 1.0f;
+	Variant.FlashIntensity = 0.92f;
+	Variant.CameraJitterDuration = 1.30f;
+	Variant.ImpactFOVPunch = 16.0f;
+	Variant.ImpactHitStopSeconds = 0.08f;
+	Variant.ImpactRumbleIntensity = 0.92f;
+	return Variant;
+}
+
 TArray<FBHJumpscareVariant> GetResolvedWhisperJumpscareVariants()
 {
 	FBHWhisperDiscoveryBuckets Discovery = BHDiscoverWhisperAssets();

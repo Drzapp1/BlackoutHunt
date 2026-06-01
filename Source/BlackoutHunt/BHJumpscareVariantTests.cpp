@@ -279,4 +279,117 @@ bool FBHJumpscareFallbackVisualSizingTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHJumpscareFaceImagePoolTest,
+	"BlackoutHunt.Horror.JumpscareFaceImagePool",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHJumpscareFaceImagePoolTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	TestNotNull(TEXT("Game settings exist."), Settings);
+	if (!Settings)
+	{
+		return false;
+	}
+
+	// The "PNG in your face" scare needs a non-empty default pool that points at cooked runtime content.
+	TestTrue(TEXT("A default face-image pool is configured."), Settings->JumpscareFaceImages.Num() > 0);
+	for (const TSoftObjectPtr<UTexture2D>& FaceImage : Settings->JumpscareFaceImages)
+	{
+		const FSoftObjectPath Path = FaceImage.ToSoftObjectPath();
+		TestFalse(TEXT("Face image entry is not null."), Path.IsNull());
+		TestTrue(TEXT("Face image stays under the migrated runtime jumpscare path."),
+			Path.ToString().StartsWith(TEXT("/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/")));
+		TestTrue(TEXT("Face image package exists on disk."), BHTestSoftPathPackageExists(Path));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHHorrorCueNewFieldDefaultsTest,
+	"BlackoutHunt.Horror.HorrorCueNewFieldDefaults",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHHorrorCueNewFieldDefaultsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	// A fresh cue must default to ordinary behaviour so existing scares are unaffected by the new fields.
+	const FBHClientHorrorCue Cue;
+	TestFalse(TEXT("A fresh cue does not lock movement-only by default."), Cue.bMoveOnlyLock);
+	TestFalse(TEXT("A fresh cue is not a directive prompt by default."), Cue.bDirectivePrompt);
+	TestTrue(TEXT("A fresh cue has no face image by default."), Cue.FaceImage.IsNull());
+	TestTrue(TEXT("Turn-release half angle has a sane default."),
+		Cue.TurnReleaseHalfAngleDegrees >= 5.0f && Cue.TurnReleaseHalfAngleDegrees <= 85.0f);
+
+	// The new event types must be distinct from each other and from the original set.
+	TestNotEqual(TEXT("FaceImage distinct from MonsterCharge."),
+		static_cast<int32>(EBHScareEventType::FaceImage), static_cast<int32>(EBHScareEventType::MonsterCharge));
+	TestNotEqual(TEXT("Peek distinct from FaceImage."),
+		static_cast<int32>(EBHScareEventType::Peek), static_cast<int32>(EBHScareEventType::FaceImage));
+	TestNotEqual(TEXT("BehindYou distinct from Peek."),
+		static_cast<int32>(EBHScareEventType::BehindYou), static_cast<int32>(EBHScareEventType::Peek));
+	TestNotEqual(TEXT("BehindYou distinct from MonsterCharge."),
+		static_cast<int32>(EBHScareEventType::BehindYou), static_cast<int32>(EBHScareEventType::MonsterCharge));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHJumpscarePeekModeTest,
+	"BlackoutHunt.Horror.PeekModeVisual",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHJumpscarePeekModeTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	// Pick any resolved variant; the peek visual path is shared with charges, so a proxy is fine.
+	FBHJumpscareVariant PeekVariant;
+	bool bFoundVariant = false;
+	for (const FBHJumpscareVariant& Variant : GetResolvedJumpscareVariants())
+	{
+		if (!Variant.VariantId.IsNone())
+		{
+			PeekVariant = Variant;
+			bFoundVariant = true;
+			break;
+		}
+	}
+	TestTrue(TEXT("A jumpscare variant resolves for the peek visual."), bFoundVariant);
+
+	FBHScopedAutomationWorld TestWorld(TEXT("BlackoutHuntJumpscarePeek"), true);
+	UWorld* World = TestWorld.Get();
+	TestNotNull(TEXT("Test world is created."), World);
+	if (!World)
+	{
+		return false;
+	}
+
+	ABHJumpscareMonster* Peeker = World->SpawnActor<ABHJumpscareMonster>(FVector(500.0f, 0.0f, 0.0f), FRotator::ZeroRotator);
+	TestNotNull(TEXT("Peek monster spawns."), Peeker);
+	if (!Peeker)
+	{
+		return false;
+	}
+
+	// ConfigurePeek with no target is valid (it only faces the target when one is set); it must still
+	// produce a visible body so the figure reads at the wall edge.
+	Peeker->ConfigurePeek(nullptr, PeekVariant, 2.5f);
+	TArray<UPrimitiveComponent*> PrimitiveComponents;
+	Peeker->GetComponents<UPrimitiveComponent>(PrimitiveComponents);
+	int32 VisiblePrimitiveCount = 0;
+	for (UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
+	{
+		if (PrimitiveComponent && PrimitiveComponent->IsVisible())
+		{
+			++VisiblePrimitiveCount;
+		}
+	}
+	TestTrue(TEXT("Peek monster has a visible body (proxy or imported mesh)."), VisiblePrimitiveCount > 0);
+
+	return true;
+}
+
 #endif
