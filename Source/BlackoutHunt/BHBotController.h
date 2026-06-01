@@ -58,6 +58,7 @@ private:
 
 	bool MoveTowardActor(AActor* Target, float AcceptanceRadius);
 	bool MoveTowardLocation(const FVector& Location, float AcceptanceRadius);
+	void UpdateBotMovementSpeed(ABHCharacter* BotCharacter, class ABHPlayerState* BotPS, bool bWantsSprint);
 	FVector GetStablePatrolPoint(const ABHCharacter* BotCharacter, float HoldSeconds = 5.0f, float MinDistance = 700.0f);
 	void ClearInteraction();
 	bool HoldInteraction(AActor* Target);
@@ -134,6 +135,7 @@ private:
 	FVector CurrentPatrolDestination;
 	float CurrentPatrolDestinationExpireTime;
 	bool bHasPatrolDestination;
+	bool bBotSprinting;
 	bool bUseStateTreeAI;
 	bool bStateTreeBrainRunning;
 	bool bStateTreePolicyFallbackActivated;

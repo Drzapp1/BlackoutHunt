@@ -91,16 +91,41 @@ FString BHBotDecisionLabel(EBHPlayerRole Role, EBHBotPersonality InPersonality, 
 
 float BHBotRoleMoveSpeed(const ABHPlayerState* BotPS)
 {
+	// Baseline (non-sprint) pace. Mirrors the human role walk speeds in BHMakeDefaultMovementRoleTuning
+	// so bots no longer crawl below a walking human - the old 395/440/470 made even the Teacher slower
+	// than a survivor's walk.
 	if (BotPS && BotPS->PlayerRole == EBHPlayerRole::Hunter)
 	{
-		return 395.0f;
-	}
-	if (BotPS && BotPS->PlayerRole == EBHPlayerRole::FakeHunter)
-	{
-		return 440.0f;
+		return 460.0f;
 	}
 
-	return 470.0f;
+	return 530.0f; // FakeHunter + Survivor share the base walk pace
+}
+
+float BHBotRoleSprintSpeed(const ABHPlayerState* BotPS)
+{
+	// Mirrors the human role sprint speeds in BHMakeDefaultMovementRoleTuning. Without this a chasing
+	// Teacher (walk 460) could never close on a sprinting survivor (900); now it sprints at 1150 just
+	// like a human Teacher, paced by the shared stamina drain.
+	if (BotPS && BotPS->PlayerRole == EBHPlayerRole::Hunter)
+	{
+		return 1150.0f;
+	}
+
+	return 900.0f; // FakeHunter + Survivor
+}
+
+bool BHBotIntentWantsSprint(EBHBotIntent Intent)
+{
+	switch (Intent)
+	{
+	case EBHBotIntent::Chase:   // Teacher closing on a visible survivor
+	case EBHBotIntent::Flee:    // survivor breaking line of sight
+	case EBHBotIntent::Escape:  // survivor sprinting for the exit
+		return true;
+	default:
+		return false;
+	}
 }
 
 bool BHBotIntentRequiresMovement(EBHBotIntent Intent)
@@ -219,6 +244,7 @@ ABHBotController::ABHBotController()
 	CurrentPatrolDestination = FVector::ZeroVector;
 	CurrentPatrolDestinationExpireTime = -999.0f;
 	bHasPatrolDestination = false;
+	bBotSprinting = false;
 }
 
 void ABHBotController::BeginPlay()
@@ -1040,6 +1066,15 @@ void ABHBotController::BuildTeacherDecisionCandidates(ABHCharacter* BotCharacter
 		AddCandidate(OutCandidates, EBHBotIntent::AmbushObjective, Exit, AmbushLocation, 1.7f + (bAmbusher ? 0.26f : 0.0f), 0.0f, 0.86f, BHBotDecisionLabel(BotRole, Personality, bCanCapture ? TEXT("guard exit") : TEXT("monitor exit route")));
 	}
 
+	// With no fresh lead, a real Teacher actively sweeps the level (corridors / scare points) instead of
+	// statically camping one objective ambush. With several Teachers the extras would otherwise each park
+	// on a different objective and read as "idle". Scored to beat a stale objective ambush (~1.0/0.86,
+	// RoutePrediction=0 when stale) but stay below a fresh-lead ambush and exit guarding (1.7).
+	if (bCanCapture && LastSeenAge > HearingMemorySeconds + 8.0f)
+	{
+		AddCandidate(OutCandidates, EBHBotIntent::Patrol, nullptr, GetStablePatrolPoint(BotCharacter, 3.0f, 1200.0f), 1.12f + (bAggressiveTeacher ? 0.16f : 0.0f), 0.0f, 0.42f, BHBotDecisionLabel(BotRole, Personality, TEXT("sweep for survivors")));
+	}
+
 	if (!bCanCapture && Now - LastTrapAttemptTime > 8.0f)
 	{
 		if (AActor* TrapTarget = FindHunterPatrolObjective())
@@ -1158,6 +1193,10 @@ void ABHBotController::CommitDecision(ABHCharacter* BotCharacter, ABHPlayerState
 	}
 	LastDecisionScore = Decision.BaseScore;
 	LastDecisionDebugLabel = Decision.DebugLabel;
+
+	// Sprint when actively pursuing (Teacher) or fleeing/escaping (survivor); walk otherwise so stamina
+	// recovers. BHApplyBotMovementProfile already reset us to the walk baseline earlier this Think.
+	UpdateBotMovementSpeed(BotCharacter, BotPS, BHBotIntentWantsSprint(Decision.Intent));
 
 	switch (Decision.Intent)
 	{
@@ -1609,6 +1648,29 @@ bool ABHBotController::MoveTowardLocation(const FVector& Location, float Accepta
 	}
 	HandleStuck(nullptr);
 	return true;
+}
+
+void ABHBotController::UpdateBotMovementSpeed(ABHCharacter* BotCharacter, ABHPlayerState* BotPS, bool bWantsSprint)
+{
+	UCharacterMovementComponent* Movement = BotCharacter ? BotCharacter->GetCharacterMovement() : nullptr;
+	if (!Movement)
+	{
+		return;
+	}
+
+	// Burst sprint paced by the character's real stamina (GetStaminaPercent is 0..100). The shared
+	// stamina drain/recovery in ABHCharacter::Tick already runs server-side for bots, so sprinting
+	// drains and walking recovers it - the same out-of-breath rhythm a human gets. Hysteresis (keep
+	// sprinting down to 12%, only restart once recovered past 45%) avoids stuttering at the threshold
+	// and gives the Teacher repeated bursts to close gaps instead of one drain to empty.
+	bool bSprint = false;
+	if (bWantsSprint)
+	{
+		const float StaminaPercent = BotCharacter->GetStaminaPercent();
+		bSprint = bBotSprinting ? StaminaPercent > 12.0f : StaminaPercent > 45.0f;
+	}
+	bBotSprinting = bSprint;
+	Movement->MaxWalkSpeed = bSprint ? BHBotRoleSprintSpeed(BotPS) : BHBotRoleMoveSpeed(BotPS);
 }
 
 void ABHBotController::ClearInteraction()

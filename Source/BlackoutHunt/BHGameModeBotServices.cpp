@@ -235,6 +235,16 @@ void ABHGameMode::SetBotCount(ABHPlayerController* RequestingController, int32 N
 	}
 }
 
+void ABHGameMode::FillBotsToCapacity(ABHPlayerController* RequestingController)
+{
+	// Aim for a full table: one bot per empty slot after the current humans. SetBotCount clamps to
+	// MaxPlayers - 1 and RefreshBotRoster re-clamps live bots to (MaxPlayers - humans) every time a
+	// human joins, so this is a "fill it up now" request that still leaves room for late arrivals.
+	const int32 HumanCount = CountHumanPlayers();
+	const int32 DesiredBots = FMath::Clamp(MaxPlayers - HumanCount, 0, FMath::Max(0, MaxPlayers - 1));
+	SetBotCount(RequestingController, DesiredBots);
+}
+
 void ABHGameMode::SetBotDifficulty(ABHPlayerController* RequestingController, EBHBotDifficulty NewDifficulty)
 {
 	if (!RequireHostAdmin(RequestingController, TEXT("change bot difficulty")))
