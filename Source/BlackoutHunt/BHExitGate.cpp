@@ -3,6 +3,8 @@
 #include "BHGameMode.h"
 #include "BHGameState.h"
 #include "BHPlayerState.h"
+#include "BHPropVisuals.h"
+#include "Components/PointLightComponent.h"
 #include "Net/UnrealNetwork.h"
 
 ABHExitGate::ABHExitGate()
@@ -10,6 +12,77 @@ ABHExitGate::ABHExitGate()
 	InteractionLabel = FText::FromString(TEXT("Exit"));
 	bDirectorActive = true;
 	SetActorScale3D(FVector(2.0f, 0.2f, 2.5f));
+
+	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.bStartWithTickEnabled = true;
+
+	// Status beacon that color-codes the gate state and is visible in the dark from across the room.
+	// Relative Z is pre-scale: the actor's 2.5x Z scale lifts it to ~1.8m, just above the gate top so
+	// the gate body never occludes it.
+	StatusLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("StatusLight"));
+	StatusLight->SetupAttachment(GetRootComponent());
+	StatusLight->SetRelativeLocation(FVector(0.0f, 0.0f, 72.0f));
+	StatusLight->SetAttenuationRadius(520.0f);
+	StatusLight->SetCastShadows(false);
+	StatusLight->SetIntensity(0.0f);
+	StatusLight->SetMobility(EComponentMobility::Movable);
+}
+
+void ABHExitGate::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+	ApplyExitGateVisuals();
+}
+
+void ABHExitGate::ApplyExitGateVisuals()
+{
+	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	const bool bUnlocked = BHGS && BHGS->bExitUnlocked;
+
+	// 0 inactive (not the exit this round), 1 locked (objectives outstanding), 2 escape-ready.
+	const int32 State = !bDirectorActive ? 0 : (bUnlocked ? 2 : 1);
+
+	FLinearColor BodyColor;
+	FLinearColor LightColor;
+	float BaseIntensity;
+	float Glow;
+	switch (State)
+	{
+	case 2: // escape-ready: inviting green, the only state that pulses to pull the eye
+		BodyColor = FLinearColor(0.10f, 0.32f, 0.18f, 1.0f);
+		LightColor = FLinearColor(0.16f, 1.0f, 0.45f, 1.0f);
+		BaseIntensity = 1500.0f;
+		Glow = 0.9f;
+		break;
+	case 1: // locked: steady amber-red warning
+		BodyColor = FLinearColor(0.16f, 0.11f, 0.07f, 1.0f);
+		LightColor = FLinearColor(1.0f, 0.30f, 0.10f, 1.0f);
+		BaseIntensity = 900.0f;
+		Glow = 0.22f;
+		break;
+	default: // inactive: dead, unlit slate
+		BodyColor = FLinearColor(0.05f, 0.05f, 0.06f, 1.0f);
+		LightColor = FLinearColor(0.20f, 0.20f, 0.22f, 1.0f);
+		BaseIntensity = 0.0f;
+		Glow = 0.0f;
+		break;
+	}
+
+	if (State != LastVisualState)
+	{
+		BHPropVisuals::TintPart(Mesh, BodyColor, Glow);
+		LastVisualState = State;
+	}
+
+	if (StatusLight)
+	{
+		const float Pulse = (State == 2 && GetWorld())
+			? 0.78f + 0.22f * FMath::Sin(GetWorld()->GetTimeSeconds() * 3.2f)
+			: 1.0f;
+		StatusLight->SetVisibility(State != 0);
+		StatusLight->SetLightColor(LightColor);
+		StatusLight->SetIntensity(BaseIntensity * Pulse);
+	}
 }
 
 void ABHExitGate::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const

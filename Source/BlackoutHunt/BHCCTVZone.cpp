@@ -217,10 +217,13 @@ void ABHCCTVZone::ApplyZoneVisuals()
 
 	const bool bShowOutline = bZoneVisible;
 	const FLinearColor PlateColor(0.012f, 0.018f, 0.018f, 0.0f);
+	// Enabled = alarming teal that glows; disabled = a cool slate that is dim but still clearly
+	// readable, so "offline" reads as a deliberate state from a distance instead of the stripes
+	// nearly vanishing (which players misread as the zone never having been there).
 	const FLinearColor StripeColor = bZoneEnabled
 		? FLinearColor(0.26f, 0.58f, 0.54f, 0.72f)
-		: FLinearColor(0.12f, 0.15f, 0.15f, 0.48f);
-	const float StripeGlow = bZoneEnabled ? 0.32f : 0.0f;
+		: FLinearColor(0.20f, 0.24f, 0.30f, 0.66f);
+	const float StripeGlow = bZoneEnabled ? 0.32f : 0.06f;
 
 	BHPropVisuals::SetPartVisible(ZonePlate, false);
 	BHPropVisuals::SetPartVisible(WarningStripeA, bShowOutline);

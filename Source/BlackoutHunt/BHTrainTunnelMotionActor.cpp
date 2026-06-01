@@ -27,7 +27,10 @@ ABHTrainTunnelMotionActor::ABHTrainTunnelMotionActor()
 		Strip->SetupAttachment(SceneRoot);
 		Strip->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		Strip->SetCastShadow(false);
-		Strip->SetRelativeScale3D(FVector(0.06f, 3.8f, 0.08f));
+		// Strips live in the service gap between the carriage window glass (y=+/-300) and the opaque
+		// tunnel backdrop (y=+/-580). Keep them short enough in Y that they never poke through the glass
+		// into the interior nor clip the backdrop: centred at y=+/-430, half-length 110cm -> y[320,540].
+		Strip->SetRelativeScale3D(FVector(0.06f, 2.2f, 0.08f));
 		if (CubeMesh.Succeeded())
 		{
 			Strip->SetStaticMesh(CubeMesh.Object);

@@ -237,7 +237,9 @@ void ABHBreakableGlassPane::ApplyGlassVisuals()
 		Mesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 		Mesh->SetVisibility(true, true);
 		Mesh->SetHiddenInGame(false, true);
-		BHPropVisuals::TintPart(Mesh, FLinearColor(0.58f, 0.82f, 0.92f, 0.56f), 0.45f);
+		// Warm yellow-white + brighter glow and higher opacity so a cracked (interactable) pane is
+		// clearly distinct from an intact blue pane and reads at a glance in dark corridors.
+		BHPropVisuals::TintPart(Mesh, FLinearColor(0.85f, 0.90f, 0.62f, 0.70f), 0.62f);
 		break;
 	case EBHBreakableGlassState::Intact:
 	default:
