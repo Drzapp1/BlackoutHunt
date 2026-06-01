@@ -38,6 +38,12 @@ public:
 	void ClearSpectatorSupportState(bool bClearRolePreference = true);
 	void AddSpectatorEncouragement();
 	void ResetRevisionStats();
+	// Records that the player tried a warmup action during Prep. Server-authoritative and a
+	// no-op outside the live role warmup, so it can be called unconditionally from action sites.
+	// Never touches scoring/mastery/reports. Sends a one-time "you're ready" toast on completion.
+	void MarkWarmupStep(EBHWarmupStep Step);
+	// Clears the warmup checklist so it never carries between warmup and the live Hunt.
+	void ResetWarmupChecklist();
 	// Per-player spaced-repetition review queue: question IDs the player answered
 	// incorrectly, oldest first, re-surfaced until answered correctly.
 	void EnqueueRevisionReview(const FString& QuestionId);
@@ -102,6 +108,15 @@ public:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Revision")
 	FBHPlayerRevisionStats RevisionStats;
 
+	// Advisory teaching state for the role warmup checklist (see EBHWarmupStep). Owner-only
+	// replication: only the player's own HUD needs the mask; the host reads it server-side for
+	// the classroom-board coverage count. Cleared before the live Hunt; never affects reports.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Warmup")
+	uint8 WarmupChecklistMask;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Warmup")
+	bool bWarmupComplete;
+
 	// Question IDs the player missed, oldest first. Replicated to the owner so the
 	// client HUD can frame a re-asked question as a review. Server-authoritative.
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Revision")
@@ -121,4 +136,11 @@ public:
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Powerups")
 	TArray<FBHPowerupInventoryEntry> Powerups;
+
+	// Server-side only (deliberately NOT replicated): the secret per-client reconnect token. Set from the
+	// join URL in ABHGameMode::InitNewPlayer when a client echoes a prior token, or freshly generated in
+	// PostLogin and pushed to the owning client via ABHPlayerController::ClientReceiveReconnectToken. The
+	// mid-round reconnect match (UBHGameInstance::TryGetReconnectProgress) keys on this token rather than
+	// the spoofable display name, so same-named students can't be restored into each other's slot.
+	FString ReconnectToken;
 };

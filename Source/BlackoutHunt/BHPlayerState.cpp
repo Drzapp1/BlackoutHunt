@@ -1,5 +1,8 @@
 #include "BHPlayerState.h"
 #include "BHCosmeticUnlocks.h"
+#include "BHGameState.h"
+#include "BHPlayerController.h"
+#include "GameFramework/Controller.h"
 #include "Net/UnrealNetwork.h"
 
 namespace
@@ -33,6 +36,8 @@ ABHPlayerState::ABHPlayerState()
 	SpectatorEncouragementCount = 0;
 	RevisionStats = FBHPlayerRevisionStats();
 	RevisionReviewQueue.Reset();
+	WarmupChecklistMask = 0;
+	bWarmupComplete = false;
 	QuestionPoints = 0;
 	LifetimeQuestionPoints = 0;
 	HunterPoints = 0;
@@ -58,8 +63,15 @@ void ABHPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLi
 	DOREPLIFETIME(ABHPlayerState, bFakeHunterEligible);
 	DOREPLIFETIME(ABHPlayerState, SpectatorRolePreference);
 	DOREPLIFETIME(ABHPlayerState, SpectatorEncouragementCount);
-	DOREPLIFETIME(ABHPlayerState, RevisionStats);
-	DOREPLIFETIME(ABHPlayerState, RevisionReviewQueue);
+	// Owner-only: a student's academic record (mastery %, attempt/correct/hint counts, and the exact
+	// IDs of questions they got wrong) is private. The owning client's HUD is the only client-side
+	// reader; the host reads it server-side for the classroom board, so it never needs to reach other
+	// students' clients. Replicating it to everyone let a modded/curious student read classmates'
+	// performance straight off the wire. Mirror the warmup fields below.
+	DOREPLIFETIME_CONDITION(ABHPlayerState, RevisionStats, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(ABHPlayerState, RevisionReviewQueue, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(ABHPlayerState, WarmupChecklistMask, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(ABHPlayerState, bWarmupComplete, COND_OwnerOnly);
 	DOREPLIFETIME(ABHPlayerState, QuestionPoints);
 	DOREPLIFETIME(ABHPlayerState, LifetimeQuestionPoints);
 	DOREPLIFETIME(ABHPlayerState, HunterPoints);
@@ -173,6 +185,45 @@ void ABHPlayerState::ResetRevisionStats()
 {
 	RevisionStats = FBHPlayerRevisionStats();
 	RevisionReviewQueue.Reset();
+}
+
+void ABHPlayerState::MarkWarmupStep(EBHWarmupStep Step)
+{
+	// Server-authoritative, and only meaningful during the live role warmup (Prep, not the
+	// practice/test sandboxes). Mirrors BHIsRoleWarmupPhase() without depending on that
+	// translation-unit-local helper. A no-op everywhere else, so callers can fire it freely.
+	const UWorld* World = GetWorld();
+	const ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
+	if (!HasAuthority() || !BHGS
+		|| BHGS->RoundPhase != EBHRoundPhase::Prep
+		|| BHGS->bPracticeMode
+		|| BHGS->bTestMode)
+	{
+		return;
+	}
+
+	const uint8 Bit = static_cast<uint8>(Step);
+	if ((WarmupChecklistMask & Bit) != 0)
+	{
+		return; // already tried this action
+	}
+	WarmupChecklistMask |= Bit;
+
+	const uint8 Expected = BHWarmupExpectedMask(PlayerRole);
+	if (!bWarmupComplete && Expected != 0 && (WarmupChecklistMask & Expected) == Expected)
+	{
+		bWarmupComplete = true;
+		if (ABHPlayerController* PC = Cast<ABHPlayerController>(GetOwningController()))
+		{
+			PC->ClientShowStatusMessage(TEXT("Warmup complete - you're ready! Wait for the class to start."), 3.5f);
+		}
+	}
+}
+
+void ABHPlayerState::ResetWarmupChecklist()
+{
+	WarmupChecklistMask = 0;
+	bWarmupComplete = false;
 }
 
 namespace

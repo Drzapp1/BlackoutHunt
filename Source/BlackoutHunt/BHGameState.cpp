@@ -136,6 +136,7 @@ ABHGameState::ABHGameState()
 	PresencePulse = 0;
 	ObjectiveBeats.Reset();
 	bPracticeMode = false;
+	bTutorialMode = false;
 	bTestMode = false;
 	bBotMode = false;
 	TargetBotCount = 0;
@@ -199,6 +200,7 @@ void ABHGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 	DOREPLIFETIME(ABHGameState, PresencePulse);
 	DOREPLIFETIME(ABHGameState, ObjectiveBeats);
 	DOREPLIFETIME(ABHGameState, bPracticeMode);
+	DOREPLIFETIME(ABHGameState, bTutorialMode);
 	DOREPLIFETIME(ABHGameState, bTestMode);
 	DOREPLIFETIME(ABHGameState, bBotMode);
 	DOREPLIFETIME(ABHGameState, TargetBotCount);
@@ -543,6 +545,11 @@ void ABHGameState::SetObjectiveBeats(const TArray<FBHObjectiveBeat>& NewObjectiv
 void ABHGameState::SetPracticeMode(bool bNewPracticeMode)
 {
 	bPracticeMode = bNewPracticeMode;
+}
+
+void ABHGameState::SetTutorialMode(bool bNewTutorialMode)
+{
+	bTutorialMode = bNewTutorialMode;
 }
 
 void ABHGameState::SetTestMode(bool bNewTestMode)

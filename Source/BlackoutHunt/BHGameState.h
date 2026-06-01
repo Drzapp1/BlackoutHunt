@@ -46,6 +46,7 @@ public:
 	void SetPresenceState(float NewPresenceLevel, const FString& NewPresenceText, int32 NewPresencePulse);
 	void SetObjectiveBeats(const TArray<FBHObjectiveBeat>& NewObjectiveBeats);
 	void SetPracticeMode(bool bNewPracticeMode);
+	void SetTutorialMode(bool bNewTutorialMode);
 	void SetTestMode(bool bNewTestMode);
 	void SetBotOptions(bool bNewBotMode, int32 NewTargetBotCount, EBHBotDifficulty NewBotDifficulty);
 	void SetRevisionOptions(EBHRevisionMode NewRevisionMode, int32 NewTopicMask, EBHRevisionDifficultyMix NewDifficultyMix, float NewClassThreshold, float NewIndividualThreshold, int32 NewRoundDuration, int32 NewScareIntensity);
@@ -127,6 +128,11 @@ public:
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Practice")
 	bool bPracticeMode;
+
+	// Replicated so client-side systems (the adaptive-graphics prompt, the horror vignette) can soften
+	// or suppress themselves during the guided tutorial without interfering with the teaching prompts.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Practice")
+	bool bTutorialMode;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Test")
 	bool bTestMode;
