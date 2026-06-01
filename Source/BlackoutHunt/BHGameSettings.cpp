@@ -3,6 +3,7 @@
 #include "Animation/AnimSequence.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
+#include "Engine/Texture2D.h"
 #include "GameFramework/Actor.h"
 #include "Materials/MaterialInterface.h"
 #include "NiagaraSystem.h"
@@ -173,6 +174,9 @@ UBHGameSettings::UBHGameSettings()
 	MinPlayers = 2;
 	MaxPlayers = 12;
 	PrepSeconds = 45;
+	bExtendedFirstWarmup = false;
+	ExtendedPrepSeconds = 90;
+	bHasHostedClassBefore = false;
 	HuntSeconds = 900;
 	RequiredBreakers = 6;
 	bAllowHostForceStart = false;
@@ -229,7 +233,7 @@ UBHGameSettings::UBHGameSettings()
 		BHMakeJumpscareVariant(
 			TEXT("ProxyRed"),
 			TEXT("Procedural Red Proxy"),
-			1.00f,
+			0.45f,
 			0,
 			TEXT(""),
 			TEXT(""),
@@ -251,7 +255,7 @@ UBHGameSettings::UBHGameSettings()
 		BHMakeJumpscareVariant(
 			TEXT("ProxyCyan"),
 			TEXT("Procedural Cyan Proxy"),
-			0.72f,
+			0.30f,
 			1,
 			TEXT(""),
 			TEXT(""),
@@ -273,7 +277,7 @@ UBHGameSettings::UBHGameSettings()
 		BHMakeJumpscareVariant(
 			TEXT("ProxyViolet"),
 			TEXT("Procedural Violet Proxy"),
-			0.64f,
+			0.26f,
 			2,
 			TEXT(""),
 			TEXT(""),
@@ -295,8 +299,8 @@ UBHGameSettings::UBHGameSettings()
 		BHMakeJumpscareVariant(
 			TEXT("FabMonster01"),
 			TEXT("Free Customizable Jumpscares Monster 01"),
-			1.20f,
-			1,
+			1.60f,
+			0,
 			TEXT("/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Meshes/Skeletal_Meshes/SKM_Monster_01.SKM_Monster_01"),
 			TEXT("/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Animations/AS_Monster_01_Idle.AS_Monster_01_Idle"),
 			TEXT(""),
@@ -317,8 +321,8 @@ UBHGameSettings::UBHGameSettings()
 		BHMakeJumpscareVariant(
 			TEXT("FabMonster02"),
 			TEXT("Free Customizable Jumpscares Monster 02"),
-			1.15f,
-			1,
+			1.50f,
+			0,
 			TEXT("/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Meshes/Skeletal_Meshes/SKM_Monster_02.SKM_Monster_02"),
 			TEXT("/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Animations/AS_Monster_02_Walk.AS_Monster_02_Walk"),
 			TEXT(""),
@@ -339,8 +343,8 @@ UBHGameSettings::UBHGameSettings()
 		BHMakeJumpscareVariant(
 			TEXT("FabMonster03"),
 			TEXT("Free Customizable Jumpscares Monster 03"),
-			1.10f,
-			2,
+			1.40f,
+			1,
 			TEXT("/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Meshes/Skeletal_Meshes/SKM_Monster_03.SKM_Monster_03"),
 			TEXT("/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Animations/AS_Monster_03_Jumpscare.AS_Monster_03_Jumpscare"),
 			TEXT(""),
@@ -358,6 +362,29 @@ UBHGameSettings::UBHGameSettings()
 			1.0f,
 			0.90f,
 			1.45f)
+	};
+
+	// Every pack monster shares the SK_Monster skeleton, so the one shipped lunge-at-camera clip
+	// (AS_Monster_03_Jumpscare) drives all of them. Use it as the close-up pose for any variant that owns a
+	// skeletal mesh but lacks its own aggressive clip (Monster 01 ships only an idle, Monster 02 only a walk),
+	// so the "in your face" slam, the behind-you payoff and corner peeks always present a camera-facing
+	// creature instead of a neutral pose that reads as turned 90 degrees.
+	const TSoftObjectPtr<UAnimSequence> SharedLungeAnimation(FSoftObjectPath(TEXT("/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Animations/AS_Monster_03_Jumpscare.AS_Monster_03_Jumpscare")));
+	for (FBHJumpscareVariant& Variant : JumpscareVariants)
+	{
+		if (Variant.CloseUpAnimation.IsNull() && !Variant.SkeletalMesh.IsNull())
+		{
+			Variant.CloseUpAnimation = SharedLungeAnimation;
+		}
+	}
+
+	// Default "PNG in your face" pool: the Free Customizable Jumpscares monster textures. They are
+	// cooked as dependencies of the M_Monster_* materials and via the Textures cook directory, so a
+	// random one can be slammed full-screen at runtime. Hosts can add imported scary stills here.
+	JumpscareFaceImages = {
+		TSoftObjectPtr<UTexture2D>(FSoftObjectPath(TEXT("/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Textures/T_Monster_01.T_Monster_01"))),
+		TSoftObjectPtr<UTexture2D>(FSoftObjectPath(TEXT("/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Textures/T_Monster_02.T_Monster_02"))),
+		TSoftObjectPtr<UTexture2D>(FSoftObjectPath(TEXT("/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Textures/T_Monster_03.T_Monster_03")))
 	};
 	FootstepSurfaceProfiles = {
 		BHMakeFootstepSurfaceProfile(EBHFootstepSurface::Default, 1.00f, 1600.0f, 1700.0f, 1.00f, 0.24f, TEXT("/Game/ResidentHorrorV1/Audio/CharactersAudio/WaveFiles/Foley/Ground/WAV_ground_4.WAV_ground_4"), TEXT("/Game/A_Surface_Footstep/Niagara_FX/ParticleSystems/PSN_General1_Surface.PSN_General1_Surface"), 0.42f),

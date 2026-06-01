@@ -35,6 +35,20 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Rules")
 	bool bAllowHostForceStart;
 
+	// Teaching: a longer first-play role warmup so a brand-new class has time to try everything.
+	// The effective warmup uses ExtendedPrepSeconds when this is set OR the install has never hosted
+	// a class before (auto-enable on the first session). Host ForceStart still ends Prep instantly.
+	UPROPERTY(Config, EditAnywhere, Category = "Rules")
+	bool bExtendedFirstWarmup;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Rules")
+	int32 ExtendedPrepSeconds;
+
+	// Bookkeeping for the auto-enable-first-session behaviour above. Set true once the first Hunt of
+	// the install starts, so experienced hosts keep the lean default warmup afterwards.
+	UPROPERTY(Config)
+	bool bHasHostedClassBefore;
+
 	// When true, travel prefers an authored /Game/BlackoutHunt/Maps/<Level> .umap (discovered via a placed
 	// ABHLevelMarker) over the procedural runtime generator, falling back to /Engine/Maps/Entry when the
 	// authored asset is missing. Leave false until authored maps ship and host/launch travel is fully routed.
@@ -131,6 +145,23 @@ public:
 
 	UPROPERTY(Config, EditAnywhere, Category = "Horror", meta = (ClampMin = "0.1", ClampMax = "4.0"))
 	float JumpscareDuckSeconds = 1.4f;
+
+	// Full-screen "face image" still frames slammed over the view for the FaceImage scare (the
+	// "PNG in your face"). A random one is picked per scare. Defaults to the Free Customizable
+	// Jumpscares monster textures; add your own imported scary textures here (or in DefaultGame.ini)
+	// to extend the pool. Empty falls back to the procedural flash with no image.
+	UPROPERTY(Config, EditAnywhere, Category = "Horror")
+	TArray<TSoftObjectPtr<UTexture2D>> JumpscareFaceImages;
+
+	// "Behind you" directive scare: the longest the directive + movement lock can hold before the payoff
+	// jumpscare auto-fires, so a player who refuses to turn is never stuck. The look input stays free.
+	UPROPERTY(Config, EditAnywhere, Category = "Horror", meta = (ClampMin = "1.5", ClampMax = "8.0"))
+	float BehindYouMaxHoldSeconds = 6.0f;
+
+	// Corner-peek scare: seconds a peeking figure lingers at a wall edge before retreating if the player
+	// never looks at it. Looking directly at it makes it duck back sooner.
+	UPROPERTY(Config, EditAnywhere, Category = "Horror", meta = (ClampMin = "0.6", ClampMax = "6.0"))
+	float PeekLingerSeconds = 2.6f;
 
 	UPROPERTY(Config, EditAnywhere, Category = "Horror|Footsteps")
 	TArray<FBHFootstepSurfaceProfile> FootstepSurfaceProfiles;
