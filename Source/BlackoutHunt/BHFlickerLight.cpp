@@ -113,7 +113,18 @@ void ABHFlickerLight::Tick(float DeltaSeconds)
 	const float EffectiveBurstMultiplier = FMath::Lerp(1.0f, FMath::Max(0.1f, FlickerBurstIntensityMultiplier), FlashScale);
 	const float ActiveIntensity = bFlickerBurstActive ? BaseIntensity * EffectiveBurstMultiplier : BaseIntensity;
 	const float AmplitudeBoost = bFlickerBurstActive ? FMath::Lerp(1.0f, 1.8f, FlashScale) : 1.0f;
-	const float Noise = FMath::Sin(Time * ActiveSpeed + Phase) * 0.5f + FMath::Sin(Time * 17.0f + Phase * 0.37f) * 0.5f;
+	// Give every fixture its own rhythm rather than the same two-sine shifted only by phase: derive a
+	// stable per-light frequency jitter + secondary frequency from Phase, and add a slow tertiary sine
+	// so the decay wanders organically instead of looping a fixed pattern. All terms are cheap and need
+	// no extra state (FMath::Frac(Phase*k) is a stable pseudo-random per light). Weights sum to ~1.0 so
+	// the overall swing matches the historical look.
+	const float FreqJitter = 0.85f + 0.30f * FMath::Frac(Phase * 0.137f);   // ~0.85..1.15 per light
+	const float SecondaryHz = 13.0f + 9.0f * FMath::Frac(Phase * 0.061f);   // ~13..22 Hz per light
+	const float SlowHz = 0.6f + 0.25f * FMath::Frac(Phase * 0.290f);        // ~0.6..0.85 Hz per light
+	const float Noise =
+		FMath::Sin(Time * ActiveSpeed * FreqJitter + Phase) * 0.46f +
+		FMath::Sin(Time * SecondaryHz + Phase * 0.37f) * 0.34f +
+		FMath::Sin(Time * SlowHz + Phase * 1.7f) * 0.20f;
 	Light->SetIntensity(FMath::Max(80.0f, ActiveIntensity + Noise * FlickerAmount * AmplitudeBoost));
 }
 

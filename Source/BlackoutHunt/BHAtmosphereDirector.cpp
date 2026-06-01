@@ -45,6 +45,12 @@ FString BHDefaultScareCueMessage(EBHScareEventType Type)
 		return TEXT("A whisper traces your route.");
 	case EBHScareEventType::FootstepEcho:
 		return TEXT("Footsteps match your pace, then stop.");
+	case EBHScareEventType::FaceImage:
+		return TEXT("It is suddenly, impossibly close.");
+	case EBHScareEventType::Peek:
+		return TEXT("Something leans out, just at the edge of sight.");
+	case EBHScareEventType::BehindYou:
+		return TEXT("SOMETHING IS BEHIND YOU");
 	case EBHScareEventType::Ambient:
 	default:
 		return TEXT("The room shifts around you.");
@@ -159,6 +165,21 @@ bool UBHAtmosphereDirector::TriggerAtmosphereCue(const FBHScareEventSpec& Spec)
 	FBHScareEventSpec WorkingSpec = Spec;
 	ABHCharacter* Target = ResolveTarget(WorkingSpec.Target);
 	FVector Origin = WorkingSpec.Origin.IsNearlyZero() && Target ? Target->GetActorLocation() : WorkingSpec.Origin;
+
+	// Suppress autonomous jumpscares (monster charge / SCP-096, in-your-face, behind-you, corner peek) when the
+	// teacher is right next to the target — a random monster would step on the teacher's own approach.
+	// Deliberate teacher scares and test-menu scares set bBypassDirectorBudget / bGameplayCritical and are exempt.
+	if (!WorkingSpec.bBypassDirectorBudget && !WorkingSpec.bGameplayCritical
+		&& (IsJumpscareCue(WorkingSpec.EventType) || WorkingSpec.EventType == EBHScareEventType::Peek))
+	{
+		const FVector GateLocation = Target ? Target->GetActorLocation() : Origin;
+		if (OwnerGameMode->IsTeacherNearby(GateLocation))
+		{
+			LastBudgetDecision = TEXT("suppressed: teacher nearby");
+			return false;
+		}
+	}
+
 	FString BudgetReason;
 	if (!TryApplyBudget(Target, WorkingSpec, Origin, true, BudgetReason))
 	{
@@ -180,6 +201,30 @@ bool UBHAtmosphereDirector::TriggerAtmosphereCue(const FBHScareEventSpec& Spec)
 		if (Target)
 		{
 			OwnerGameMode->TriggerMonsterChargeJumpscare(Target);
+			return true;
+		}
+		return false;
+
+	case EBHScareEventType::FaceImage:
+		if (Target)
+		{
+			OwnerGameMode->TriggerFaceImageJumpscare(Target);
+			return true;
+		}
+		return false;
+
+	case EBHScareEventType::BehindYou:
+		if (Target)
+		{
+			OwnerGameMode->TriggerBehindYouScare(Target);
+			return true;
+		}
+		return false;
+
+	case EBHScareEventType::Peek:
+		if (Target)
+		{
+			OwnerGameMode->TriggerCornerPeek(Target);
 			return true;
 		}
 		return false;
@@ -497,11 +542,22 @@ EBHScareEventType UBHAtmosphereDirector::ChoosePressureCueType(ABHCharacter* Tar
 	{
 		Candidates.Add(EBHScareEventType::AudioStinger);
 		Candidates.Add(EBHScareEventType::LightCut);
+		// Heavy client-side jumpscares that don't need the monster-beat gate; the shared jumpscare
+		// cooldown (IsJumpscareCue) keeps them from stacking with a monster charge.
+		Candidates.Add(EBHScareEventType::FaceImage);
+		Candidates.Add(EBHScareEventType::BehindYou);
 	}
-	if (ClampedPressure >= 0.38f)
+	if (ClampedPressure >= 0.12f)
 	{
+		// Passive tension cues are the backbone of the dread loop — keep them available almost always (from very
+		// low pressure) and weighted heavily (extra copies) so the director leans on whispers / footsteps / corner
+		// peeks far more than the heavy jumpscares. The hard scares still gate on high pressure above.
 		Candidates.Add(EBHScareEventType::FootstepEcho);
 		Candidates.Add(EBHScareEventType::Whisper);
+		Candidates.Add(EBHScareEventType::Peek);
+		Candidates.Add(EBHScareEventType::Whisper);
+		Candidates.Add(EBHScareEventType::FootstepEcho);
+		Candidates.Add(EBHScareEventType::Peek);
 	}
 	Candidates.Add(EBHScareEventType::Ambient);
 
@@ -829,6 +885,12 @@ float UBHAtmosphereDirector::GetCueCost(EBHScareEventType ScareType, float Inten
 		return 0.24f + ClampedIntensity * 0.08f;
 	case EBHScareEventType::FootstepEcho:
 		return 0.22f + ClampedIntensity * 0.08f;
+	case EBHScareEventType::FaceImage:
+		return 0.96f + ClampedIntensity * 0.20f;
+	case EBHScareEventType::BehindYou:
+		return 1.06f + ClampedIntensity * 0.22f;
+	case EBHScareEventType::Peek:
+		return 0.30f + ClampedIntensity * 0.10f;
 	case EBHScareEventType::Ambient:
 	default:
 		return 0.26f + ClampedIntensity * 0.10f;
@@ -856,6 +918,12 @@ float UBHAtmosphereDirector::GetSameTypeCooldown(EBHScareEventType ScareType) co
 		return 12.0f * IntensityScale;
 	case EBHScareEventType::FootstepEcho:
 		return 11.0f * IntensityScale;
+	case EBHScareEventType::FaceImage:
+		return 50.0f * IntensityScale;
+	case EBHScareEventType::BehindYou:
+		return 82.0f * IntensityScale;
+	case EBHScareEventType::Peek:
+		return 16.0f * IntensityScale;
 	case EBHScareEventType::Ambient:
 	default:
 		return 10.0f * IntensityScale;
@@ -871,6 +939,8 @@ float UBHAtmosphereDirector::GetHeavyCueCooldown(EBHScareEventType ScareType) co
 bool UBHAtmosphereDirector::IsHeavyCue(EBHScareEventType ScareType) const
 {
 	return ScareType == EBHScareEventType::MonsterCharge
+		|| ScareType == EBHScareEventType::FaceImage
+		|| ScareType == EBHScareEventType::BehindYou
 		|| ScareType == EBHScareEventType::FaceFlash
 		|| ScareType == EBHScareEventType::AudioStinger
 		|| ScareType == EBHScareEventType::CCTVGlitch;
@@ -879,6 +949,8 @@ bool UBHAtmosphereDirector::IsHeavyCue(EBHScareEventType ScareType) const
 bool UBHAtmosphereDirector::IsJumpscareCue(EBHScareEventType ScareType) const
 {
 	return ScareType == EBHScareEventType::MonsterCharge
+		|| ScareType == EBHScareEventType::FaceImage
+		|| ScareType == EBHScareEventType::BehindYou
 		|| ScareType == EBHScareEventType::FaceFlash;
 }
 

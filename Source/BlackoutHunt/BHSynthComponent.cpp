@@ -59,7 +59,7 @@ int32 UBHSynthComponent::OnGenerateAudio(float* OutAudio, int32 NumSamples)
 		}
 		else
 		{
-			OutAudio[SampleIndex] = (Tone * Pulse + Noise * NoiseAmount) * Volume;
+			OutAudio[SampleIndex] = FMath::Clamp((Tone * Pulse + Noise * NoiseAmount) * Volume, -1.0f, 1.0f);
 		}
 
 		Phase += PhaseStep;
