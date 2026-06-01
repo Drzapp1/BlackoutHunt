@@ -34,3 +34,40 @@ Config/EOS/EOSValues.local.ini
 
 # Caddy binary (large; fetch per ThirdParty/Caddy/README.md)
 ThirdParty/Caddy/caddy.exe
+
+# Editor / agent-local state (machine-specific, never shipped)
+.claude/
+.vscode/
+
+# Scratch & leftover working files (editor temp-writes, ad-hoc diffs, run markers)
+*.tmp.*
+/_atmos.diff
+/_monster.diff
+/_monsterh.diff
+/_pc.diff
+/bt2.exit
+/ai_swarm_studio/
+
+# Unintegrated third-party content & plugin packs. These are licensed
+# Marketplace/Fab kits kept on the local cook box only: a few are referenced at
+# runtime (footstep/flashlight audio, a demo material) and so are pulled into the
+# cook from disk, but they are deliberately not redistributed in this public repo.
+/Plugins/
+/Content/BFHorror/
+/Content/FirstPersonHorrorKit/
+/Content/FlashLight_System/
+/Content/HorrorTemplate/
+/Content/Horror_Template/
+/Content/ResidentHorrorV1/
+/Content/__ExternalActors__/Easy_Kit_Horror/
+/Content/__ExternalActors__/FirstPerson/
+/Content/__ExternalActors__/FirstPersonHorrorKit/
+/Content/__ExternalActors__/ResidentHorrorV1/
+/Content/__ExternalActors__/Survial_horror_project/
+/Content/__ExternalActors__/Survival_01/
+/Content/__ExternalActors__/Survival_Character/
+/Content/__ExternalActors__/ThirdPerson/
+/Content/__ExternalObjects__/Easy_Kit_Horror/
+/Content/__ExternalObjects__/FirstPersonHorrorKit/
+/Content/__ExternalObjects__/ResidentHorrorV1/
+/Content/__ExternalObjects__/Survival_Character/
