@@ -19,6 +19,11 @@ public:
 
 	void Configure(const FVector& NewBoxExtent);
 
+	// Box extent this gate was configured with. The authored-map export records this (with the actor
+	// transform) into the ABHLevelMarker so the gate can be rebuilt if a later hand-edit of the baked
+	// .umap drops the volume actor.
+	FVector GetConfiguredExtent() const;
+
 #if WITH_DEV_AUTOMATION_TESTS
 	bool DebugCanCharacterUseCrawlSpace(const ABHCharacter* Character) const;
 #endif

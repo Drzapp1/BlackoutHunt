@@ -127,6 +127,11 @@ void ABHCrawlSpaceVolume::Configure(const FVector& NewBoxExtent)
 	}
 }
 
+FVector ABHCrawlSpaceVolume::GetConfiguredExtent() const
+{
+	return Volume ? Volume->GetUnscaledBoxExtent() : FVector::ZeroVector;
+}
+
 #if WITH_DEV_AUTOMATION_TESTS
 bool ABHCrawlSpaceVolume::DebugCanCharacterUseCrawlSpace(const ABHCharacter* Character) const
 {
@@ -243,7 +248,11 @@ void ABHCrawlSpaceVolume::RejectCharacter(ABHCharacter* Character)
 	FVector RejectedLocation = VolumeTransform.TransformPosition(LocalLocation);
 	RejectedLocation.Z = CurrentLocation.Z;
 
-	Character->SetActorLocation(RejectedLocation, false, nullptr, ETeleportType::TeleportPhysics);
+	// Sweep the push-out so the capsule stops at any wall in the way. A non-swept teleport
+	// could shove the rejected character (e.g. the Teacher) straight through a wall the
+	// crawlspace gap is embedded in, letting them phase out the far side.
+	FHitResult RejectSweep;
+	Character->SetActorLocation(RejectedLocation, true, &RejectSweep, ETeleportType::TeleportPhysics);
 
 	if (Movement)
 	{
