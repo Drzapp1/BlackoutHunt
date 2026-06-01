@@ -1,0 +1,52 @@
+Blackout Hunt — Source-Available License
+Copyright (c) 2026 Adam Rosta. All rights reserved.
+
+1. Definitions
+   "Software" means the Blackout Hunt source code, assets, configuration,
+   documentation, and any other materials in this repository that are
+   authored by the copyright holder, excluding Third-Party Materials (see
+   Section 5).
+   "You" means any individual or entity exercising permissions under this license.
+
+2. Grant
+   You are permitted to view, clone, and download the Software solely for
+   personal, non-commercial evaluation, reference, and educational purposes.
+   This is a source-available license, not an open-source license.
+
+3. Restrictions
+   Except as expressly permitted in Section 2, You may NOT, without prior
+   written permission from the copyright holder:
+     (a) use the Software, in whole or in part, in any product or service,
+         whether commercial or non-commercial;
+     (b) copy, modify, merge, adapt, translate, or create derivative works
+         from the Software;
+     (c) redistribute, publish, sublicense, sell, rent, lease, or otherwise
+         make the Software available to any third party;
+     (d) remove or alter this license or any copyright, trademark, or
+         attribution notices.
+
+4. Reservation of Rights
+   All rights not expressly granted to You are reserved by the copyright
+   holder. No rights are granted by implication, estoppel, or otherwise.
+   To request additional rights (including commercial or distribution
+   rights), contact the copyright holder.
+
+5. Third-Party Materials
+   The Software includes or references third-party assets and dependencies
+   (for example, CC0 PBR materials, the KayKit asset packs referenced as
+   submodules, and other contents of the ThirdParty/ and Downloaded/
+   directories). These Third-Party Materials are licensed under their own
+   respective terms, NOT under this license. Nothing in this license grants
+   You any rights in Third-Party Materials beyond those provided by their
+   original licenses, and You are responsible for complying with those terms.
+
+6. No Warranty
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+
+7. Limitation of Liability
+   IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES,
+   OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE,
+   ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+   OTHER DEALINGS IN THE SOFTWARE.
