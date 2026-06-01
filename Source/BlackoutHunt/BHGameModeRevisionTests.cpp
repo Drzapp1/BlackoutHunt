@@ -49,8 +49,30 @@ bool FBHGameModeRevisionTuningTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Revision question bank remains valid for classroom reports and adaptive selection."),
 		FBHRevisionQuestionBank::Validate(BankSummary));
 	FString BuiltInSummary;
-	TestTrue(TEXT("Built-in compiled bank keeps its exact shipped distribution (368/92/28-36-28)."),
+	TestTrue(TEXT("Built-in compiled bank keeps its exact shipped distribution (376 total, 94/topic, 28/38/28 difficulty)."),
 		FBHRevisionQuestionBank::ValidateBuiltInDistribution(BuiltInSummary));
+	// Answer-safety: every built-in question's four options must be mutually distinct (no duplicate or
+	// whitespace-only-different option), so no question can present two identical / both-correct buttons.
+	// ValidateBuiltInDistribution also enforces this now; this loop reports the exact offender for diagnosis.
+	{
+		int32 DuplicateOptionQuestions = 0;
+		for (const FBHRevisionQuestion& Q : FBHRevisionQuestionBank::GetBuiltInQuestions())
+		{
+			TSet<FString> SeenChoices;
+			for (const FString& Choice : Q.Answer.Choices)
+			{
+				bool bAlreadyPresent = false;
+				SeenChoices.Add(Choice.TrimStartAndEnd(), &bAlreadyPresent);
+				if (bAlreadyPresent)
+				{
+					AddError(FString::Printf(TEXT("Question '%s' has a duplicate answer option: '%s'."), *Q.Id, *Choice));
+					++DuplicateOptionQuestions;
+					break;
+				}
+			}
+		}
+		TestEqual(TEXT("No built-in question has duplicate/ambiguous answer options."), DuplicateOptionQuestions, 0);
+	}
 	for (int32 TopicIndex = 0; TopicIndex < 4; ++TopicIndex)
 	{
 		for (int32 DifficultyIndex = 0; DifficultyIndex < 3; ++DifficultyIndex)
@@ -128,6 +150,62 @@ bool FBHRevisionReviewQueueTest::RunTest(const FString& Parameters)
 	}
 	TestTrue(TEXT("Review queue stays bounded across many misses."), PlayerState->RevisionReviewQueue.Num() <= 8);
 	TestEqual(TEXT("Capped queue keeps the most recent miss reachable."), PlayerState->RevisionReviewQueue.Last(), FString(TEXT("q_19")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHAdaptiveDifficultyPerTopicTest,
+	"BlackoutHunt.GameMode.AdaptiveDifficultyPerTopic",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHAdaptiveDifficultyPerTopicTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	ABHGameMode* GameMode = NewObject<ABHGameMode>();
+	ABHPlayerState* PlayerState = NewObject<ABHPlayerState>();
+	if (!TestNotNull(TEXT("Game mode constructs for adaptive-plan testing."), GameMode)
+		|| !TestNotNull(TEXT("Player state constructs for adaptive-plan testing."), PlayerState))
+	{
+		return false;
+	}
+
+	EBHPhysicsTopic OutTopic = EBHPhysicsTopic::ForcesAndMotion;
+	EBHQuestionDifficulty OutDifficulty = EBHQuestionDifficulty::Easy;
+	FString OutReason;
+
+	// The core fix: difficulty is calibrated to the TARGETED (weakest) topic's mastery, not the
+	// student's cross-topic average. This student is strong overall (~81%) yet weak in Forces
+	// (40%). The next question must target Forces AND be eased to that topic — NOT served Hard on
+	// the strength of an average the student does not have in the topic being asked.
+	PlayerState->RevisionStats.Attempts = 10;
+	PlayerState->RevisionStats.ForcesMastery = 40.0f;
+	PlayerState->RevisionStats.ElectricityMastery = 95.0f;
+	PlayerState->RevisionStats.WavesMastery = 95.0f;
+	PlayerState->RevisionStats.EnergyMastery = 95.0f;
+	PlayerState->RevisionStats.MasteryPercent = 81.25f; // mean of the four topics
+	GameMode->GetAdaptiveRevisionPlan(PlayerState, /*bLastAnswerCorrect=*/true, OutTopic, OutDifficulty, OutReason);
+	TestEqual(TEXT("Adaptive plan targets the student's weakest topic."), OutTopic, EBHPhysicsTopic::ForcesAndMotion);
+	TestEqual(TEXT("A topic the student is weak in is eased, not served Hard on a strong overall average."),
+		OutDifficulty, EBHQuestionDifficulty::Easy);
+	TestNotEqual(TEXT("A weak topic is never escalated to Hard off the overall average."),
+		OutDifficulty, EBHQuestionDifficulty::Hard);
+
+	// Control: a student genuinely strong in every topic, last answer correct, earns a Hard question.
+	PlayerState->RevisionStats.ForcesMastery = 90.0f;
+	PlayerState->RevisionStats.ElectricityMastery = 90.0f;
+	PlayerState->RevisionStats.WavesMastery = 90.0f;
+	PlayerState->RevisionStats.EnergyMastery = 90.0f;
+	PlayerState->RevisionStats.MasteryPercent = 90.0f;
+	GameMode->GetAdaptiveRevisionPlan(PlayerState, /*bLastAnswerCorrect=*/true, OutTopic, OutDifficulty, OutReason);
+	TestEqual(TEXT("A uniformly strong student who just answered correctly is challenged with Hard."),
+		OutDifficulty, EBHQuestionDifficulty::Hard);
+
+	// Cold start: a student with no attempts always begins on Easy regardless of stored mastery.
+	PlayerState->RevisionStats.Attempts = 0;
+	GameMode->GetAdaptiveRevisionPlan(PlayerState, /*bLastAnswerCorrect=*/false, OutTopic, OutDifficulty, OutReason);
+	TestEqual(TEXT("A student with no attempts always starts on Easy."),
+		OutDifficulty, EBHQuestionDifficulty::Easy);
 
 	return true;
 }
@@ -365,6 +443,224 @@ bool FBHRevisionDiagramBandHeightsTest::RunTest(const FString& Parameters)
 		}
 		const float Height = FBHDiagramRenderer::BandHeightFor(Type);
 		TestTrue(FString::Printf(TEXT("BandHeightFor(%s) is sane (90..200)."), *Name), Height >= 90.0f && Height <= 200.0f);
+	}
+	return true;
+}
+
+// Interactive drag answers (matching/ordering): the correct choice of every such question must parse
+// into a well-formed slot/piece set so the on-screen drag tray can be built and graded.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHRevisionArrangementParseTest,
+	"BlackoutHunt.GameMode.RevisionArrangementParse",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHRevisionArrangementParseTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	// Grammar shape checks for the two arrangement forms.
+	{
+		TArray<FString> Slots;
+		TArray<FString> Pieces;
+		TestTrue(TEXT("Ordering string parses."), FBHRevisionQuestionBank::ParseArrangementChoice(TEXT("first -> second -> third"), EBHQuestionType::Ordering, Slots, Pieces));
+		TestEqual(TEXT("Ordering yields three slots."), Slots.Num(), 3);
+		TestEqual(TEXT("Ordering yields three pieces."), Pieces.Num(), 3);
+		TestEqual(TEXT("Ordering piece 0 is 'first'."), Pieces[0], FString(TEXT("first")));
+		TestEqual(TEXT("Ordering piece 2 is 'third'."), Pieces[2], FString(TEXT("third")));
+	}
+	{
+		TArray<FString> Slots;
+		TArray<FString> Pieces;
+		// Mixed separators (": " and " -> ") inside one matching string must both parse.
+		TestTrue(TEXT("Matching string parses."), FBHRevisionQuestionBank::ParseArrangementChoice(TEXT("Vector: force; Scalar -> time"), EBHQuestionType::DragDropMatching, Slots, Pieces));
+		TestEqual(TEXT("Matching yields two slots."), Slots.Num(), 2);
+		TestEqual(TEXT("Matching slot 0 key is 'Vector'."), Slots[0], FString(TEXT("Vector")));
+		TestEqual(TEXT("Matching piece 0 value is 'force'."), Pieces[0], FString(TEXT("force")));
+		TestEqual(TEXT("Matching slot 1 key is 'Scalar'."), Slots[1], FString(TEXT("Scalar")));
+		TestEqual(TEXT("Matching piece 1 value is 'time'."), Pieces[1], FString(TEXT("time")));
+	}
+	{
+		TArray<FString> Slots;
+		TArray<FString> Pieces;
+		TestFalse(TEXT("A plain answer string is not a valid arrangement."), FBHRevisionQuestionBank::ParseArrangementChoice(TEXT("Balanced forces"), EBHQuestionType::Ordering, Slots, Pieces));
+	}
+
+	int32 Checked = 0;
+	int32 Failures = 0;
+	for (const FBHRevisionQuestion& Q : FBHRevisionQuestionBank::GetBuiltInQuestions())
+	{
+		if (Q.Type != EBHQuestionType::DragDropMatching && Q.Type != EBHQuestionType::Ordering)
+		{
+			continue;
+		}
+		++Checked;
+		if (!Q.Answer.Choices.IsValidIndex(Q.Answer.CorrectChoiceIndex))
+		{
+			++Failures;
+			AddError(FString::Printf(TEXT("[%s] correct choice index out of range."), *Q.Id));
+			continue;
+		}
+		TArray<FString> Slots;
+		TArray<FString> Pieces;
+		if (!FBHRevisionQuestionBank::ParseArrangementChoice(Q.Answer.Choices[Q.Answer.CorrectChoiceIndex], Q.Type, Slots, Pieces)
+			|| Slots.Num() < 2 || Slots.Num() != Pieces.Num())
+		{
+			++Failures;
+			AddError(FString::Printf(TEXT("[%s] correct choice '%s' did not parse into matching slots/pieces."), *Q.Id, *Q.Answer.Choices[Q.Answer.CorrectChoiceIndex]));
+			continue;
+		}
+		for (const FString& Piece : Pieces)
+		{
+			if (Piece.IsEmpty())
+			{
+				++Failures;
+				AddError(FString::Printf(TEXT("[%s] produced an empty arrangement piece."), *Q.Id));
+				break;
+			}
+		}
+	}
+	TestTrue(TEXT("At least one matching/ordering question exists to validate."), Checked > 0);
+	TestEqual(TEXT("Every matching/ordering correct choice parses into a drag arrangement."), Failures, 0);
+	return true;
+}
+
+// Mirrors ABHObjectiveStation::GradeArrangement (shuffled-piece-per-slot vs canonical) without a
+// spawned actor: the correct assignment must grade true and a rotated one must grade false.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHRevisionArrangementGradeTest,
+	"BlackoutHunt.GameMode.RevisionArrangementGrade",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHRevisionArrangementGradeTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	int32 Checked = 0;
+	int32 Failures = 0;
+	for (const FBHRevisionQuestion& Q : FBHRevisionQuestionBank::GetBuiltInQuestions())
+	{
+		if (Q.Type != EBHQuestionType::DragDropMatching && Q.Type != EBHQuestionType::Ordering)
+		{
+			continue;
+		}
+		if (!Q.Answer.Choices.IsValidIndex(Q.Answer.CorrectChoiceIndex))
+		{
+			continue;
+		}
+		TArray<FString> Slots;
+		TArray<FString> Canonical;
+		if (!FBHRevisionQuestionBank::ParseArrangementChoice(Q.Answer.Choices[Q.Answer.CorrectChoiceIndex], Q.Type, Slots, Canonical))
+		{
+			continue;
+		}
+		const int32 N = Canonical.Num();
+		if (N < 2)
+		{
+			continue;
+		}
+		++Checked;
+
+		// Deterministic non-identity "shuffle": reverse the canonical order.
+		TArray<FString> Shuffled;
+		Shuffled.Reserve(N);
+		for (int32 i = N - 1; i >= 0; --i)
+		{
+			Shuffled.Add(Canonical[i]);
+		}
+
+		auto GradeWith = [&](const TArray<int32>& SlotToPiece) -> bool
+		{
+			if (SlotToPiece.Num() != N)
+			{
+				return false;
+			}
+			for (int32 Slot = 0; Slot < N; ++Slot)
+			{
+				const int32 PieceIdx = SlotToPiece[Slot];
+				if (!Shuffled.IsValidIndex(PieceIdx) || !Shuffled[PieceIdx].Equals(Canonical[Slot], ESearchCase::CaseSensitive))
+				{
+					return false;
+				}
+			}
+			return true;
+		};
+
+		TArray<int32> Correct;
+		Correct.Reserve(N);
+		for (int32 Slot = 0; Slot < N; ++Slot)
+		{
+			int32 Found = INDEX_NONE;
+			for (int32 j = 0; j < N; ++j)
+			{
+				if (Shuffled[j].Equals(Canonical[Slot], ESearchCase::CaseSensitive))
+				{
+					Found = j;
+					break;
+				}
+			}
+			Correct.Add(Found);
+		}
+		if (Correct.Contains(INDEX_NONE) || !GradeWith(Correct))
+		{
+			++Failures;
+			AddError(FString::Printf(TEXT("[%s] correct arrangement did not grade as correct."), *Q.Id));
+			continue;
+		}
+
+		// When the pieces are all distinct, a one-step rotation must be graded wrong.
+		bool bDistinct = true;
+		for (int32 a = 0; a < N && bDistinct; ++a)
+		{
+			for (int32 b = a + 1; b < N; ++b)
+			{
+				if (Canonical[a].Equals(Canonical[b], ESearchCase::CaseSensitive))
+				{
+					bDistinct = false;
+					break;
+				}
+			}
+		}
+		if (bDistinct)
+		{
+			TArray<int32> Rotated;
+			Rotated.Reserve(N);
+			for (int32 Slot = 0; Slot < N; ++Slot)
+			{
+				Rotated.Add(Correct[(Slot + 1) % N]);
+			}
+			if (GradeWith(Rotated))
+			{
+				++Failures;
+				AddError(FString::Printf(TEXT("[%s] a rotated (wrong) arrangement graded as correct."), *Q.Id));
+			}
+		}
+	}
+	TestTrue(TEXT("At least one matching/ordering question exercised the grader."), Checked > 0);
+	TestEqual(TEXT("Arrangement grading accepts the correct order and rejects a rotated one."), Failures, 0);
+	return true;
+}
+
+// Every station topic must have at least one drag (matching/ordering) question, so the
+// "mix proper questions into all modes" bias always finds one for any station.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHRevisionSelectDragQuestionTest,
+	"BlackoutHunt.GameMode.RevisionSelectDragQuestion",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHRevisionSelectDragQuestionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const EBHPhysicsTopic Topics[] = {
+		EBHPhysicsTopic::ForcesAndMotion, EBHPhysicsTopic::Electricity,
+		EBHPhysicsTopic::Waves, EBHPhysicsTopic::Energy
+	};
+	for (const EBHPhysicsTopic Topic : Topics)
+	{
+		FBHRevisionQuestion Out;
+		const bool bFound = FBHRevisionQuestionBank::SelectDragQuestion(Topic, EBHQuestionDifficulty::Easy, 12345, Out);
+		TestTrue(FString::Printf(TEXT("Topic %d has a drag question."), static_cast<int32>(Topic)), bFound);
+		if (bFound)
+		{
+			TestTrue(TEXT("Selected drag question is matching or ordering."),
+				Out.Type == EBHQuestionType::DragDropMatching || Out.Type == EBHQuestionType::Ordering);
+			TestEqual(TEXT("Selected drag question is in the requested topic."), Out.Topic, Topic);
+		}
 	}
 	return true;
 }

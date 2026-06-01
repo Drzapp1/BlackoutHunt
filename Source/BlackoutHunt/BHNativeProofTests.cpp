@@ -27,6 +27,7 @@
 #include "BHSecurityMonitor.h"
 #include "BHSecurityShutter.h"
 #include "BHSecurityTerminal.h"
+#include "BHTutorialDirector.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -399,6 +400,168 @@ bool FBHRoleWarmupSafetyTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// Holding E and walking away from a hold-style objective (station/breaker) used to keep completing the
+// task: the worker was only dropped on key release (StopInteract), and nothing re-checked range while the
+// key stayed held. The server-tick guard now ends the interaction once the player leaves reach.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHHeldInteractionRangeGuardTest,
+	"BlackoutHunt.Interaction.HeldInteractionEndsOutOfRange",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHHeldInteractionRangeGuardTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FBHScopedAutomationWorld TestWorld(TEXT("BlackoutHuntHeldInteraction"));
+	UWorld* World = TestWorld.Get();
+	TestNotNull(TEXT("Test world is created."), World);
+	if (!World)
+	{
+		return false;
+	}
+
+	ABHGameState* GameState = BHCreateProofGameState(World, EBHRoundPhase::Hunt);
+	ABHCharacter* Survivor = World->SpawnActor<ABHCharacter>(FVector(0.0f, 0.0f, 140.0f), FRotator::ZeroRotator);
+	ABHObjectiveStation* Station = World->SpawnActor<ABHObjectiveStation>(FVector(120.0f, 0.0f, 95.0f), FRotator::ZeroRotator);
+	TestNotNull(TEXT("Hunt game state spawns."), GameState);
+	TestNotNull(TEXT("Hold-interaction survivor spawns."), Survivor);
+	TestNotNull(TEXT("Hold-interaction station spawns."), Station);
+	if (!GameState || !Survivor || !Station)
+	{
+		return false;
+	}
+
+	BHAttachProofPlayerState(World, Survivor, EBHPlayerRole::Survivor, TEXT("Hold Student"));
+	// Leave the station unconfigured: with no question loaded it is immediately holdable, the same state a
+	// solved question reaches, so begin-interact registers the survivor as a worker.
+
+	TestTrue(TEXT("Survivor in reach can begin holding the station."), Survivor->DebugBeginInteractForTest(Station));
+	TestTrue(TEXT("The station is the active server interaction target."), Survivor->DebugGetServerInteractTargetForTest() == Station);
+
+	// Still in reach: the range guard must NOT cancel a legitimate hold (e.g. turning to read the question).
+	Survivor->DebugEndStaleHeldInteractionForTest();
+	TestTrue(TEXT("In-range hold is preserved by the range guard."), Survivor->DebugGetServerInteractTargetForTest() == Station);
+
+	// Walk far away while still holding E (StopInteract never fired): the guard ends the interaction so the
+	// station stops counting the survivor toward completion.
+	Survivor->SetActorLocation(FVector(6000.0f, 0.0f, 140.0f));
+	Survivor->DebugEndStaleHeldInteractionForTest();
+	TestNull(TEXT("Walking out of reach ends the held interaction."), Survivor->DebugGetServerInteractTargetForTest());
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHWarmupChecklistTest,
+	"BlackoutHunt.Round.WarmupChecklist",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHWarmupChecklistTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	// Pure-function invariants for the guided warmup checklist + role-intro copy (SHARED-A / SHARED-C).
+	int32 Done = 0;
+	int32 Total = 0;
+	BHWarmupProgress(EBHPlayerRole::Survivor, 0, Done, Total);
+	TestEqual(TEXT("Survivor warmup has three steps."), Total, 3);
+	TestEqual(TEXT("Empty mask completes zero steps."), Done, 0);
+	BHWarmupProgress(EBHPlayerRole::Hunter, 0, Done, Total);
+	TestEqual(TEXT("Hunter warmup has two steps."), Total, 2);
+	BHWarmupProgress(EBHPlayerRole::FakeHunter, 0, Done, Total);
+	TestEqual(TEXT("Hall Monitor warmup has two steps."), Total, 2);
+
+	const uint8 SurvivorAll = BHWarmupExpectedMask(EBHPlayerRole::Survivor);
+	TestTrue(TEXT("Next-step label is empty once every step is done."), BHWarmupNextStepLabel(EBHPlayerRole::Survivor, SurvivorAll).IsEmpty());
+	TestFalse(TEXT("Next-step label is non-empty with steps remaining."), BHWarmupNextStepLabel(EBHPlayerRole::Survivor, 0).IsEmpty());
+
+	// Role-intro copy exists for every assignable role and is never blank (no silent empty cards).
+	for (const EBHPlayerRole IntroRole : { EBHPlayerRole::Survivor, EBHPlayerRole::Hunter, EBHPlayerRole::FakeHunter, EBHPlayerRole::Spectator })
+	{
+		const FBHRoleIntroCopy Copy = BHGetRoleIntroCopy(IntroRole, true);
+		TestFalse(TEXT("Role intro has a title."), Copy.Title.IsEmpty());
+		TestFalse(TEXT("Role intro has a goal."), Copy.Goal.IsEmpty());
+		TestTrue(TEXT("Role intro lists at least one control."), Copy.Keys.Num() > 0);
+	}
+
+	// Server-authoritative MarkWarmupStep behaviour against a real PlayerState in Prep.
+	FBHScopedAutomationWorld TestWorld(TEXT("BlackoutHuntWarmupChecklist"));
+	UWorld* World = TestWorld.Get();
+	TestNotNull(TEXT("Test world is created."), World);
+	if (!World)
+	{
+		return false;
+	}
+
+	ABHGameState* GameState = BHCreateProofGameState(World, EBHRoundPhase::Prep);
+	ABHCharacter* Survivor = World->SpawnActor<ABHCharacter>(FVector(0.0f, 0.0f, 140.0f), FRotator::ZeroRotator);
+	TestNotNull(TEXT("Checklist game state spawns."), GameState);
+	TestNotNull(TEXT("Checklist survivor spawns."), Survivor);
+	if (!GameState || !Survivor)
+	{
+		return false;
+	}
+	ABHPlayerState* PlayerState = BHAttachProofPlayerState(World, Survivor, EBHPlayerRole::Survivor, TEXT("Checklist Student"));
+	TestNotNull(TEXT("Checklist player state attaches."), PlayerState);
+	if (!PlayerState)
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("Warmup mask starts empty."), static_cast<int32>(PlayerState->WarmupChecklistMask), 0);
+	TestFalse(TEXT("Warmup starts incomplete."), PlayerState->bWarmupComplete);
+
+	PlayerState->MarkWarmupStep(EBHWarmupStep::Flashlight);
+	PlayerState->MarkWarmupStep(EBHWarmupStep::Flashlight); // idempotent: re-marking the same step does nothing
+	BHWarmupProgress(PlayerState->PlayerRole, PlayerState->WarmupChecklistMask, Done, Total);
+	TestEqual(TEXT("One distinct step counts once."), Done, 1);
+	TestFalse(TEXT("Not complete after one step."), PlayerState->bWarmupComplete);
+
+	PlayerState->MarkWarmupStep(EBHWarmupStep::Hide);
+	PlayerState->MarkWarmupStep(EBHWarmupStep::Question);
+	TestTrue(TEXT("All three survivor steps complete the warmup."), PlayerState->bWarmupComplete);
+
+	// Reset clears it so warmup state never carries into the live Hunt.
+	PlayerState->ResetWarmupChecklist();
+	TestEqual(TEXT("Reset clears the mask."), static_cast<int32>(PlayerState->WarmupChecklistMask), 0);
+	TestFalse(TEXT("Reset clears completion."), PlayerState->bWarmupComplete);
+
+	// Outside the warmup phase the mark is a no-op, so it can never pollute the live Hunt.
+	GameState->SetRoundPhase(EBHRoundPhase::Hunt);
+	PlayerState->MarkWarmupStep(EBHWarmupStep::Flashlight);
+	TestEqual(TEXT("MarkWarmupStep is a no-op outside Prep."), static_cast<int32>(PlayerState->WarmupChecklistMask), 0);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHTutorialDirectorSpawnsTest,
+	"BlackoutHunt.Round.TutorialDirectorSpawns",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHTutorialDirectorSpawnsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	// The dedicated tutorial level resolves to a non-empty package (its baked authored .umap once cooked,
+	// otherwise the runtime base map), and the special-case never collides with the train intermission.
+	TestFalse(TEXT("Tutorial resolves to a non-empty package."), BHResolveLevelMapPackage(TEXT("Tutorial")).IsEmpty());
+	TestEqual(TEXT("Train intermission still uses the runtime base map."), BHResolveLevelMapPackage(TEXT("TrainIntermission")), FString(TEXT("/Engine/Maps/Entry")));
+
+	FBHScopedAutomationWorld TestWorld(TEXT("BlackoutHuntTutorialDirector"));
+	UWorld* World = TestWorld.Get();
+	TestNotNull(TEXT("Test world is created."), World);
+	if (!World)
+	{
+		return false;
+	}
+
+	// The director is baked into the Tutorial map; spawning it must succeed and its deferred BeginPlay
+	// must not crash (it only arms a one-shot activation timer until the host pawn exists).
+	BHCreateProofGameState(World, EBHRoundPhase::Hunt);
+	ABHTutorialDirector* Director = World->SpawnActor<ABHTutorialDirector>(FVector::ZeroVector, FRotator::ZeroRotator);
+	TestNotNull(TEXT("Tutorial director spawns without crashing."), Director);
+
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHSurvivorAntiCampPressureTest,
 	"BlackoutHunt.Horror.AntiCampRequiresMeaningfulMovement",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -733,6 +896,73 @@ bool FBHActiveRolesResetForLobbyAfterTravelTest::RunTest(const FString& Paramete
 		TestEqual(TEXT("Captured state clears for the next lobby."), PlayerState->LifeState, EBHPlayerLifeState::Alive);
 		TestFalse(TEXT("Hall Monitor eligibility does not leak to the next lobby."), PlayerState->bFakeHunterEligible);
 		TestFalse(TEXT("Ready state resets after travel."), PlayerState->bReady);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHLateJoinerMidRoundStaysSpectatorTest,
+	"BlackoutHunt.Network.LateJoinerMidRoundStaysSpectator",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHLateJoinerMidRoundStaysSpectatorTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	// A player who played an earlier round leaves behind a persisted travel entry as a live Survivor.
+	UBHGameInstance* GameInstance = NewObject<UBHGameInstance>();
+	TestNotNull(TEXT("Travel game instance is created."), GameInstance);
+	if (!GameInstance)
+	{
+		return false;
+	}
+
+	ABHPlayerState* SourcePS = NewObject<ABHPlayerState>();
+	TestNotNull(TEXT("Source player state can be created."), SourcePS);
+	if (!SourcePS)
+	{
+		return false;
+	}
+	SourcePS->SetPlayerName(TEXT("Mid Round Returner"));
+	SourcePS->SetRole(EBHPlayerRole::Survivor);
+	SourcePS->SetDesiredRole(EBHPlayerRole::Survivor);
+	SourcePS->SetLifeState(EBHPlayerLifeState::Alive);
+	SourcePS->AddQuestionPoints(40);
+	GameInstance->PersistTravelPlayerState(SourcePS);
+
+	// Active-round late join: PostLogin has already placed the returning player into Spectator +
+	// Captured. The GATED restore (bApplyRoleAndLifeState = false, exactly what RestorePlayersAfterTravel
+	// passes during Prep/Hunt/FinalEscape) must PRESERVE that spectator identity so the player is not
+	// resurrected as a live, capturable, win-counted participant - while still carrying banked points.
+	ABHPlayerState* ActiveJoinPS = NewObject<ABHPlayerState>();
+	TestNotNull(TEXT("Active-join player state can be created."), ActiveJoinPS);
+	if (ActiveJoinPS)
+	{
+		ActiveJoinPS->SetPlayerName(TEXT("Mid Round Returner"));
+		ActiveJoinPS->SetRole(EBHPlayerRole::Spectator);
+		ActiveJoinPS->SetDesiredRole(EBHPlayerRole::Survivor);
+		ActiveJoinPS->SetLifeState(EBHPlayerLifeState::Captured);
+
+		TestTrue(TEXT("Gated restore still matches the persisted entry."), GameInstance->RestoreTravelPlayerState(ActiveJoinPS, /*bApplyRoleAndLifeState=*/false));
+		TestEqual(TEXT("Mid-round late joiner stays a spectator (not resurrected)."), ActiveJoinPS->PlayerRole, EBHPlayerRole::Spectator);
+		TestEqual(TEXT("Mid-round late joiner stays captured (not made live/capturable)."), ActiveJoinPS->LifeState, EBHPlayerLifeState::Captured);
+		TestEqual(TEXT("Mid-round late joiner still recovers banked question points."), ActiveJoinPS->QuestionPoints, 40);
+	}
+
+	// Legitimate cross-travel landing (Lobby / train Intermission): the same entry DOES fully restore
+	// the live role, proving the gate only suppresses identity during active phases.
+	ABHPlayerState* LobbyJoinPS = NewObject<ABHPlayerState>();
+	TestNotNull(TEXT("Lobby-join player state can be created."), LobbyJoinPS);
+	if (LobbyJoinPS)
+	{
+		LobbyJoinPS->SetPlayerName(TEXT("Mid Round Returner"));
+		LobbyJoinPS->SetRole(EBHPlayerRole::Spectator);
+		LobbyJoinPS->SetLifeState(EBHPlayerLifeState::Captured);
+
+		TestTrue(TEXT("Full restore matches the persisted entry."), GameInstance->RestoreTravelPlayerState(LobbyJoinPS, /*bApplyRoleAndLifeState=*/true));
+		TestEqual(TEXT("Cross-travel restore returns the player to their live role."), LobbyJoinPS->PlayerRole, EBHPlayerRole::Survivor);
+		TestEqual(TEXT("Cross-travel restore returns the player to alive."), LobbyJoinPS->LifeState, EBHPlayerLifeState::Alive);
+		TestEqual(TEXT("Cross-travel restore also carries banked question points."), LobbyJoinPS->QuestionPoints, 40);
 	}
 
 	return true;
@@ -1770,18 +2000,26 @@ bool FBHReconnectRestoresRoleWithinGraceTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	// A caught student who became a Hall Monitor drops mid-round.
+	// A caught student who became a Hall Monitor drops mid-round. The server issued this client a secret
+	// reconnect token at join, which is persisted alongside their progress.
+	const FString StudentToken = TEXT("reconnect-token-student-A");
 	PlayerState->SetPlayerName(TEXT("Student-Reconnect"));
 	PlayerState->SetRole(EBHPlayerRole::FakeHunter);
 	PlayerState->SetDesiredRole(EBHPlayerRole::Survivor);
 	PlayerState->SetLifeState(EBHPlayerLifeState::Captured);
 	PlayerState->SetFakeHunterEligible(true);
 	PlayerState->QuestionPoints = 30;
+	PlayerState->ReconnectToken = StudentToken;
 
 	const float LeaveTime = 100.0f;
+	// Drive the monotonic reconnect clock deterministically so the grace-window expiry path is
+	// actually exercised (the production clock is FPlatformTime::Seconds(), which barely advances
+	// during a test). The override stamps the leave time here and is moved forward before each probe.
+	GameInstance->SetReconnectClockOverrideForTest(LeaveTime);
 	GameInstance->MarkTravelPlayerLeftForReconnect(PlayerState, LeaveTime);
 
-	// The student rejoins on a fresh connection with reset state but the same lobby name.
+	// The SAME student's client rejoins within grace, echoing the secret token it was issued (the same
+	// lobby name is incidental and must NOT be what's matched on).
 	ABHPlayerState* RejoinState = World->SpawnActor<ABHPlayerState>();
 	TestNotNull(TEXT("Rejoining player state spawns."), RejoinState);
 	if (!RejoinState)
@@ -1791,17 +2029,38 @@ bool FBHReconnectRestoresRoleWithinGraceTest::RunTest(const FString& Parameters)
 	RejoinState->SetPlayerName(TEXT("Student-Reconnect"));
 	RejoinState->SetRole(EBHPlayerRole::Spectator);
 	RejoinState->SetLifeState(EBHPlayerLifeState::Alive);
+	RejoinState->ReconnectToken = StudentToken;
 
-	// Within the grace window the cached state is recognized by display name and restored.
+	// Within the grace window the cached state is recognized by the secret token and restored.
+	GameInstance->SetReconnectClockOverrideForTest(LeaveTime + 90.0f);
 	FBHTravelPlayerProgress Progress;
 	const bool bWithinGrace = GameInstance->TryGetReconnectProgress(RejoinState, LeaveTime + 90.0f, 120.0f, Progress);
-	TestTrue(TEXT("Reconnect within grace is recognized by display name."), bWithinGrace);
+	TestTrue(TEXT("Reconnect within grace is recognized by the secret token."), bWithinGrace);
 	TestEqual(TEXT("Reconnect restores the cached role."), Progress.PlayerRole, EBHPlayerRole::FakeHunter);
 	TestEqual(TEXT("Reconnect restores the cached captured life state."), Progress.LifeState, EBHPlayerLifeState::Captured);
 	TestTrue(TEXT("Reconnect restores Hall Monitor eligibility."), Progress.bFakeHunterEligible);
 	TestEqual(TEXT("Reconnect restores banked question points."), Progress.QuestionPoints, 30);
 
+	// Identity-safety (Bug 9): a DIFFERENT student who happens to type the SAME lobby name must NOT be
+	// restored into the original student's role/points. This is the id-less direct-IP/Playit case the old
+	// display-name match got wrong. No token => treated as a fresh late joiner; a different token => no match.
+	ABHPlayerState* ImposterState = World->SpawnActor<ABHPlayerState>();
+	TestNotNull(TEXT("Imposter player state spawns."), ImposterState);
+	if (ImposterState)
+	{
+		ImposterState->SetPlayerName(TEXT("Student-Reconnect"));
+		ImposterState->ReconnectToken = FString();
+		FBHTravelPlayerProgress ImposterProgress;
+		const bool bNoToken = GameInstance->TryGetReconnectProgress(ImposterState, LeaveTime + 90.0f, 120.0f, ImposterProgress);
+		TestFalse(TEXT("A same-named student WITHOUT the secret token is NOT restored (no name-based identity theft)."), bNoToken);
+
+		ImposterState->ReconnectToken = TEXT("reconnect-token-imposter-B");
+		const bool bWrongToken = GameInstance->TryGetReconnectProgress(ImposterState, LeaveTime + 90.0f, 120.0f, ImposterProgress);
+		TestFalse(TEXT("A same-named student with a DIFFERENT token is NOT restored."), bWrongToken);
+	}
+
 	// Past the grace window the reconnect is rejected and the player falls back to spectator.
+	GameInstance->SetReconnectClockOverrideForTest(LeaveTime + 200.0f);
 	FBHTravelPlayerProgress ExpiredProgress;
 	const bool bExpired = GameInstance->TryGetReconnectProgress(RejoinState, LeaveTime + 200.0f, 120.0f, ExpiredProgress);
 	TestFalse(TEXT("Reconnect past the grace window is rejected."), bExpired);
