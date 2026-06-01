@@ -77,6 +77,9 @@ private:
 	FReply OnHostSubstationClicked();
 	FReply OnHostFoggroundsClicked();
 	FReply OnHostPracticeClicked();
+	FReply OnHostTutorialClicked();
+	// Launch a specific tutorial (Survivor / Teacher / Monitor). bChain=true is the full chained course.
+	FReply OnHostTutorialPhaseClicked(EBHTutorialPhase StartPhase, bool bChain);
 	FReply OnHostTestRoundClicked();
 	FReply OnHostSubstationTestRoundClicked();
 	FReply OnHostFoggroundsTestRoundClicked();
@@ -137,6 +140,8 @@ private:
 	FReply OnHunterCountClicked(int32 HunterCount);
 	FReply OnObjectiveIntensityClicked(int32 Intensity);
 	FReply OnBotCountClicked(int32 BotCount);
+	FReply OnBotCountStepClicked(int32 Delta);
+	FReply OnFillBotsClicked();
 	FReply OnBotDifficultyClicked(EBHBotDifficulty Difficulty);
 	FReply OnToggleInfectionClicked();
 	FReply OnTogglePaceClicked();
@@ -359,6 +364,9 @@ private:
 	EBHMainMenuTab ActiveMenuTab = EBHMainMenuTab::Play;
 	bool bShowingStartScreen = false;
 	bool bShowStartCredentials = false;
+	// When the local player is the listen-server host, leaving ends the whole class session,
+	// so the first LEAVE press only arms a confirm prompt; the second press actually leaves.
+	bool bLeaveConfirmPending = false;
 
 	// Feedback / bug report / survey form state.
 	TSharedPtr<SMultiLineEditableTextBox> FeedbackMessageTextBox;

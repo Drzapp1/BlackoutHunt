@@ -1846,7 +1846,7 @@ namespace
 		AddSlide(MenuGuidePhotoSlide(
 			FName(TEXT("Locker")),
 			FText::FromString(TEXT("Locker Pressure")),
-			FText::FromString(TEXT("Lockers break sight. Leave when the Teacher meter clears; staying close builds dread.")),
+			FText::FromString(TEXT("Lockers break sight, and for a beat after you leave one the Teacher cannot grab you. Leave when the meter clears; camping builds dread.")),
 			FText::FromString(TEXT("HIDE")),
 			FLinearColor(0.58f, 0.72f, 0.96f, 1.0f)));
 		AddSlide(MenuGuidePhotoSlide(
@@ -3252,7 +3252,7 @@ FReply SBHMainMenu::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKe
 		return FReply::Handled();
 	}
 
-	if (InKeyEvent.GetKey() == EKeys::B)
+	if (InKeyEvent.GetKey() == EKeys::B && CanOpenClassroomBoard())
 	{
 		return OnOpenClassroomBoardClicked();
 	}
@@ -4683,6 +4683,36 @@ void SBHMainMenu::BuildPlayActionList(TSharedRef<SVerticalBox> ActionList, bool 
 			FLinearColor(0.14f, 0.36f, 0.27f, 1.0f),
 			FOnClicked::CreateSP(this, &SBHMainMenu::OnHostLiveClassroomMapClicked, FString(TEXT("Foggrounds")))));
 
+		AddAction(ActionList, MenuPlayActionButton(
+			FText::FromString(TEXT("TUTORIAL: LEARN TO PLAY")),
+			FText::FromString(TEXT("Full solo course - Survivor, then Teacher, then Hall Monitor, back to back. No host needed.")),
+			FLinearColor(0.20f, 0.40f, 0.30f, 1.0f),
+			FOnClicked::CreateSP(this, &SBHMainMenu::OnHostTutorialClicked)));
+
+		// Jump straight to one role's tutorial (plays just that lesson, then returns to the menu).
+		TSharedRef<SVerticalBox> TutorialActions = SNew(SVerticalBox);
+		AddAction(TutorialActions, MenuPlayActionButton(
+			FText::FromString(TEXT("SURVIVOR TUTORIAL")),
+			FText::FromString(TEXT("Move, flashlight, hide, crawl, fix a breaker, answer questions, escape a Teacher.")),
+			FLinearColor(0.20f, 0.40f, 0.30f, 1.0f),
+			FOnClicked::CreateSP(this, &SBHMainMenu::OnHostTutorialPhaseClicked, EBHTutorialPhase::Survivor, false)));
+		AddAction(TutorialActions, MenuPlayActionButton(
+			FText::FromString(TEXT("TEACHER TUTORIAL")),
+			FText::FromString(TEXT("Play the Hunter - scan, chase and capture a student, black out the lights.")),
+			FLinearColor(0.42f, 0.22f, 0.20f, 1.0f),
+			FOnClicked::CreateSP(this, &SBHMainMenu::OnHostTutorialPhaseClicked, EBHTutorialPhase::Teacher, false)));
+		AddAction(TutorialActions, MenuPlayActionButton(
+			FText::FromString(TEXT("HALL MONITOR TUTORIAL")),
+			FText::FromString(TEXT("Play the monitor - real hints, false markers, and traps to mislead the Teacher.")),
+			FLinearColor(0.30f, 0.26f, 0.44f, 1.0f),
+			FOnClicked::CreateSP(this, &SBHMainMenu::OnHostTutorialPhaseClicked, EBHTutorialPhase::Monitor, false)));
+		MenuAddPlayDropdownSection(
+			ActionList,
+			FText::FromString(TEXT("Tutorial: one role")),
+			FText::FromString(TEXT("Practise a single role's tutorial.")),
+			FLinearColor(0.20f, 0.40f, 0.30f, 1.0f),
+			TutorialActions);
+
 		TSharedRef<SVerticalBox> QuickStartActions = SNew(SVerticalBox);
 		AddAction(QuickStartActions, MenuPlayActionButton(
 			FText::FromString(TEXT("TEST ROUND")),
@@ -4709,23 +4739,23 @@ void SBHMainMenu::BuildPlayActionList(TSharedRef<SVerticalBox> ActionList, bool 
 		TSharedRef<SVerticalBox> BotActions = SNew(SVerticalBox);
 		AddAction(BotActions, MenuPlayActionButton(
 			FText::FromString(TEXT("BOT FACILITY")),
-			FText::FromString(TEXT("Offline normal round with server bots.")),
+			FText::FromString(TEXT("Lobby filled with bots - friends can still join.")),
 			FLinearColor(0.24f, 0.33f, 0.29f, 1.0f),
 			FOnClicked::CreateSP(this, &SBHMainMenu::OnHostBotClicked)));
 		AddAction(BotActions, MenuPlayActionButton(
 			FText::FromString(TEXT("BOT SUBSTATION")),
-			FText::FromString(TEXT("Offline normal round on Substation.")),
+			FText::FromString(TEXT("Substation lobby with bots - friends can still join.")),
 			FLinearColor(0.20f, 0.28f, 0.38f, 1.0f),
 			FOnClicked::CreateSP(this, &SBHMainMenu::OnHostBotSubstationClicked)));
 		AddAction(BotActions, MenuPlayActionButton(
 			FText::FromString(TEXT("BOT FOGGROUNDS")),
-			FText::FromString(TEXT("Offline foggy perimeter round with server bots.")),
+			FText::FromString(TEXT("Foggrounds lobby with bots - friends can still join.")),
 			FLinearColor(0.18f, 0.31f, 0.25f, 1.0f),
 			FOnClicked::CreateSP(this, &SBHMainMenu::OnHostBotFoggroundsClicked)));
 		MenuAddPlayDropdownSection(
 			ActionList,
 			FText::FromString(TEXT("Bots")),
-			FText::FromString(TEXT("Offline bot rounds by map.")),
+			FText::FromString(TEXT("Bot lobbies by map - others can still join.")),
 			FLinearColor(0.24f, 0.33f, 0.29f, 1.0f),
 			BotActions);
 
@@ -4891,6 +4921,34 @@ FReply SBHMainMenu::OnHostPracticeClicked()
 	{
 		FString Message;
 		PC->HostPracticeGameForMenu(Message);
+		StatusText = FText::FromString(Message);
+		return FReply::Handled();
+	}
+
+	StatusText = FText::FromString(TEXT("No local player controller was available."));
+	return FReply::Handled();
+}
+
+FReply SBHMainMenu::OnHostTutorialClicked()
+{
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		FString Message;
+		PC->HostTutorialGameForMenu(Message);
+		StatusText = FText::FromString(Message);
+		return FReply::Handled();
+	}
+
+	StatusText = FText::FromString(TEXT("No local player controller was available."));
+	return FReply::Handled();
+}
+
+FReply SBHMainMenu::OnHostTutorialPhaseClicked(EBHTutorialPhase StartPhase, bool bChain)
+{
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		FString Message;
+		PC->HostTutorialPhaseForMenu(StartPhase, bChain, Message);
 		StatusText = FText::FromString(Message);
 		return FReply::Handled();
 	}
@@ -5509,6 +5567,8 @@ FReply SBHMainMenu::OnSpectatorRolePreferenceClicked(EBHPlayerRole DesiredRole)
 
 FReply SBHMainMenu::OnResumeClicked()
 {
+	// Clear any half-completed LEAVE confirmation so a stale prompt never carries into a later open.
+	bLeaveConfirmPending = false;
 	if (ABHPlayerController* PC = PlayerController.Get())
 	{
 		PC->HideMainMenu();
@@ -5666,6 +5726,38 @@ FReply SBHMainMenu::OnBotCountClicked(int32 BotCount)
 	{
 		FString Message;
 		PC->SetBotCountForMenu(BotCount, Message);
+		StatusText = FText::FromString(Message);
+	}
+
+	return FReply::Handled();
+}
+
+FReply SBHMainMenu::OnBotCountStepClicked(int32 Delta)
+{
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		int32 Current = 0;
+		if (UWorld* World = PC->GetWorld())
+		{
+			if (ABHGameState* BHGS = World->GetGameState<ABHGameState>())
+			{
+				Current = BHGS->TargetBotCount;
+			}
+		}
+		FString Message;
+		PC->SetBotCountForMenu(FMath::Clamp(Current + Delta, 0, 11), Message);
+		StatusText = FText::FromString(Message);
+	}
+
+	return FReply::Handled();
+}
+
+FReply SBHMainMenu::OnFillBotsClicked()
+{
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		FString Message;
+		PC->FillBotsForMenu(Message);
 		StatusText = FText::FromString(Message);
 	}
 
@@ -5853,6 +5945,12 @@ FReply SBHMainMenu::OnTesterFinalRecapClicked()
 
 FReply SBHMainMenu::OnTargetScareClicked(TWeakObjectPtr<APlayerState> TargetPlayerState)
 {
+	if (!TargetPlayerState.IsValid())
+	{
+		StatusText = FText::FromString(TEXT("That player already left."));
+		return FReply::Handled();
+	}
+
 	if (ABHPlayerController* PC = PlayerController.Get())
 	{
 		FString Message;
@@ -6322,6 +6420,12 @@ void SBHMainMenu::OnHudPanelOpacityChanged(float SliderValue)
 
 FReply SBHMainMenu::OnAssignRoleClicked(TWeakObjectPtr<APlayerState> TargetPlayerState, EBHPlayerRole DesiredRole)
 {
+	if (!TargetPlayerState.IsValid())
+	{
+		StatusText = FText::FromString(TEXT("That player already left."));
+		return FReply::Handled();
+	}
+
 	if (ABHPlayerController* PC = PlayerController.Get())
 	{
 		PC->SetDesiredRole(TargetPlayerState.Get(), DesiredRole);
@@ -6333,6 +6437,12 @@ FReply SBHMainMenu::OnAssignRoleClicked(TWeakObjectPtr<APlayerState> TargetPlaye
 
 FReply SBHMainMenu::OnKickPlayerClicked(TWeakObjectPtr<APlayerState> TargetPlayerState)
 {
+	if (!TargetPlayerState.IsValid())
+	{
+		StatusText = FText::FromString(TEXT("That player already left."));
+		return FReply::Handled();
+	}
+
 	if (ABHPlayerController* PC = PlayerController.Get())
 	{
 		FString Message;
@@ -6349,11 +6459,25 @@ FReply SBHMainMenu::OnKickPlayerClicked(TWeakObjectPtr<APlayerState> TargetPlaye
 
 FReply SBHMainMenu::OnDisconnectClicked()
 {
-	if (ABHPlayerController* PC = PlayerController.Get())
+	ABHPlayerController* PC = PlayerController.Get();
+	if (!PC)
 	{
-		PC->ReturnToMainMenu();
+		return FReply::Handled();
 	}
 
+	// On a listen-server host, leaving tears down the session for every connected student, so require
+	// a confirm step. Non-host clients (NM_Client, or Standalone after a bounce) keep one-click leave.
+	const UWorld* World = PC->GetWorld();
+	const bool bIsListenServerHost = World && World->GetNetMode() == NM_ListenServer;
+	if (bIsListenServerHost && !bLeaveConfirmPending)
+	{
+		bLeaveConfirmPending = true;
+		StatusText = FText::FromString(TEXT("Leaving ends the class session for everyone. Press LEAVE TO MAIN MENU again to confirm, or RESUME GAME to stay."));
+		return FReply::Handled();
+	}
+
+	bLeaveConfirmPending = false;
+	PC->ReturnToMainMenu();
 	return FReply::Handled();
 }
 
@@ -6377,6 +6501,14 @@ void SBHMainMenu::OnAddressCommitted(const FText& Text, ETextCommit::Type Commit
 
 FText SBHMainMenu::GetStatusText() const
 {
+	// A pending host LEAVE confirmation must outrank the sticky network/account status messages
+	// (set during hosting/sign-in and never cleared); otherwise the confirm prompt is masked and the
+	// host, seeing no visible change, presses LEAVE again and tears down the whole class session.
+	if (bLeaveConfirmPending)
+	{
+		return StatusText;
+	}
+
 	const ABHPlayerController* PC = PlayerController.Get();
 	const UGameInstance* GameInstance = PC ? PC->GetGameInstance() : nullptr;
 	const UBHAccountSubsystem* AccountSubsystem = GameInstance ? GameInstance->GetSubsystem<UBHAccountSubsystem>() : nullptr;
@@ -8744,33 +8876,56 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoundOptionsPanel()
 					SNew(STextBlock)
 					.Font(MenuFont(10, FName(TEXT("Bold"))))
 					.ColorAndOpacity(FLinearColor(0.72f, 0.80f, 0.80f, 1.0f))
-					.Text(FText::FromString(TEXT("Bots")))
+					.Text_Lambda([this]() -> FText
+					{
+						int32 Count = 0;
+						if (ABHPlayerController* StepPC = PlayerController.Get())
+						{
+							if (UWorld* StepWorld = StepPC->GetWorld())
+							{
+								if (ABHGameState* StepGS = StepWorld->GetGameState<ABHGameState>())
+								{
+									Count = StepGS->TargetBotCount;
+								}
+							}
+						}
+						return FText::FromString(FString::Printf(TEXT("Bots %d/11"), Count));
+					})
 				]
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
 				.Padding(0.0f, 0.0f, 4.0f, 0.0f)
 				[
-					SNew(SBHMenuButton).IsEnabled(bCanEditHost).ContentPadding(FMargin(7.0f, 3.0f)).OnClicked(this, &SBHMainMenu::OnBotCountClicked, 0)
+					SNew(SBHMenuButton).IsEnabled(bCanEditHost).ContentPadding(FMargin(9.0f, 3.0f)).OnClicked(this, &SBHMainMenu::OnBotCountStepClicked, -1)
 					[
-						SNew(STextBlock).Font(MenuFont(9, FName(TEXT("Bold")))).Text(FText::FromString(TEXT("0")))
+						SNew(STextBlock).Font(MenuFont(11, FName(TEXT("Bold")))).Text(FText::FromString(TEXT("-")))
+					]
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+				[
+					SNew(SBHMenuButton).IsEnabled(bCanEditHost).ContentPadding(FMargin(9.0f, 3.0f)).OnClicked(this, &SBHMainMenu::OnBotCountStepClicked, 1)
+					[
+						SNew(STextBlock).Font(MenuFont(11, FName(TEXT("Bold")))).Text(FText::FromString(TEXT("+")))
 					]
 				]
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
 				.Padding(0.0f, 0.0f, 4.0f, 0.0f)
 				[
-					SNew(SBHMenuButton).IsEnabled(bCanEditHost).ContentPadding(FMargin(7.0f, 3.0f)).OnClicked(this, &SBHMainMenu::OnBotCountClicked, 5)
+					SNew(SBHMenuButton).IsEnabled(bCanEditHost).ContentPadding(FMargin(7.0f, 3.0f)).OnClicked(this, &SBHMainMenu::OnFillBotsClicked)
 					[
-						SNew(STextBlock).Font(MenuFont(9, FName(TEXT("Bold")))).Text(FText::FromString(TEXT("5")))
+						SNew(STextBlock).Font(MenuFont(9, FName(TEXT("Bold")))).Text(FText::FromString(TEXT("Fill")))
 					]
 				]
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
 				.Padding(0.0f, 0.0f, 12.0f, 0.0f)
 				[
-					SNew(SBHMenuButton).IsEnabled(bCanEditHost).ContentPadding(FMargin(7.0f, 3.0f)).OnClicked(this, &SBHMainMenu::OnBotCountClicked, 11)
+					SNew(SBHMenuButton).IsEnabled(bCanEditHost).ContentPadding(FMargin(7.0f, 3.0f)).OnClicked(this, &SBHMainMenu::OnBotCountClicked, 0)
 					[
-						SNew(STextBlock).Font(MenuFont(9, FName(TEXT("Bold")))).Text(FText::FromString(TEXT("11")))
+						SNew(STextBlock).Font(MenuFont(9, FName(TEXT("Bold")))).Text(FText::FromString(TEXT("Clear")))
 					]
 				]
 				+ SHorizontalBox::Slot()
@@ -9770,7 +9925,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 			MenuGuideObjectCard(
 				FName(TEXT("Locker")),
 				FText::FromString(TEXT("Locker")),
-				FText::FromString(TEXT("Short sight reset. Dread still climbs if the Teacher is close or you stay hidden too long.")),
+				FText::FromString(TEXT("Short sight reset and a panic button: for about 2s after you pop out the Teacher cannot grab you, and you exit at a random spot in front. Dread still climbs if you camp it.")),
 				FLinearColor(0.56f, 0.70f, 0.94f, 1.0f))
 		];
 	ObjectGrid->AddSlot(1, 1)
@@ -9964,7 +10119,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 	KeyGrid->AddSlot(1, 0)
 		.Padding(0.0f, 0.0f, 8.0f, 8.0f)
 		[
-			MenuGuideActionTile(FText::FromString(TEXT("Space")), FText::FromString(TEXT("Jump / Hop")), FText::FromString(TEXT("Tap or hold near landing to queue the next jump briefly for smoother chained hops.")), FLinearColor(0.22f, 0.46f, 0.32f, 1.0f))
+			MenuGuideActionTile(FText::FromString(TEXT("Space")), FText::FromString(TEXT("Jump / Hop")), FText::FromString(TEXT("Tap Shift to top speed, then chain hops to keep sprint speed for less stamina. Buffer the next jump just before you land.")), FLinearColor(0.22f, 0.46f, 0.32f, 1.0f))
 		];
 	KeyGrid->AddSlot(2, 0)
 		.Padding(0.0f, 0.0f, 0.0f, 8.0f)
@@ -10175,7 +10330,8 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 		];
 
 	const TArray<FText> ExpertMovementItems = {
-		FText::FromString(TEXT("Tap or hold Space just before landing to buffer the next jump for a clean hop chain.")),
+		FText::FromString(TEXT("Bunny hop to travel: tap Shift to reach sprint speed, then chain jumps. Airborne the per-second sprint drain stops, so a clean chain holds top speed for less stamina than holding Shift, letting you outlast the chase.")),
+		FText::FromString(TEXT("Buffer each hop by tapping Space just before you land; miss the rhythm and the jumps only bleed stamina with no speed gain.")),
 		FText::FromString(TEXT("Air steering is limited: line up before takeoff, then strafe/look only for small corrections.")),
 		FText::FromString(TEXT("Sprint+Ctrl rolls through capture timing windows and fits corner/doorway dodges.")),
 		FText::FromString(TEXT("Sprint+Alt slides farther and lower; holding Alt can leave you prone, but it is not silent.")),
@@ -10189,9 +10345,10 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 	};
 	const TArray<FText> ExpertSurvivorItems = {
 		FText::FromString(TEXT("Counter CCTV by breaking line of sight, going prone, opening shutters, or baiting a false route.")),
+		FText::FromString(TEXT("Cornered? Duck into a locker and pop straight back out: for about 2 seconds after you leave one the Teacher cannot capture you, and you exit at an unpredictable spot to break the chase.")),
 		FText::FromString(TEXT("Commit to hold-E work only after checking sound, CCTV, and Teacher meter pressure.")),
 		FText::FromString(TEXT("Flashlight stagger, door slam, roll, slide, prone, and dive all matter during axe timing.")),
-		FText::FromString(TEXT("At final escape, abandon optional pickups and use Door Rush or Sprint Burst to board."))
+		FText::FromString(TEXT("At final escape the Teacher is slowed, so a straight sprint to the train usually beats them; drop optional pickups and use Door Rush or Sprint Burst to board."))
 	};
 	const TArray<FText> ExpertTeacherItems = {
 		FText::FromString(TEXT("Swing when survivors are committed to work, doors, ladders, slides, or bad landings.")),
@@ -10429,7 +10586,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildControlsPanel()
 	AddControl(TEXT("Move Right"), MenuDescribeAxisBinding(FName(TEXT("MoveRight")), 1.0f, TEXT("D")), TEXT("Strafe right."));
 	AddControl(TEXT("Move Left"), MenuDescribeAxisBinding(FName(TEXT("MoveRight")), -1.0f, TEXT("A")), TEXT("Strafe left."));
 	AddControl(TEXT("Look"), LookBinding, TEXT("Turn and look up or down."));
-	AddControl(TEXT("Jump / Bunny Hop"), MenuDescribeActionBinding(FName(TEXT("Jump")), TEXT("Space")), TEXT("Jump; tapping or holding near landing queues the next hop briefly. Air steering is limited."));
+	AddControl(TEXT("Jump / Bunny Hop"), MenuDescribeActionBinding(FName(TEXT("Jump")), TEXT("Space")), TEXT("Jump; after tapping Shift to top speed, chain hops to hold sprint speed for less stamina. Buffer near landing. Air steering is limited."));
 	AddControl(TEXT("Sprint"), MenuDescribeActionBinding(FName(TEXT("Sprint")), TEXT("Left Shift")), TEXT("Hold while moving; faster, louder, and stamina-limited."));
 	AddControl(TEXT("Crouch / Roll"), MenuDescribeActionBinding(FName(TEXT("Crouch")), TEXT("Left Ctrl")), TEXT("Crouch normally; press while sprinting to roll through timing windows."));
 	AddControl(TEXT("Prone / Slide"), MenuDescribeActionBinding(FName(TEXT("Prone")), TEXT("Left Alt")), TEXT("Tap to toggle prone; hold while sprinting to slide, and keep held to end low."));
@@ -10445,6 +10602,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildControlsPanel()
 	AddControl(TEXT("Security Feed"), TEXT("Hold E on monitor"), TEXT("Teacher tracks camera feed, Hall Monitor spoofs CCTV motion, others can watch only."));
 	AddControl(TEXT("Map"), MenuDescribeActionBinding(FName(TEXT("Map")), TEXT("M / I")), TEXT("Raise or lower the HUD map."));
 	AddControl(TEXT("Answer Choice"), TEXT("1-4 / Numpad 1-4"), TEXT("Submit classroom station and train bonus answers."));
+	AddControl(TEXT("Node Marker"), MenuDescribeActionBinding(FName(TEXT("NodeMarker")), TEXT("N")), TEXT("Pin a routing marker to the nearest active question node for 8 seconds."));
 
 	AddSectionTitle(TEXT("Teacher, Spectator, And Host"));
 	AddControl(TEXT("Capture"), MenuDescribeActionBinding(FName(TEXT("Capture")), TEXT("Left Mouse Button")), TEXT("Start a close axe swing; survivors can dodge, blind, slam doors, or use timed special moves."));
@@ -10756,6 +10914,31 @@ TSharedRef<SWidget> SBHMainMenu::BuildTestCommandPanel()
 		FText::FromString(TEXT("Runs the current director monster scare path.")),
 		FLinearColor(0.36f, 0.12f, 0.10f, 1.0f),
 		FOnClicked::CreateSP(this, &SBHMainMenu::OnPracticeJumpscareClicked)));
+	AddCommand(JumpscareCommands, MenuPlayActionButton(
+		FText::FromString(TEXT("MONSTER IN YOUR FACE")),
+		FText::FromString(TEXT("Slams a close-up creature into the camera with a scream and flash (immediate).")),
+		FLinearColor(0.52f, 0.06f, 0.06f, 1.0f),
+		FOnClicked::CreateSP(this, &SBHMainMenu::OnJumpscareVariantClicked, FString(TEXT("face")))));
+	AddCommand(JumpscareCommands, MenuPlayActionButton(
+		FText::FromString(TEXT("CORNER PEEK")),
+		FText::FromString(TEXT("A figure leans out from a wall edge nearby; it ducks back when you look at it.")),
+		FLinearColor(0.30f, 0.14f, 0.20f, 1.0f),
+		FOnClicked::CreateSP(this, &SBHMainMenu::OnJumpscareVariantClicked, FString(TEXT("peek")))));
+	AddCommand(JumpscareCommands, MenuPlayActionButton(
+		FText::FromString(TEXT("SOMETHING BEHIND YOU")),
+		FText::FromString(TEXT("Locks movement with a directive; turn around to spring the payoff jumpscare.")),
+		FLinearColor(0.44f, 0.08f, 0.12f, 1.0f),
+		FOnClicked::CreateSP(this, &SBHMainMenu::OnJumpscareVariantClicked, FString(TEXT("behind")))));
+	AddCommand(JumpscareCommands, MenuPlayActionButton(
+		FText::FromString(TEXT("SCP-096 REVEAL")),
+		FText::FromString(TEXT("Appears far off with a faint red glow, pauses, then sprints in screaming and cuts the lights.")),
+		FLinearColor(0.40f, 0.06f, 0.06f, 1.0f),
+		FOnClicked::CreateSP(this, &SBHMainMenu::OnJumpscareVariantClicked, FString(TEXT("scp096")))));
+	AddCommand(JumpscareCommands, MenuPlayActionButton(
+		FText::FromString(TEXT("SCP-096 (REAL MODEL)")),
+		FText::FromString(TEXT("The genuine SCP-096 creature on the same reveal -> pause -> charge -> blackout flow.")),
+		FLinearColor(0.34f, 0.05f, 0.05f, 1.0f),
+		FOnClicked::CreateSP(this, &SBHMainMenu::OnJumpscareVariantClicked, FString(TEXT("realscp")))));
 	AddCommand(JumpscareCommands, MenuPlayActionButton(
 		FText::FromString(TEXT("SUPER JUMPSCARE CHAIN")),
 		FText::FromString(TEXT("Peek, screen-crossing sprint, final charge, then face close-up.")),
