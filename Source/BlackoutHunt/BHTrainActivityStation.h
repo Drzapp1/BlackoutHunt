@@ -50,6 +50,7 @@ protected:
 	int32 GetReflexCursorSlot(float ServerTime) const;
 	int32 GetReflexTargetSlot() const;
 	void GetMemoryCardSlots(float ServerTime, int32& OutLeftSlot, int32& OutRightSlot) const;
+	int32 GetDisplayedActivityRound() const;
 	FString BuildLiveActivityBody() const;
 	FString BuildPromptRiskText(const ABHCharacter* Character) const;
 	FString AwardActivityPoints(ABHPlayerState* PlayerState, int32 Points) const;

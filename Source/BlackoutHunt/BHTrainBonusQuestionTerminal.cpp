@@ -37,16 +37,17 @@ ABHTrainBonusQuestionTerminal::ABHTrainBonusQuestionTerminal()
 	PrimaryActorTick.TickInterval = 0.5f;
 	InteractionLabel = FText::FromString(TEXT("Bonus Question"));
 	SetActorScale3D(FVector(1.05f, 0.24f, 1.35f));
-	LastAnswerServerTime = -100.0f;
 	bFeedbackCorrect = false;
 
+	// Prompt/choices on the +Y FRONT face (reader's side) so the body never occludes them; same +Y facing as
+	// before so they read correctly (not mirrored). Prompt above, choices spaced below.
 	PromptText = CreateDefaultSubobject<UTextRenderComponent>(TEXT("PromptText"));
 	PromptText->SetupAttachment(SceneRoot);
-	BHPropVisuals::ConfigureReadableText(PromptText, FVector(-58.0f, -60.0f, 92.0f), FRotator(0.0f, 90.0f, 0.0f), 12.0f, FColor(255, 210, 92));
+	BHPropVisuals::ConfigureReadableText(PromptText, FVector(-58.0f, 75.0f, 52.0f), FRotator(0.0f, 90.0f, 0.0f), 12.0f, FColor(255, 210, 92));
 
 	ChoicesText = CreateDefaultSubobject<UTextRenderComponent>(TEXT("ChoicesText"));
 	ChoicesText->SetupAttachment(SceneRoot);
-	BHPropVisuals::ConfigureReadableText(ChoicesText, FVector(-58.0f, -61.0f, 34.0f), FRotator(0.0f, 90.0f, 0.0f), 9.5f, FColor(220, 242, 232));
+	BHPropVisuals::ConfigureReadableText(ChoicesText, FVector(-58.0f, 75.0f, 26.0f), FRotator(0.0f, 90.0f, 0.0f), 9.5f, FColor(220, 242, 232));
 
 	DiagramPlane = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("DiagramPlane"));
 	DiagramPlane->SetupAttachment(SceneRoot);
@@ -228,14 +229,30 @@ bool ABHTrainBonusQuestionTerminal::SubmitAnswer(ABHCharacter* Character, int32 
 
 	const AGameStateBase* BaseGameState = GetWorld() ? GetWorld()->GetGameState() : nullptr;
 	const float Now = BaseGameState ? BaseGameState->GetServerWorldTimeSeconds() : (GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f);
-	if (Now - LastAnswerServerTime < 0.35f)
+	// Per-player throttle: the whole class shares one terminal, so a single shared cooldown would
+	// silently drop a second student's answer that lands within 0.35s of the first.
+	const int32 PlayerId = BHPS->GetPlayerId();
+	if (Now - LastAnswerTimeByPlayerId.FindRef(PlayerId) < 0.35f)
 	{
 		return false;
 	}
-	LastAnswerServerTime = Now;
+	LastAnswerTimeByPlayerId.Add(PlayerId, Now);
 
-	// Anti-gaming correction hold: after a wrong answer, block resubmission for a few seconds so
-	// the student reads the correction instead of cycling 1-4. Input-only; never pins the player.
+	// One answer per student per shared question: prevents point-farming and keeps the prompt stable
+	// for everyone else still reading it (we no longer re-roll the shared question on each answer).
+	if (PlayersAnsweredCurrentQuestion.Contains(PlayerId))
+	{
+		if (PC)
+		{
+			PC->ClientShowStatusMessage(TEXT("You already answered this bonus question - wait for the next round's terminal."), 2.5f);
+		}
+		return false;
+	}
+
+	// Per-player anti-gaming correction hold: after a wrong answer, block THIS student's resubmission
+	// for a few seconds so they read the correction instead of cycling 1-4. Never pins the player, and
+	// per-player so one student's wrong answer cannot hold up the rest of the class.
+	const float CorrectionHoldUntil = CorrectionHoldUntilByPlayerId.FindRef(PlayerId);
 	if (Now < CorrectionHoldUntil)
 	{
 		if (PC)
@@ -269,13 +286,9 @@ bool ABHTrainBonusQuestionTerminal::SubmitAnswer(ABHCharacter* Character, int32 
 	// mode and returns the bonus shop points it awarded.
 	ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr;
 	int32 Awarded = 0;
-	EBHPhysicsTopic NextTopic = ServerQuestion.Topic;
 	if (BHGM && BHGM->IsRevisionMode())
 	{
 		Awarded = BHGM->RecordRevisionAnswer(Character, ServerQuestion, bCorrect, bCurrentQuestionIsReview, SelectedAnswer, FString(), /*bCountsAsContribution=*/false, /*bBonusPoints=*/true);
-		EBHQuestionDifficulty NextDifficulty = EBHQuestionDifficulty::Easy;
-		FString NextReason;
-		BHGM->GetAdaptiveRevisionPlan(BHPS, bCorrect, NextTopic, NextDifficulty, NextReason);
 	}
 	else
 	{
@@ -301,8 +314,8 @@ bool ABHTrainBonusQuestionTerminal::SubmitAnswer(ABHCharacter* Character, int32 
 	else
 	{
 		Character->AddFear(4.0f);
-		// Hold resubmission so the student reads the correction before retrying.
-		CorrectionHoldUntil = Now + 4.0f;
+		// Hold this student's resubmission so they read the correction before retrying.
+		CorrectionHoldUntilByPlayerId.Add(PlayerId, Now + 4.0f);
 		FeedbackText = FString::Printf(TEXT("Wrong. No bonus points; pressure rises and mastery dipped. Answer: %s. %s Read the correction before retrying."), *CorrectChoice, *Question.Explanation);
 	}
 	bFeedbackCorrect = bCorrect;
@@ -312,7 +325,10 @@ bool ABHTrainBonusQuestionTerminal::SubmitAnswer(ABHCharacter* Character, int32 
 		PC->ClientShowStatusMessage(FeedbackText.Left(180), 4.0f);
 	}
 
-	LoadQuestion(NextTopic, FMath::Rand(), BHPS, bCorrect);
+	// Mark this student done with the current shared question. We intentionally do NOT re-roll the
+	// shared question here: doing so swapped the prompt out from under every other reader and pushed
+	// this player's result onto the whole class. The missed question still returns via spaced repetition.
+	PlayersAnsweredCurrentQuestion.Add(PlayerId);
 	return true;
 }
 
@@ -357,12 +373,43 @@ void ABHTrainBonusQuestionTerminal::LoadQuestion(EBHPhysicsTopic PreferredTopic,
 	{
 		ServerQuestion = NewQuestion;
 		Question = NewQuestion;
+		// The built-in bank stores every question's correct choice at index 0 with no shuffle, so merely
+		// zeroing the replicated CorrectChoiceIndex (below) would still leave Choices[0] == the correct
+		// answer on the wire -- a free answer any client could read (even unmodified: the HUD labels
+		// Choices[0] as option 1). Rotate the choices by a per-question amount (mirrors ABHObjectiveStation's
+		// ChoiceRotation): the server-only ServerQuestion used for grading carries the true rotated index,
+		// while the replicated Question carries the same rotated choices with its index scrubbed, so the
+		// correct answer no longer sits at a fixed/known position on the wire.
+		if (NewQuestion.Answer.Choices.Num() > 1 && NewQuestion.Answer.Choices.IsValidIndex(NewQuestion.Answer.CorrectChoiceIndex))
+		{
+			const int32 ChoiceCount = NewQuestion.Answer.Choices.Num();
+			// Per-question, non-zero rotation in [1, ChoiceCount-1]; unsigned to avoid negative-modulo UB.
+			// Derived from the question id (varies per question) XOR the selection seed, so it isn't a
+			// constant "always pick slot N" offset a student could memorize across questions.
+			const uint32 RotationSeed = GetTypeHash(NewQuestion.Id) ^ static_cast<uint32>(Seed);
+			const int32 Rotation = 1 + static_cast<int32>(RotationSeed % static_cast<uint32>(ChoiceCount - 1));
+			TArray<FString> RotatedChoices;
+			RotatedChoices.Reserve(ChoiceCount);
+			for (int32 ChoiceIndex = 0; ChoiceIndex < ChoiceCount; ++ChoiceIndex)
+			{
+				RotatedChoices.Add(NewQuestion.Answer.Choices[(ChoiceIndex + Rotation) % ChoiceCount]);
+			}
+			ServerQuestion.Answer.Choices = RotatedChoices;
+			ServerQuestion.Answer.CorrectChoiceIndex = ((NewQuestion.Answer.CorrectChoiceIndex - Rotation) % ChoiceCount + ChoiceCount) % ChoiceCount;
+			Question.Answer.Choices = RotatedChoices;
+		}
 		// Scrub the answer from the replicated copy so it never travels to clients. A fixed 0 keeps
 		// the existing IsValidIndex() readiness checks true while revealing nothing (grading uses
 		// ServerQuestion). Defeats reading the correct answer off the wire to farm the economy.
 		Question.Answer.CorrectChoiceIndex = 0;
 		Question.Answer.NumericAnswer = 0.0f;
 		bCurrentQuestionIsReview = bReviewSelected;
+		// A new shared question is shown: everyone may answer it once. Also clear the per-player throttle
+		// maps so they cannot accumulate stale entries for departed/reconnected PlayerIds over a long host
+		// session — the cooldown / correction-hold only need to be valid for the currently shown question.
+		PlayersAnsweredCurrentQuestion.Reset();
+		LastAnswerTimeByPlayerId.Reset();
+		CorrectionHoldUntilByPlayerId.Reset();
 	}
 	RefreshDisplay();
 }

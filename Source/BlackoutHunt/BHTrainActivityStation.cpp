@@ -96,13 +96,15 @@ ABHTrainActivityStation::ABHTrainActivityStation()
 	ButtonC = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ButtonC"));
 	ButtonC->SetupAttachment(SceneRoot);
 
+	// Text on the +Y FRONT face (reader's side) so the body/props never occlude it; same +Y facing as before so
+	// it reads correctly (not mirrored). Title above, detail spaced below it.
 	TitleText = CreateDefaultSubobject<UTextRenderComponent>(TEXT("TitleText"));
 	TitleText->SetupAttachment(SceneRoot);
-	BHConfigureActivityText(TitleText, FVector(-58.0f, -56.0f, 82.0f), 14.5f, FColor(255, 210, 92));
+	BHConfigureActivityText(TitleText, FVector(-58.0f, 58.0f, 52.0f), 14.5f, FColor(255, 210, 92));
 
 	DetailText = CreateDefaultSubobject<UTextRenderComponent>(TEXT("DetailText"));
 	DetailText->SetupAttachment(SceneRoot);
-	BHConfigureActivityText(DetailText, FVector(-58.0f, -57.0f, 48.0f), 8.8f, FColor(222, 244, 232));
+	BHConfigureActivityText(DetailText, FVector(-58.0f, 58.0f, 30.0f), 8.8f, FColor(222, 244, 232));
 
 	AccentLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("AccentLight"));
 	AccentLight->SetupAttachment(SceneRoot);
@@ -396,16 +398,30 @@ int32 ABHTrainActivityStation::GetReflexCursorSlot(float ServerTime) const
 	return FMath::Clamp(FMath::FloorToInt(RawSlot), 0, BHTrainReflexSlotCount - 1);
 }
 
+int32 ABHTrainActivityStation::GetDisplayedActivityRound() const
+{
+	// The reflex/memory TARGET must be the same value the client renders as the hint and the value the
+	// server grades against. Previously it was folded from ActivityUseCounter, which the server bumped on
+	// every use: between that bump and the counter replicating, a client still displayed the OLD target
+	// while the server already graded against the NEW one, so input timed to the visible hint scored a miss.
+	// Deriving the round from the synchronized server clock (GetServerWorldTimeSeconds, identical on server
+	// and clients at any instant) makes the displayed and graded target agree by construction, with no
+	// replication-window race. ActivityUseCounter remains for use accounting/cooldowns but no longer steers
+	// the graded slot. The 6s cadence is slower than any cooldown so the target is stable across a single use.
+	return FMath::FloorToInt(GetServerTimeSeconds() / 6.0f);
+}
+
 int32 ABHTrainActivityStation::GetReflexTargetSlot() const
 {
-	const int32 RawTarget = ActivitySeed + ActivityUseCounter * 3;
+	const int32 RawTarget = ActivitySeed + GetDisplayedActivityRound() * 3;
 	return FMath::Abs(RawTarget) % BHTrainReflexSlotCount;
 }
 
 void ABHTrainActivityStation::GetMemoryCardSlots(float ServerTime, int32& OutLeftSlot, int32& OutRightSlot) const
 {
-	const int32 SeedA = FMath::Abs(ActivitySeed + ActivityUseCounter * 5);
-	const int32 SeedB = FMath::Abs(ActivitySeed * 3 + ActivityUseCounter * 7 + 11);
+	const int32 Round = GetDisplayedActivityRound();
+	const int32 SeedA = FMath::Abs(ActivitySeed + Round * 5);
+	const int32 SeedB = FMath::Abs(ActivitySeed * 3 + Round * 7 + 11);
 	OutLeftSlot = (SeedA + FMath::FloorToInt(ServerTime * 1.55f)) % 4;
 	OutRightSlot = (SeedB + FMath::FloorToInt(ServerTime * 1.95f)) % 4;
 }

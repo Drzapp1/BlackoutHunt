@@ -39,13 +39,16 @@ ABHPowerupShopTerminal::ABHPowerupShopTerminal()
 	PowerupType = EBHPowerupType::StaminaBoost;
 	SetActorScale3D(FVector(0.75f, 0.32f, 1.25f));
 
+	// Text sits on the +Y FRONT face (the reader's side) so the panel body never occludes it -- the body is at
+	// local Y0, the reader is on +Y, so text on +Y is in front of it. Same +Y facing as before, so it reads
+	// correctly (not mirrored). Label is 3 lines, so detail is dropped well below it to avoid overlap.
 	LabelText = CreateDefaultSubobject<UTextRenderComponent>(TEXT("LabelText"));
 	LabelText->SetupAttachment(SceneRoot);
-	BHPropVisuals::ConfigureReadableText(LabelText, FVector(-58.0f, -58.0f, 78.0f), FRotator(0.0f, 90.0f, 0.0f), 18.0f, FColor(255, 198, 74));
+	BHPropVisuals::ConfigureReadableText(LabelText, FVector(-58.0f, 62.0f, 56.0f), FRotator(0.0f, 90.0f, 0.0f), 18.0f, FColor(255, 198, 74));
 
 	DetailText = CreateDefaultSubobject<UTextRenderComponent>(TEXT("DetailText"));
 	DetailText->SetupAttachment(SceneRoot);
-	BHPropVisuals::ConfigureReadableText(DetailText, FVector(-58.0f, -59.0f, 43.0f), FRotator(0.0f, 90.0f, 0.0f), 10.5f, FColor(224, 242, 232));
+	BHPropVisuals::ConfigureReadableText(DetailText, FVector(-58.0f, 62.0f, -4.0f), FRotator(0.0f, 90.0f, 0.0f), 10.5f, FColor(224, 242, 232));
 }
 
 void ABHPowerupShopTerminal::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const

@@ -85,10 +85,17 @@ protected:
 	UPROPERTY(ReplicatedUsing = OnRep_Question, BlueprintReadOnly, Category = "Question")
 	bool bFeedbackCorrect;
 
-	float LastAnswerServerTime;
-	// Server-only anti-gaming hold: after a wrong answer, block resubmission until this server
-	// time so the student reads the correction. Input-only — never pins the player.
-	float CorrectionHoldUntil = 0.0f;
+	// Per-player server-side throttle (keyed by PlayerId) so one student's answer timing cannot drop
+	// another student's answer — the single shared terminal is used by the whole class at once.
+	TMap<int32, float> LastAnswerTimeByPlayerId;
+	// Per-player anti-gaming hold: after a wrong answer, block that one student's resubmission until
+	// this server time so they read the correction. Input-only — never pins the player; per-player so
+	// one wrong answer cannot hold the rest of the class.
+	TMap<int32, float> CorrectionHoldUntilByPlayerId;
+	// Players who already answered the CURRENT shared question. Prevents point-farming and lets the
+	// shown question stay stable for everyone instead of being re-rolled out from under other readers.
+	// Cleared whenever a new question is loaded.
+	TSet<int32> PlayersAnsweredCurrentQuestion;
 	// True when the loaded question was re-surfaced from the player's spaced-repetition review
 	// queue (a previously missed question), so a correct answer counts as a correction.
 	bool bCurrentQuestionIsReview = false;
