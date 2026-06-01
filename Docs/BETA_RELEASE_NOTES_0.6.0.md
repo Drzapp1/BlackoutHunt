@@ -1,8 +1,8 @@
-# Blackout Hunt 0.6.0-beta.1 Release Notes — Authored Map Pipeline
+# Blackout Hunt 0.6.0 Release Notes — Authored Map Pipeline
 
 ## Headline
 
-`0.6.0-beta.1` is a **major** beta. It lands the **Authored Map Pipeline**: the
+`0.6.0` is a **major** beta. It lands the **Authored Map Pipeline**: the
 foundation that lets Blackout Hunt move from runtime-generated prototype levels toward
 hand-authored production maps, without disturbing the shipping procedural game. This is
 the largest structural change since the classroom betas began — roughly 8,000 lines
@@ -76,7 +76,7 @@ This release was cut on the **Windows** dual-boot (UE 5.7 + MSVC), so the two pl
 packages differ in currency:
 
 - **Windows — freshly cooked at release time and fully current.** Classroom Shipping, cooked
-  on the Windows UE 5.7 / MSVC toolchain on **2026-05-29** from the exact `v0.6.0-beta.1`
+  on the Windows UE 5.7 / MSVC toolchain on **2026-05-29** from the exact `v0.6.0`
   commit via `Tools/Package-Windows-Classroom.ps1`. This package contains **every** change in
   this release — the Authored Map Pipeline, the revision-quality and editable-question-bank
   work, the data-driven visual questions, the Foggrounds atmosphere pass, the feedback
@@ -84,9 +84,9 @@ packages differ in currency:
   There is no trailing-commit gap.
 - **Linux — the prior `0.5.0-beta.1` Classroom Shipping cook** (`Tools/Package-Linux-Wine.sh`,
   **2026-05-28**), attached as a compatibility package. It is **one minor version behind**: it
-  does **not** contain the `0.6.0-beta.1` Authored Map Pipeline or the other changes above. The
+  does **not** contain the `0.6.0` Authored Map Pipeline or the other changes above. The
   Linux cross-toolchain lives only on the Linux boot and cannot be driven from this Windows
-  session, so a Linux package at exact `0.6.0-beta.1` parity must be re-cooked there:
+  session, so a Linux package at exact `0.6.0` parity must be re-cooked there:
 
 ```text
 Linux parity re-cook : CLASSROOM=1 ./Tools/Package-Linux-Wine.sh   (on the Linux boot)
@@ -117,9 +117,11 @@ Linux parity re-cook : CLASSROOM=1 ./Tools/Package-Linux-Wine.sh   (on the Linux
 - `BlackoutHunt-0.5.0-beta.1-Linux-Classroom-20260528-125358.zip` — prior `0.5.0-beta.1`, compatibility (see parity note)
 - `BlackoutHunt-0.5.0-beta.1-Linux-Classroom-20260528-125358.zip.sha256`
 
+> Note: the attached Windows zip keeps its original `0.6.0-beta.1` cook label (both the filename and the in-game version string), because that is the exact binary that was cooked and verified. The repository is now versioned `0.6.0`, so the next Windows cook will be labelled `0.6.0`.
+
 ## Build Notes
 
-- Release commit: tagged `v0.6.0-beta.1` on branch `feature/authored-map-pipeline`. `main` is
+- Release commit: tagged `v0.6.0` on branch `feature/authored-map-pipeline`. `main` is
   intentionally left untouched (this beta is a prerelease off the feature branch).
 - Windows: Classroom Shipping (`-distribution`) freshly cooked on **2026-05-29** with
   `.\Tools\Package-Windows-Classroom.ps1` on the Windows UE 5.7 / MSVC toolchain; package

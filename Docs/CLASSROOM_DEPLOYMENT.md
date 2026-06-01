@@ -144,6 +144,16 @@ The primary student path is simply to double-click `BlackoutHunt.exe`. On weak h
 - The only failure in-game Settings cannot fix is a machine that cannot reach the menu because the engine fails to select a usable renderer at default settings. For that case, an optional non-console launcher that forces DX11/windowed/720p at process start is provided as source under `Tools\LowSpecLauncher`. It must be built and validated on the real school image before being added to a classroom package (see its README); it is not auto-staged into releases.
 - Machines that expose only Microsoft Basic Display Adapter, Remote Desktop software graphics, an unsupported VM graphics path, or a pre-DX11 GPU cannot meet Unreal's Direct3D feature level 11.0 requirement and should be identified quickly rather than debugged during class.
 
+## Windows SmartScreen And Antivirus
+
+The release is an **unsigned** executable distributed as a zip, and it bundles `playit.exe` and opens UDP sockets — all common triggers for Windows SmartScreen and school antivirus/endpoint protection on locked-down lab images. Plan for this **before** class, because it is a likely first-contact failure:
+
+- **Mark-of-the-Web:** a zip downloaded from the internet is flagged. Right-click the **zip** → Properties → tick **Unblock** → Apply, *then* extract. (Unblocking after extraction does not always propagate to the inner files.) Files copied from a USB stick or a local network share are usually not flagged.
+- **SmartScreen "Windows protected your PC":** on first launch of the unsigned `BlackoutHunt.exe`, click **More info → Run anyway**. A standard locked-down student account may not be allowed to click through this at all.
+- **Antivirus / endpoint protection:** the unsigned `BlackoutHunt.exe` and the bundled `playit.exe` can be quarantined. Ask IT to **allow-list the extracted build folder** (or the two executables) on the lab image ahead of time.
+- **Recommended for managed labs:** have IT **pre-stage the extracted, unblocked build on each machine's image** so students never see SmartScreen or AV prompts, rather than relying on each student to click through them. Verify the exact distributed build launches cleanly on the real school image during the pre-flight, on a standard (non-admin) student account.
+- Code-signing the release (Authenticode) would remove the SmartScreen/AV friction entirely and is recommended if a certificate is available; the current packaging does not sign the binary.
+
 ## Windows Hotspot
 
 The classroom beta does not use the Windows hotspot helper by default because locked-down student/teacher machines often require administrator networking permission. Use IT-managed Wi-Fi/LAN or the Playit fallback instead.

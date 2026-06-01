@@ -10,6 +10,8 @@ These instructions apply to the whole repository. Use them as the first stop for
 
 ## Start Here
 
+- **Read `Docs/BLACKOUT_HUNT_COMPLETE_OVERVIEW.md` first, before scanning the repo.** It is the canonical repo-context document — a 33-section reference covering every system, config knob, tool, the build pipeline, and known caveats. Reading it up front saves you (and the credits/tokens) the cost of re-discovering the codebase from a fresh scan; only dig into source/config after it to confirm the specifics you'll touch. `Docs/BLACKOUT_HUNT_ONE_PAGER.md` is the quick elevator-pitch version.
+- **Keep the overview current.** Whenever you change a system, a config default, a tool/script, a test, or the version, update the affected section of `Docs/BLACKOUT_HUNT_COMPLETE_OVERVIEW.md` in the *same* change so the next agent isn't misled and doesn't have to re-scan. It paraphrases live values, so the authoritative numbers stay in `Config/DefaultGame.ini`, `Source/BlackoutHunt/BHTypes.h`, and `Source/BlackoutHunt/BHGameSettings.cpp`.
 - Confirm the current task against `README.md` and, for larger work, `Docs/CODEX_GAME_IMPROVEMENT_TASKS.md`.
 - Run `git status --short` before editing so you know what was already dirty.
 - Inspect the relevant C++ classes, config entries, docs, and assets before designing new behavior.
@@ -20,14 +22,14 @@ These instructions apply to the whole repository. Use them as the first stop for
 ## Project Context
 
 - Blackout Hunt is an Unreal Engine 5.7 direct-IP multiplayer classroom horror hunt prototype.
-- Current beta target is `0.5.0-beta.1`; classroom Windows packaging is the primary release path.
+- Current beta target is `0.6.0` (matches `ProjectVersion` in `Config/DefaultGame.ini` and the latest GitHub release `v0.6.0`); classroom Windows packaging is the primary release path.
 - Main project paths:
   - `Source/BlackoutHunt`: native gameplay, UI, networking, automation tests, and module rules.
   - `Content`: imported assets, project art/audio, runtime maps, external actors, and package-sensitive content.
   - `Config`: gameplay tuning, input, scalability, cook/stage rules, and classroom defaults.
   - `Docs`: roadmap, deployment, tuning, assets, maintainability, release notes, and task handoff context.
   - `Tools`: build, package, import, validation, support-bundle, and maintenance scripts.
-- Important reference docs include `README.md`, `Docs/ASSETS.md`, `Docs/CLASSROOM_DEPLOYMENT.md`, `Docs/TUNING.md`, `Docs/FACILITY_VERTICAL_SLICE.md`, `Docs/MAINTAINABILITY.md`, and `Docs/CODEX_GAME_IMPROVEMENT_TASKS.md`.
+- Important reference docs include `Docs/BLACKOUT_HUNT_COMPLETE_OVERVIEW.md` (full repo context), `README.md`, `Docs/ASSETS.md`, `Docs/CLASSROOM_DEPLOYMENT.md`, `Docs/TUNING.md`, `Docs/FACILITY_VERTICAL_SLICE.md`, `Docs/MAINTAINABILITY.md`, and `Docs/CODEX_GAME_IMPROVEMENT_TASKS.md`.
 
 ## Change Routing
 
@@ -82,6 +84,23 @@ Choose validation based on the files and behavior touched:
 - Shared gameplay, networking, classroom flow, reports, bots, jumpscare variants, train economy, command-line automation, or package tooling: run targeted Unreal automation tests when available.
 
 For documentation-only changes, a focused file review and `git status --short -- AGENTS.md` are enough unless the docs describe changed behavior that should be verified separately.
+
+## Signalling the User
+
+When you need a response from the user — to answer a question, run a live test, or review completed output — open a text file named after your task in Windows Notepad so it appears on screen:
+
+```powershell
+$msg = @"
+[Task: <short task name>]
+
+<Your message or question here>
+"@
+$file = "$env:TEMP\Agent_<ShortTaskName>.txt"
+Set-Content -Path $file -Value $msg -Encoding UTF8
+Start-Process notepad.exe -ArgumentList $file
+```
+
+Use a file name that identifies the task (e.g. `Agent_SmartboardDashboard.txt`). Keep the message short: what you need and why. Do not use this for intermediate logging — only when you genuinely need the user's eyes on screen.
 
 ## Before Handoff
 

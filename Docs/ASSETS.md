@@ -27,7 +27,7 @@ Project attribution text:
 - `Tiles078`: tiled facility floor patches
 - `Sign009`: warning placards near exits and hazard routes
 
-## 0.5.0-beta.1 Package Policy
+## 0.6.0 Package Policy
 
 The Windows classroom beta cooks only the documented package-safe content paths. Package-safe paths include ambientCG materials/textures, in-house/generated audio, UI background media, Quaternius CC0 avatars, KayKit CC0 weapon props, and the specific restored Free Customizable Jumpscares runtime subfolders used by optional `UBHGameSettings.JumpscareVariants`. The default scare pool now includes asset-free procedural C++ proxy variants so classroom packages do not depend on unresolved prototype or IP-derived jumpscare visuals.
 
@@ -43,7 +43,7 @@ Current cook policy is controlled by `Config/DefaultGame.ini`:
 
 Risk decisions:
 
-| Asset area | Runtime references | 0.5.0-beta.1 decision | Distribution notes |
+| Asset area | Runtime references | 0.6.0 decision | Distribution notes |
 | --- | --- | --- | --- |
 | Procedural jumpscare proxy variants | `UBHGameSettings.JumpscareVariants` includes `ProxyRed`, `ProxyCyan`, and `ProxyViolet`; `ABHJumpscareMonster` builds the visual from native primitive components. | Include. | Uses no third-party visual asset. Audio uses the approved in-house/OpenGameArt CC0 processed scare layer under `/Game/BlackoutHunt/Audio`. |
 | SCP096 prototype, `Content/BlackoutHunt/Art/SCP096` | Local development/import scripts only; not exposed as a default `UBHGameSettings` variant and no longer hard-loaded by `ABHJumpscareMonster`. | Exclude from classroom packages. | Broader distribution is blocked until complete source-license and underlying-IP evidence is recorded. Raw `SourceFiles`, cooked `.uasset` files, and `scp-096.zip` must never stage. |

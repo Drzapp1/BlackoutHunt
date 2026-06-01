@@ -8,6 +8,11 @@ Pipeline").
 This work **cannot be done on the Linux dev box** — it needs a compiled `BlackoutHuntEditor` and the
 editor GUI for the art/lighting/nav pass.
 
+> **Update:** the export now bakes the level into a real, editable, lit `.umap` automatically (no more
+> invisible block-field seed). See `Docs/AUTHORED_MAP_BAKE.md` for the code-driven bake, the verified
+> Facility result, the in-editor polish punch-list, and the v2 modular-shell plan. The steps below remain
+> the reference for manual editor authoring on top of the bake.
+
 ## 0. One-shot seeding
 
 ```powershell
