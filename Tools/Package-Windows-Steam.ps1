@@ -12,6 +12,7 @@ $project = Join-Path $projectRoot "BlackoutHunt.uproject"
 $archive = Join-Path $projectRoot "Builds\WindowsSteam"
 $packageDdc = Join-Path $projectRoot "Builds\DerivedDataCache"
 $engineConfigPath = Join-Path $projectRoot "Config\DefaultEngine.ini"
+$gameConfigPath = Join-Path $projectRoot "Config\DefaultGame.ini"
 $defaultValuesPath = Join-Path $projectRoot "Config\Steam\SteamValues.example.ini"
 $localValuesPath = Join-Path $projectRoot "Config\Steam\SteamValues.local.ini"
 $unreal = & "$PSScriptRoot\Find-Unreal.ps1"
@@ -68,7 +69,10 @@ function ConvertTo-BoolValue {
 }
 
 function New-SteamEngineConfig {
-    param([Parameter(Mandatory = $true)][string]$AppId)
+    param(
+        [Parameter(Mandatory = $true)][string]$AppId,
+        [Parameter(Mandatory = $true)][string]$GameVersion
+    )
 
     return @"
 
@@ -90,7 +94,7 @@ bRelaunchInSteam=false
 GameServerQueryPort=27015
 bAllowP2PPacketRelay=true
 P2PConnectionTimeout=90
-GameVersion=0.5.0-beta.1
+GameVersion=$GameVersion
 
 [/Script/OnlineSubsystemSteam.SteamNetDriver]
 NetConnectionClassName="/Script/OnlineSubsystemSteam.SteamNetConnection"
@@ -175,6 +179,12 @@ if ($steamAppId -notmatch '^\d+$' -or [int64]$steamAppId -le 0) {
     throw "SteamAppId must be a positive numeric Steam App ID in $SteamValuesPath."
 }
 
+# Read the live project version so the Steam GameVersion never drifts from Config\DefaultGame.ini.
+$gameVersion = Read-IniValue -Path $gameConfigPath -Section "/Script/EngineSettings.GeneralProjectSettings" -Key "ProjectVersion"
+if (-not $gameVersion) {
+    throw "Could not read ProjectVersion from $gameConfigPath."
+}
+
 $includeSteamAppIdTxt = ConvertTo-BoolValue (Read-IniValue -Path $SteamValuesPath -Section "Steam" -Key "IncludeSteamAppIdTxtForLocalTesting" -DefaultValue "false")
 if ($Configuration -eq "Shipping" -and $steamAppId -eq "480" -and -not $AllowSpacewarShipping) {
     throw "Shipping Steam packages cannot use Spacewar App ID 480. Set a real SteamAppId or pass -AllowSpacewarShipping for an explicit smoke-test package."
@@ -197,7 +207,7 @@ $previousLocalDataCachePath = [System.Environment]::GetEnvironmentVariable("UE-L
 
 try {
     [System.Environment]::SetEnvironmentVariable("BH_STEAM_APP_ID", $steamAppId, "Process")
-    [System.IO.File]::WriteAllText($engineConfigPath, ($originalEngineConfigText.TrimEnd() + (New-SteamEngineConfig -AppId $steamAppId) + "`r`n"), [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($engineConfigPath, ($originalEngineConfigText.TrimEnd() + (New-SteamEngineConfig -AppId $steamAppId -GameVersion $gameVersion) + "`r`n"), [System.Text.UTF8Encoding]::new($false))
 
     if (Test-Path -LiteralPath $archive) {
         Remove-Item -LiteralPath $archive -Recurse -Force
