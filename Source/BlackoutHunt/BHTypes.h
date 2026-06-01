@@ -14,6 +14,7 @@ class UNiagaraSystem;
 class USoundBase;
 class USkeletalMesh;
 class UStaticMesh;
+class UTexture2D;
 
 UENUM(BlueprintType)
 enum class EBHRoundPhase : uint8
@@ -38,6 +39,16 @@ enum class EBHPlayerRole : uint8
 	Spectator UMETA(DisplayName = "Spectator")
 };
 
+// Which solo tutorial the guided ABHTutorialDirector runs. Selected by the ?BHTutorialPhase= URL option and
+// chained Survivor -> Teacher -> Monitor as the student reaches each exit.
+UENUM(BlueprintType)
+enum class EBHTutorialPhase : uint8
+{
+	Survivor UMETA(DisplayName = "Survivor"),
+	Teacher UMETA(DisplayName = "Teacher"),
+	Monitor UMETA(DisplayName = "Monitor")
+};
+
 UENUM(BlueprintType)
 enum class EBHPlayerLifeState : uint8
 {
@@ -45,6 +56,124 @@ enum class EBHPlayerLifeState : uint8
 	Captured UMETA(DisplayName = "Captured"),
 	Escaped UMETA(DisplayName = "Escaped")
 };
+
+// Bitmask of "things to try" during the live role warmup (Prep). Tracked per player on the
+// PlayerState and surfaced as a short HUD checklist. Purely advisory teaching state: it never
+// affects scoring, mastery, XP, or classroom reports. Not a UENUM — server/HUD-internal only,
+// and the values are bit flags rather than a contiguous reflected list.
+enum class EBHWarmupStep : uint8
+{
+	Flashlight = 1 << 0, // Survivor/Tester: toggled the flashlight (F)
+	Hide       = 1 << 1, // Survivor/Tester: hid in a locker (E)
+	Question   = 1 << 2, // Survivor/Tester: answered a practice question (1-4)
+	Scan       = 1 << 3, // Hunter heartbeat scan / Hall Monitor real hint (Q)
+	Tool       = 1 << 4, // Hunter blackout-or-swing / Hall Monitor trap-or-false-marker (G/R/Mouse)
+};
+
+// The warmup steps expected for a role. Drives the checklist total and the "you're ready" signal.
+// Returns 0 for roles with no checklist (Spectator/Unassigned).
+inline uint8 BHWarmupExpectedMask(EBHPlayerRole Role)
+{
+	switch (Role)
+	{
+	case EBHPlayerRole::Survivor:
+	case EBHPlayerRole::Tester:
+		return static_cast<uint8>(EBHWarmupStep::Flashlight)
+			| static_cast<uint8>(EBHWarmupStep::Hide)
+			| static_cast<uint8>(EBHWarmupStep::Question);
+	case EBHPlayerRole::Hunter:
+	case EBHPlayerRole::FakeHunter:
+		return static_cast<uint8>(EBHWarmupStep::Scan)
+			| static_cast<uint8>(EBHWarmupStep::Tool);
+	default:
+		return 0;
+	}
+}
+
+// Count of completed / total warmup steps for a role given the player's tried-step mask.
+inline void BHWarmupProgress(EBHPlayerRole Role, uint8 TriedMask, int32& OutDone, int32& OutTotal)
+{
+	const uint8 Expected = BHWarmupExpectedMask(Role);
+	OutDone = 0;
+	OutTotal = 0;
+	for (uint8 Bit = 1; Bit != 0; Bit = static_cast<uint8>(Bit << 1))
+	{
+		if ((Expected & Bit) != 0)
+		{
+			++OutTotal;
+			if ((TriedMask & Bit) != 0)
+			{
+				++OutDone;
+			}
+		}
+	}
+}
+
+// Short, kid-simple label for the next incomplete warmup step (the action to try next), by role.
+// Empty when the role has no checklist or every step is done.
+inline FString BHWarmupNextStepLabel(EBHPlayerRole Role, uint8 TriedMask)
+{
+	const uint8 Expected = BHWarmupExpectedMask(Role);
+	const uint8 Remaining = static_cast<uint8>(Expected & ~TriedMask);
+	if (Remaining == 0)
+	{
+		return FString();
+	}
+	const bool bMonitor = (Role == EBHPlayerRole::FakeHunter);
+	auto Has = [Remaining](EBHWarmupStep Step) { return (Remaining & static_cast<uint8>(Step)) != 0; };
+	if (Has(EBHWarmupStep::Flashlight)) { return TEXT("press F for your flashlight"); }
+	if (Has(EBHWarmupStep::Hide))       { return TEXT("hide in a locker (E)"); }
+	if (Has(EBHWarmupStep::Question))   { return TEXT("answer a practice question (1-4)"); }
+	if (Has(EBHWarmupStep::Scan))       { return bMonitor ? TEXT("send a real hint (Q)") : TEXT("scan for heartbeats (Q)"); }
+	if (Has(EBHWarmupStep::Tool))       { return bMonitor ? TEXT("set a trap (G) or false marker (R)") : TEXT("fire blackout (G) or swing (Mouse)"); }
+	return FString();
+}
+
+// Canonical, kid-simple onboarding copy for a role: the single source of truth for the role
+// intro card, the warmup guidance, and the in-session role cheat-sheet. Centralised so the
+// wording never drifts and never leaks Teacher-only information (player positions, answer keys).
+struct FBHRoleIntroCopy
+{
+	FString Title;        // e.g. "YOU ARE A SURVIVOR"
+	FString Goal;         // one short sentence: what you are trying to do
+	TArray<FString> Keys; // a few "KEY: action" control reminders
+	FString Tip;          // one short tactical reminder
+};
+
+inline FBHRoleIntroCopy BHGetRoleIntroCopy(EBHPlayerRole Role, bool bRevisionMode)
+{
+	FBHRoleIntroCopy Copy;
+	switch (Role)
+	{
+	case EBHPlayerRole::Hunter:
+		Copy.Title = bRevisionMode ? TEXT("YOU ARE THE TEACHER") : TEXT("YOU ARE THE HUNTER");
+		Copy.Goal = TEXT("Catch the students before they finish their tasks and escape.");
+		Copy.Keys = { TEXT("Q: scan for heartbeats"), TEXT("Mouse: swing to capture"), TEXT("G: blackout"), TEXT("F: flashlight") };
+		Copy.Tip = TEXT("Capture only starts in the Hunt. Listen for noise and cut off the exits.");
+		break;
+	case EBHPlayerRole::FakeHunter:
+		Copy.Title = TEXT("YOU ARE A HALL MONITOR");
+		Copy.Goal = TEXT("Answer at stations to unlock tools, then misdirect with hints and traps.");
+		Copy.Keys = { TEXT("E: answer / work"), TEXT("Q: real hint"), TEXT("R: false marker"), TEXT("G: trap") };
+		Copy.Tip = TEXT("You cannot capture. Contribute at stations first to unlock your tools.");
+		break;
+	case EBHPlayerRole::Spectator:
+		Copy.Title = TEXT("YOU ARE SPECTATING");
+		Copy.Goal = TEXT("Watch this round and cheer the class on.");
+		Copy.Keys = { TEXT("H: encourage"), TEXT("T / Y / U: request a next-round role") };
+		Copy.Tip = TEXT("Ask the host for a role in the next round.");
+		break;
+	case EBHPlayerRole::Survivor:
+	case EBHPlayerRole::Tester:
+	default:
+		Copy.Title = TEXT("YOU ARE A SURVIVOR");
+		Copy.Goal = TEXT("Answer questions to power the exits, finish the tasks, then reach a green exit.");
+		Copy.Keys = { TEXT("E: interact / hold to work"), TEXT("1-4: answer"), TEXT("F: flashlight"), TEXT("E: hide in a locker") };
+		Copy.Tip = TEXT("Watch your Fear. When the Teacher is near, hide in a locker and stay quiet.");
+		break;
+	}
+	return Copy;
+}
 
 UENUM(BlueprintType)
 enum class EBHMovementSpecialState : uint8
@@ -504,7 +633,14 @@ enum class EBHScareEventType : uint8
 	CCTVGlitch UMETA(DisplayName = "CCTV Glitch"),
 	LockerKnock UMETA(DisplayName = "Locker Knock"),
 	Whisper UMETA(DisplayName = "Whisper"),
-	FootstepEcho UMETA(DisplayName = "Footstep Echo")
+	FootstepEcho UMETA(DisplayName = "Footstep Echo"),
+	// A scary still image slammed full-screen into the player's face for a beat (no 3D actor needed).
+	FaceImage UMETA(DisplayName = "Face Image"),
+	// A figure that peeks around a wall/corner at the edge of view and ducks back when looked at. Passive tension.
+	Peek UMETA(DisplayName = "Corner Peek"),
+	// "Something is behind you." Locks movement (look stays free) and a directive prompt holds until the
+	// player turns to face the presence, which springs the payoff jumpscare. Safety-released on timeout.
+	BehindYou UMETA(DisplayName = "Behind You")
 };
 
 // How a monster-charge jumpscare approaches the target. Used to vary the spawn framing so
@@ -544,6 +680,13 @@ struct FBHJumpscareVariant
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
 	TSoftObjectPtr<UAnimSequence> RunAnimation;
+
+	// Pose played for tight presentations (the "in your face" slam, the behind-you payoff, corner peeks).
+	// All three pack monsters share one skeleton, so a single lunge-at-camera clip can drive any of them and
+	// gives every creature a correct, aggressive, camera-facing pose instead of a neutral idle/walk that reads
+	// as "turned the wrong way". Falls back to RunAnimation when unset.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	TSoftObjectPtr<UAnimSequence> CloseUpAnimation;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
 	TSoftObjectPtr<UStaticMesh> StaticMesh;
@@ -745,6 +888,27 @@ struct FBHClientHorrorCue
 	// When true the impact scream is doubled with a pitched-down "roar" layer for extra low-end weight.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
 	bool bLayeredImpactAudio = false;
+
+	// Optional full-screen still image slammed over the view for the cue's duration (the "PNG in your face"
+	// scare). Drawn by the HUD to cover the screen; respects reduced-flash/jumpscare comfort. Null = no image.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	TSoftObjectPtr<UTexture2D> FaceImage;
+
+	// When true the input lock ignores movement but leaves look/turn free, so the player can still rotate
+	// (used by the "behind you" directive scare where turning around is the whole point).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	bool bMoveOnlyLock = false;
+
+	// When true the Message is shown as a large centered directive banner (e.g. "DON'T TURN AROUND")
+	// rather than a small status line.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
+	bool bDirectivePrompt = false;
+
+	// "Behind you" handshake: the cue arms a client-side state that holds the directive + movement lock
+	// until the player turns to face FocusLocation (or the lock safety elapses), which springs the payoff
+	// jumpscare locally using this same cue's framing/variant. Ignored unless EventType == BehindYou.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror", meta = (ClampMin = "5.0", ClampMax = "85.0"))
+	float TurnReleaseHalfAngleDegrees = 42.0f;
 };
 
 USTRUCT(BlueprintType)
