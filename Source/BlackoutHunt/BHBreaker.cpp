@@ -91,7 +91,12 @@ void ABHBreaker::Tick(float DeltaSeconds)
 
 	for (auto It = Repairers.CreateIterator(); It; ++It)
 	{
-		if (!It->IsValid())
+		const ABHCharacter* Repairer = It->Get();
+		// Drop repairers whose pawn is gone, and also those who can no longer act
+		// (e.g. captured mid-repair): a captured survivor is still IsValid() but must
+		// stop contributing to the repair speed scaled by Repairers.Num() below.
+		const ABHPlayerState* RepairerPS = Repairer ? Repairer->GetBHPlayerState() : nullptr;
+		if (!Repairer || !RepairerPS || !RepairerPS->IsAliveSurvivor())
 		{
 			It.RemoveCurrent();
 		}

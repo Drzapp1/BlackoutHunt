@@ -63,6 +63,12 @@ protected:
 	UFUNCTION()
 	void OnRep_ModuleState();
 
+	// Plays the press SFX on every machine (server + all clients). ActivateModule runs server-only and
+	// a Press-mode button toggles bActive true->false within one call, so OnRep cannot be relied on to
+	// fire the cue remotely; an unreliable multicast guarantees clients hear the press, not just the host.
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastPlayPressSound();
+
 	void ActivateModule(ABHCharacter* Character);
 	void ApplyModuleVisuals();
 	float GetServerTimeSeconds() const;

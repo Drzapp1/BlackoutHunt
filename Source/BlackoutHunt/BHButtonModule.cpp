@@ -230,6 +230,14 @@ void ABHButtonModule::OnRep_ModuleState()
 	ApplyModuleVisuals();
 }
 
+void ABHButtonModule::MulticastPlayPressSound_Implementation()
+{
+	if (PressSound)
+	{
+		UGameplayStatics::PlaySoundAtLocation(this, PressSound, GetActorLocation(), 0.72f);
+	}
+}
+
 void ABHButtonModule::ActivateModule(ABHCharacter* Character)
 {
 	if (!HasAuthority())
@@ -257,10 +265,7 @@ void ABHButtonModule::ActivateModule(ABHCharacter* Character)
 	}
 
 	CooldownEndServerTime = GetServerTimeSeconds() + CooldownSeconds;
-	if (PressSound)
-	{
-		UGameplayStatics::PlaySoundAtLocation(this, PressSound, GetActorLocation(), 0.72f);
-	}
+	MulticastPlayPressSound();
 
 	OnModuleActivated.Broadcast(Character, ModuleId, bBroadcastActive);
 	ReceiveModuleActivated(Character, ModuleId, bBroadcastActive);

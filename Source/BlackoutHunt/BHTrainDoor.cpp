@@ -300,20 +300,32 @@ void ABHTrainDoor::ApplyDoorVisuals(float DeltaSeconds)
 		? FMath::FInterpTo(DoorOpenAlpha, TargetAlpha, DeltaSeconds, 3.5f)
 		: TargetAlpha;
 
+	// Blocking collision follows the replicated authoritative open state, NOT the interpolated
+	// DoorOpenAlpha. The server snaps bOpen instantly, so a client must clear the doorway the moment
+	// bOpen replicates; gating collision on alpha>0.92 left the doorway solid for the ~0.3s slide and
+	// bounced survivors sprinting for a just-opened door. Only the cosmetic panel slide stays on alpha.
+	const ECollisionEnabled::Type BlockingCollision = bOpen ? ECollisionEnabled::NoCollision : ECollisionEnabled::QueryAndPhysics;
 	if (LeftPanel)
 	{
 		LeftPanel->SetRelativeLocation(FVector(0.0f, FMath::Lerp(-42.0f, -116.0f, DoorOpenAlpha), 72.0f));
-		LeftPanel->SetCollisionEnabled(DoorOpenAlpha > 0.92f ? ECollisionEnabled::NoCollision : ECollisionEnabled::QueryAndPhysics);
+		LeftPanel->SetCollisionEnabled(BlockingCollision);
 	}
 	if (RightPanel)
 	{
 		RightPanel->SetRelativeLocation(FVector(0.0f, FMath::Lerp(42.0f, 116.0f, DoorOpenAlpha), 72.0f));
-		RightPanel->SetCollisionEnabled(DoorOpenAlpha > 0.92f ? ECollisionEnabled::NoCollision : ECollisionEnabled::QueryAndPhysics);
+		RightPanel->SetCollisionEnabled(BlockingCollision);
 	}
 	if (DoorBlocker)
 	{
-		DoorBlocker->SetCollisionEnabled(DoorOpenAlpha > 0.92f ? ECollisionEnabled::NoCollision : ECollisionEnabled::QueryAndPhysics);
+		DoorBlocker->SetCollisionEnabled(BlockingCollision);
 	}
+	// A door still sliding (DoorOpenAlpha mid-range) is "in motion"; without this a closing door snaps
+	// to a static red light and reads as jammed during the escape. Closing pulses a touch slower than
+	// opening so the two directions stay distinguishable, and settles to steady once fully shut.
+	const bool bMoving = DoorOpenAlpha > 0.06f && DoorOpenAlpha < 0.94f;
+	const float TimeNow = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	const FLinearColor OpenColor(0.12f, 1.0f, 0.48f, 1.0f);
+	const FLinearColor ShutColor(1.0f, 0.10f, 0.06f, 1.0f);
 	if (HeaderLight)
 	{
 		if (!HeaderLightMaterial)
@@ -322,18 +334,21 @@ void ABHTrainDoor::ApplyDoorVisuals(float DeltaSeconds)
 		}
 		if (HeaderLightMaterial)
 		{
-			const FLinearColor Color = bOpen ? FLinearColor(0.12f, 1.0f, 0.48f, 1.0f) : FLinearColor(1.0f, 0.10f, 0.06f, 1.0f);
-			const float Pulse = bOpen && GetWorld() ? 1.0f + 0.18f * FMath::Sin(GetWorld()->GetTimeSeconds() * 5.5f) : 1.0f;
+			const FLinearColor Color = bOpen ? OpenColor : ShutColor;
+			const float PulseHz = bOpen ? 5.5f : 4.0f;
+			const float Pulse = (bOpen || bMoving) ? 1.0f + 0.18f * FMath::Sin(TimeNow * PulseHz) : 1.0f;
+			const float EmissiveScale = bOpen ? (3.5f * Pulse) : (bMoving ? 2.8f * Pulse : 2.2f);
 			HeaderLightMaterial->SetVectorParameterValue(TEXT("Color"), Color);
 			HeaderLightMaterial->SetVectorParameterValue(TEXT("BaseColor"), Color);
-			HeaderLightMaterial->SetVectorParameterValue(TEXT("EmissiveColor"), Color * (bOpen ? 3.5f * Pulse : 2.2f));
+			HeaderLightMaterial->SetVectorParameterValue(TEXT("EmissiveColor"), Color * EmissiveScale);
 		}
 	}
 	if (StatusLight)
 	{
-		const float Pulse = bOpen && GetWorld() ? 0.5f + 0.5f * FMath::Sin(GetWorld()->GetTimeSeconds() * 5.5f) : 0.0f;
-		StatusLight->SetLightColor((bOpen ? FLinearColor(0.12f, 1.0f, 0.48f, 1.0f) : FLinearColor(1.0f, 0.10f, 0.06f, 1.0f)).ToFColor(true));
-		StatusLight->SetIntensity(bOpen ? 900.0f + Pulse * 260.0f : (bEscapeDoor ? 660.0f : 520.0f));
+		const float Pulse = (bOpen || bMoving) ? 0.5f + 0.5f * FMath::Sin(TimeNow * (bOpen ? 5.5f : 4.0f)) : 0.0f;
+		StatusLight->SetLightColor((bOpen ? OpenColor : ShutColor).ToFColor(true));
+		const float ShutIntensity = bMoving ? 760.0f + Pulse * 200.0f : (bEscapeDoor ? 660.0f : 520.0f);
+		StatusLight->SetIntensity(bOpen ? 900.0f + Pulse * 260.0f : ShutIntensity);
 	}
 }
 
