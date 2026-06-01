@@ -1,0 +1,3717 @@
+{
+  "mesh_count": 116,
+  "meshes": [
+    {
+      "asset_path": "/Engine/BasicShapes/Cone.Cone",
+      "name": "Cone",
+      "root": "/Engine/BasicShapes",
+      "size_cm": [
+        100.0,
+        100.0,
+        100.0
+      ],
+      "half_extent": [
+        50.0,
+        50.0,
+        50.0
+      ],
+      "origin": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "bbox_min": [
+        -50.0,
+        -50.0,
+        -50.0
+      ],
+      "bbox_max": [
+        50.0,
+        50.0,
+        50.0
+      ],
+      "radius_cm": 70.71,
+      "floor_seat_z": 50.0
+    },
+    {
+      "asset_path": "/Engine/BasicShapes/Cube.Cube",
+      "name": "Cube",
+      "root": "/Engine/BasicShapes",
+      "size_cm": [
+        100.0,
+        100.0,
+        100.0
+      ],
+      "half_extent": [
+        50.0,
+        50.0,
+        50.0
+      ],
+      "origin": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "bbox_min": [
+        -50.0,
+        -50.0,
+        -50.0
+      ],
+      "bbox_max": [
+        50.0,
+        50.0,
+        50.0
+      ],
+      "radius_cm": 86.6,
+      "floor_seat_z": 50.0
+    },
+    {
+      "asset_path": "/Engine/BasicShapes/Cube1.Cube1",
+      "name": "Cube1",
+      "root": "/Engine/BasicShapes",
+      "size_cm": [
+        100.0,
+        100.0,
+        100.0
+      ],
+      "half_extent": [
+        50.0,
+        50.0,
+        50.0
+      ],
+      "origin": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "bbox_min": [
+        -50.0,
+        -50.0,
+        -50.0
+      ],
+      "bbox_max": [
+        50.0,
+        50.0,
+        50.0
+      ],
+      "radius_cm": 86.6,
+      "floor_seat_z": 50.0
+    },
+    {
+      "asset_path": "/Engine/BasicShapes/Cylinder.Cylinder",
+      "name": "Cylinder",
+      "root": "/Engine/BasicShapes",
+      "size_cm": [
+        100.0,
+        100.0,
+        100.0
+      ],
+      "half_extent": [
+        50.0,
+        50.0,
+        50.0
+      ],
+      "origin": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "bbox_min": [
+        -50.0,
+        -50.0,
+        -50.0
+      ],
+      "bbox_max": [
+        50.0,
+        50.0,
+        50.0
+      ],
+      "radius_cm": 70.71,
+      "floor_seat_z": 50.0
+    },
+    {
+      "asset_path": "/Engine/BasicShapes/Plane.Plane",
+      "name": "Plane",
+      "root": "/Engine/BasicShapes",
+      "size_cm": [
+        100.0,
+        100.0,
+        0.0
+      ],
+      "half_extent": [
+        50.0,
+        50.0,
+        0.0
+      ],
+      "origin": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "bbox_min": [
+        -50.0,
+        -50.0,
+        -0.0
+      ],
+      "bbox_max": [
+        50.0,
+        50.0,
+        0.0
+      ],
+      "radius_cm": 70.71,
+      "floor_seat_z": 0.0
+    },
+    {
+      "asset_path": "/Engine/BasicShapes/Sphere.Sphere",
+      "name": "Sphere",
+      "root": "/Engine/BasicShapes",
+      "size_cm": [
+        100.0,
+        100.0,
+        100.0
+      ],
+      "half_extent": [
+        50.0,
+        50.0,
+        50.0
+      ],
+      "origin": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "bbox_min": [
+        -50.0,
+        -50.0,
+        -50.0
+      ],
+      "bbox_max": [
+        50.0,
+        50.0,
+        50.0
+      ],
+      "radius_cm": 50.0,
+      "floor_seat_z": 50.0
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/MergeActors/SM_CH_Container_Metal_A1.SM_CH_Container_Metal_A1",
+      "name": "SM_CH_Container_Metal_A1",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        653.45,
+        313.96,
+        271.23
+      ],
+      "half_extent": [
+        326.73,
+        156.98,
+        135.61
+      ],
+      "origin": [
+        -322.27,
+        -157.02,
+        134.32
+      ],
+      "bbox_min": [
+        -649.0,
+        -314.0,
+        -1.29
+      ],
+      "bbox_max": [
+        4.45,
+        -0.04,
+        269.94
+      ],
+      "radius_cm": 387.02,
+      "floor_seat_z": 1.29
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/MergeActors/SM_CH_Container_Metal_A2.SM_CH_Container_Metal_A2",
+      "name": "SM_CH_Container_Metal_A2",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        648.51,
+        314.05,
+        271.25
+      ],
+      "half_extent": [
+        324.26,
+        157.03,
+        135.63
+      ],
+      "origin": [
+        -319.8,
+        -156.97,
+        134.31
+      ],
+      "bbox_min": [
+        -644.06,
+        -314.0,
+        -1.32
+      ],
+      "bbox_max": [
+        4.45,
+        0.05,
+        269.94
+      ],
+      "radius_cm": 384.96,
+      "floor_seat_z": 1.32
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/MergeActors/SM_CH_Container_Metal_A3.SM_CH_Container_Metal_A3",
+      "name": "SM_CH_Container_Metal_A3",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        656.02,
+        325.64,
+        269.9
+      ],
+      "half_extent": [
+        328.01,
+        162.82,
+        134.95
+      ],
+      "origin": [
+        -322.03,
+        -157.09,
+        134.98
+      ],
+      "bbox_min": [
+        -650.04,
+        -319.91,
+        0.03
+      ],
+      "bbox_max": [
+        5.98,
+        5.73,
+        269.94
+      ],
+      "radius_cm": 390.27,
+      "floor_seat_z": -0.03
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/MergeActors/SM_CH_Container_Metal_A4.SM_CH_Container_Metal_A4",
+      "name": "SM_CH_Container_Metal_A4",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        656.02,
+        325.64,
+        269.9
+      ],
+      "half_extent": [
+        328.01,
+        162.82,
+        134.95
+      ],
+      "origin": [
+        -322.03,
+        -157.09,
+        134.98
+      ],
+      "bbox_min": [
+        -650.04,
+        -319.91,
+        0.03
+      ],
+      "bbox_max": [
+        5.98,
+        5.73,
+        269.94
+      ],
+      "radius_cm": 390.27,
+      "floor_seat_z": -0.03
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/MergeActors/SM_CH_Container_Wood_A1.SM_CH_Container_Wood_A1",
+      "name": "SM_CH_Container_Wood_A1",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        648.51,
+        313.96,
+        271.23
+      ],
+      "half_extent": [
+        324.26,
+        156.98,
+        135.61
+      ],
+      "origin": [
+        -319.8,
+        -157.02,
+        134.32
+      ],
+      "bbox_min": [
+        -644.06,
+        -314.0,
+        -1.29
+      ],
+      "bbox_max": [
+        4.45,
+        -0.04,
+        269.94
+      ],
+      "radius_cm": 384.94,
+      "floor_seat_z": 1.29
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/MergeActors/SM_CH_Container_Wood_A2.SM_CH_Container_Wood_A2",
+      "name": "SM_CH_Container_Wood_A2",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        656.02,
+        325.64,
+        269.9
+      ],
+      "half_extent": [
+        328.01,
+        162.82,
+        134.95
+      ],
+      "origin": [
+        -322.03,
+        -157.09,
+        134.98
+      ],
+      "bbox_min": [
+        -650.04,
+        -319.91,
+        0.03
+      ],
+      "bbox_max": [
+        5.98,
+        5.74,
+        269.94
+      ],
+      "radius_cm": 390.27,
+      "floor_seat_z": -0.03
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/MergeActors/SM_CH_Container_Wood_A3.SM_CH_Container_Wood_A3",
+      "name": "SM_CH_Container_Wood_A3",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        656.02,
+        325.64,
+        269.9
+      ],
+      "half_extent": [
+        328.01,
+        162.82,
+        134.95
+      ],
+      "origin": [
+        -322.03,
+        -157.09,
+        134.98
+      ],
+      "bbox_min": [
+        -650.04,
+        -319.91,
+        0.03
+      ],
+      "bbox_max": [
+        5.98,
+        5.74,
+        269.94
+      ],
+      "radius_cm": 390.27,
+      "floor_seat_z": -0.03
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/MergeActors/SM_CH_Container_Wood_A4.SM_CH_Container_Wood_A4",
+      "name": "SM_CH_Container_Wood_A4",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        656.02,
+        325.64,
+        269.9
+      ],
+      "half_extent": [
+        328.01,
+        162.82,
+        134.95
+      ],
+      "origin": [
+        -322.03,
+        -157.09,
+        134.98
+      ],
+      "bbox_min": [
+        -650.04,
+        -319.91,
+        0.03
+      ],
+      "bbox_max": [
+        5.98,
+        5.74,
+        269.94
+      ],
+      "radius_cm": 390.27,
+      "floor_seat_z": -0.03
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/MergeActors/SM_CH_House_Metal_A1.SM_CH_House_Metal_A1",
+      "name": "SM_CH_House_Metal_A1",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        656.02,
+        325.64,
+        630.7
+      ],
+      "half_extent": [
+        328.01,
+        162.82,
+        315.35
+      ],
+      "origin": [
+        -321.97,
+        -156.91,
+        -45.42
+      ],
+      "bbox_min": [
+        -649.98,
+        -319.73,
+        -360.77
+      ],
+      "bbox_max": [
+        6.04,
+        5.91,
+        269.94
+      ],
+      "radius_cm": 483.27,
+      "floor_seat_z": 360.77
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/MergeActors/SM_CH_House_Metal_A2.SM_CH_House_Metal_A2",
+      "name": "SM_CH_House_Metal_A2",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        656.02,
+        325.64,
+        634.75
+      ],
+      "half_extent": [
+        328.01,
+        162.82,
+        317.37
+      ],
+      "origin": [
+        -321.97,
+        -156.91,
+        -43.39
+      ],
+      "bbox_min": [
+        -649.98,
+        -319.73,
+        -360.77
+      ],
+      "bbox_max": [
+        6.04,
+        5.91,
+        273.98
+      ],
+      "radius_cm": 484.59,
+      "floor_seat_z": 360.77
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/MergeActors/SM_CH_House_Wood_A1.SM_CH_House_Wood_A1",
+      "name": "SM_CH_House_Wood_A1",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        656.02,
+        325.64,
+        633.07
+      ],
+      "half_extent": [
+        328.01,
+        162.82,
+        316.54
+      ],
+      "origin": [
+        -322.03,
+        -157.09,
+        -44.23
+      ],
+      "bbox_min": [
+        -650.04,
+        -319.91,
+        -360.77
+      ],
+      "bbox_max": [
+        5.98,
+        5.74,
+        272.31
+      ],
+      "radius_cm": 484.04,
+      "floor_seat_z": 360.77
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/MergeActors/SM_CH_House_Wood_A2.SM_CH_House_Wood_A2",
+      "name": "SM_CH_House_Wood_A2",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        655.53,
+        325.47,
+        631.7
+      ],
+      "half_extent": [
+        327.77,
+        162.73,
+        315.85
+      ],
+      "origin": [
+        -322.03,
+        -157.0,
+        -44.92
+      ],
+      "bbox_min": [
+        -649.8,
+        -319.73,
+        -360.77
+      ],
+      "bbox_max": [
+        5.74,
+        5.74,
+        270.94
+      ],
+      "radius_cm": 483.4,
+      "floor_seat_z": 360.77
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/MergeActors/SM_CH_Stair_A1.SM_CH_Stair_A1",
+      "name": "SM_CH_Stair_A1",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        643.98,
+        316.34,
+        731.99
+      ],
+      "half_extent": [
+        321.99,
+        158.17,
+        365.99
+      ],
+      "origin": [
+        -321.99,
+        -155.81,
+        5.05
+      ],
+      "bbox_min": [
+        -643.98,
+        -313.98,
+        -360.94
+      ],
+      "bbox_max": [
+        -0.0,
+        2.36,
+        371.05
+      ],
+      "radius_cm": 512.49,
+      "floor_seat_z": 360.94
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Base_3x3m.SM_Base_3x3m",
+      "name": "SM_Base_3x3m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        317.58,
+        346.0,
+        373.74
+      ],
+      "half_extent": [
+        158.79,
+        173.0,
+        186.87
+      ],
+      "origin": [
+        156.41,
+        -171.0,
+        -186.9
+      ],
+      "bbox_min": [
+        -2.38,
+        -344.0,
+        -373.77
+      ],
+      "bbox_max": [
+        315.2,
+        2.0,
+        -0.03
+      ],
+      "radius_cm": 300.1,
+      "floor_seat_z": 373.77
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Base_3x4m.SM_Base_3x4m",
+      "name": "SM_Base_3x4m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        314.28,
+        440.06,
+        361.24
+      ],
+      "half_extent": [
+        157.14,
+        220.03,
+        180.62
+      ],
+      "origin": [
+        157.1,
+        -219.96,
+        -180.65
+      ],
+      "bbox_min": [
+        -0.04,
+        -439.99,
+        -361.27
+      ],
+      "bbox_max": [
+        314.24,
+        0.06,
+        -0.03
+      ],
+      "radius_cm": 325.16,
+      "floor_seat_z": 361.27
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Base_3x6m.SM_Base_3x6m",
+      "name": "SM_Base_3x6m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        314.01,
+        644.01,
+        361.88
+      ],
+      "half_extent": [
+        157.0,
+        322.01,
+        180.94
+      ],
+      "origin": [
+        157.03,
+        -322.01,
+        -180.97
+      ],
+      "bbox_min": [
+        0.03,
+        -644.02,
+        -361.91
+      ],
+      "bbox_max": [
+        314.04,
+        -0.01,
+        -0.03
+      ],
+      "radius_cm": 401.34,
+      "floor_seat_z": 361.91
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Base_Stair_A1.SM_Base_Stair_A1",
+      "name": "SM_Base_Stair_A1",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        319.52,
+        323.93,
+        282.42
+      ],
+      "half_extent": [
+        159.76,
+        161.96,
+        141.21
+      ],
+      "origin": [
+        157.62,
+        -156.44,
+        -141.24
+      ],
+      "bbox_min": [
+        -2.14,
+        -318.4,
+        -282.45
+      ],
+      "bbox_max": [
+        317.38,
+        5.53,
+        -0.03
+      ],
+      "radius_cm": 267.76,
+      "floor_seat_z": 282.45
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Container_Skeleton_3x3m_A1.SM_Container_Skeleton_3x3m_A1",
+      "name": "SM_Container_Skeleton_3x3m_A1",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        314.02,
+        352.67,
+        269.9
+      ],
+      "half_extent": [
+        157.01,
+        176.33,
+        134.95
+      ],
+      "origin": [
+        156.99,
+        -171.91,
+        134.98
+      ],
+      "bbox_min": [
+        -0.02,
+        -348.25,
+        0.03
+      ],
+      "bbox_max": [
+        314.0,
+        4.42,
+        269.94
+      ],
+      "radius_cm": 271.95,
+      "floor_seat_z": -0.03
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Container_Skeleton_3x3m_A2.SM_Container_Skeleton_3x3m_A2",
+      "name": "SM_Container_Skeleton_3x3m_A2",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        326.4,
+        354.48,
+        270.16
+      ],
+      "half_extent": [
+        163.2,
+        177.24,
+        135.08
+      ],
+      "origin": [
+        157.2,
+        -171.58,
+        135.11
+      ],
+      "bbox_min": [
+        -6.0,
+        -348.82,
+        0.03
+      ],
+      "bbox_max": [
+        320.4,
+        5.66,
+        270.19
+      ],
+      "radius_cm": 276.21,
+      "floor_seat_z": -0.03
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Container_Skeleton_3x6m_A1.SM_Container_Skeleton_3x6m_A1",
+      "name": "SM_Container_Skeleton_3x6m_A1",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        313.96,
+        653.19,
+        269.9
+      ],
+      "half_extent": [
+        156.98,
+        326.59,
+        134.95
+      ],
+      "origin": [
+        157.02,
+        -322.13,
+        134.98
+      ],
+      "bbox_min": [
+        0.04,
+        -648.72,
+        0.03
+      ],
+      "bbox_max": [
+        314.0,
+        4.47,
+        269.94
+      ],
+      "radius_cm": 386.68,
+      "floor_seat_z": -0.03
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Container_Skeleton_3x6m_A2.SM_Container_Skeleton_3x6m_A2",
+      "name": "SM_Container_Skeleton_3x6m_A2",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        326.22,
+        655.77,
+        269.9
+      ],
+      "half_extent": [
+        163.11,
+        327.89,
+        134.95
+      ],
+      "origin": [
+        156.95,
+        -322.15,
+        134.98
+      ],
+      "bbox_min": [
+        -6.16,
+        -650.04,
+        0.03
+      ],
+      "bbox_max": [
+        320.06,
+        5.74,
+        269.94
+      ],
+      "radius_cm": 390.29,
+      "floor_seat_z": -0.03
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Door_Container_Metal_A1.SM_Door_Container_Metal_A1",
+      "name": "SM_Door_Container_Metal_A1",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        155.04,
+        16.51,
+        270.38
+      ],
+      "half_extent": [
+        77.52,
+        8.26,
+        135.19
+      ],
+      "origin": [
+        75.1,
+        1.18,
+        133.8
+      ],
+      "bbox_min": [
+        -2.42,
+        -7.07,
+        -1.39
+      ],
+      "bbox_max": [
+        152.62,
+        9.44,
+        268.99
+      ],
+      "radius_cm": 156.06,
+      "floor_seat_z": 1.39
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Door_Container_Metal_A2.SM_Door_Container_Metal_A2",
+      "name": "SM_Door_Container_Metal_A2",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        155.04,
+        16.4,
+        270.38
+      ],
+      "half_extent": [
+        77.52,
+        8.2,
+        135.19
+      ],
+      "origin": [
+        75.1,
+        1.13,
+        133.8
+      ],
+      "bbox_min": [
+        -2.42,
+        -7.07,
+        -1.39
+      ],
+      "bbox_max": [
+        152.62,
+        9.33,
+        268.99
+      ],
+      "radius_cm": 156.06,
+      "floor_seat_z": 1.39
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Door_Container_Metal_A3.SM_Door_Container_Metal_A3",
+      "name": "SM_Door_Container_Metal_A3",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        155.0,
+        16.16,
+        229.34
+      ],
+      "half_extent": [
+        77.5,
+        8.08,
+        114.67
+      ],
+      "origin": [
+        75.12,
+        1.01,
+        134.67
+      ],
+      "bbox_min": [
+        -2.38,
+        -7.07,
+        20.0
+      ],
+      "bbox_max": [
+        152.62,
+        9.09,
+        249.34
+      ],
+      "radius_cm": 138.64,
+      "floor_seat_z": -20.0
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Door_Metal_2m.SM_Door_Metal_2m",
+      "name": "SM_Door_Metal_2m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        13.09,
+        199.76,
+        240.9
+      ],
+      "half_extent": [
+        6.55,
+        99.88,
+        120.45
+      ],
+      "origin": [
+        2.93,
+        -99.48,
+        110.2
+      ],
+      "bbox_min": [
+        -3.62,
+        -199.36,
+        -10.25
+      ],
+      "bbox_max": [
+        9.47,
+        0.4,
+        230.65
+      ],
+      "radius_cm": 156.61,
+      "floor_seat_z": 10.25
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Door_Metal_3m_1m.SM_Door_Metal_3m_1m",
+      "name": "SM_Door_Metal_3m_1m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        16.09,
+        301.58,
+        240.44
+      ],
+      "half_extent": [
+        8.05,
+        150.79,
+        120.22
+      ],
+      "origin": [
+        5.84,
+        -149.77,
+        109.97
+      ],
+      "bbox_min": [
+        -2.21,
+        -300.55,
+        -10.25
+      ],
+      "bbox_max": [
+        13.88,
+        1.02,
+        230.19
+      ],
+      "radius_cm": 193.01,
+      "floor_seat_z": 10.25
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Door_Metal_3m_2m.SM_Door_Metal_3m_2m",
+      "name": "SM_Door_Metal_3m_2m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        17.3,
+        300.05,
+        235.21
+      ],
+      "half_extent": [
+        8.65,
+        150.03,
+        117.61
+      ],
+      "origin": [
+        5.18,
+        -149.98,
+        114.08
+      ],
+      "bbox_min": [
+        -3.46,
+        -300.01,
+        -3.52
+      ],
+      "bbox_max": [
+        13.83,
+        0.04,
+        231.69
+      ],
+      "radius_cm": 190.82,
+      "floor_seat_z": 3.52
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Door_Metal_4m.SM_Door_Metal_4m",
+      "name": "SM_Door_Metal_4m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        19.66,
+        399.43,
+        234.76
+      ],
+      "half_extent": [
+        9.83,
+        199.71,
+        117.38
+      ],
+      "origin": [
+        4.0,
+        -198.65,
+        113.86
+      ],
+      "bbox_min": [
+        -5.83,
+        -398.37,
+        -3.52
+      ],
+      "bbox_max": [
+        13.83,
+        1.06,
+        231.23
+      ],
+      "radius_cm": 231.86,
+      "floor_seat_z": 3.52
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Door_Metal_6m.SM_Door_Metal_6m",
+      "name": "SM_Door_Metal_6m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        10.47,
+        600.85,
+        231.49
+      ],
+      "half_extent": [
+        5.24,
+        300.43,
+        115.75
+      ],
+      "origin": [
+        4.24,
+        -299.94,
+        115.15
+      ],
+      "bbox_min": [
+        -1.0,
+        -600.37,
+        -0.6
+      ],
+      "bbox_max": [
+        9.47,
+        0.49,
+        230.9
+      ],
+      "radius_cm": 322.0,
+      "floor_seat_z": 0.6
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Door_Metal_A1.SM_Door_Metal_A1",
+      "name": "SM_Door_Metal_A1",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        12.38,
+        100.04,
+        209.67
+      ],
+      "half_extent": [
+        6.19,
+        50.02,
+        104.84
+      ],
+      "origin": [
+        -4.43,
+        -49.97,
+        104.83
+      ],
+      "bbox_min": [
+        -10.62,
+        -99.99,
+        -0.01
+      ],
+      "bbox_max": [
+        1.76,
+        0.04,
+        209.66
+      ],
+      "radius_cm": 116.32,
+      "floor_seat_z": 0.01
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Door_Metal_A2.SM_Door_Metal_A2",
+      "name": "SM_Door_Metal_A2",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        6.31,
+        103.04,
+        209.68
+      ],
+      "half_extent": [
+        3.15,
+        51.52,
+        104.84
+      ],
+      "origin": [
+        -3.2,
+        -51.47,
+        104.83
+      ],
+      "bbox_min": [
+        -6.35,
+        -102.99,
+        -0.01
+      ],
+      "bbox_max": [
+        -0.04,
+        0.04,
+        209.68
+      ],
+      "radius_cm": 116.86,
+      "floor_seat_z": 0.01
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Door_Metal_A3.SM_Door_Metal_A3",
+      "name": "SM_Door_Metal_A3",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        12.37,
+        200.04,
+        209.67
+      ],
+      "half_extent": [
+        6.19,
+        100.02,
+        104.84
+      ],
+      "origin": [
+        -0.43,
+        -59.97,
+        104.83
+      ],
+      "bbox_min": [
+        -6.62,
+        -159.99,
+        -0.01
+      ],
+      "bbox_max": [
+        5.75,
+        40.04,
+        209.66
+      ],
+      "radius_cm": 145.02,
+      "floor_seat_z": 0.01
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Door_Wood_2m.SM_Door_Wood_2m",
+      "name": "SM_Door_Wood_2m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        8.3,
+        200.63,
+        229.67
+      ],
+      "half_extent": [
+        4.15,
+        100.32,
+        114.84
+      ],
+      "origin": [
+        4.16,
+        -99.68,
+        114.85
+      ],
+      "bbox_min": [
+        0.01,
+        -199.99,
+        0.02
+      ],
+      "bbox_max": [
+        8.31,
+        0.64,
+        229.69
+      ],
+      "radius_cm": 152.54,
+      "floor_seat_z": -0.02
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Door_Wood_3m_1m.SM_Door_Wood_3m_1m",
+      "name": "SM_Door_Wood_3m_1m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        8.69,
+        300.35,
+        229.67
+      ],
+      "half_extent": [
+        4.34,
+        150.18,
+        114.84
+      ],
+      "origin": [
+        4.35,
+        -149.82,
+        114.85
+      ],
+      "bbox_min": [
+        0.01,
+        -299.99,
+        0.02
+      ],
+      "bbox_max": [
+        8.7,
+        0.36,
+        229.69
+      ],
+      "radius_cm": 189.1,
+      "floor_seat_z": -0.02
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Door_Wood_3m_2m.SM_Door_Wood_3m_2m",
+      "name": "SM_Door_Wood_3m_2m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        7.92,
+        300.04,
+        229.67
+      ],
+      "half_extent": [
+        3.96,
+        150.02,
+        114.84
+      ],
+      "origin": [
+        3.97,
+        -149.97,
+        114.85
+      ],
+      "bbox_min": [
+        0.01,
+        -299.99,
+        0.02
+      ],
+      "bbox_max": [
+        7.93,
+        0.04,
+        229.69
+      ],
+      "radius_cm": 188.97,
+      "floor_seat_z": -0.02
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Door_Wood_4m.SM_Door_Wood_4m",
+      "name": "SM_Door_Wood_4m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        7.92,
+        400.04,
+        229.67
+      ],
+      "half_extent": [
+        3.96,
+        200.02,
+        114.84
+      ],
+      "origin": [
+        3.97,
+        -199.97,
+        114.85
+      ],
+      "bbox_min": [
+        0.01,
+        -399.99,
+        0.02
+      ],
+      "bbox_max": [
+        7.93,
+        0.04,
+        229.69
+      ],
+      "radius_cm": 230.67,
+      "floor_seat_z": -0.02
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Door_Wood_6m.SM_Door_Wood_6m",
+      "name": "SM_Door_Wood_6m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        7.92,
+        600.04,
+        229.67
+      ],
+      "half_extent": [
+        3.96,
+        300.02,
+        114.84
+      ],
+      "origin": [
+        3.97,
+        -299.97,
+        114.85
+      ],
+      "bbox_min": [
+        0.01,
+        -599.99,
+        0.02
+      ],
+      "bbox_max": [
+        7.93,
+        0.04,
+        229.69
+      ],
+      "radius_cm": 321.27,
+      "floor_seat_z": -0.02
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Door_Wood_A1.SM_Door_Wood_A1",
+      "name": "SM_Door_Wood_A1",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        18.02,
+        100.04,
+        209.67
+      ],
+      "half_extent": [
+        9.01,
+        50.02,
+        104.84
+      ],
+      "origin": [
+        1.42,
+        -49.97,
+        104.83
+      ],
+      "bbox_min": [
+        -7.59,
+        -99.99,
+        -0.01
+      ],
+      "bbox_max": [
+        10.43,
+        0.04,
+        209.66
+      ],
+      "radius_cm": 116.5,
+      "floor_seat_z": 0.01
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Door_Wood_A2.SM_Door_Wood_A2",
+      "name": "SM_Door_Wood_A2",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        16.43,
+        100.04,
+        209.67
+      ],
+      "half_extent": [
+        8.21,
+        50.02,
+        104.84
+      ],
+      "origin": [
+        2.12,
+        -49.97,
+        104.83
+      ],
+      "bbox_min": [
+        -6.09,
+        -99.99,
+        -0.01
+      ],
+      "bbox_max": [
+        10.33,
+        0.04,
+        209.66
+      ],
+      "radius_cm": 116.45,
+      "floor_seat_z": 0.01
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Grid_2m.SM_Grid_2m",
+      "name": "SM_Grid_2m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        204.07,
+        13.96,
+        104.13
+      ],
+      "half_extent": [
+        102.03,
+        6.98,
+        52.07
+      ],
+      "origin": [
+        0.21,
+        0.02,
+        49.98
+      ],
+      "bbox_min": [
+        -101.82,
+        -6.97,
+        -2.08
+      ],
+      "bbox_max": [
+        102.25,
+        7.0,
+        102.05
+      ],
+      "radius_cm": 114.76,
+      "floor_seat_z": 2.08
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Grid_3m.SM_Grid_3m",
+      "name": "SM_Grid_3m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        304.07,
+        13.96,
+        104.13
+      ],
+      "half_extent": [
+        152.03,
+        6.98,
+        52.07
+      ],
+      "origin": [
+        0.21,
+        0.02,
+        49.98
+      ],
+      "bbox_min": [
+        -151.82,
+        -6.97,
+        -2.08
+      ],
+      "bbox_max": [
+        152.25,
+        7.0,
+        102.05
+      ],
+      "radius_cm": 160.85,
+      "floor_seat_z": 2.08
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Grid_6m.SM_Grid_6m",
+      "name": "SM_Grid_6m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        641.87,
+        13.46,
+        102.84
+      ],
+      "half_extent": [
+        320.94,
+        6.73,
+        51.42
+      ],
+      "origin": [
+        -0.87,
+        0.26,
+        50.63
+      ],
+      "bbox_min": [
+        -321.8,
+        -6.47,
+        -0.8
+      ],
+      "bbox_max": [
+        320.07,
+        7.0,
+        102.05
+      ],
+      "radius_cm": 325.1,
+      "floor_seat_z": 0.8
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Roof_Metal_3m.SM_Roof_Metal_3m",
+      "name": "SM_Roof_Metal_3m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        301.15,
+        300.12,
+        8.45
+      ],
+      "half_extent": [
+        150.58,
+        150.06,
+        4.23
+      ],
+      "origin": [
+        150.21,
+        -149.95,
+        4.04
+      ],
+      "bbox_min": [
+        -0.37,
+        -300.01,
+        -0.19
+      ],
+      "bbox_max": [
+        300.79,
+        0.11,
+        8.26
+      ],
+      "radius_cm": 212.63,
+      "floor_seat_z": 0.19
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Roof_Metal_4m.SM_Roof_Metal_4m",
+      "name": "SM_Roof_Metal_4m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        300.96,
+        400.23,
+        8.5
+      ],
+      "half_extent": [
+        150.48,
+        200.11,
+        4.25
+      ],
+      "origin": [
+        150.2,
+        -199.97,
+        4.01
+      ],
+      "bbox_min": [
+        -0.28,
+        -400.08,
+        -0.24
+      ],
+      "bbox_max": [
+        300.68,
+        0.14,
+        8.26
+      ],
+      "radius_cm": 250.42,
+      "floor_seat_z": 0.24
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Roof_Metal_6m.SM_Roof_Metal_6m",
+      "name": "SM_Roof_Metal_6m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        300.75,
+        600.33,
+        8.55
+      ],
+      "half_extent": [
+        150.38,
+        300.16,
+        4.27
+      ],
+      "origin": [
+        150.0,
+        -300.01,
+        3.99
+      ],
+      "bbox_min": [
+        -0.38,
+        -600.17,
+        -0.29
+      ],
+      "bbox_max": [
+        300.37,
+        0.15,
+        8.26
+      ],
+      "radius_cm": 335.75,
+      "floor_seat_z": 0.29
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Roof_Windows_Metal_A1.SM_Roof_Windows_Metal_A1",
+      "name": "SM_Roof_Windows_Metal_A1",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        300.33,
+        600.11,
+        10.0
+      ],
+      "half_extent": [
+        150.16,
+        300.05,
+        5.0
+      ],
+      "origin": [
+        150.06,
+        -300.01,
+        4.0
+      ],
+      "bbox_min": [
+        -0.1,
+        -600.06,
+        -1.0
+      ],
+      "bbox_max": [
+        300.22,
+        0.04,
+        9.0
+      ],
+      "radius_cm": 335.56,
+      "floor_seat_z": 1.0
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Roof_Windows_Metal_A2.SM_Roof_Windows_Metal_A2",
+      "name": "SM_Roof_Windows_Metal_A2",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        302.38,
+        600.35,
+        11.24
+      ],
+      "half_extent": [
+        151.19,
+        300.18,
+        5.62
+      ],
+      "origin": [
+        150.06,
+        -300.02,
+        4.62
+      ],
+      "bbox_min": [
+        -1.13,
+        -600.2,
+        -1.0
+      ],
+      "bbox_max": [
+        301.25,
+        0.16,
+        10.24
+      ],
+      "radius_cm": 336.15,
+      "floor_seat_z": 1.0
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Roof_Windows_Wood_A1.SM_Roof_Windows_Wood_A1",
+      "name": "SM_Roof_Windows_Wood_A1",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        300.24,
+        600.11,
+        16.36
+      ],
+      "half_extent": [
+        150.12,
+        300.05,
+        8.18
+      ],
+      "origin": [
+        150.14,
+        -300.01,
+        3.92
+      ],
+      "bbox_min": [
+        0.02,
+        -600.06,
+        -4.26
+      ],
+      "bbox_max": [
+        300.26,
+        0.04,
+        12.1
+      ],
+      "radius_cm": 335.61,
+      "floor_seat_z": 4.26
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Roof_Windows_Wood_A2.SM_Roof_Windows_Wood_A2",
+      "name": "SM_Roof_Windows_Wood_A2",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        300.24,
+        600.11,
+        12.09
+      ],
+      "half_extent": [
+        150.12,
+        300.05,
+        6.05
+      ],
+      "origin": [
+        150.14,
+        -300.01,
+        4.26
+      ],
+      "bbox_min": [
+        0.02,
+        -600.06,
+        -1.79
+      ],
+      "bbox_max": [
+        300.26,
+        0.04,
+        10.31
+      ],
+      "radius_cm": 335.57,
+      "floor_seat_z": 1.79
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Roof_Wood_3m.SM_Roof_Wood_3m",
+      "name": "SM_Roof_Wood_3m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        300.24,
+        300.07,
+        9.39
+      ],
+      "half_extent": [
+        150.12,
+        150.04,
+        4.69
+      ],
+      "origin": [
+        150.14,
+        -149.99,
+        4.7
+      ],
+      "bbox_min": [
+        0.02,
+        -300.03,
+        0.01
+      ],
+      "bbox_max": [
+        300.26,
+        0.04,
+        9.4
+      ],
+      "radius_cm": 212.29,
+      "floor_seat_z": -0.01
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Roof_Wood_4m.SM_Roof_Wood_4m",
+      "name": "SM_Roof_Wood_4m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        300.24,
+        400.07,
+        9.29
+      ],
+      "half_extent": [
+        150.12,
+        200.04,
+        4.64
+      ],
+      "origin": [
+        150.14,
+        -199.99,
+        4.65
+      ],
+      "bbox_min": [
+        0.02,
+        -400.03,
+        0.01
+      ],
+      "bbox_max": [
+        300.26,
+        0.04,
+        9.29
+      ],
+      "radius_cm": 250.14,
+      "floor_seat_z": -0.01
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Roof_Wood_6m.SM_Roof_Wood_6m",
+      "name": "SM_Roof_Wood_6m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        300.24,
+        600.11,
+        8.53
+      ],
+      "half_extent": [
+        150.12,
+        300.05,
+        4.27
+      ],
+      "origin": [
+        150.14,
+        -300.01,
+        4.27
+      ],
+      "bbox_min": [
+        0.02,
+        -600.06,
+        0.01
+      ],
+      "bbox_max": [
+        300.26,
+        0.04,
+        8.54
+      ],
+      "radius_cm": 335.54,
+      "floor_seat_z": -0.01
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Stair.SM_Stair",
+      "name": "SM_Stair",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        320.59,
+        336.12,
+        276.09
+      ],
+      "half_extent": [
+        160.29,
+        168.06,
+        138.05
+      ],
+      "origin": [
+        155.8,
+        162.92,
+        -132.75
+      ],
+      "bbox_min": [
+        -4.49,
+        -5.14,
+        -270.79
+      ],
+      "bbox_max": [
+        316.09,
+        330.97,
+        5.3
+      ],
+      "radius_cm": 270.17,
+      "floor_seat_z": 270.79
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Stair_Grid.SM_Stair_Grid",
+      "name": "SM_Stair_Grid",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        314.02,
+        332.47,
+        376.74
+      ],
+      "half_extent": [
+        157.01,
+        166.24,
+        188.37
+      ],
+      "origin": [
+        156.95,
+        162.27,
+        -83.27
+      ],
+      "bbox_min": [
+        -0.06,
+        -3.96,
+        -271.64
+      ],
+      "bbox_max": [
+        313.95,
+        328.51,
+        105.1
+      ],
+      "radius_cm": 296.26,
+      "floor_seat_z": 271.64
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Stair_Indoor.SM_Stair_Indoor",
+      "name": "SM_Stair_Indoor",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        300.64,
+        335.98,
+        255.03
+      ],
+      "half_extent": [
+        150.32,
+        167.99,
+        127.52
+      ],
+      "origin": [
+        145.8,
+        162.92,
+        -122.61
+      ],
+      "bbox_min": [
+        -4.52,
+        -5.07,
+        -250.13
+      ],
+      "bbox_max": [
+        296.12,
+        330.91,
+        4.91
+      ],
+      "radius_cm": 258.99,
+      "floor_seat_z": 250.13
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Support_3x3m.SM_Support_3x3m",
+      "name": "SM_Support_3x3m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        320.08,
+        326.79,
+        140.31
+      ],
+      "half_extent": [
+        160.04,
+        163.4,
+        70.15
+      ],
+      "origin": [
+        160.0,
+        156.6,
+        -50.23
+      ],
+      "bbox_min": [
+        -0.04,
+        -6.8,
+        -120.38
+      ],
+      "bbox_max": [
+        320.04,
+        319.99,
+        19.93
+      ],
+      "radius_cm": 239.23,
+      "floor_seat_z": 120.38
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Support_3x6m.SM_Support_3x6m",
+      "name": "SM_Support_3x6m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        640.06,
+        326.96,
+        139.47
+      ],
+      "half_extent": [
+        320.03,
+        163.48,
+        69.74
+      ],
+      "origin": [
+        320.04,
+        156.51,
+        -49.81
+      ],
+      "bbox_min": [
+        0.01,
+        -6.97,
+        -119.54
+      ],
+      "bbox_max": [
+        640.07,
+        319.99,
+        19.93
+      ],
+      "radius_cm": 366.07,
+      "floor_seat_z": 119.54
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Wall_Metal_1m.SM_Wall_Metal_1m",
+      "name": "SM_Wall_Metal_1m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        8.54,
+        120.87,
+        231.23
+      ],
+      "half_extent": [
+        4.27,
+        60.44,
+        115.62
+      ],
+      "origin": [
+        3.99,
+        -60.22,
+        114.72
+      ],
+      "bbox_min": [
+        -0.27,
+        -120.66,
+        -0.89
+      ],
+      "bbox_max": [
+        8.26,
+        0.22,
+        230.34
+      ],
+      "radius_cm": 130.53,
+      "floor_seat_z": 0.89
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Wall_Metal_2m.SM_Wall_Metal_2m",
+      "name": "SM_Wall_Metal_2m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        8.59,
+        199.61,
+        230.4
+      ],
+      "half_extent": [
+        4.29,
+        99.8,
+        115.2
+      ],
+      "origin": [
+        3.97,
+        -99.55,
+        115.14
+      ],
+      "bbox_min": [
+        -0.32,
+        -199.36,
+        -0.06
+      ],
+      "bbox_max": [
+        8.26,
+        0.25,
+        230.34
+      ],
+      "radius_cm": 152.48,
+      "floor_seat_z": 0.06
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Wall_Metal_3m.SM_Wall_Metal_3m",
+      "name": "SM_Wall_Metal_3m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        8.51,
+        300.33,
+        230.04
+      ],
+      "half_extent": [
+        4.25,
+        150.16,
+        115.02
+      ],
+      "origin": [
+        4.01,
+        -149.98,
+        114.94
+      ],
+      "bbox_min": [
+        -0.24,
+        -300.15,
+        -0.08
+      ],
+      "bbox_max": [
+        8.26,
+        0.18,
+        229.95
+      ],
+      "radius_cm": 189.2,
+      "floor_seat_z": 0.08
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Wall_Metal_4m.SM_Wall_Metal_4m",
+      "name": "SM_Wall_Metal_4m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        8.5,
+        398.54,
+        230.03
+      ],
+      "half_extent": [
+        4.25,
+        199.27,
+        115.01
+      ],
+      "origin": [
+        4.01,
+        -199.1,
+        114.93
+      ],
+      "bbox_min": [
+        -0.24,
+        -398.37,
+        -0.08
+      ],
+      "bbox_max": [
+        8.26,
+        0.17,
+        229.94
+      ],
+      "radius_cm": 230.12,
+      "floor_seat_z": 0.08
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Wall_Metal_6m.SM_Wall_Metal_6m",
+      "name": "SM_Wall_Metal_6m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        8.45,
+        600.25,
+        230.03
+      ],
+      "half_extent": [
+        4.23,
+        300.13,
+        115.01
+      ],
+      "origin": [
+        4.04,
+        -300.01,
+        114.9
+      ],
+      "bbox_min": [
+        -0.19,
+        -600.14,
+        -0.11
+      ],
+      "bbox_max": [
+        8.26,
+        0.12,
+        229.91
+      ],
+      "radius_cm": 321.44,
+      "floor_seat_z": 0.11
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Wall_Wood_1m.SM_Wall_Wood_1m",
+      "name": "SM_Wall_Wood_1m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        7.92,
+        100.04,
+        229.67
+      ],
+      "half_extent": [
+        3.96,
+        50.02,
+        114.84
+      ],
+      "origin": [
+        3.97,
+        -49.97,
+        114.85
+      ],
+      "bbox_min": [
+        0.01,
+        -99.99,
+        0.02
+      ],
+      "bbox_max": [
+        7.93,
+        0.04,
+        229.69
+      ],
+      "radius_cm": 125.32,
+      "floor_seat_z": -0.02
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Wall_Wood_2m.SM_Wall_Wood_2m",
+      "name": "SM_Wall_Wood_2m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        7.92,
+        200.04,
+        229.67
+      ],
+      "half_extent": [
+        3.96,
+        100.02,
+        114.84
+      ],
+      "origin": [
+        3.97,
+        -99.97,
+        114.85
+      ],
+      "bbox_min": [
+        0.01,
+        -199.99,
+        0.02
+      ],
+      "bbox_max": [
+        7.93,
+        0.04,
+        229.69
+      ],
+      "radius_cm": 152.34,
+      "floor_seat_z": -0.02
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Wall_Wood_3m.SM_Wall_Wood_3m",
+      "name": "SM_Wall_Wood_3m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        8.67,
+        300.07,
+        229.67
+      ],
+      "half_extent": [
+        4.34,
+        150.04,
+        114.84
+      ],
+      "origin": [
+        4.34,
+        -149.99,
+        114.85
+      ],
+      "bbox_min": [
+        0.01,
+        -300.03,
+        0.02
+      ],
+      "bbox_max": [
+        8.68,
+        0.04,
+        229.69
+      ],
+      "radius_cm": 188.99,
+      "floor_seat_z": -0.02
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Wall_Wood_4m.SM_Wall_Wood_4m",
+      "name": "SM_Wall_Wood_4m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        8.91,
+        400.07,
+        229.67
+      ],
+      "half_extent": [
+        4.45,
+        200.04,
+        114.84
+      ],
+      "origin": [
+        4.46,
+        -199.99,
+        114.85
+      ],
+      "bbox_min": [
+        0.01,
+        -400.03,
+        0.02
+      ],
+      "bbox_max": [
+        8.91,
+        0.04,
+        229.69
+      ],
+      "radius_cm": 230.7,
+      "floor_seat_z": -0.02
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Wall_Wood_6m.SM_Wall_Wood_6m",
+      "name": "SM_Wall_Wood_6m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        7.92,
+        600.11,
+        229.67
+      ],
+      "half_extent": [
+        3.96,
+        300.05,
+        114.84
+      ],
+      "origin": [
+        3.97,
+        -300.01,
+        114.85
+      ],
+      "bbox_min": [
+        0.01,
+        -600.06,
+        0.02
+      ],
+      "bbox_max": [
+        7.93,
+        0.04,
+        229.69
+      ],
+      "radius_cm": 321.3,
+      "floor_seat_z": -0.02
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Windows_Metal_2m.SM_Windows_Metal_2m",
+      "name": "SM_Windows_Metal_2m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        10.47,
+        199.4,
+        230.72
+      ],
+      "half_extent": [
+        5.24,
+        99.7,
+        115.36
+      ],
+      "origin": [
+        4.24,
+        -99.66,
+        115.29
+      ],
+      "bbox_min": [
+        -1.0,
+        -199.36,
+        -0.07
+      ],
+      "bbox_max": [
+        9.47,
+        0.04,
+        230.65
+      ],
+      "radius_cm": 152.56,
+      "floor_seat_z": 0.07
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Windows_Metal_3m.SM_Windows_Metal_3m",
+      "name": "SM_Windows_Metal_3m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        10.35,
+        300.42,
+        231.74
+      ],
+      "half_extent": [
+        5.17,
+        150.21,
+        115.87
+      ],
+      "origin": [
+        4.17,
+        -149.93,
+        115.78
+      ],
+      "bbox_min": [
+        -1.0,
+        -300.14,
+        -0.09
+      ],
+      "bbox_max": [
+        9.35,
+        0.28,
+        231.65
+      ],
+      "radius_cm": 189.78,
+      "floor_seat_z": 0.09
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Windows_Metal_4m.SM_Windows_Metal_4m",
+      "name": "SM_Windows_Metal_4m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        10.49,
+        398.43,
+        230.84
+      ],
+      "half_extent": [
+        5.24,
+        199.22,
+        115.42
+      ],
+      "origin": [
+        4.24,
+        -199.15,
+        115.25
+      ],
+      "bbox_min": [
+        -1.0,
+        -398.37,
+        -0.18
+      ],
+      "bbox_max": [
+        9.49,
+        0.06,
+        230.67
+      ],
+      "radius_cm": 230.3,
+      "floor_seat_z": 0.18
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Windows_Metal_6m.SM_Windows_Metal_6m",
+      "name": "SM_Windows_Metal_6m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        10.47,
+        600.11,
+        230.79
+      ],
+      "half_extent": [
+        5.24,
+        300.05,
+        115.4
+      ],
+      "origin": [
+        4.24,
+        -300.01,
+        115.26
+      ],
+      "bbox_min": [
+        -1.0,
+        -600.06,
+        -0.14
+      ],
+      "bbox_max": [
+        9.47,
+        0.04,
+        230.65
+      ],
+      "radius_cm": 321.52,
+      "floor_seat_z": 0.14
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Windows_Metal_Mini_2m.SM_Windows_Metal_Mini_2m",
+      "name": "SM_Windows_Metal_Mini_2m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        10.0,
+        199.62,
+        230.61
+      ],
+      "half_extent": [
+        5.0,
+        99.81,
+        115.3
+      ],
+      "origin": [
+        4.0,
+        -99.55,
+        115.12
+      ],
+      "bbox_min": [
+        -1.0,
+        -199.36,
+        -0.18
+      ],
+      "bbox_max": [
+        9.0,
+        0.26,
+        230.43
+      ],
+      "radius_cm": 152.58,
+      "floor_seat_z": 0.18
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Windows_Metal_Mini_3m.SM_Windows_Metal_Mini_3m",
+      "name": "SM_Windows_Metal_Mini_3m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        10.51,
+        300.45,
+        231.15
+      ],
+      "half_extent": [
+        5.26,
+        150.23,
+        115.58
+      ],
+      "origin": [
+        4.26,
+        -149.89,
+        115.45
+      ],
+      "bbox_min": [
+        -1.0,
+        -300.12,
+        -0.12
+      ],
+      "bbox_max": [
+        9.51,
+        0.33,
+        231.03
+      ],
+      "radius_cm": 189.61,
+      "floor_seat_z": 0.12
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Windows_Wood_2m.SM_Windows_Wood_2m",
+      "name": "SM_Windows_Wood_2m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        8.92,
+        200.12,
+        229.67
+      ],
+      "half_extent": [
+        4.46,
+        100.06,
+        114.84
+      ],
+      "origin": [
+        4.47,
+        -99.96,
+        114.85
+      ],
+      "bbox_min": [
+        0.01,
+        -200.02,
+        0.02
+      ],
+      "bbox_max": [
+        8.92,
+        0.1,
+        229.69
+      ],
+      "radius_cm": 152.38,
+      "floor_seat_z": -0.02
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Windows_Wood_3m.SM_Windows_Wood_3m",
+      "name": "SM_Windows_Wood_3m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        8.98,
+        300.16,
+        229.67
+      ],
+      "half_extent": [
+        4.49,
+        150.08,
+        114.84
+      ],
+      "origin": [
+        4.5,
+        -149.91,
+        114.85
+      ],
+      "bbox_min": [
+        0.01,
+        -299.99,
+        0.02
+      ],
+      "bbox_max": [
+        8.98,
+        0.17,
+        229.69
+      ],
+      "radius_cm": 189.03,
+      "floor_seat_z": -0.02
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Windows_Wood_4m.SM_Windows_Wood_4m",
+      "name": "SM_Windows_Wood_4m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        9.23,
+        400.13,
+        229.67
+      ],
+      "half_extent": [
+        4.61,
+        200.07,
+        114.84
+      ],
+      "origin": [
+        4.62,
+        -199.93,
+        114.85
+      ],
+      "bbox_min": [
+        0.01,
+        -399.99,
+        0.02
+      ],
+      "bbox_max": [
+        9.24,
+        0.14,
+        229.69
+      ],
+      "radius_cm": 230.73,
+      "floor_seat_z": -0.02
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Windows_Wood_6m.SM_Windows_Wood_6m",
+      "name": "SM_Windows_Wood_6m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        14.08,
+        600.11,
+        229.67
+      ],
+      "half_extent": [
+        7.04,
+        300.05,
+        114.84
+      ],
+      "origin": [
+        2.79,
+        -300.01,
+        114.85
+      ],
+      "bbox_min": [
+        -4.25,
+        -600.06,
+        0.02
+      ],
+      "bbox_max": [
+        9.83,
+        0.04,
+        229.69
+      ],
+      "radius_cm": 321.35,
+      "floor_seat_z": -0.02
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Windows_Wood_Mini_2m.SM_Windows_Wood_Mini_2m",
+      "name": "SM_Windows_Wood_Mini_2m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        8.95,
+        200.21,
+        229.67
+      ],
+      "half_extent": [
+        4.47,
+        100.1,
+        114.84
+      ],
+      "origin": [
+        4.48,
+        -99.89,
+        114.85
+      ],
+      "bbox_min": [
+        0.01,
+        -199.99,
+        0.02
+      ],
+      "bbox_max": [
+        8.95,
+        0.22,
+        229.69
+      ],
+      "radius_cm": 152.41,
+      "floor_seat_z": -0.02
+    },
+    {
+      "asset_path": "/Game/ContainersHouseCH/StaticMesh/SM_Windows_Wood_Mini_3m.SM_Windows_Wood_Mini_3m",
+      "name": "SM_Windows_Wood_Mini_3m",
+      "root": "/Game/ContainersHouseCH/StaticMesh",
+      "size_cm": [
+        8.82,
+        300.16,
+        229.67
+      ],
+      "half_extent": [
+        4.41,
+        150.08,
+        114.84
+      ],
+      "origin": [
+        4.42,
+        -149.91,
+        114.85
+      ],
+      "bbox_min": [
+        0.01,
+        -299.99,
+        0.02
+      ],
+      "bbox_max": [
+        8.83,
+        0.16,
+        229.69
+      ],
+      "radius_cm": 189.02,
+      "floor_seat_z": -0.02
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Demo/SCContent/Props/SM_CornerFrame.SM_CornerFrame",
+      "name": "SM_CornerFrame",
+      "root": "/Game/SmartBasicInterfaces/Demo/SCContent/Props",
+      "size_cm": [
+        21.25,
+        24.0,
+        21.25
+      ],
+      "half_extent": [
+        10.63,
+        12.0,
+        10.63
+      ],
+      "origin": [
+        10.63,
+        -0.0,
+        10.63
+      ],
+      "bbox_min": [
+        -0.0,
+        -12.0,
+        0.0
+      ],
+      "bbox_max": [
+        21.25,
+        12.0,
+        21.25
+      ],
+      "radius_cm": 19.23,
+      "floor_seat_z": -0.0
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Demo/SCContent/Props/SM_PillarFrame.SM_PillarFrame",
+      "name": "SM_PillarFrame",
+      "root": "/Game/SmartBasicInterfaces/Demo/SCContent/Props",
+      "size_cm": [
+        21.25,
+        24.0,
+        400.0
+      ],
+      "half_extent": [
+        10.63,
+        12.0,
+        200.0
+      ],
+      "origin": [
+        10.63,
+        0.0,
+        200.0
+      ],
+      "bbox_min": [
+        -0.0,
+        -12.0,
+        0.0
+      ],
+      "bbox_max": [
+        21.25,
+        12.0,
+        400.0
+      ],
+      "radius_cm": 200.64,
+      "floor_seat_z": -0.0
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Demo/SCContent/Props/SM_PillarFrame300.SM_PillarFrame300",
+      "name": "SM_PillarFrame300",
+      "root": "/Game/SmartBasicInterfaces/Demo/SCContent/Props",
+      "size_cm": [
+        21.25,
+        24.0,
+        300.0
+      ],
+      "half_extent": [
+        10.63,
+        12.0,
+        150.0
+      ],
+      "origin": [
+        10.63,
+        0.0,
+        150.0
+      ],
+      "bbox_min": [
+        -0.0,
+        -12.0,
+        0.0
+      ],
+      "bbox_max": [
+        21.25,
+        12.0,
+        300.0
+      ],
+      "radius_cm": 150.85,
+      "floor_seat_z": -0.0
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Demo/SCContent/Props/SM_Shelf.SM_Shelf",
+      "name": "SM_Shelf",
+      "root": "/Game/SmartBasicInterfaces/Demo/SCContent/Props",
+      "size_cm": [
+        31.81,
+        200.0,
+        25.29
+      ],
+      "half_extent": [
+        15.9,
+        100.0,
+        12.65
+      ],
+      "origin": [
+        15.91,
+        0.0,
+        -12.65
+      ],
+      "bbox_min": [
+        0.0,
+        -100.0,
+        -25.3
+      ],
+      "bbox_max": [
+        31.81,
+        100.0,
+        -0.0
+      ],
+      "radius_cm": 101.95,
+      "floor_seat_z": 25.3
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_alarm.SM_alarm",
+      "name": "SM_alarm",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        27.7,
+        27.7,
+        18.29
+      ],
+      "half_extent": [
+        13.85,
+        13.85,
+        9.15
+      ],
+      "origin": [
+        0.0,
+        0.0,
+        -9.15
+      ],
+      "bbox_min": [
+        -13.85,
+        -13.85,
+        -18.29
+      ],
+      "bbox_max": [
+        13.85,
+        13.85,
+        0.0
+      ],
+      "radius_cm": 16.6,
+      "floor_seat_z": 18.29
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_cabinet.SM_cabinet",
+      "name": "SM_cabinet",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        57.21,
+        57.21,
+        133.57
+      ],
+      "half_extent": [
+        28.6,
+        28.6,
+        66.78
+      ],
+      "origin": [
+        0.0,
+        -0.0,
+        66.78
+      ],
+      "bbox_min": [
+        -28.6,
+        -28.6,
+        -0.0
+      ],
+      "bbox_max": [
+        28.6,
+        28.6,
+        133.57
+      ],
+      "radius_cm": 78.08,
+      "floor_seat_z": 0.0
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_cabinetdrawer.SM_cabinetdrawer",
+      "name": "SM_cabinetdrawer",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        56.26,
+        57.18,
+        26.26
+      ],
+      "half_extent": [
+        28.13,
+        28.59,
+        13.13
+      ],
+      "origin": [
+        -13.64,
+        0.0,
+        -0.06
+      ],
+      "bbox_min": [
+        -41.77,
+        -28.59,
+        -13.19
+      ],
+      "bbox_max": [
+        14.49,
+        28.59,
+        13.08
+      ],
+      "radius_cm": 41.26,
+      "floor_seat_z": 13.19
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_card.SM_card",
+      "name": "SM_card",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        6.49,
+        10.57,
+        0.07
+      ],
+      "half_extent": [
+        3.25,
+        5.29,
+        0.03
+      ],
+      "origin": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "bbox_min": [
+        -3.25,
+        -5.29,
+        -0.03
+      ],
+      "bbox_max": [
+        3.25,
+        5.29,
+        0.03
+      ],
+      "radius_cm": 6.17,
+      "floor_seat_z": 0.03
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_cardreader.SM_cardreader",
+      "name": "SM_cardreader",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        7.36,
+        27.9,
+        34.67
+      ],
+      "half_extent": [
+        3.68,
+        13.95,
+        17.33
+      ],
+      "origin": [
+        -2.02,
+        0.0,
+        0.0
+      ],
+      "bbox_min": [
+        -5.7,
+        -13.95,
+        -17.33
+      ],
+      "bbox_max": [
+        1.66,
+        13.95,
+        17.33
+      ],
+      "radius_cm": 22.29,
+      "floor_seat_z": 17.33
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_doubledoor01.SM_doubledoor01",
+      "name": "SM_doubledoor01",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        24.96,
+        166.01,
+        319.74
+      ],
+      "half_extent": [
+        12.48,
+        83.01,
+        159.87
+      ],
+      "origin": [
+        0.0,
+        83.07,
+        159.87
+      ],
+      "bbox_min": [
+        -12.48,
+        0.07,
+        0.0
+      ],
+      "bbox_max": [
+        12.48,
+        166.08,
+        319.74
+      ],
+      "radius_cm": 180.57,
+      "floor_seat_z": -0.0
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_doubledoor02.SM_doubledoor02",
+      "name": "SM_doubledoor02",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        24.96,
+        166.01,
+        319.74
+      ],
+      "half_extent": [
+        12.48,
+        83.01,
+        159.87
+      ],
+      "origin": [
+        0.0,
+        -83.07,
+        159.87
+      ],
+      "bbox_min": [
+        -12.48,
+        -166.08,
+        -0.0
+      ],
+      "bbox_max": [
+        12.48,
+        -0.07,
+        319.74
+      ],
+      "radius_cm": 180.57,
+      "floor_seat_z": 0.0
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_doubledoorframe.SM_doubledoorframe",
+      "name": "SM_doubledoorframe",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        107.28,
+        588.26,
+        400.0
+      ],
+      "half_extent": [
+        53.64,
+        294.13,
+        200.0
+      ],
+      "origin": [
+        0.0,
+        -0.0,
+        200.0
+      ],
+      "bbox_min": [
+        -53.64,
+        -294.13,
+        -0.0
+      ],
+      "bbox_max": [
+        53.64,
+        294.13,
+        400.0
+      ],
+      "radius_cm": 350.61,
+      "floor_seat_z": 0.0
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_gascan.SM_gascan",
+      "name": "SM_gascan",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        35.83,
+        15.04,
+        38.9
+      ],
+      "half_extent": [
+        17.92,
+        7.52,
+        19.45
+      ],
+      "origin": [
+        0.04,
+        -0.0,
+        19.45
+      ],
+      "bbox_min": [
+        -17.88,
+        -7.52,
+        -0.0
+      ],
+      "bbox_max": [
+        17.96,
+        7.52,
+        38.9
+      ],
+      "radius_cm": 26.72,
+      "floor_seat_z": 0.0
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_generatorBack.SM_generatorBack",
+      "name": "SM_generatorBack",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        254.61,
+        190.62,
+        250.06
+      ],
+      "half_extent": [
+        127.31,
+        95.31,
+        125.03
+      ],
+      "origin": [
+        -0.0,
+        0.0,
+        -3.57
+      ],
+      "bbox_min": [
+        -127.31,
+        -95.31,
+        -128.6
+      ],
+      "bbox_max": [
+        127.31,
+        95.31,
+        121.46
+      ],
+      "radius_cm": 199.45,
+      "floor_seat_z": 128.6
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_generatorFront.SM_generatorFront",
+      "name": "SM_generatorFront",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        200.0,
+        297.09,
+        200.0
+      ],
+      "half_extent": [
+        100.0,
+        148.55,
+        100.0
+      ],
+      "origin": [
+        -0.0,
+        75.69,
+        -28.6
+      ],
+      "bbox_min": [
+        -100.0,
+        -72.86,
+        -128.6
+      ],
+      "bbox_max": [
+        100.0,
+        224.24,
+        71.4
+      ],
+      "radius_cm": 205.1,
+      "floor_seat_z": 128.6
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_generatorSection.SM_generatorSection",
+      "name": "SM_generatorSection",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        305.56,
+        200.0,
+        252.78
+      ],
+      "half_extent": [
+        152.78,
+        100.0,
+        126.39
+      ],
+      "origin": [
+        3.54,
+        25.88,
+        -2.21
+      ],
+      "bbox_min": [
+        -149.24,
+        -74.12,
+        -128.6
+      ],
+      "bbox_max": [
+        156.32,
+        125.88,
+        124.18
+      ],
+      "radius_cm": 220.29,
+      "floor_seat_z": 128.6
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_lever.SM_lever",
+      "name": "SM_lever",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        20.42,
+        21.79,
+        1.52
+      ],
+      "half_extent": [
+        10.21,
+        10.9,
+        0.76
+      ],
+      "origin": [
+        10.06,
+        0.0,
+        0.04
+      ],
+      "bbox_min": [
+        -0.15,
+        -10.9,
+        -0.72
+      ],
+      "bbox_max": [
+        20.27,
+        10.9,
+        0.8
+      ],
+      "radius_cm": 14.94,
+      "floor_seat_z": 0.72
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_leverbase.SM_leverbase",
+      "name": "SM_leverbase",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        6.08,
+        27.69,
+        39.0
+      ],
+      "half_extent": [
+        3.04,
+        13.85,
+        19.5
+      ],
+      "origin": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "bbox_min": [
+        -3.04,
+        -13.85,
+        -19.5
+      ],
+      "bbox_max": [
+        3.04,
+        13.85,
+        19.5
+      ],
+      "radius_cm": 23.92,
+      "floor_seat_z": 19.5
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_light.SM_light",
+      "name": "SM_light",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        26.25,
+        26.25,
+        3.12
+      ],
+      "half_extent": [
+        13.12,
+        13.12,
+        1.56
+      ],
+      "origin": [
+        0.0,
+        -0.0,
+        1.56
+      ],
+      "bbox_min": [
+        -13.12,
+        -13.12,
+        -0.0
+      ],
+      "bbox_max": [
+        13.12,
+        13.12,
+        3.12
+      ],
+      "radius_cm": 16.83,
+      "floor_seat_z": 0.0
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_lightswitchbase.SM_lightswitchbase",
+      "name": "SM_lightswitchbase",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        1.22,
+        8.65,
+        10.81
+      ],
+      "half_extent": [
+        0.61,
+        4.33,
+        5.4
+      ],
+      "origin": [
+        -0.33,
+        0.0,
+        -0.13
+      ],
+      "bbox_min": [
+        -0.94,
+        -4.33,
+        -5.53
+      ],
+      "bbox_max": [
+        0.27,
+        4.33,
+        5.28
+      ],
+      "radius_cm": 6.95,
+      "floor_seat_z": 5.53
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_lightswitchbtn.SM_lightswitchbtn",
+      "name": "SM_lightswitchbtn",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        0.28,
+        1.48,
+        2.72
+      ],
+      "half_extent": [
+        0.14,
+        0.74,
+        1.36
+      ],
+      "origin": [
+        0.31,
+        -0.0,
+        0.08
+      ],
+      "bbox_min": [
+        0.17,
+        -0.74,
+        -1.28
+      ],
+      "bbox_max": [
+        0.45,
+        0.74,
+        1.44
+      ],
+      "radius_cm": 1.56,
+      "floor_seat_z": 1.28
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_panel.SM_panel",
+      "name": "SM_panel",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        7.25,
+        88.29,
+        88.29
+      ],
+      "half_extent": [
+        3.62,
+        44.15,
+        44.15
+      ],
+      "origin": [
+        -1.99,
+        -0.0,
+        7.67
+      ],
+      "bbox_min": [
+        -5.61,
+        -44.15,
+        -36.48
+      ],
+      "bbox_max": [
+        1.64,
+        44.15,
+        51.81
+      ],
+      "radius_cm": 54.08,
+      "floor_seat_z": 36.48
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_powerbtn.SM_powerbtn",
+      "name": "SM_powerbtn",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        0.94,
+        4.67,
+        4.67
+      ],
+      "half_extent": [
+        0.47,
+        2.33,
+        2.33
+      ],
+      "origin": [
+        3.76,
+        0.0,
+        0.0
+      ],
+      "bbox_min": [
+        3.29,
+        -2.33,
+        -2.33
+      ],
+      "bbox_max": [
+        4.23,
+        2.33,
+        2.33
+      ],
+      "radius_cm": 2.46,
+      "floor_seat_z": 2.33
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_powerbtnbase.SM_powerbtnbase",
+      "name": "SM_powerbtnbase",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        4.08,
+        19.22,
+        28.89
+      ],
+      "half_extent": [
+        2.04,
+        9.61,
+        14.44
+      ],
+      "origin": [
+        -0.13,
+        0.0,
+        0.0
+      ],
+      "bbox_min": [
+        -2.17,
+        -9.61,
+        -14.44
+      ],
+      "bbox_max": [
+        1.91,
+        9.61,
+        14.44
+      ],
+      "radius_cm": 16.63,
+      "floor_seat_z": 14.44
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_powerbtnring.SM_powerbtnring",
+      "name": "SM_powerbtnring",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        1.68,
+        5.72,
+        5.72
+      ],
+      "half_extent": [
+        0.84,
+        2.86,
+        2.86
+      ],
+      "origin": [
+        2.56,
+        0.0,
+        0.0
+      ],
+      "bbox_min": [
+        1.72,
+        -2.86,
+        -2.86
+      ],
+      "bbox_max": [
+        3.4,
+        2.86,
+        2.86
+      ],
+      "radius_cm": 3.1,
+      "floor_seat_z": 2.86
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_pressureplate.SM_pressureplate",
+      "name": "SM_pressureplate",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        90.39,
+        90.39,
+        2.35
+      ],
+      "half_extent": [
+        45.2,
+        45.2,
+        1.17
+      ],
+      "origin": [
+        0.0,
+        -0.0,
+        5.77
+      ],
+      "bbox_min": [
+        -45.2,
+        -45.2,
+        4.6
+      ],
+      "bbox_max": [
+        45.2,
+        45.2,
+        6.94
+      ],
+      "radius_cm": 63.93,
+      "floor_seat_z": -4.6
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_pressureplatebase.SM_pressureplatebase",
+      "name": "SM_pressureplatebase",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        100.85,
+        100.85,
+        4.6
+      ],
+      "half_extent": [
+        50.43,
+        50.43,
+        2.3
+      ],
+      "origin": [
+        0.0,
+        0.0,
+        2.3
+      ],
+      "bbox_min": [
+        -50.43,
+        -50.43,
+        -0.0
+      ],
+      "bbox_max": [
+        50.43,
+        50.43,
+        4.6
+      ],
+      "radius_cm": 70.49,
+      "floor_seat_z": 0.0
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_simpledoor.SM_simpledoor",
+      "name": "SM_simpledoor",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        20.07,
+        151.46,
+        244.1
+      ],
+      "half_extent": [
+        10.03,
+        75.73,
+        122.05
+      ],
+      "origin": [
+        0.0,
+        -0.0,
+        122.05
+      ],
+      "bbox_min": [
+        -10.03,
+        -75.73,
+        -0.0
+      ],
+      "bbox_max": [
+        10.03,
+        75.73,
+        244.1
+      ],
+      "radius_cm": 143.99,
+      "floor_seat_z": 0.0
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_simpledoorframe.SM_simpledoorframe",
+      "name": "SM_simpledoorframe",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        27.99,
+        190.34,
+        263.63
+      ],
+      "half_extent": [
+        13.99,
+        95.17,
+        131.81
+      ],
+      "origin": [
+        0.0,
+        -0.0,
+        131.81
+      ],
+      "bbox_min": [
+        -13.99,
+        -95.17,
+        -0.0
+      ],
+      "bbox_max": [
+        13.99,
+        95.17,
+        263.63
+      ],
+      "radius_cm": 162.88,
+      "floor_seat_z": 0.0
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_simpledoorglass.SM_simpledoorglass",
+      "name": "SM_simpledoorglass",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        5.02,
+        88.02,
+        65.69
+      ],
+      "half_extent": [
+        2.51,
+        44.01,
+        32.85
+      ],
+      "origin": [
+        0.0,
+        -0.0,
+        180.76
+      ],
+      "bbox_min": [
+        -2.51,
+        -44.01,
+        147.91
+      ],
+      "bbox_max": [
+        2.51,
+        44.01,
+        213.6
+      ],
+      "radius_cm": 54.97,
+      "floor_seat_z": -147.91
+    },
+    {
+      "asset_path": "/Game/SmartBasicInterfaces/Meshes/SM_smallbattery.SM_smallbattery",
+      "name": "SM_smallbattery",
+      "root": "/Game/SmartBasicInterfaces/Meshes",
+      "size_cm": [
+        1.4,
+        1.4,
+        3.77
+      ],
+      "half_extent": [
+        0.7,
+        0.7,
+        1.88
+      ],
+      "origin": [
+        0.0,
+        -0.0,
+        1.88
+      ],
+      "bbox_min": [
+        -0.7,
+        -0.7,
+        -0.0
+      ],
+      "bbox_max": [
+        0.7,
+        0.7,
+        3.77
+      ],
+      "radius_cm": 2.01,
+      "floor_seat_z": 0.0
+    }
+  ]
+}
