@@ -91,6 +91,40 @@ foreach ($file in $allFiles) {
     }
 }
 
+# Assert the authored maps actually made it into the cooked container. bUseAuthoredLevels=True (and the
+# always-authored Tutorial) route every Host/Bot/Test/Live-Classroom/Tutorial mode to /Game/BlackoutHunt/Maps/*;
+# if those packages are missing from the pak the travel fails and the engine bounces back to the Standalone
+# /Engine/Maps/Entry menu, so "every mode just returns to the menu". A bad -map= cook list silently dropped
+# them in 0.7.0 -- catch that here instead of in a player's hands.
+$requiredMaps = @("Facility", "Substation", "Foggrounds", "Tutorial")
+$utoc = Join-Path $resolvedPackageRoot "BlackoutHunt\Content\Paks\BlackoutHunt-Windows.utoc"
+if (-not (Test-Path -LiteralPath $utoc)) {
+    Add-Failure "missing cooked pak container: BlackoutHunt\Content\Paks\BlackoutHunt-Windows.utoc"
+}
+else {
+    $unrealPak = $null
+    try {
+        $unreal = & (Join-Path $PSScriptRoot "Find-Unreal.ps1")
+        if ($unreal -and $unreal.Root) {
+            $candidate = Join-Path $unreal.Root "Engine\Binaries\Win64\UnrealPak.exe"
+            if (Test-Path -LiteralPath $candidate) { $unrealPak = $candidate }
+        }
+    }
+    catch { $unrealPak = $null }
+
+    if (-not $unrealPak) {
+        Write-Warning "UnrealPak.exe not found; skipping the cooked-map presence check. Install UE 5.7 to enable it."
+    }
+    else {
+        $listing = & $unrealPak $utoc -List 2>&1 | Out-String
+        foreach ($map in $requiredMaps) {
+            if ($listing -notmatch "(?i)/Maps/$map\.umap") {
+                Add-Failure "authored map missing from cook: /Game/BlackoutHunt/Maps/$map.umap (fix the -map= list in the Package-* script and re-cook)"
+            }
+        }
+    }
+}
+
 if ($failures.Count -gt 0) {
     $message = "EOS package verification failed:`n - " + (($failures | Sort-Object -Unique) -join "`n - ")
     throw $message

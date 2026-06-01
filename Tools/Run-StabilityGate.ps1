@@ -421,7 +421,7 @@ try {
                 "-serverconfig=$Configuration",
                 "-cook",
                 "-ddc=InstalledNoZenLocalFallback",
-                "-map=/Engine/Maps/Entry",
+                "-map=/Engine/Maps/Entry+/Game/BlackoutHunt/Maps/Facility+/Game/BlackoutHunt/Maps/Substation+/Game/BlackoutHunt/Maps/Foggrounds+/Game/BlackoutHunt/Maps/Tutorial",
                 "-build",
                 "-noxge",
                 "-ubtargs=-WaitMutex -NoXGE -NoUBA -MaxParallelActions=1",
