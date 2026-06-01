@@ -95,6 +95,22 @@ echo(
 powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJDIR%Tools\Package-Windows-EOS.ps1" -Configuration Shipping
 set "RC=%ERRORLEVEL%"
 
+REM --- Playability gate: boot the cooked package and prove a mode actually reaches gameplay. ---
+REM This catches the whole class of "every mode bounces back to the menu" failures (a map-load crash,
+REM a net driver that cannot bind a listen host, a missing cooked map) that Verify-EOSPackage cannot see
+REM because they only happen at runtime. Set BH_SKIP_SMOKE=1 to bypass for a quick local iteration build.
+if "%RC%"=="0" if not "%BH_SKIP_SMOKE%"=="1" (
+    echo(
+    echo Running packaged playability smoke test ^(host + 2 clients must reach ROUND_STARTED^)...
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJDIR%Tools\Run-PackagedClassroomSmoke.ps1" -PackageRoot "%PROJDIR%Builds\WindowsEOS" -HostMode LiveFacility -ClientCount 2 -AutoQuitSeconds 45
+    set "RC=!ERRORLEVEL!"
+    if not "!RC!"=="0" (
+        echo(
+        echo [!!] PLAYABILITY SMOKE TEST FAILED: the build cooked but a mode did not reach gameplay.
+        echo      See the SMOKE_REPORT.md under Saved\PackagedClassroomSmoke. DO NOT SHIP this package.
+    )
+)
+
 echo(
 echo ============================================================
 if "%RC%"=="0" (

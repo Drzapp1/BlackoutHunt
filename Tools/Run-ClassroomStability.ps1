@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.7.1",
+    [string]$Version = "0.7.2",
     [string]$ValidationRoot = "$PSScriptRoot\..\Builds\Validation",
     [string]$ArchiveRoot = "$PSScriptRoot\..\Builds\Archives",
     [string]$BaseVmName = "BlackoutHunt-Win11Eval-01",

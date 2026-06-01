@@ -153,8 +153,14 @@ function New-EOSEngineConfig {
 DefaultPlatformService=EOS
 
 [/Script/Engine.Engine]
+; Transport is plain IP so the game binds a real UDP socket: this is what LAN, direct-IP, and the Playit
+; tunnel (the documented classroom join, blackouthunt.playit.plus:24761) require. EOS still provides
+; accounts/identity + lobby discovery (DefaultPlatformService=EOS below), but NetDriverEOS as the game
+; net driver could not bind a plain ?listen host without a live EOS P2P session and bounced every mode back
+; to the menu ("Could not bind local address" -> "returning to Entry"). P2P-relay hosting can return later
+; via per-mode net-driver selection; for now school-network tunnel/LAN connectivity is the priority.
 !NetDriverDefinitions=ClearArray
-+NetDriverDefinitions=(DefName="GameNetDriver",DriverClassName="/Script/SocketSubsystemEOS.NetDriverEOS",DriverClassNameFallback="/Script/OnlineSubsystemUtils.IpNetDriver")
++NetDriverDefinitions=(DefName="GameNetDriver",DriverClassName="/Script/OnlineSubsystemUtils.IpNetDriver",DriverClassNameFallback="/Script/OnlineSubsystemUtils.IpNetDriver")
 +NetDriverDefinitions=(DefName="BeaconNetDriver",DriverClassName="/Script/OnlineSubsystemUtils.IpNetDriver",DriverClassNameFallback="/Script/OnlineSubsystemUtils.IpNetDriver")
 +NetDriverDefinitions=(DefName="DemoNetDriver",DriverClassName="/Script/Engine.DemoNetDriver",DriverClassNameFallback="/Script/Engine.DemoNetDriver")
 
