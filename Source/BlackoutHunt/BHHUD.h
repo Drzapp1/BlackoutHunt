@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #pragma once
 
 #include "CoreMinimal.h"
@@ -62,6 +66,11 @@ protected:
 	void DrawPhaseBanner(const class ABHGameState* GameState, const ABHCharacter* Character);
 	// One-shot role onboarding card shown at warmup start (driven by ClientShowRoleIntro).
 	void DrawRoleIntroCard(const class ABHPlayerController* BHPC, const class ABHGameState* GameState);
+	// Full-screen tutorial transition snapshot (dark wash + centred title/body), driven by PC card state.
+	void DrawTutorialCard(const class ABHPlayerController* BHPC);
+	// Tutorial step guidance on its own banner at the top of the screen (its own channel, so noise/round
+	// status messages in the shared toast can never cut it off).
+	void DrawTutorialPrompt(const class ABHPlayerController* BHPC);
 
 	// Refresh cached per-frame UI preferences (palette, scale, opacity, element toggles)
 	// from the owning player controller. Called once at the top of DrawHUD().

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #pragma once
 
 #include "CoreMinimal.h"
@@ -18,8 +22,9 @@ class ABHBreaker;
 // the Tutorial map loads and self-activates on the listen-server host. It runs one of three self-paced
 // lessons, selected by the game mode's tutorial phase (?BHTutorialPhase=) and chained on reaching the exit:
 //   * Survivor: move, flashlight, hide, crawl, breaker, two questions, a scripted Teacher chase, escape.
-//   * Teacher:  play the Hunter - scan, chase + capture an AI student, blackout, then reach the exit.
-//   * Monitor:  play the hall monitor - answer to unlock tools, real hint, false marker, trap, reach exit.
+//   * Teacher:  play the Hunter - scan for heartbeats, learn student counterplay (noise decoys, lockers,
+//               crawl ducts), chase + capture an AI student, black out the lights, then reach the exit.
+//   * Monitor:  play the hall monitor - answer at a station to unlock tools, real hint, false marker, trap, exit.
 //
 // Design rules so a brand-new 15-16 year old can never get stuck:
 //  * Every step has a generous timeout fallback, so the flow always advances even if a check never trips.
@@ -46,6 +51,7 @@ protected:
 		Flashlight,
 		Hide,
 		Crawl,
+		Decoy,
 		Breaker,
 		Question,
 		Interact,
@@ -53,11 +59,14 @@ protected:
 		Escape,
 		Complete,
 	};
-	enum class ETeacherStep : uint8 { Intro, Move, Scan, Capture, Blackout, Exit, Done };
+	enum class ETeacherStep : uint8 { Intro, Move, Sprint, Axe, Scan, Noise, Counterplay, Capture, Blackout, Exit, Done };
 	enum class EMonitorStep : uint8 { Intro, Move, Unlock, Hint, Marker, Trap, Exit, Done };
 
 	// Defer activation a beat so the host pawn/player state exist, then run the step machine on a timer.
 	void Activate();
+	// Freeze controls the instant the map loads (re-asserted on a fast timer until Activate's intro takes over),
+	// so the player can't run off during the ~1s before the lesson's intro lock would otherwise kick in.
+	void EnforceIntroInputLock();
 	void EnterStep(EStep NewStep);
 	void EvaluateStep();
 	// Per-phase step machines (Survivor uses EnterStep/EvaluateStep above; the timer dispatches by Phase).
@@ -100,13 +109,17 @@ protected:
 	bool SurvivorIsCrawlingNearDuct() const;
 	// Breaker lesson: cut/restore the tutorial's flicker lights so a blackout the student can fix is taught.
 	void SetTutorialLightsPowered(bool bPowered) const;
+	// Force the exit gate into its GREEN "escape-ready" state for the run-to-exit beat. The Survivor lesson opens
+	// it naturally by repairing the breaker, but the Teacher/Monitor never repair one - so without this the gate
+	// stays amber/locked while the prompt tells them to reach the "GREEN EXIT".
+	void SetTutorialExitUnlocked() const;
 	// Encounter lesson (Survivor phase): every tick, push the Teacher bot a fresh Chase intent at the student's
 	// live position so it is a real pursuit - but stand still for ~1s after spawn, and fall back to patrol
 	// while the student is hidden in a locker (so it wanders off instead of camping the door).
 	void DriveTeacherChase() const;
 	// Phase-aware per-tick AI driving: Survivor -> teacher chase; Teacher -> the AI student wanders/flees the
 	// human Hunter; Monitor -> the AI student wanders while an AI teacher patrols.
-	void DriveScriptedCast() const;
+	void DriveScriptedCast();
 	// Keep the AI student survivor lively: work a station when safe, flee when a Hunter is close.
 	void DriveStudentBot() const;
 	// Generic chase order for an arbitrary bot toward an arbitrary character (AI teacher -> AI student).
@@ -122,6 +135,22 @@ protected:
 	ABHBotController* SpawnScriptedBot(EBHPlayerRole Role, const FString& BotName, const FVector& Spawn);
 	// Best-effort: spawn one Hunter bot at the teacher spawn for the Survivor-phase encounter.
 	void SpawnScriptedTeacher();
+	// Teacher phase: put the human Teacher at the same Hunter spawn the AI Teacher uses in the Survivor lesson,
+	// so picking up the Teacher tutorial reads as continuous with the chase the student just survived. Returns
+	// true once the human pawn existed and was actually moved (retried each Intro tick until then).
+	bool TeleportHumanToHunterSpawn() const;
+	// Teacher phase (Noise step): drop a single demonstration decoy by the AI student so the Teacher sees exactly
+	// one "Noise: decoy" ping. Autonomous bot decoys are suppressed in tutorials (they would spam over the prompt).
+	void PlaceDemoDecoyNearStudent() const;
+	// Teacher phase: drive the AI student on a fixed, always-moving SCRIPTED route (not the wander/flee decision
+	// AI, which only moved when the Teacher was adjacent). It demonstrates hiding in a locker during Counterplay
+	// and flees the human Teacher during Capture. Built on RunStateTreeIntent with explicit destinations.
+	void DriveScriptedTutorialStudent();
+	// Populate ScriptedWaypoints from the baked map's stations/breaker so the student has a deterministic loop.
+	void BuildScriptedWaypoints();
+	// Full-screen transition "snapshot": a titled card shown on every client for Seconds (covers the phase
+	// hand-off so it reads as a loading screen, not a freeze). Drawn by ABHHUD from replicated PC state.
+	void ShowTutorialCard(const FString& Title, const FString& Body, float Seconds) const;
 	// When the student reaches the exit, hand off to the game mode to load the next tutorial phase (or menu).
 	void FinishTutorialPhase() const;
 
@@ -145,8 +174,24 @@ protected:
 	bool bTeacherSpawned = false;
 	// Hide lesson: set once the student has actually hidden, so the next prompt only fires after they climb out.
 	bool bHideRegistered = false;
-	// Breaker lesson: true while the tutorial blackout is active (lights cut until the breaker is repaired).
+	// Breaker lesson: true while the tutorial blackout is active (lights cut until the breaker is repaired). Reused
+	// by the Teacher Blackout step to flag the forced demonstration blackout (restored on entering Exit).
 	bool bTutorialBlackoutActive = false;
+	// Teacher phase: set once the human Teacher has been moved to the Hunter spawn (continuity with the Survivor lesson).
+	bool bTeacherStartPlaced = false;
+	// Teacher phase (Blackout step): server time the forced tutorial blackout began, so the dark holds for a beat
+	// before the run-to-exit instead of snapping back the instant the player taps R.
+	float BlackoutDemoServerTime = 0.0f;
+	// Teacher phase (Scan step): server time the player's scan fired, so the heartbeat readout stays on screen a
+	// few seconds before the next prompt replaces it.
+	float ScanDemoServerTime = 0.0f;
+	// Monitor phase (Hint/Marker/Trap steps): server time the player fired the current tool. The step then holds a
+	// few seconds showing a confirmation line before advancing - the hall-monitor tools only notify human Teachers,
+	// so against the solo lesson's AI Teacher the key-press would otherwise look like it did nothing.
+	float MonitorToolConfirmServerTime = 0.0f;
+	// Teacher phase: deterministic patrol loop for the scripted student + the index it's currently heading to.
+	TArray<FVector> ScriptedWaypoints;
+	int32 ScriptedWaypointIndex = 0;
 
 	TWeakObjectPtr<ABHObjectiveStation> PracticeStation;
 	// Second, more easterly station that hosts the interactive drag-drop question (the Interact step).
@@ -159,4 +204,6 @@ protected:
 
 	FTimerHandle ActivateTimerHandle;
 	FTimerHandle EvalTimerHandle;
+	// Fast pre-activation timer that holds the intro input lock until the step machine starts.
+	FTimerHandle IntroLockTimerHandle;
 };

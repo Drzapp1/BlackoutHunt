@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #include "BHExitGate.h"
 #include "BHCharacter.h"
 #include "BHGameMode.h"
@@ -118,6 +122,11 @@ FText ABHExitGate::GetInteractionLabel_Implementation(ABHCharacter* Character) c
 	}
 
 	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	const ABHPlayerState* BHPS = Character ? Character->GetBHPlayerState() : nullptr;
+	if (BHGS && BHGS->bTutorialMode && BHPS && (BHPS->PlayerRole == EBHPlayerRole::FakeHunter || BHPS->IsAliveHunter()))
+	{
+		return FText::FromString(TEXT("Training Exit"));
+	}
 	return (BHGS && BHGS->bExitUnlocked) ? FText::FromString(TEXT("Escape")) : FText::FromString(TEXT("Exit Locked"));
 }
 
@@ -151,6 +160,12 @@ FBHInteractionPromptInfo ABHExitGate::GetInteractionPromptInfo_Implementation(AB
 	else if (BHPS->LifeState != EBHPlayerLifeState::Alive)
 	{
 		Info.DisabledReason = FText::FromString(TEXT("YOU ARE OUT OF PLAY"));
+	}
+	else if (BHGS && BHGS->bTutorialMode && (BHPS->PlayerRole == EBHPlayerRole::FakeHunter || BHPS->IsAliveHunter()))
+	{
+		// In the tutorial the Teacher/Monitor are deliberately sent to this door to finish, and the director
+		// completes the lesson on proximity - so don't scold them with "CANNOT ESCAPE"; it just reads as broken.
+		Info.DisabledReason = FText::FromString(TEXT("WALK IN TO FINISH"));
 	}
 	else if (BHPS->PlayerRole == EBHPlayerRole::FakeHunter)
 	{

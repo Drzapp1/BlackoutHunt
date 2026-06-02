@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #pragma once
 
 #include "CoreMinimal.h"
@@ -456,6 +460,17 @@ public:
 	float GetRoleIntroAlpha() const;
 	EBHPlayerRole GetRoleIntroRole() const;
 	bool IsRoleIntroRevisionMode() const;
+
+	bool HasActiveTutorialCard() const;
+	float GetTutorialCardAlpha() const;
+	const FString& GetTutorialCardTitle() const;
+	const FString& GetTutorialCardBody() const;
+
+	// Dedicated tutorial guidance line (separate channel from the shared status toast, so noise/round alerts
+	// can't overwrite it). Rendered at the top of the screen.
+	bool HasActiveTutorialPrompt() const;
+	float GetTutorialPromptAlpha() const;
+	const FString& GetTutorialPromptMessage() const;
 	bool HasActiveCCTVReveal() const;
 	float GetCCTVRevealAlpha() const;
 	const FVector& GetCCTVRevealLocation() const;
@@ -665,6 +680,14 @@ public:
 	UFUNCTION(Client, Reliable)
 	void ClientShowRoleIntro(EBHPlayerRole InRole, bool bRevisionMode);
 
+	// Full-screen tutorial transition "snapshot" (title + one line), shown for Seconds. Drawn by ABHHUD.
+	UFUNCTION(Client, Reliable)
+	void ClientShowTutorialCard(const FString& Title, const FString& Body, float Seconds);
+
+	// Tutorial step guidance, shown on its own top-of-screen line so noise/round status messages can't cut it off.
+	UFUNCTION(Client, Reliable)
+	void ClientShowTutorialPrompt(const FString& Message, float Seconds);
+
 	UFUNCTION(Client, Unreliable)
 	void ClientShowCCTVReveal(ABHCharacter* RevealTarget, const FVector& RevealLocation, const FString& TargetName, float DurationSeconds);
 
@@ -770,6 +793,15 @@ private:
 	bool bRoleIntroRevisionMode = false;
 	float RoleIntroStartTime = 0.0f;
 	float RoleIntroEndTime = 0.0f;
+
+	FString TutorialCardTitle;
+	FString TutorialCardBody;
+	float TutorialCardStartTime = -1000.0f;
+	float TutorialCardEndTime = -1000.0f;
+
+	FString TutorialPromptMessage;
+	float TutorialPromptStartTime = -1000.0f;
+	float TutorialPromptEndTime = -1000.0f;
 	FVector CCTVRevealLocation = FVector::ZeroVector;
 	FString CCTVRevealTargetName;
 	TWeakObjectPtr<ABHCharacter> CCTVRevealTarget;

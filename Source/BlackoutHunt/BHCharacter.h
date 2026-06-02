@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #pragma once
 
 #include "CoreMinimal.h"
@@ -65,6 +69,17 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt")
 	float GetFlashlightBattery() const;
+
+	// True when this character is a student standing inside an active Teacher blackout, so their flashlight is
+	// being weakened: faster battery drain, a flickering near-dead beam, and no teacher-stagger. The Teacher
+	// and far-away students are never affected.
+	UFUNCTION(BlueprintPure, Category = "Blackout Hunt")
+	bool IsInTeacherBlackout() const;
+
+	// Per-second flashlight battery drain for this character right now, including the surge while caught in a
+	// Teacher blackout (see IsInTeacherBlackout).
+	UFUNCTION(BlueprintPure, Category = "Blackout Hunt")
+	float GetEffectiveFlashlightDrainPerSecond() const;
 
 	// Public read of the flashlight on/off state (the replicated field itself is protected). Used by the
 	// tutorial director to detect when a student has tried the flashlight.
@@ -268,6 +283,9 @@ protected:
 	EBHFootstepSurface ResolveFootstepSurface(const FHitResult* KnownGroundHit = nullptr) const;
 	FBHFootstepSurfaceProfile GetFootstepSurfaceProfile(EBHFootstepSurface Surface) const;
 	void BroadcastFlashlightAudioCue(bool bNewOn, bool bBatteryDied = false);
+	// Server-side stuttering "the light is fighting the dark" cue, emitted on a short cadence while a student
+	// is caught in a Teacher blackout (reuses the flashlight click sound, no new asset).
+	void BroadcastFlashlightStruggleAudioCue();
 	void SendTeacherProximityAudioCue(float DistanceAlpha, bool bHunterHasSight);
 	void UpdateAntiCampPressureAuthority(float DeltaSeconds, float Speed2D, const class ABHGameState* BHGS, const ABHPlayerState* BHPS);
 	void ResetAntiCampTrackingAuthority();
@@ -279,6 +297,9 @@ protected:
 	FRotator ComputeJumpscareCameraFlinch() const;
 	bool IsReducedCameraShakeLocal() const;
 	void UpdateFlashlightFeel(float DeltaSeconds);
+	// Instantaneous [~0.02..0.55] beam-strength multiplier while caught in a Teacher blackout: a low, violently
+	// flickering value driven by FlashlightPulseTime so the beam stutters and nearly dies.
+	float ComputeBlackoutFlashlightFlicker() const;
 	void TryBHopJump();
 	bool TryStartSpecialMoveAuthority(EBHMovementSpecialState RequestedState, bool bEndProne, bool bEndProneRequiresInput);
 	bool ValidateSpecialMoveSpaceAuthority(EBHMovementSpecialState RequestedState, const FBHMovementSpecialTuning& Tuning, FString& OutFailureReason) const;
@@ -678,6 +699,7 @@ protected:
 	float LastSprintNoiseTime;
 	float LastFootstepStimulusTime;
 	float LastFlashlightAudioCueTime;
+	float LastFlashlightStruggleAudioTime = -100.0f;
 	float LastTeacherProximityAudioTime;
 	float FootstepStimulusDistanceAccumulator;
 	float StaminaRecoveryLockedUntil;

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #include "BHHUD.h"
 #include "BHBreakableGlassPane.h"
 #include "BHCharacter.h"
@@ -1005,7 +1009,14 @@ void ABHHUD::DrawHUD()
 
 	const float SafePad = FMath::Max(18.0f, Canvas->ClipX * 0.014f);
 	const float ReadoutW = FMath::Clamp(Canvas->ClipX * 0.38f, 280.0f, 560.0f);
-	if (BHGS)
+	if (BHGS && BHGS->bTutorialMode)
+	{
+		// Tutorial: the DrawTutorialPrompt banner is the sole instruction channel, so suppress the generic match
+		// telemetry (timer/exit pill + action/detail/aux lines). It otherwise contradicts the guided lesson - e.g.
+		// "FIND A LIVE BREAKER / HOLD E" during the flashlight step, or "EXIT OPEN" while the lesson is still at a
+		// station. The taught vitals stack (battery/stamina/fear/dread) is drawn separately and stays.
+	}
+	else if (BHGS)
 	{
 		const FString TimerText = BHGS->bTestMode ? FString(TEXT("TEST LOOP")) : (BHGS->bPracticeMode ? FString(TEXT("PRACTICE")) : FString::Printf(TEXT("T-%s"), *FormatClock(BHGS->RemainingTime)));
 		const FString ExitText = BHGS->bExitUnlocked ? FString(TEXT("EXIT OPEN")) : FString(TEXT("EXIT LOCKED"));
@@ -1080,8 +1091,11 @@ void ABHHUD::DrawHUD()
 
 			DrawRightAlignedText(CaptureReadout, Canvas->ClipX - SafePad, SafePad + 42.0f, CaptureColor, GEngine->GetSmallFont(), 0.66f);
 		}
-		else if (BHPS->PlayerRole == EBHPlayerRole::FakeHunter)
+		else if (BHPS->PlayerRole == EBHPlayerRole::FakeHunter && !(BHGS && BHGS->bTutorialMode))
 		{
+			// In the Monitor tutorial the prompt channel narrates the tools step-by-step ("Press Q to send a REAL
+			// hint", etc.); the persistent "Q REAL R MARK G TRAP" pill would contradict the "revise to unlock tools"
+			// framing, so suppress it and let the lesson drive.
 			const float MonitorW = FMath::Clamp(Canvas->ClipX * 0.30f, 260.0f, 440.0f);
 			FString MonitorLine;
 			if (BHGS && BHGS->bRevisionMode)
@@ -1287,6 +1301,10 @@ void ABHHUD::DrawHUD()
 	DrawPhaseBanner(BHGS, Character);
 	DrawRoleIntroCard(BHPC, BHGS);
 	DrawDiagramPreview();
+	// Tutorial guidance gets its own top banner so the shared status toast (noise/round alerts) can't cut it off.
+	DrawTutorialPrompt(BHPC);
+	// Drawn last so the transition snapshot sits on top of the whole HUD.
+	DrawTutorialCard(BHPC);
 }
 
 FLinearColor ABHHUD::MainText() const
@@ -2340,7 +2358,7 @@ void ABHHUD::DrawInteractionPrompt(ABHCharacter* Character)
 	const ABHObjectiveStation* PromptStation = Cast<ABHObjectiveStation>(Target);
 	const bool bCanViewStationQuestion = BHPS
 		&& BHPS->LifeState == EBHPlayerLifeState::Alive
-		&& (BHPS->IsAliveSurvivor() || (BHGS && BHGS->bRevisionMode && BHPS->PlayerRole == EBHPlayerRole::FakeHunter));
+		&& (BHPS->IsAliveSurvivor() || (BHGS && (BHGS->bRevisionMode || BHGS->bTutorialMode) && BHPS->PlayerRole == EBHPlayerRole::FakeHunter));
 	const bool bStationQuestionPrompt = PromptStation
 		&& PromptStation->IsDirectorActive()
 		&& !PromptStation->IsCompleted()
@@ -3251,6 +3269,13 @@ void ABHHUD::DrawPhaseBanner(const ABHGameState* GameState, const ABHCharacter* 
 		return;
 	}
 
+	// The guided tutorial shows its own per-phase ShowTutorialCard; the generic "PRACTICE LAB" phase banner is
+	// off-message and competes with that card, so suppress it in tutorial mode.
+	if (GameState->bTutorialMode)
+	{
+		return;
+	}
+
 	const float Now = GetWorld()->GetTimeSeconds();
 	float Alpha = FMath::Clamp((PhaseBannerEndTime - Now) / 3.6f, 0.0f, 1.0f);
 	if (GameState->RoundPhase == EBHRoundPhase::SurvivorsWin || GameState->RoundPhase == EBHRoundPhase::HunterWin)
@@ -3396,4 +3421,72 @@ void ABHHUD::DrawRoleIntroCard(const ABHPlayerController* BHPC, const ABHGameSta
 	}
 
 	DrawWrappedHudText(Copy.Tip, PanelX + 26.0f * S, Cursor + 6.0f * S, PanelW - 52.0f * S, WithAlpha(Accent, SmoothAlpha), Font, 0.82f * S, 14.0f * S, 2);
+}
+
+void ABHHUD::DrawTutorialCard(const ABHPlayerController* BHPC)
+{
+	if (!Canvas || !GEngine || !BHPC || !BHPC->HasActiveTutorialCard())
+	{
+		return;
+	}
+	const float Alpha = BHPC->GetTutorialCardAlpha();
+	if (Alpha <= 0.01f)
+	{
+		return;
+	}
+	const float Smooth = Alpha * Alpha * (3.0f - 2.0f * Alpha);
+
+	// Full-screen dark wash so the phase hand-off reads as a deliberate loading card, not a freeze or a jump-cut.
+	const FLinearColor Wash(0.012f, 0.014f, 0.018f, 0.92f * Smooth);
+	DrawPanel(0.0f, 0.0f, Canvas->ClipX, Canvas->ClipY, Wash, FLinearColor(0.0f, 0.0f, 0.0f, 0.0f));
+
+	const float S = HudScale;
+	const UFont* TitleFont = GEngine->GetLargeFont();
+	const UFont* BodyFont = GEngine->GetSmallFont();
+	const FLinearColor Accent = WithAlpha(ActivePalette.Good, Smooth);
+	const FLinearColor BodyColor = WithAlpha(FLinearColor(0.90f, 0.93f, 0.95f, 1.0f), Smooth);
+
+	const FString& Title = BHPC->GetTutorialCardTitle();
+	const float TitleScale = 1.8f * S;
+	float TitleW = 0.0f;
+	float TitleH = 0.0f;
+	Canvas->TextSize(TitleFont, Title, TitleW, TitleH, TitleScale, TitleScale);
+	const float TitleY = Canvas->ClipY * 0.40f;
+	DrawHudText(Title, (Canvas->ClipX - TitleW) * 0.5f, TitleY, Accent, TitleFont, TitleScale);
+
+	const float BodyW = FMath::Min(Canvas->ClipX * 0.70f, 900.0f * S);
+	DrawWrappedHudText(BHPC->GetTutorialCardBody(), (Canvas->ClipX - BodyW) * 0.5f, TitleY + TitleH + 16.0f * S, BodyW, BodyColor, BodyFont, 1.0f * S, 20.0f * S, 3);
+}
+
+void ABHHUD::DrawTutorialPrompt(const ABHPlayerController* BHPC)
+{
+	if (!Canvas || !GEngine || !BHPC || !BHPC->HasActiveTutorialPrompt())
+	{
+		return;
+	}
+	const float Alpha = BHPC->GetTutorialPromptAlpha();
+	if (Alpha <= 0.01f)
+	{
+		return;
+	}
+	const FString& Message = BHPC->GetTutorialPromptMessage();
+	const UFont* Font = GEngine->GetSmallFont();
+	const float S = HudScale;
+
+	float TextW = 0.0f;
+	float TextH = 0.0f;
+	Canvas->TextSize(Font, Message, TextW, TextH, 0.95f * S, 0.95f * S);
+	const float PanelW = FMath::Clamp(TextW + 56.0f * S, 340.0f * S, Canvas->ClipX * 0.84f);
+	const bool bWrap = TextW > PanelW - 56.0f * S;
+	const float PanelH = (bWrap ? 72.0f : 46.0f) * S;
+	const float PanelX = (Canvas->ClipX - PanelW) * 0.5f;
+	// Top of the screen, well clear of the shared status toast (which sits at ~0.72) and below any phase banner.
+	const float PanelY = Canvas->ClipY * 0.11f;
+
+	const bool bHighContrastHud = BHPC->IsHighContrastHudEnabled();
+	const FLinearColor Fill = bHighContrastHud ? FLinearColor(0.0f, 0.0f, 0.0f, 0.95f) : FLinearColor(0.020f, 0.030f, 0.050f, 0.90f);
+	const FLinearColor Accent = bHighContrastHud ? FLinearColor(0.55f, 0.95f, 1.0f, 1.0f) : FLinearColor(0.32f, 0.74f, 0.95f, 0.96f);
+	const FLinearColor TextColor = bHighContrastHud ? FLinearColor(1.0f, 1.0f, 1.0f, 1.0f) : FLinearColor(0.92f, 0.96f, 0.99f, 1.0f);
+	DrawPanel(PanelX, PanelY, PanelW, PanelH, WithAlpha(Fill, Alpha), WithAlpha(Accent, Alpha));
+	DrawWrappedHudText(Message, PanelX + 28.0f * S, PanelY + 14.0f * S, PanelW - 56.0f * S, WithAlpha(TextColor, Alpha), Font, 0.95f * S, 18.0f * S, 2);
 }

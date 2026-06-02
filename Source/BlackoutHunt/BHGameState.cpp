@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #include "BHGameState.h"
 #include "Net/UnrealNetwork.h"
 
@@ -134,6 +138,9 @@ ABHGameState::ABHGameState()
 	PresenceLevel = 0.0f;
 	PresenceText = TEXT("The building is listening.");
 	PresencePulse = 0;
+	TeacherBlackoutSourceLocation = FVector::ZeroVector;
+	TeacherBlackoutRadius = 0.0f;
+	TeacherBlackoutEndServerTime = 0.0f;
 	ObjectiveBeats.Reset();
 	bPracticeMode = false;
 	bTutorialMode = false;
@@ -198,6 +205,9 @@ void ABHGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 	DOREPLIFETIME(ABHGameState, PresenceLevel);
 	DOREPLIFETIME(ABHGameState, PresenceText);
 	DOREPLIFETIME(ABHGameState, PresencePulse);
+	DOREPLIFETIME(ABHGameState, TeacherBlackoutSourceLocation);
+	DOREPLIFETIME(ABHGameState, TeacherBlackoutRadius);
+	DOREPLIFETIME(ABHGameState, TeacherBlackoutEndServerTime);
 	DOREPLIFETIME(ABHGameState, ObjectiveBeats);
 	DOREPLIFETIME(ABHGameState, bPracticeMode);
 	DOREPLIFETIME(ABHGameState, bTutorialMode);
@@ -535,6 +545,27 @@ void ABHGameState::SetPresenceState(float NewPresenceLevel, const FString& NewPr
 	PresenceLevel = FMath::Clamp(NewPresenceLevel, 0.0f, 100.0f);
 	PresenceText = NewPresenceText;
 	PresencePulse = FMath::Max(0, NewPresencePulse);
+}
+
+void ABHGameState::SetTeacherBlackout(const FVector& SourceLocation, float Radius, float EndServerTime)
+{
+	// A fresh blackout takes over the darkened area; never shorten an in-flight window if blackouts overlap.
+	TeacherBlackoutSourceLocation = SourceLocation;
+	TeacherBlackoutRadius = FMath::Max(0.0f, Radius);
+	TeacherBlackoutEndServerTime = FMath::Max(TeacherBlackoutEndServerTime, EndServerTime);
+}
+
+bool ABHGameState::IsTeacherBlackoutActive() const
+{
+	// Compare against the synchronized server clock so the window agrees on the server and on clients (the
+	// flashlight beam is dimmed client-side in ABHCharacter::UpdateFlashlightFeel).
+	return TeacherBlackoutRadius > 0.0f && GetServerWorldTimeSeconds() < TeacherBlackoutEndServerTime;
+}
+
+bool ABHGameState::IsPointInTeacherBlackout(const FVector& Location) const
+{
+	return IsTeacherBlackoutActive()
+		&& FVector::DistSquared2D(Location, TeacherBlackoutSourceLocation) <= FMath::Square(TeacherBlackoutRadius);
 }
 
 void ABHGameState::SetObjectiveBeats(const TArray<FBHObjectiveBeat>& NewObjectiveBeats)

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #pragma once
 
 #include "CoreMinimal.h"
@@ -44,6 +48,7 @@ public:
 	void SetActiveFogPreset(EBHFogPreset NewActiveFogPreset);
 	void SetActiveLevelName(const FString& NewActiveLevelName);
 	void SetPresenceState(float NewPresenceLevel, const FString& NewPresenceText, int32 NewPresencePulse);
+	void SetTeacherBlackout(const FVector& SourceLocation, float Radius, float EndServerTime);
 	void SetObjectiveBeats(const TArray<FBHObjectiveBeat>& NewObjectiveBeats);
 	void SetPracticeMode(bool bNewPracticeMode);
 	void SetTutorialMode(bool bNewTutorialMode);
@@ -122,6 +127,26 @@ public:
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Horror")
 	int32 PresencePulse;
+
+	// A Teacher blackout that is currently weakening nearby students' flashlights: where it was triggered, how
+	// far its dark reaches (cm), and the server time it lapses. Radius 0 / past the end time = no active
+	// blackout. Set by ABHGameMode::TriggerHunterBlackout; read by ABHCharacter for the flashlight battery + beam.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Horror")
+	FVector TeacherBlackoutSourceLocation;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Horror")
+	float TeacherBlackoutRadius;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Horror")
+	float TeacherBlackoutEndServerTime;
+
+	// True while any Teacher blackout window is open (ignores location).
+	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Horror")
+	bool IsTeacherBlackoutActive() const;
+
+	// True while a Teacher blackout is open AND the given world location is inside its darkened radius.
+	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Horror")
+	bool IsPointInTeacherBlackout(const FVector& Location) const;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Navigation")
 	TArray<FBHObjectiveBeat> ObjectiveBeats;

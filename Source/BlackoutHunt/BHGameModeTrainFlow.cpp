@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #include "BHGameMode.h"
 
 #include "BHEscapeStationManager.h"
@@ -213,7 +217,11 @@ void ABHGameMode::ConvertMonitorsBackToSurvivors(const FString& Reason)
 
 void ABHGameMode::TriggerFinalEscapeIfNeeded()
 {
-	if (!HasAuthority() || !IsFinalStage())
+	// The final-escape/train sequence must never fire in the guided tutorial. The tutorial URL pins BHStageIndex=0
+	// so IsFinalStage() is already false, but guard bTutorialMode here too as an authoritative backstop in case the
+	// stage ever leaks in (e.g. a direct map open without the pin). Scoped to bTutorialMode only, so the practice
+	// lab and Test Loop can still exercise the finale.
+	if (!HasAuthority() || !IsFinalStage() || bTutorialMode)
 	{
 		return;
 	}

@@ -1,12 +1,24 @@
 # Blackout Hunt
 
+**License:** Source available for personal/educational use. Commercial use requires a written license — contact [rostabadi1111@gmail.com](mailto:rostabadi1111@gmail.com). Attribution to Adam Rosta required. See [LICENSE](LICENSE) for full terms.
+
 Blackout Hunt is a direct-IP multiplayer horror hunt prototype for Unreal Engine 5.
 
 One player hosts a listen server and friends join with `host-ip-or-domain:7777`. Players can connect across LAN, a game-created hotspot, or the internet when the host is reachable on UDP port `7777`. The current implementation generates its levels at runtime and uses imported CC0 PBR materials for the main environment surfaces and set dressing.
 
 ## Beta Release
 
-Current beta target: `0.7.0` Windows classroom build. See `Docs\BETA_RELEASE_NOTES_0.7.0.md` for tester scope, known limits, and validation notes.
+Current beta target: `0.7.2` Windows classroom build.
+
+## First Run — Windows Security Prompt
+
+Windows may show a SmartScreen warning the first time you launch the exe. This is normal for unsigned indie games.
+
+1. Double-click `BlackoutHunt.exe`.
+2. If a blue "Windows protected your PC" dialog appears, click **More info**.
+3. Click **Run anyway**.
+
+This happens once per machine. After that Windows remembers the file and skips the prompt.
 
 ## Current Gameplay
 
@@ -192,12 +204,6 @@ Linux runtime logs are written under:
 ## Twinmotion
 
 Twinmotion is installed at `D:\Twinmotion2026.1`. The project has Datasmith import support enabled for the editor; see `Docs\TWINMOTION.md` for the visual pass workflow.
-
-## License
-
-Blackout Hunt is **source-available, all rights reserved** — see [`LICENSE`](LICENSE). You may view, clone, and download the project for personal, non-commercial evaluation and educational use only. Any other use (including reuse, modification, redistribution, or commercial use) requires prior written permission from the copyright holder.
-
-Third-party assets and dependencies (e.g. CC0 PBR materials, the KayKit asset packs referenced as submodules, and other contents of `ThirdParty/` and `Downloaded/` directories) are licensed under their own respective terms, not under this project's license.
 
 ## License
 

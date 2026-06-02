@@ -35,7 +35,7 @@ foreach ($level in $Levels) {
 
 foreach ($level in $Levels) {
     Write-Host "==> Exporting authored seed for $level ..."
-    & $editorCmd "$project" -run=BHExportLevel -Level=$level -stdout -unattended -nopause -nosplash
+    & $editorCmd "$project" -run=BHExportLevel "-Level=$level" -stdout -unattended -nopause -nosplash
     if ($LASTEXITCODE -ne 0) {
         Write-Error "Export failed for $level (exit $LASTEXITCODE)."
         exit $LASTEXITCODE

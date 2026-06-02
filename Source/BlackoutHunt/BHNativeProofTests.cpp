@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "BHAutomationTestWorld.h"
@@ -396,6 +400,87 @@ bool FBHRoleWarmupSafetyTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Warmup reset clears fear."), Survivor->GetFear(), 0.0f);
 	TestEqual(TEXT("Warmup reset clears dread."), Survivor->GetDread(), 0.0f);
 	TestFalse(TEXT("Warmup reset clears detention mark."), Survivor->IsDetentionMarked());
+
+	return true;
+}
+
+// A Teacher blackout weakens the flashlight of nearby students only: their battery drains faster (and their
+// beam flickers near-dead, dimmed in UpdateFlashlightFeel). A student outside the darkened radius and the
+// Teacher themselves are never affected, and everything relaxes back once the window closes. Proves the
+// located GameState gate (IsPointInTeacherBlackout) and the role/proximity gate + battery surge in
+// ABHCharacter::IsInTeacherBlackout / GetEffectiveFlashlightDrainPerSecond.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHTeacherBlackoutWeakensNearbyStudentFlashlightTest,
+	"BlackoutHunt.Horror.TeacherBlackoutWeakensNearbyStudentFlashlight",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHTeacherBlackoutWeakensNearbyStudentFlashlightTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FBHScopedAutomationWorld TestWorld(TEXT("BlackoutHuntBlackout"));
+	UWorld* World = TestWorld.Get();
+	TestNotNull(TEXT("Test world is created."), World);
+	if (!World)
+	{
+		return false;
+	}
+
+	const FVector BlackoutOrigin(0.0f, 0.0f, 140.0f);
+	ABHGameState* GameState = BHCreateProofGameState(World, EBHRoundPhase::Hunt);
+	ABHCharacter* NearStudent = World->SpawnActor<ABHCharacter>(BlackoutOrigin, FRotator::ZeroRotator);
+	ABHCharacter* FarStudent = World->SpawnActor<ABHCharacter>(FVector(6000.0f, 0.0f, 140.0f), FRotator::ZeroRotator);
+	ABHCharacter* Teacher = World->SpawnActor<ABHCharacter>(FVector(200.0f, 0.0f, 140.0f), FRotator::ZeroRotator);
+	TestNotNull(TEXT("Blackout game state spawns."), GameState);
+	TestNotNull(TEXT("Near student spawns."), NearStudent);
+	TestNotNull(TEXT("Far student spawns."), FarStudent);
+	TestNotNull(TEXT("Teacher spawns."), Teacher);
+	if (!GameState || !NearStudent || !FarStudent || !Teacher)
+	{
+		return false;
+	}
+
+	BHAttachProofPlayerState(World, NearStudent, EBHPlayerRole::Survivor, TEXT("Near Student"));
+	BHAttachProofPlayerState(World, FarStudent, EBHPlayerRole::Survivor, TEXT("Far Student"));
+	BHAttachProofPlayerState(World, Teacher, EBHPlayerRole::Hunter, TEXT("Blackout Teacher"));
+
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	TestNotNull(TEXT("Game settings resolve."), Settings);
+	if (!Settings)
+	{
+		return false;
+	}
+	const float ExpectedMultiplier = FMath::Max(1.0f, Settings->BlackoutFlashlightDrainMultiplier);
+	const float BaseDrain = NearStudent->GetEffectiveFlashlightDrainPerSecond();
+
+	// No blackout yet: nobody is weakened and everyone drains at the baseline rate.
+	TestFalse(TEXT("No Teacher blackout is active at round start."), GameState->IsTeacherBlackoutActive());
+	TestFalse(TEXT("Near student is not weakened before any blackout."), NearStudent->IsInTeacherBlackout());
+
+	// Open a located blackout centred on the near student with a 2000-unit radius.
+	GameState->SetTeacherBlackout(BlackoutOrigin, 2000.0f, GameState->GetServerWorldTimeSeconds() + 5.0f);
+	TestTrue(TEXT("Teacher blackout reports active."), GameState->IsTeacherBlackoutActive());
+	TestTrue(TEXT("The blackout origin is inside the darkened radius."), GameState->IsPointInTeacherBlackout(BlackoutOrigin));
+	TestFalse(TEXT("A point well outside the radius is not in the blackout."), GameState->IsPointInTeacherBlackout(FVector(6000.0f, 0.0f, 140.0f)));
+
+	// Near student: weakened, battery drains by the configured multiplier.
+	TestTrue(TEXT("Near student is caught in the blackout."), NearStudent->IsInTeacherBlackout());
+	const float SurgedDrain = NearStudent->GetEffectiveFlashlightDrainPerSecond();
+	TestTrue(TEXT("Near student's flashlight drains faster during the blackout."), SurgedDrain > BaseDrain + KINDA_SMALL_NUMBER);
+	TestEqual(TEXT("Surge multiplies the baseline drain by the configured factor."), SurgedDrain, BaseDrain * ExpectedMultiplier);
+
+	// Far student: outside the radius, untouched.
+	TestFalse(TEXT("Far student is outside the blackout."), FarStudent->IsInTeacherBlackout());
+	TestEqual(TEXT("Far student's flashlight is not surged."), FarStudent->GetEffectiveFlashlightDrainPerSecond(), BaseDrain);
+
+	// Teacher: inside the radius but not a student, so never weakened by their own dark.
+	TestFalse(TEXT("Teacher is not weakened by their own blackout."), Teacher->IsInTeacherBlackout());
+	TestEqual(TEXT("Teacher's own flashlight is not surged."), Teacher->GetEffectiveFlashlightDrainPerSecond(), BaseDrain);
+
+	// After the window closes, the near student relaxes back to the baseline.
+	BHAdvanceProofWorld(World, 6.0f);
+	TestFalse(TEXT("Teacher blackout window expires."), GameState->IsTeacherBlackoutActive());
+	TestFalse(TEXT("Near student is no longer weakened after the window."), NearStudent->IsInTeacherBlackout());
+	TestEqual(TEXT("Near student's flashlight drain returns to baseline after the blackout."), NearStudent->GetEffectiveFlashlightDrainPerSecond(), BaseDrain);
 
 	return true;
 }

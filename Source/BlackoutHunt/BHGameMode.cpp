@@ -10326,6 +10326,15 @@ void ABHGameMode::UpdatePresenceDirector()
 		return;
 	}
 
+	// Tutorial teaching: hold the presence director fully calm - no threat-driven climb, no dread text, no whisper,
+	// no light-kill - so a lesson step never reads as scary (the dread meter stays at the practice baseline). The
+	// scripted chase climax (bTutorialHorrorAllowed) runs the full director below for real tension. Inert in live
+	// matches (the predicate is false there).
+	if (IsTutorialHorrorSuppressed())
+	{
+		return;
+	}
+
 	int32 SurvivorCount = 0;
 	int32 HiddenCount = 0;
 	int32 HunterCount = 0;
@@ -10485,9 +10494,9 @@ void ABHGameMode::UpdatePresenceDirector()
 	const float WhisperCooldown = bPartyPace || BHGS->RoundModifier == EBHRoundModifier::PanicSurge ? 8.5f : 14.0f;
 	const bool bWhisperMoment = BestTarget
 		&& (BestTargetDistance <= 4200.0f || BestTarget->IsHiddenInLocker() || BestTarget->GetDread() >= 52.0f || BestTarget->IsDetentionMarked());
-	// The whole presence-whisper cue (behind-you drone, dread, on-screen line, light-kill) is suppressed during calm
-	// tutorial teaching beats and resumes for the scripted chase climax. The presence meter above is unaffected.
-	if (bWhisperMoment && NewPresence >= 54.0f && Now - LastPresenceWhisperTime >= WhisperCooldown && !IsTutorialHorrorSuppressed())
+	// (Tutorial teaching never reaches here - UpdatePresenceDirector early-returns above when horror is suppressed,
+	// so the whisper cue only fires in live matches and during the scripted chase climax.)
+	if (bWhisperMoment && NewPresence >= 54.0f && Now - LastPresenceWhisperTime >= WhisperCooldown)
 	{
 		const FVector BehindTarget = BestTarget->GetActorLocation() - BestTarget->GetActorForwardVector() * FMath::FRandRange(180.0f, 420.0f) + FVector(0.0f, 0.0f, 88.0f);
 		const float WhisperJumpscareCooldown = bPartyPace || BHGS->RoundModifier == EBHRoundModifier::PanicSurge ? 36.0f : 68.0f;
@@ -10610,6 +10619,14 @@ void ABHGameMode::ApplyPresenceSpike(const FVector& SourceLocation, float SpikeL
 		return;
 	}
 
+	// Tutorial teaching: no presence spike at all - a taught action (answering a graph, repairing the breaker) must
+	// not raise the dread meter/vignette or fire its light-flicker burst. The chase climax (bTutorialHorrorAllowed)
+	// and live matches still spike normally.
+	if (IsTutorialHorrorSuppressed())
+	{
+		return;
+	}
+
 	const float Now = GetWorld()->GetTimeSeconds();
 	const float NewPresence = FMath::Clamp(FMath::Max(BHGS->PresenceLevel, SpikeLevel), 0.0f, 100.0f);
 	BHGS->SetPresenceState(NewPresence, PresenceText, BHGS->PresencePulse + 1);
@@ -10624,9 +10641,9 @@ void ABHGameMode::ApplyPresenceSpike(const FVector& SourceLocation, float SpikeL
 	// flicker so the lighting itself signals the Shape is closing in. Reuses the self-reverting burst
 	// system (timer-based restore, replication- and reduced-flash-comfort safe), so this is purely
 	// event-driven with no per-frame cost. Capped at a few nearest lights so it reads as a cue rather
-	// than a room-wide strobe, and scales hotter with the spike level. Suppressed during calm tutorial
-	// teaching beats (the presence meter above still updates); allowed during the scripted chase climax.
-	if (!FlickerLights.IsEmpty() && !IsTutorialHorrorSuppressed())
+	// than a room-wide strobe, and scales hotter with the spike level. (Tutorial teaching never reaches here -
+	// ApplyPresenceSpike early-returns above when horror is suppressed.)
+	if (!FlickerLights.IsEmpty())
 	{
 		const float PresenceAlpha = FMath::Clamp(SpikeLevel / 100.0f, 0.0f, 1.0f);
 		const FLinearColor DreadTint = FMath::Lerp(FLinearColor(0.92f, 0.70f, 0.26f, 1.0f), FLinearColor(0.62f, 0.80f, 0.30f, 1.0f), PresenceAlpha);

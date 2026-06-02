@@ -18,6 +18,10 @@ ReconnectGraceSeconds=120.0
 InteractDistance=550.0
 CaptureDistance=220.0
 FlashlightDrainPerSecond=0.17
+BlackoutFlashlightDrainMultiplier=3.0
+BlackoutFlashlightStrengthScale=0.15
+BlackoutFlashlightWeakenSeconds=6.0
+BlackoutFlashlightEffectRadius=2600.0
 ScanCooldownSeconds=25.0
 DecoyCooldownSeconds=10.0
 HunterSprintDrainMultiplierMax=0.85
@@ -53,6 +57,10 @@ bDefaultHighContrastHud=False
 - `InteractDistance`: range for doors, lockers, breakers, batteries, switches, terminals, and exit.
 - `CaptureDistance`: Teacher capture range.
 - `FlashlightDrainPerSecond`: battery drain while flashlight is on. `0.17` gives roughly 10 minutes from full charge.
+- `BlackoutFlashlightDrainMultiplier`: while caught in a Teacher blackout, a nearby student's flashlight battery drains `FlashlightDrainPerSecond` times this factor. `1.0` disables the battery surge.
+- `BlackoutFlashlightStrengthScale`: the beam strength a blackout collapses a nearby student's flashlight toward, violently flickering around it (also kills its ability to stagger the Teacher). `0.15` is a near-dead 15% beam; `1.0` disables the dimming.
+- `BlackoutFlashlightWeakenSeconds`: how long the blackout weakening (battery + beam) lasts on a student. Each Blackout Surge upgrade charge adds two seconds.
+- `BlackoutFlashlightEffectRadius`: radius (cm) around the Teacher's blackout that weakens students' flashlights (fallback when no lights were killed; otherwise the killed-light spread + margin is used).
 - `ScanCooldownSeconds`: Teacher heartbeat scan cooldown.
 - `DecoyCooldownSeconds`: survivor decoy cooldown.
 - `HunterSprintDrainMultiplierMax`: maximum Teacher sprint stamina drain multiplier after role movement tuning is applied. Existing movement data assets are capped by this value.

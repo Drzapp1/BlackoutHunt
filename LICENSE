@@ -5,20 +5,27 @@ Copyright (c) 2026 Adam Rosta. All rights reserved.
    "Software" means the Blackout Hunt source code, assets, configuration,
    documentation, and any other materials in this repository that are
    authored by the copyright holder, excluding Third-Party Materials (see
-   Section 5).
+   Section 6).
    "You" means any individual or entity exercising permissions under this
    license.
+   "Commercial Use" means any use of the Software, in whole or in part, that
+   is primarily intended for or directed toward commercial advantage or
+   monetary compensation — including selling, licensing, renting, or
+   distributing the Software or any product, service, or derivative work that
+   incorporates the Software, and including use to generate revenue through
+   advertising, donations, subscriptions, or in-product purchases.
 
 2. Grant
    You are permitted to view, clone, and download the Software solely for
-   personal, non-commercial evaluation, reference, and educational purposes.
+   personal, non-commercial evaluation, reference, and educational purposes,
+   subject to the Attribution requirement in Section 4.
    This is a source-available license, not an open-source license.
 
 3. Restrictions
-   Except as expressly permitted in Section 2, You may NOT, without prior
+   Except as expressly permitted in Section 2, or under a separate written
+   commercial license granted under Section 5, You may NOT, without prior
    written permission from the copyright holder:
-     (a) use the Software, in whole or in part, in any product or service,
-         whether commercial or non-commercial;
+     (a) make any Commercial Use of the Software, in whole or in part;
      (b) copy, modify, merge, adapt, translate, or create derivative works
          from the Software;
      (c) redistribute, publish, sublicense, sell, rent, lease, or otherwise
@@ -26,13 +33,28 @@ Copyright (c) 2026 Adam Rosta. All rights reserved.
      (d) remove or alter this license or any copyright, trademark, or
          attribution notices.
 
-4. Reservation of Rights
-   All rights not expressly granted to You are reserved by the copyright
-   holder. No rights are granted by implication, estoppel, or otherwise.
-   To request additional rights (including commercial or distribution
-   rights), contact the copyright holder.
+4. Attribution
+   Any use of the Software permitted under this license, or under any
+   commercial license granted under Section 5, must give clear and visible
+   credit to "Adam Rosta" as the original author of Blackout Hunt. At minimum,
+   the credit must appear in any of the following that exist for Your use: the
+   product's credits or "About" screen, its documentation, and the description
+   of any public page, listing, or repository through which the Software or a
+   derivative is made available. The credit must be reasonably prominent and
+   must not be removed, obscured, or disclaimed.
 
-5. Third-Party Materials
+5. Commercial Use & Revenue Sharing
+   Commercial Use is NOT granted by this license. If You wish to sell,
+   monetize, or otherwise make Commercial Use of the Software, You must first
+   obtain a separate written commercial license from the copyright holder. The
+   commercial license is where the parties agree, in writing, on terms
+   including any revenue share, royalty, fee, scope, and attribution
+   obligations. Any Commercial Use without such a signed commercial license is
+   a breach of this license and an infringement of the copyright holder's
+   rights. To request a commercial license, contact the copyright holder at
+   rostabadi1111@gmail.com.
+
+6. Third-Party Materials
    The Software includes or references third-party assets and dependencies
    (for example, CC0 PBR materials, the KayKit asset packs referenced as
    submodules, and other contents of the ThirdParty/ and Downloaded/
@@ -41,12 +63,22 @@ Copyright (c) 2026 Adam Rosta. All rights reserved.
    You any rights in Third-Party Materials beyond those provided by their
    original licenses, and You are responsible for complying with those terms.
 
-6. No Warranty
+7. Reservation of Rights
+   All rights not expressly granted to You are reserved by the copyright
+   holder. No rights are granted by implication, estoppel, or otherwise.
+
+8. Termination
+   Any breach of this license — including unauthorized Commercial Use or
+   failure to provide the attribution required by Section 4 — automatically
+   and immediately terminates the rights granted to You under Section 2,
+   without prejudice to any other remedies available to the copyright holder.
+
+9. No Warranty
    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
    FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
 
-7. Limitation of Liability
+10. Limitation of Liability
    IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES,
    OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE,
    ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR

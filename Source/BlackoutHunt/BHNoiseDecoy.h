@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #pragma once
 
 #include "CoreMinimal.h"
@@ -38,5 +42,13 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UBHSynthComponent> Synth;
 
+	// Server-only: fires a realistic survivor noise (footstep/breathing) into the perception system on a
+	// repeating timer so the Teacher and bots chase the decoy as if a real student were moving here. The
+	// emitted reason deliberately never says "decoy" -- that is the whole point of the rework.
+	void EmitDecoyNoise();
+
 	float AgeSeconds;
+
+	FTimerHandle NoiseTimerHandle;
+	int32 NoisePingIndex;
 };

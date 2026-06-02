@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #include "BHTutorialDirector.h"
 
 #include "BHBotController.h"
@@ -9,6 +13,7 @@
 #include "BHGameMode.h"
 #include "BHGameState.h"
 #include "BHLocker.h"
+#include "BHNoiseDecoy.h"
 #include "BHObjectiveStation.h"
 #include "BHPlayerController.h"
 #include "BHPlayerState.h"
@@ -34,8 +39,27 @@ void ABHTutorialDirector::BeginPlay()
 		return;
 	}
 
+	// Freeze controls immediately (and keep re-asserting on a fast timer) so the player can't wander off during
+	// the ~1s before Activate's intro lock would kick in - the freeze must feel instant on map entry.
+	SetAllInputLocked(true);
+	GetWorldTimerManager().SetTimer(IntroLockTimerHandle, this, &ABHTutorialDirector::EnforceIntroInputLock, 0.1f, true);
+
 	// Defer a beat so the listen-server host's pawn and player state exist before the first lesson line.
 	GetWorldTimerManager().SetTimer(ActivateTimerHandle, this, &ABHTutorialDirector::Activate, 1.0f, false);
+}
+
+void ABHTutorialDirector::EnforceIntroInputLock()
+{
+	// Once the step machine is live, its Intro step owns the lock; stop the pre-activation enforcement.
+	if (bActivated || !HasAuthority())
+	{
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(IntroLockTimerHandle);
+		}
+		return;
+	}
+	SetAllInputLocked(true);
 }
 
 void ABHTutorialDirector::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -44,6 +68,7 @@ void ABHTutorialDirector::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	{
 		World->GetTimerManager().ClearTimer(ActivateTimerHandle);
 		World->GetTimerManager().ClearTimer(EvalTimerHandle);
+		World->GetTimerManager().ClearTimer(IntroLockTimerHandle);
 	}
 	Super::EndPlay(EndPlayReason);
 }
@@ -55,6 +80,7 @@ void ABHTutorialDirector::Activate()
 		return;
 	}
 	bActivated = true;
+	GetWorldTimerManager().ClearTimer(IntroLockTimerHandle);
 
 	// Which tutorial are we running, and is it the chained full course or a single selected lesson?
 	if (const ABHGameMode* GameMode = GetWorld()->GetAuthGameMode<ABHGameMode>())
@@ -102,6 +128,7 @@ void ABHTutorialDirector::Activate()
 	{
 	case EBHTutorialPhase::Teacher:
 		StudentBot = SpawnScriptedBot(EBHPlayerRole::Survivor, TEXT("Student"), FVector(3000.0f, 0.0f, 120.0f));
+		BuildScriptedWaypoints();
 		EnterTeacherStep(ETeacherStep::Intro);
 		break;
 	case EBHTutorialPhase::Monitor:
@@ -145,6 +172,7 @@ void ABHTutorialDirector::EnterStep(EStep NewStep)
 	{
 	case EStep::Intro:
 		SetAllInputLocked(true);
+		ShowTutorialCard(TEXT("SURVIVOR TRAINING"), TEXT("You're a student. Learn to move, hide, crawl, and escape the Teacher."), 4.5f);
 		Broadcast(TEXT("Welcome to the Blackout Hunt tutorial. Watch for a moment - your controls unlock in a few seconds."), 5.0f);
 		break;
 	case EStep::Move:
@@ -171,6 +199,9 @@ void ABHTutorialDirector::EnterStep(EStep NewStep)
 		break;
 	case EStep::Crawl:
 		Broadcast(TEXT("Good. Now the low CRAWL DUCT (follow the marker): press LEFT ALT to go prone, then crawl in. A standing Teacher can't follow."), 16.0f);
+		break;
+	case EStep::Decoy:
+		Broadcast(TEXT("You can misdirect the Teacher too: press G to drop a NOISE DECOY. It fakes footsteps and breathing to pull them off you. Try it now."), 14.0f);
 		break;
 	case EStep::Breaker:
 		// Cut the lights so the student has a real blackout to fix - this is the breaker lesson.
@@ -202,7 +233,20 @@ void ABHTutorialDirector::EnterStep(EStep NewStep)
 		break;
 	case EStep::Encounter:
 		// A real chase: spawn the Teacher when it is time, play the "Teacher appears" reveal, then have it
-		// actively pursue (driven each tick in EvaluateStep).
+		// actively pursue (driven each tick in EvaluateStep). The breaker repair already opened the exit, but
+		// re-assert it so the gate is reliably GREEN for the run, matching the prompt.
+		// The calm teaching is over - allow ambient dread for the chase climax (the random monster-charge jumpscare
+		// stays suppressed; that gate is bTutorialMode-only in the game mode). And hand the student a full stamina
+		// bar so the "RUN!" sprint feels strong; it still drains normally, so they learn to manage it.
+		if (ABHGameMode* HorrorGameMode = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
+		{
+			HorrorGameMode->SetTutorialHorrorAllowed(true);
+		}
+		if (ABHCharacter* RunSurvivor = FindTutorialSurvivor())
+		{
+			RunSurvivor->RecoverStamina(1000.0f);
+		}
+		SetTutorialExitUnlocked();
 		SpawnScriptedTeacher();
 		if (ABHBotController* Teacher = TeacherBot.Get())
 		{
@@ -219,6 +263,13 @@ void ABHTutorialDirector::EnterStep(EStep NewStep)
 	case EStep::Complete:
 		SetAllInputLocked(false);
 		ClearBeats();
+		// Chase over - return to the calm/no-horror state so a lingering high presence can't fire a whisper over
+		// the completion card.
+		if (ABHGameMode* CalmGameMode = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
+		{
+			CalmGameMode->SetTutorialHorrorAllowed(false);
+		}
+		ShowTutorialCard(TEXT("SURVIVOR TRAINING COMPLETE"), bChained ? TEXT("Loading Teacher training...") : TEXT("Returning to the menu..."), 3.2f);
 		Broadcast(bChained
 			? TEXT("Survivor training complete! Now you'll learn to play as the TEACHER...")
 			: TEXT("Survivor training complete - nice work! Returning to the menu..."), 6.0f);
@@ -310,7 +361,7 @@ void ABHTutorialDirector::EvaluateStep()
 		if (!bHideRegistered && Survivor && Survivor->IsHiddenInLocker())
 		{
 			bHideRegistered = true;
-			Broadcast(TEXT("Good - you're hidden and the Teacher can't see you. When you're ready, press E to climb out."), 8.0f);
+			Broadcast(TEXT("Good - you're hidden and the Teacher can't see you. When you climb out (press E) you reappear a few steps away from the locker, not at the door - so the Teacher can't corner you there."), 10.0f);
 		}
 		if ((bHideRegistered && Survivor && !Survivor->IsHiddenInLocker()) || Elapsed >= 28.0f)
 		{
@@ -321,9 +372,24 @@ void ABHTutorialDirector::EvaluateStep()
 		// Advance once the student has actually gone low-profile by the duct, or on the generous timeout.
 		if (SurvivorIsCrawlingNearDuct() || Elapsed >= 20.0f)
 		{
+			EnterStep(EStep::Decoy);
+		}
+		break;
+	case EStep::Decoy:
+	{
+		// Advance once the student has actually dropped a decoy (LastDecoyTime moves past step entry), or on
+		// the generous timeout so a student who can't find G is never stuck.
+		const bool bDropped = Survivor && Survivor->GetLastDecoyTime() >= StepStartServerTime;
+		if (bDropped || Elapsed >= 18.0f)
+		{
+			if (bDropped)
+			{
+				Broadcast(TEXT("Nice - the Teacher hears that and checks the wrong spot. Decoys buy you time to move."), 4.0f);
+			}
 			EnterStep(EStep::Breaker);
 		}
 		break;
+	}
 	case EStep::Breaker:
 	{
 		const ABHBreaker* Breaker = TutorialBreaker.Get();
@@ -402,7 +468,9 @@ void ABHTutorialDirector::Broadcast(const FString& Message, float DurationSecond
 	{
 		if (ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get()))
 		{
-			PC->ClientShowStatusMessage(Message, DurationSeconds);
+			// Tutorial guidance goes on its own dedicated top-of-screen channel, NOT the shared status toast,
+			// so noise alerts / round messages can never cut a lesson prompt off mid-read.
+			PC->ClientShowTutorialPrompt(Message, DurationSeconds);
 		}
 	}
 }
@@ -483,7 +551,7 @@ ABHCharacter* ABHTutorialDirector::FindStudentCharacter() const
 	return Bot ? Cast<ABHCharacter>(Bot->GetPawn()) : nullptr;
 }
 
-void ABHTutorialDirector::DriveScriptedCast() const
+void ABHTutorialDirector::DriveScriptedCast()
 {
 	switch (Phase)
 	{
@@ -494,8 +562,9 @@ void ABHTutorialDirector::DriveScriptedCast() const
 		}
 		break;
 	case EBHTutorialPhase::Teacher:
-		// The human is the Hunter; keep the AI student lively so there's something to scan, chase and catch.
-		DriveStudentBot();
+		// The human is the Hunter; drive the AI student on a fixed scripted route (always moving, hides on cue)
+		// rather than the wander/flee decision AI that only stirred when the Teacher was right on top of it.
+		DriveScriptedTutorialStudent();
 		break;
 	case EBHTutorialPhase::Monitor:
 		// The AI student wanders; the AI teacher hunts it so the monitor has a live scene to mislead. If the
@@ -553,7 +622,12 @@ void ABHTutorialDirector::DriveStudentBot() const
 	}
 	if (Threat && BestDistSq < (1500.0f * 1500.0f))
 	{
-		Bot->RunStateTreeIntent(EBHBotIntent::Flee, Threat, Student->GetActorLocation(), 200.0f);
+		// Flee AWAY from the threat: the Flee intent drives toward Decision.Location, so passing the student's own
+		// position (as this used to) made it stand still and get bodied in place. Project a run point directly away
+		// from the Hunter so the monitor watches a real evasion to mislead.
+		const FVector Away = (Student->GetActorLocation() - Threat->GetActorLocation()).GetSafeNormal2D();
+		const FVector FleeTo = Student->GetActorLocation() + (Away.IsNearlyZero() ? Student->GetActorForwardVector() : Away) * 1000.0f;
+		Bot->RunStateTreeIntent(EBHBotIntent::Flee, Threat, FleeTo, 160.0f);
 	}
 	else
 	{
@@ -667,7 +741,10 @@ void ABHTutorialDirector::PublishStepBeat() const
 	// Teacher / Monitor phases point the marker at their own targets (the AI student, a station, or the exit).
 	if (Phase == EBHTutorialPhase::Teacher)
 	{
-		if (TeacherStep == ETeacherStep::Capture)
+		// Point at the student through the observe-the-student beats and the chase itself.
+		if (TeacherStep == ETeacherStep::Noise
+			|| TeacherStep == ETeacherStep::Counterplay
+			|| TeacherStep == ETeacherStep::Capture)
 		{
 			if (const ABHCharacter* Student = FindStudentCharacter())
 			{
@@ -869,6 +946,16 @@ void ABHTutorialDirector::SetTutorialLightsPowered(bool bPowered) const
 	}
 }
 
+void ABHTutorialDirector::SetTutorialExitUnlocked() const
+{
+	UWorld* World = GetWorld();
+	if (ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr)
+	{
+		// Replicated server bool; the gate's ApplyExitGateVisuals reads it and switches to the pulsing green state.
+		BHGS->SetExitUnlocked(true);
+	}
+}
+
 void ABHTutorialDirector::DriveTeacherChase() const
 {
 	ABHBotController* Bot = TeacherBot.Get();
@@ -885,11 +972,14 @@ void ABHTutorialDirector::DriveTeacherChase() const
 		return;
 	}
 
-	// If the student has ducked into a locker, the Teacher loses sight of them - wander off on patrol instead
-	// of camping the locker door. The next tick resumes the chase the moment they climb back out.
+	// If the student has ducked into a locker, the Teacher loses sight of them - it must give up and walk AWAY,
+	// not loiter at the door (the Patrol intent stalled near the locker). Send it back toward the Hunter spawn so
+	// the student can safely climb out. The next tick resumes the chase the moment they reappear.
 	if (Survivor->IsHiddenInLocker())
 	{
-		Bot->RunStateTreeIntent(EBHBotIntent::Patrol, nullptr, FVector::ZeroVector, 220.0f);
+		const ABHGameMode* GameMode = GetWorld()->GetAuthGameMode<ABHGameMode>();
+		const FVector RetreatTo = GameMode ? GameMode->GetHunterSpawnLocation() : (GetActorLocation() + FVector(1200.0f, 0.0f, 0.0f));
+		Bot->RunStateTreeIntent(EBHBotIntent::Flee, nullptr, RetreatTo, 250.0f);
 		return;
 	}
 
@@ -968,7 +1058,7 @@ bool ABHTutorialDirector::ReviveIfCaught() const
 			PS->SetLifeState(EBHPlayerLifeState::Alive);
 			if (ABHPlayerController* PC = Cast<ABHPlayerController>(Ctrl))
 			{
-				PC->ClientShowStatusMessage(TEXT("Caught! No real penalty in the tutorial - you're back on your feet. Hide, then reach the exit."), 4.0f);
+				PC->ClientShowTutorialPrompt(TEXT("Caught! No real penalty in the tutorial - you're back on your feet. Hide, then reach the exit."), 4.0f);
 			}
 			// RestartPlayer respawns a fresh pawn at a PlayerStart, guaranteeing the student is unstuck
 			// even if the capture flow left the old pawn pinned. Iterator is now stale, so stop here.
@@ -1042,7 +1132,132 @@ void ABHTutorialDirector::SpawnScriptedTeacher()
 	TeacherSpawnServerTime = World->GetTimeSeconds();
 }
 
-// ---- Teacher tutorial (player = Hunter): scan(Q) -> chase + capture(LMB) an AI student -> blackout(R) -> exit ----
+bool ABHTutorialDirector::TeleportHumanToHunterSpawn() const
+{
+	ABHGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr;
+	ABHCharacter* Human = FindHumanPlayer();
+	if (!GameMode || !Human)
+	{
+		return false;
+	}
+	// Keep the player's current facing; only the position needs to match the AI Teacher's loom spot.
+	return Human->TeleportTo(GameMode->GetHunterSpawnLocation(), Human->GetActorRotation());
+}
+
+void ABHTutorialDirector::PlaceDemoDecoyNearStudent() const
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	const ABHCharacter* Student = FindStudentCharacter();
+	const FVector Origin = Student ? Student->GetActorLocation() : FVector(3000.0f, 0.0f, 120.0f);
+	const FVector SpawnLocation = Origin + FVector(140.0f, 0.0f, 20.0f);
+	// The decoy fires its own realistic footstep noise on spawn (a single on-screen "Noise: footstep" ping,
+	// then quieter tracking pings), so the Teacher gets exactly the same lure a real dropped decoy makes -- no
+	// separate "decoy"-labelled ping, because that label would give the trick away and never appears in a real
+	// hunt anymore.
+	World->SpawnActor<ABHNoiseDecoy>(SpawnLocation, FRotator::ZeroRotator);
+}
+
+void ABHTutorialDirector::BuildScriptedWaypoints()
+{
+	ScriptedWaypoints.Reset();
+	ScriptedWaypointIndex = 0;
+	// A deterministic circuit drawn from the baked map's furniture, so every waypoint is a reachable spot.
+	if (const ABHObjectiveStation* S = PracticeStation.Get()) { ScriptedWaypoints.Add(S->GetActorLocation()); }
+	if (const ABHBreaker* B = TutorialBreaker.Get()) { ScriptedWaypoints.Add(B->GetActorLocation()); }
+	if (const ABHObjectiveStation* S2 = InteractiveStation.Get()) { ScriptedWaypoints.Add(S2->GetActorLocation()); }
+	if (const ABHCharacter* Student = FindStudentCharacter()) { ScriptedWaypoints.Add(Student->GetActorLocation()); }
+	// Fallback so the student always has at least two points to pace between.
+	if (ScriptedWaypoints.Num() < 2)
+	{
+		const FVector Origin = GetActorLocation();
+		ScriptedWaypoints.Add(Origin + FVector(900.0f, 650.0f, 0.0f));
+		ScriptedWaypoints.Add(Origin + FVector(900.0f, -650.0f, 0.0f));
+	}
+}
+
+void ABHTutorialDirector::DriveScriptedTutorialStudent()
+{
+	ABHBotController* Bot = StudentBot.Get();
+	ABHCharacter* Student = FindStudentCharacter();
+	if (!Bot || !Student)
+	{
+		return;
+	}
+
+	// Counterplay beat: get the student into the nearest locker so the Teacher SEES them vanish (and reappear
+	// when we resume). The bot's own Hide interaction was unreliable AND its brain kept wandering it back out, so
+	// once it's close we force the hide with EnterLocker (sets hidden + repositions) and re-assert it every tick.
+	if (TeacherStep == ETeacherStep::Counterplay)
+	{
+		if (ABHLocker* Locker = FindNearestLocker(Student->GetActorLocation()))
+		{
+			// Simple, reliable locker demo: drop the student straight INTO a locker (re-asserted every tick so its
+			// own brain can't pull it back out), then climb it out a few seconds later so the Teacher watches a
+			// student pop out of a locker. (Pathing it in + the bot's own hide interaction was unreliable.)
+			if (StepElapsed() < 5.0f)
+			{
+				Student->EnterLocker(Locker);
+				Bot->StopMovement();
+				return;
+			}
+			if (Student->IsHiddenInLocker())
+			{
+				Student->ExitLocker();
+				return;
+			}
+			// Emerged - fall through to the roam below so it drifts for the rest of the beat.
+		}
+	}
+
+	// Capture beat: a real evasion - flee directly away from the human Teacher so the chase has stakes.
+	if (TeacherStep == ETeacherStep::Capture)
+	{
+		if (const ABHCharacter* Hunter = FindHumanPlayer())
+		{
+			const FVector Away = (Student->GetActorLocation() - Hunter->GetActorLocation()).GetSafeNormal2D();
+			const FVector FleeTo = Student->GetActorLocation() + (Away.IsNearlyZero() ? FVector(1.0f, 0.0f, 0.0f) : Away) * 1100.0f;
+			Bot->RunStateTreeIntent(EBHBotIntent::Flee, nullptr, FleeTo, 140.0f);
+			return;
+		}
+	}
+
+	// Default: walk a fixed loop so the student is always visibly on the move (not idling at a station the way
+	// the old wander/flee decision AI did until the Teacher was right next to it).
+	if (ScriptedWaypoints.Num() == 0)
+	{
+		BuildScriptedWaypoints();
+	}
+	if (ScriptedWaypoints.Num() > 0)
+	{
+		const int32 Count = ScriptedWaypoints.Num();
+		if (FVector::DistSquared2D(Student->GetActorLocation(), ScriptedWaypoints[ScriptedWaypointIndex % Count]) < (320.0f * 320.0f))
+		{
+			ScriptedWaypointIndex = (ScriptedWaypointIndex + 1) % Count;
+		}
+		Bot->RunStateTreeIntent(EBHBotIntent::Flee, nullptr, ScriptedWaypoints[ScriptedWaypointIndex % Count], 130.0f);
+	}
+}
+
+void ABHTutorialDirector::ShowTutorialCard(const FString& Title, const FString& Body, float Seconds) const
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		if (ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get()))
+		{
+			PC->ClientShowTutorialCard(Title, Body, Seconds);
+		}
+	}
+}
+
+// ---- Teacher tutorial (player = Hunter): scan(Q) -> noise/counterplay -> capture(LMB) -> blackout(R) -> exit ----
 
 void ABHTutorialDirector::EnterTeacherStep(ETeacherStep NewStep)
 {
@@ -1053,6 +1268,7 @@ void ABHTutorialDirector::EnterTeacherStep(ETeacherStep NewStep)
 	{
 	case ETeacherStep::Intro:
 		SetAllInputLocked(true);
+		ShowTutorialCard(TEXT("TEACHER TRAINING"), TEXT("Now you're the Hunter. Swing your axe, scan for heartbeats, and capture the student."), 4.5f);
 		Broadcast(TEXT("Now you're the TEACHER - hunt the student down before they escape. Watch a moment; your controls unlock shortly."), 5.0f);
 		break;
 	case ETeacherStep::Move:
@@ -1068,21 +1284,49 @@ void ABHTutorialDirector::EnterTeacherStep(ETeacherStep NewStep)
 		}
 		NextMoveHintServerTime = StepStartServerTime + 3.0f;
 		break;
+	case ETeacherStep::Sprint:
+		// First step after the (locked) intro now that the WASD lesson is skipped - hand back control here.
+		SetAllInputLocked(false);
+		Broadcast(TEXT("Quick tip: as the TEACHER you SPRINT faster than students (hold LEFT SHIFT), but your stamina is short and your normal walk is slow - so save sprint to close the gap for a capture, don't waste it wandering."), 14.0f);
+		break;
+	case ETeacherStep::Axe:
+		SetAllInputLocked(false);
+		Broadcast(TEXT("You carry an AXE. Press LEFT MOUSE to swing it - a hit on a student captures them. Take a practice swing now."), 14.0f);
+		break;
 	case ETeacherStep::Scan:
-		Broadcast(TEXT("Press Q to SCAN - it pings the nearest student's heartbeat and points you their way."), 14.0f);
+		Broadcast(TEXT("Press Q to SCAN. It detects the nearest student's HEARTBEAT and reports their direction and distance - they can't mask it. Use it whenever you lose them."), 16.0f);
+		break;
+	case ETeacherStep::Noise:
+		// Suppress the autonomous bot decoys (see DropDecoyAuthority) and stage exactly one here. The decoy fires
+		// a single on-screen footstep ping on spawn while the lesson explains it, instead of a stream that wipes
+		// the line.
+		PlaceDemoDecoyNearStudent();
+		Broadcast(TEXT("Students fight back with NOISE: they throw DECOYS that sound exactly like real footsteps and breathing, away from where they actually are. One just dropped - that 'Noise' could be a student or a trick. Confirm with a Q scan before you commit."), 16.0f);
+		break;
+	case ETeacherStep::Counterplay:
+		Broadcast(TEXT("They also vanish: a student in a LOCKER drops off your sight until they climb back out - watch the locker doors. And they slip into low CRAWL DUCTS you can't fit through. Cut them off; don't chase into a duct."), 18.0f);
 		break;
 	case ETeacherStep::Capture:
-		Broadcast(TEXT("Hunt the STUDENT (follow the marker). Get close and press LEFT MOUSE to swing and capture them."), 16.0f);
+		Broadcast(TEXT("Now hunt the STUDENT (follow the marker). Get close and swing your AXE (LEFT MOUSE) to capture them - they'll dodge into lockers and ducts, so corner them."), 16.0f);
 		break;
 	case ETeacherStep::Blackout:
 		Broadcast(TEXT("Press R for a BLACKOUT - it kills the lights so students lose their bearings."), 14.0f);
 		break;
 	case ETeacherStep::Exit:
+		// Bring the demonstration blackout back up so the run to the exit isn't in the dark.
+		if (bTutorialBlackoutActive)
+		{
+			SetTutorialLightsPowered(true);
+			bTutorialBlackoutActive = false;
+		}
+		// The Teacher never repairs a breaker, so force the gate green to match the "GREEN EXIT" prompt.
+		SetTutorialExitUnlocked();
 		Broadcast(TEXT("Nice work, Teacher. Head to the GREEN EXIT (follow the marker) to continue to Monitor training."), 12.0f);
 		break;
 	case ETeacherStep::Done:
 		SetAllInputLocked(false);
 		ClearBeats();
+		ShowTutorialCard(TEXT("TEACHER TRAINING COMPLETE"), bChained ? TEXT("Loading Hall Monitor training...") : TEXT("Returning to the menu..."), 3.2f);
 		Broadcast(bChained
 			? TEXT("Teacher training complete! Next: the HALL MONITOR...")
 			: TEXT("Teacher training complete - nice work! Returning to the menu..."), 6.0f);
@@ -1106,9 +1350,17 @@ void ABHTutorialDirector::EvaluateTeacherStep()
 	switch (TeacherStep)
 	{
 	case ETeacherStep::Intro:
+		// Move the human onto the Hunter spawn (the spot the AI Teacher loomed from in the Survivor lesson) while
+		// input is still locked, so the role hand-off feels continuous. Retried until the pawn exists.
+		if (!bTeacherStartPlaced && TeleportHumanToHunterSpawn())
+		{
+			bTeacherStartPlaced = true;
+		}
+		// Skip the WASD lesson on the Teacher map - the Survivor lesson already taught movement; repeating it
+		// (with its screen-pausing prompt) is just tedious. Straight to the role's movement tip + abilities.
 		if (Elapsed >= 5.0f)
 		{
-			EnterTeacherStep(ETeacherStep::Move);
+			EnterTeacherStep(ETeacherStep::Sprint);
 		}
 		break;
 	case ETeacherStep::Move:
@@ -1116,7 +1368,7 @@ void ABHTutorialDirector::EvaluateTeacherStep()
 		const uint8 Mask = Human ? Human->GetTutorialMovementMask() : 0;
 		if ((Human && (Mask & ABHCharacter::TutorialMoveAllMask) == ABHCharacter::TutorialMoveAllMask) || Elapsed >= 60.0f)
 		{
-			EnterTeacherStep(ETeacherStep::Scan);
+			EnterTeacherStep(ETeacherStep::Axe);
 			break;
 		}
 		const float Now = GetWorld()->GetTimeSeconds();
@@ -1127,9 +1379,46 @@ void ABHTutorialDirector::EvaluateTeacherStep()
 		}
 		break;
 	}
+	case ETeacherStep::Sprint:
+		// Quick informational movement tip; hold long enough to read it, then on to the axe.
+		if (Elapsed >= 8.0f)
+		{
+			EnterTeacherStep(ETeacherStep::Axe);
+		}
+		break;
+	case ETeacherStep::Axe:
+		// Advance once they swing the axe (the capture attack), or on the generous timeout.
+		if ((Human && Human->IsTeacherCaptureAttackActive()) || Elapsed >= 22.0f)
+		{
+			EnterTeacherStep(ETeacherStep::Scan);
+		}
+		break;
 	case ETeacherStep::Scan:
-		// Advance when the player actually scans (Q), or on the generous timeout.
-		if ((Human && Human->GetLastScanTime() >= StepStartServerTime) || Elapsed >= 25.0f)
+	{
+		// Once they scan, hold the step ~4s so the heartbeat readout (a client status line) stays up and is
+		// read before the next prompt overwrites it - the player was losing the scan output instantly before.
+		const bool bScanned = Human && Human->GetLastScanTime() >= StepStartServerTime;
+		if (bScanned && ScanDemoServerTime <= 0.0f)
+		{
+			ScanDemoServerTime = GetWorld()->GetTimeSeconds();
+		}
+		const bool bReadoutShown = ScanDemoServerTime > 0.0f && (GetWorld()->GetTimeSeconds() - ScanDemoServerTime >= 4.0f);
+		if (bReadoutShown || Elapsed >= 25.0f)
+		{
+			EnterTeacherStep(ETeacherStep::Noise);
+		}
+		break;
+	}
+	case ETeacherStep::Noise:
+		// Explanation beat with the single staged decoy; hold long enough to read it unrushed, then teach the rest.
+		if (Elapsed >= 11.0f)
+		{
+			EnterTeacherStep(ETeacherStep::Counterplay);
+		}
+		break;
+	case ETeacherStep::Counterplay:
+		// Explanation beat (lockers + crawl ducts) - the longest caption, so give it the most reading time.
+		if (Elapsed >= 13.0f)
 		{
 			EnterTeacherStep(ETeacherStep::Capture);
 		}
@@ -1151,12 +1440,25 @@ void ABHTutorialDirector::EvaluateTeacherStep()
 		break;
 	}
 	case ETeacherStep::Blackout:
-		// Advance when they trigger the blackout power (R), or on timeout.
-		if ((Human && Human->GetLastHunterPowerTime() >= StepStartServerTime) || Elapsed >= 25.0f)
+	{
+		// The real hunter blackout only kills lights wired to a circuit, which the compact tutorial map has none
+		// of - so the player taps R and nothing happens. Force every tutorial light off the moment they fire it
+		// so the lesson actually reads, hold the dark for a beat, then move on (Exit restores the lights).
+		const bool bFiredBlackout = Human && Human->GetLastHunterPowerTime() >= StepStartServerTime;
+		if (bFiredBlackout && !bTutorialBlackoutActive)
+		{
+			SetTutorialLightsPowered(false);
+			bTutorialBlackoutActive = true;
+			BlackoutDemoServerTime = GetWorld()->GetTimeSeconds();
+			Broadcast(TEXT("Lights out! The students are blind and scrambling. Power comes back on its own shortly."), 4.0f);
+		}
+		const bool bBlackoutHeld = bTutorialBlackoutActive && (GetWorld()->GetTimeSeconds() - BlackoutDemoServerTime >= 3.0f);
+		if (bBlackoutHeld || Elapsed >= 25.0f)
 		{
 			EnterTeacherStep(ETeacherStep::Exit);
 		}
 		break;
+	}
 	case ETeacherStep::Exit:
 	{
 		bool bReachedExit = false;
@@ -1182,11 +1484,14 @@ void ABHTutorialDirector::EnterMonitorStep(EMonitorStep NewStep)
 {
 	MonitorStep = NewStep;
 	StepStartServerTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	// Each tool step re-arms its own confirmation hold (see EvaluateMonitorStep).
+	MonitorToolConfirmServerTime = 0.0f;
 
 	switch (NewStep)
 	{
 	case EMonitorStep::Intro:
 		SetAllInputLocked(true);
+		ShowTutorialCard(TEXT("HALL MONITOR TRAINING"), TEXT("You can't catch anyone. Revise to unlock tools, then mislead the Teacher and slow the students."), 4.5f);
 		Broadcast(TEXT("Last lesson: the HALL MONITOR. You can't catch anyone - you mislead the Teacher and slow the students. Watch a moment..."), 5.0f);
 		break;
 	case EMonitorStep::Move:
@@ -1203,7 +1508,18 @@ void ABHTutorialDirector::EnterMonitorStep(EMonitorStep NewStep)
 		NextMoveHintServerTime = StepStartServerTime + 3.0f;
 		break;
 	case EMonitorStep::Unlock:
-		Broadcast(TEXT("In a real match you'd answer at STATIONS to unlock your tools. Here they're ready - let's practise them."), 8.0f);
+		// First step after the (locked) intro now that the WASD lesson is skipped - hand back control here.
+		SetAllInputLocked(false);
+		// Monitors earn their tools by REVISING in a real match - let them actually answer one here (enabled for
+		// monitors in tutorial mode, see ABHObjectiveStation / BHHUD). Re-assert the question if it got re-rolled.
+		if (ABHObjectiveStation* Station = PracticeStation.Get())
+		{
+			if (!Station->IsQuestionSolved())
+			{
+				Station->ConfigureTutorialVisualQuestion();
+			}
+		}
+		Broadcast(TEXT("Monitors unlock their tools by REVISING. Walk to the lit STATION (follow the marker) and answer with 1-4 - that's it. You don't hold E to repair nodes; answering is your whole job here."), 14.0f);
 		break;
 	case EMonitorStep::Hint:
 		Broadcast(TEXT("Press Q to send a REAL hint - it tells the Teacher where a student actually is."), 16.0f);
@@ -1215,11 +1531,14 @@ void ABHTutorialDirector::EnterMonitorStep(EMonitorStep NewStep)
 		Broadcast(TEXT("Press G to set a TRAP - students must spot and dodge it or trip the alarm."), 16.0f);
 		break;
 	case EMonitorStep::Exit:
+		// The Monitor never repairs a breaker, so force the gate green to match the "GREEN EXIT" prompt.
+		SetTutorialExitUnlocked();
 		Broadcast(TEXT("That's the whole toolkit! Head to the GREEN EXIT (follow the marker) to finish your training."), 12.0f);
 		break;
 	case EMonitorStep::Done:
 		SetAllInputLocked(false);
 		ClearBeats();
+		ShowTutorialCard(TEXT("TRAINING COMPLETE"), TEXT("You're ready for a real round. Returning to the menu..."), 3.2f);
 		Broadcast(TEXT("All training complete - you're ready for a real round! Returning to the menu..."), 6.0f);
 		if (GetWorld())
 		{
@@ -1241,9 +1560,10 @@ void ABHTutorialDirector::EvaluateMonitorStep()
 	switch (MonitorStep)
 	{
 	case EMonitorStep::Intro:
+		// Skip the WASD lesson on the Monitor map too (already taught in the Survivor lesson).
 		if (Elapsed >= 5.0f)
 		{
-			EnterMonitorStep(EMonitorStep::Move);
+			EnterMonitorStep(EMonitorStep::Unlock);
 		}
 		break;
 	case EMonitorStep::Move:
@@ -1263,30 +1583,63 @@ void ABHTutorialDirector::EvaluateMonitorStep()
 		break;
 	}
 	case EMonitorStep::Unlock:
-		// Informational only (tools aren't gated in the practice sandbox); advance on a short timer.
-		if (Elapsed >= 8.0f)
+	{
+		// Advance once they've actually answered the station's question (now permitted for monitors in tutorial
+		// mode), or on a generous timeout so nobody is stuck if they can't find it.
+		const ABHObjectiveStation* Station = PracticeStation.Get();
+		if ((Station && (Station->IsQuestionSolved() || Station->IsCompleted())) || Elapsed >= 35.0f)
 		{
 			EnterMonitorStep(EMonitorStep::Hint);
 		}
 		break;
+	}
 	case EMonitorStep::Hint:
-		if ((Human && Human->GetLastScanTime() >= StepStartServerTime) || Elapsed >= 25.0f)
+	{
+		// Hold ~3s after the player sends the hint so a confirmation reads before the next prompt - the tool only
+		// pings human Teachers, so against the solo lesson's AI Teacher there is otherwise no visible result.
+		const bool bFired = Human && Human->GetLastScanTime() >= StepStartServerTime;
+		if (bFired && MonitorToolConfirmServerTime <= 0.0f)
+		{
+			MonitorToolConfirmServerTime = GetWorld()->GetTimeSeconds();
+			Broadcast(TEXT("Real hint sent - in a live round that pings the Teacher straight to a real student. Powerful, so spend it carefully."), 5.0f);
+		}
+		const bool bHeld = MonitorToolConfirmServerTime > 0.0f && (GetWorld()->GetTimeSeconds() - MonitorToolConfirmServerTime >= 3.0f);
+		if (bHeld || Elapsed >= 25.0f)
 		{
 			EnterMonitorStep(EMonitorStep::Marker);
 		}
 		break;
+	}
 	case EMonitorStep::Marker:
-		if ((Human && Human->GetLastHunterPowerTime() >= StepStartServerTime) || Elapsed >= 25.0f)
+	{
+		const bool bFired = Human && Human->GetLastHunterPowerTime() >= StepStartServerTime;
+		if (bFired && MonitorToolConfirmServerTime <= 0.0f)
+		{
+			MonitorToolConfirmServerTime = GetWorld()->GetTimeSeconds();
+			Broadcast(TEXT("False marker dropped - that sends the Teacher chasing an empty corridor while the students slip past."), 5.0f);
+		}
+		const bool bHeld = MonitorToolConfirmServerTime > 0.0f && (GetWorld()->GetTimeSeconds() - MonitorToolConfirmServerTime >= 3.0f);
+		if (bHeld || Elapsed >= 25.0f)
 		{
 			EnterMonitorStep(EMonitorStep::Trap);
 		}
 		break;
+	}
 	case EMonitorStep::Trap:
-		if ((Human && Human->GetLastDecoyTime() >= StepStartServerTime) || Elapsed >= 25.0f)
+	{
+		const bool bFired = Human && Human->GetLastDecoyTime() >= StepStartServerTime;
+		if (bFired && MonitorToolConfirmServerTime <= 0.0f)
+		{
+			MonitorToolConfirmServerTime = GetWorld()->GetTimeSeconds();
+			Broadcast(TEXT("Trap armed - a student who doesn't spot and dodge it trips the alarm and gives their position away."), 5.0f);
+		}
+		const bool bHeld = MonitorToolConfirmServerTime > 0.0f && (GetWorld()->GetTimeSeconds() - MonitorToolConfirmServerTime >= 3.0f);
+		if (bHeld || Elapsed >= 25.0f)
 		{
 			EnterMonitorStep(EMonitorStep::Exit);
 		}
 		break;
+	}
 	case EMonitorStep::Exit:
 	{
 		bool bReachedExit = false;

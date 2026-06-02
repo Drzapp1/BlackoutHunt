@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Adam Rosta. All Rights Reserved.
+// This source code is proprietary and confidential.
+// Unauthorized copying or distribution is strictly prohibited.
+
 #include "BHSynthComponent.h"
 
 UBHSynthComponent::UBHSynthComponent(const FObjectInitializer& ObjectInitializer)
@@ -12,6 +16,14 @@ UBHSynthComponent::UBHSynthComponent(const FObjectInitializer& ObjectInitializer
 	PulsePhase = 0.0f;
 	CachedSampleRate = 48000;
 	NoiseSeed = 0x12345678;
+	bDecoyFootstepMode = false;
+	DecoyStepInterval = 0.55f;
+	DecoyStepClock = 0.0f;
+	DecoyStepEnvelope = 0.0f;
+	DecoyThumpPhase = 0.0f;
+	DecoyBreathPhase = 0.0f;
+	DecoyBreathLowpass = 0.0f;
+	DecoyStepIndex = 0;
 	bAutoDestroy = false;
 	bStopWhenOwnerDestroyed = true;
 	bAllowSpatialization = true;
@@ -37,6 +49,54 @@ int32 UBHSynthComponent::OnGenerateAudio(float* OutAudio, int32 NumSamples)
 
 	const float TwoPi = 2.0f * PI;
 	const float SafeSampleRate = static_cast<float>(FMath::Max(8000, CachedSampleRate));
+
+	if (bDecoyFootstepMode)
+	{
+		// Each step fires a short, fast-decaying low thump (the heel hit) plus a noise transient (the scuff),
+		// alternating pitch left/right foot. Underneath sits a slow filtered-noise breath bed that swells and
+		// fades on a ~3.6s inhale/exhale cycle. Entirely procedural so it needs no audio assets to ship.
+		const float StepDecayPerSample = FMath::Exp(-1.0f / (0.035f * SafeSampleRate));
+		const float SafeStepInterval = FMath::Max(0.18f, DecoyStepInterval);
+		const float BreathStep = TwoPi * 0.28f / SafeSampleRate; // ~3.6s breathing cycle
+		for (int32 SampleIndex = 0; SampleIndex < NumSamples; ++SampleIndex)
+		{
+			NoiseSeed = NoiseSeed * 1664525u + 1013904223u;
+			const float Noise = (static_cast<float>((NoiseSeed >> 8) & 0xFFFFu) / 32767.5f) - 1.0f;
+
+			DecoyStepClock += 1.0f / SafeSampleRate;
+			if (DecoyStepClock >= SafeStepInterval)
+			{
+				DecoyStepClock -= SafeStepInterval;
+				DecoyStepEnvelope = 1.0f;
+				DecoyThumpPhase = 0.0f;
+				++DecoyStepIndex;
+			}
+
+			const float ThumpFreq = (DecoyStepIndex & 1) ? 84.0f : 72.0f;
+			DecoyThumpPhase += TwoPi * ThumpFreq / SafeSampleRate;
+			if (DecoyThumpPhase > TwoPi)
+			{
+				DecoyThumpPhase -= TwoPi;
+			}
+			const float Thump = FMath::Sin(DecoyThumpPhase) * DecoyStepEnvelope;
+			// Scuff lives only in the first instants of the step (envelope squared sharpens it to a transient).
+			const float Scuff = Noise * DecoyStepEnvelope * DecoyStepEnvelope * 0.55f;
+			DecoyStepEnvelope *= StepDecayPerSample;
+
+			DecoyBreathPhase += BreathStep;
+			if (DecoyBreathPhase > TwoPi)
+			{
+				DecoyBreathPhase -= TwoPi;
+			}
+			const float BreathLFO = 0.5f + 0.5f * FMath::Sin(DecoyBreathPhase);
+			DecoyBreathLowpass += (Noise - DecoyBreathLowpass) * 0.045f; // one-pole lowpass for a breathy hiss
+			const float Breath = DecoyBreathLowpass * BreathLFO * BreathLFO * 0.5f;
+
+			OutAudio[SampleIndex] = FMath::Clamp((Thump * 0.95f + Scuff + Breath) * Volume, -1.0f, 1.0f);
+		}
+		return NumSamples;
+	}
+
 	const float PhaseStep = TwoPi * FMath::Max(1.0f, BaseFrequency) / SafeSampleRate;
 	const float PulseStep = TwoPi * FMath::Max(0.01f, PulseSpeed) / SafeSampleRate;
 	const bool bScreamMode = BaseFrequency >= 700.0f && NoiseAmount >= 0.5f;
@@ -83,4 +143,19 @@ void UBHSynthComponent::Configure(float InBaseFrequency, float InVolume, float I
 	Volume = InVolume;
 	NoiseAmount = InNoiseAmount;
 	PulseSpeed = InPulseSpeed;
+	bDecoyFootstepMode = false;
+}
+
+void UBHSynthComponent::ConfigureDecoyFootsteps(float InStepsPerSecond, float InVolume)
+{
+	bDecoyFootstepMode = true;
+	DecoyStepInterval = 1.0f / FMath::Max(0.5f, InStepsPerSecond);
+	Volume = FMath::Max(0.0f, InVolume);
+	// Start the cadence ready to fire a step almost immediately so the lure reads the instant it lands.
+	DecoyStepClock = DecoyStepInterval;
+	DecoyStepEnvelope = 0.0f;
+	DecoyThumpPhase = 0.0f;
+	DecoyBreathPhase = 0.0f;
+	DecoyBreathLowpass = 0.0f;
+	DecoyStepIndex = 0;
 }
