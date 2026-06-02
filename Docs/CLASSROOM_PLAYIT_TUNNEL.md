@@ -16,9 +16,37 @@ The game hosts a listen server bound to `127.0.0.1:7777` (loopback‑only is the
 **fine**, because the playit agent runs on the same PC and forwards to loopback). Students never need the
 teacher's real IP — they only ever use the public tunnel address.
 
+## ⚠️ REQUIRED ONE-TIME SETUP — the tunnel mapping must exist in the playit.gg account
+
+Before any of this works, the playit.gg **account** must contain a tunnel allocation that maps the public
+address to the game's local port:
+
+- **Type: Custom (UDP)**
+- **Public:** `blackouthunt.playit.plus:24761` (the existing allocation)
+- **Local / forward to:** `127.0.0.1:7777`
+
+If this mapping is missing or wrong, the agent still connects to the relay (you'll see "udp session details
+received" in its log) but the game shows **"Tunnel agent running, but no usable allocation address was found
+yet. Create/select a Custom UDP tunnel to local 127.0.0.1:7777"**, and **every student's join times out**
+(verified: client gets `ConnectionTimeout` to `147.185.221.212:24761` and returns to the menu).
+
+Two ways to create it:
+- In the game, host a classroom and press **OPEN TUNNEL SETUP** (the in-app helper walks you through it), or
+- Log in at **playit.gg** → your account → Tunnels → add a **Custom UDP** tunnel to local `127.0.0.1:7777`.
+
+Do this once; the allocation persists on the account. Confirm the game's status line changes from "no usable
+allocation" to a ready/connected tunnel status before class.
+
+**Also: run only ONE playit agent.** The game auto-starts its own bundled agent (`bAllowTunnelHelper=True`).
+If the installed `playitd` Windows service is ALSO running with the same account secret, the two conflict and
+the relay drops sessions. Either rely on the game's helper, or run the service and don't let the game start a
+second one — not both.
+
 ## Host (teacher) checklist — do this before class
 
-1. **Start the playit agent** on the teacher PC and confirm its tunnel is:
+0. **Confirm the Custom UDP tunnel mapping exists** (see the REQUIRED section above) — this is the #1 cause
+   of "nobody can join."
+1. **Start the playit agent** on the teacher PC (the game does this automatically) and confirm its tunnel is:
    - **Protocol: UDP** (not TCP — UE game traffic is UDP).
    - **Local/forward target: `127.0.0.1:7777`** (NOT the LAN IP, NOT `0.0.0.0`). This is the single most
      common misconfiguration; loopback‑only hosting requires the agent to forward to `127.0.0.1`.
