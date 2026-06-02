@@ -179,7 +179,7 @@ FBHInteractionPromptInfo ABHExitGate::GetInteractionPromptInfo_Implementation(AB
 	{
 		if (BHGS && BHGS->bRevisionMode)
 		{
-			const int32 ContributionTarget = FMath::Clamp(BHGS->RevisionContributionTarget, 1, 4);
+			const int32 ContributionTarget = FMath::Clamp(BHGS->RevisionContributionTarget, 1, 6);
 			if (BHGS->RevisionClassMasteryAverage < BHGS->RevisionClassThreshold)
 			{
 				Info.DisabledReason = FText::FromString(FString::Printf(TEXT("CLASS MASTERY %.0f/%.0f"), BHGS->RevisionClassMasteryAverage, BHGS->RevisionClassThreshold));

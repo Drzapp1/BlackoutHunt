@@ -609,7 +609,11 @@ void ABHGameState::SetRevisionOptions(EBHRevisionMode NewRevisionMode, int32 New
 
 void ABHGameState::SetRevisionContributionTarget(int32 NewContributionTarget)
 {
-	RevisionContributionTarget = FMath::Clamp(NewContributionTarget, 1, 4);
+	// Upper bound matches ABHGameMode::GetRevisionMinimumContributionTarget (the enforced gate) so the
+	// replicated/displayed requirement equals what the server actually enforces. A [1,4] cap here used to
+	// show "CONTRIBUTE 4/4 / WAIT FOR CLASS GATE" while the gate still needed 5-6, so the exit and Hall
+	// Monitor tools never unlocked when the HUD said they should.
+	RevisionContributionTarget = FMath::Clamp(NewContributionTarget, 1, 6);
 }
 
 void ABHGameState::SetRevisionSummary(float NewClassMasteryAverage, EBHPhysicsTopic NewWeakTopic, int32 NewReviewTimeRemaining, const FString& NewReviewText)

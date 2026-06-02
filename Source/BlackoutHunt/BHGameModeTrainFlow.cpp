@@ -92,8 +92,13 @@ void ABHGameMode::NotifyFinalEscapeExpired()
 		return;
 	}
 
-	BroadcastStatus(TEXT("The evacuation train departed without the class."), 4.5f);
-	EndRound(EBHRoundPhase::HunterWin);
+	// Credit a partial evacuation: if any survivor already boarded before the window closed, that is a
+	// survivor win (matching the standard Hunt resolution), not a clean Teacher win for the stragglers.
+	const bool bAnyEscaped = CountEscapedSurvivors() > 0;
+	BroadcastStatus(bAnyEscaped
+		? TEXT("The evacuation train departed. The students who boarded escaped.")
+		: TEXT("The evacuation train departed without the class."), 4.5f);
+	EndRound(bAnyEscaped ? EBHRoundPhase::SurvivorsWin : EBHRoundPhase::HunterWin);
 }
 
 void ABHGameMode::PersistPlayersForTravel()

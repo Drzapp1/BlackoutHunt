@@ -204,7 +204,10 @@ UBHGameSettings::UBHGameSettings()
 	bAllowStudentTeacherAdminControls = false;
 	bAllowTunnelHelper = true;
 	bAllowHotspotHelper = false;
-	bClassroomLoopbackOnlyHost = true;
+	// False: the classroom host binds all interfaces so LAN students can join by IP and the Playit tunnel
+	// still works for off-LAN students. True would bind 127.0.0.1 only (tunnel-mandatory, no LAN fallback).
+	// DefaultGame.ini is the operative value for packaged builds; this is the code-side default/safety net.
+	bClassroomLoopbackOnlyHost = false;
 
 	InteractDistance = 550.0f;
 	CaptureDistance = 220.0f;

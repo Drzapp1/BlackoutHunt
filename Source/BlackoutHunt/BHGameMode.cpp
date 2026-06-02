@@ -209,6 +209,12 @@ constexpr float BHJumpscareMinViewDot = 0.50f;
 constexpr float BHJumpscareSpawnCapsuleRadius = 62.0f;
 constexpr float BHJumpscareSpawnCapsuleHalfHeight = 142.0f;
 
+// Radius around a question node within which a revision participant counts as part of that node's
+// co-located answer team (see BuildRevisionAnswerTeam). Comfortably larger than the ~3.75 m answer
+// reach so everyone who could press 1-4 at the node is on the team, but local enough that students
+// across the level are not pulled into a vote they can't see.
+constexpr float BHRevisionAnswerTeamRadius = 900.0f;
+
 bool BHResolveJumpscareView(ABHCharacter* Target, ABHPlayerController* TargetPC, FVector& OutViewLocation, FVector& OutViewForward)
 {
 	FRotator ViewRotation = FRotator::ZeroRotator;
@@ -1303,7 +1309,22 @@ void ABHGameMode::Logout(AController* Exiting)
 		{
 			if (CountAliveSurvivors() <= 0)
 			{
-				EndRound(EBHRoundPhase::HunterWin);
+				// Don't hand the Teacher an instant win if the survivor(s) who just dropped still have a live
+				// reconnect window — a transient classroom Wi-Fi blip can knock out the last survivors together.
+				// Defer: if they don't return, the Hunt round timer (or the final-escape window) still resolves
+				// the round, so this can only delay a HunterWin, never prevent a legitimate one.
+				const UBHGameSettings* GraceSettings = GetDefault<UBHGameSettings>();
+				const float GraceSeconds = GraceSettings ? GraceSettings->ReconnectGraceSeconds : 0.0f;
+				const UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>();
+				const int32 PendingSurvivors = (BHGI && GraceSeconds > 0.0f) ? BHGI->CountReconnectableAliveSurvivors(GraceSeconds) : 0;
+				if (PendingSurvivors <= 0)
+				{
+					EndRound(EBHRoundPhase::HunterWin);
+				}
+				else
+				{
+					BroadcastStatus(TEXT("Survivor connection dropped - holding the round for a reconnect."), 4.0f);
+				}
 			}
 			else if (CountAliveHunters() <= 0)
 			{
@@ -3536,93 +3557,47 @@ bool ABHGameMode::BuildRevisionAnswerTeam(ABHObjectiveStation* Station, ABHChara
 {
 	OutPlayerIds.Reset();
 	OutSummary = TEXT("");
-	if (!bRevisionMode || !GameState)
+	if (!bRevisionMode || !GameState || !Station)
 	{
 		return false;
 	}
 
-	const EBHPhysicsTopic Topic = Station ? FBHRevisionQuestionBank::TopicForStationType(Station->GetStationType()) : EBHPhysicsTopic::ForcesAndMotion;
-	const auto TopicMastery = [Topic](const ABHPlayerState* PS)
-	{
-		if (!PS)
-		{
-			return 0.0f;
-		}
-		switch (Topic)
-		{
-		case EBHPhysicsTopic::ForcesAndMotion:
-			return PS->RevisionStats.ForcesMastery;
-		case EBHPhysicsTopic::Electricity:
-			return PS->RevisionStats.ElectricityMastery;
-		case EBHPhysicsTopic::Waves:
-			return PS->RevisionStats.WavesMastery;
-		case EBHPhysicsTopic::Energy:
-			return PS->RevisionStats.EnergyMastery;
-		default:
-			return 0.0f;
-		}
-	};
+	// Co-located answer team: a question node is answered by the players actually gathered AT this node,
+	// NOT a class-wide committee. This is what lets a lone student — or a Hall Monitor working a node by
+	// themselves — clear it and earn the contribution, while a cluster still votes together. Because the
+	// caller rebuilds this set on every vote, a teammate who wanders off can never soft-lock the node
+	// (the old class-wide committee could leave a present player stuck at "Vote recorded (1/5)" forever).
+	// Mirrors the multi-repairer breaker model, which already keys progress off who is physically present.
+	const FVector StationLocation = Station->GetActorLocation();
+	const float RadiusSq = FMath::Square(BHRevisionAnswerTeamRadius);
+	const ABHPlayerState* RequestingPS = RequestingCharacter ? RequestingCharacter->GetPlayerState<ABHPlayerState>() : nullptr;
 
-	TArray<ABHPlayerState*> Students;
+	TArray<FString> Names;
 	for (APlayerState* RawPS : GameState->PlayerArray)
 	{
 		ABHPlayerState* BHPS = Cast<ABHPlayerState>(RawPS);
-		if (IsRevisionParticipantState(BHPS) && !BHPS->IsABot())
+		if (!IsRevisionParticipantState(BHPS) || BHPS->LifeState != EBHPlayerLifeState::Alive)
 		{
-			Students.Add(BHPS);
+			continue;
 		}
-	}
-	if (Students.IsEmpty())
-	{
-		for (APlayerState* RawPS : GameState->PlayerArray)
+		// Bots are never team members: an idle bot wandering through the node's radius must not inflate the
+		// majority a present human needs to clear the node. A bot that is genuinely working a node alone
+		// still resolves it via the lone-voter fallback in ABHObjectiveStation::SubmitAnswer (TeamSize>=1).
+		if (BHPS->IsABot())
 		{
-			ABHPlayerState* BHPS = Cast<ABHPlayerState>(RawPS);
-			if (IsRevisionParticipantState(BHPS))
-			{
-				Students.Add(BHPS);
-			}
+			continue;
 		}
-	}
-	if (Students.IsEmpty())
-	{
-		return false;
-	}
-
-	Students.Sort([&TopicMastery](const ABHPlayerState& A, const ABHPlayerState& B)
-	{
-		if (A.RevisionStats.ContributionCount != B.RevisionStats.ContributionCount)
+		const bool bIsRequester = RequestingPS && BHPS == RequestingPS;
+		const APawn* Pawn = BHPS->GetPawn();
+		const bool bPresent = bIsRequester
+			|| (Pawn && FVector::DistSquared(Pawn->GetActorLocation(), StationLocation) <= RadiusSq);
+		if (bPresent)
 		{
-			return A.RevisionStats.ContributionCount < B.RevisionStats.ContributionCount;
-		}
-		if (!FMath::IsNearlyEqual(TopicMastery(&A), TopicMastery(&B)))
-		{
-			return TopicMastery(&A) < TopicMastery(&B);
-		}
-		return A.GetPlayerId() < B.GetPlayerId();
-	});
-
-	const ABHPlayerState* RequestingPS = RequestingCharacter ? RequestingCharacter->GetPlayerState<ABHPlayerState>() : nullptr;
-	const int32 TargetTeamSize = FMath::Clamp(GetRevisionAnswerTeamTargetSize(), 1, Students.Num());
-	if (RequestingPS)
-	{
-		OutPlayerIds.Add(RequestingPS->GetPlayerId());
-	}
-	for (ABHPlayerState* Student : Students)
-	{
-		if (Student && OutPlayerIds.Num() < TargetTeamSize)
-		{
-			OutPlayerIds.Add(Student->GetPlayerId());
+			OutPlayerIds.Add(BHPS->GetPlayerId());
+			Names.Add(BHPS->GetPlayerName());
 		}
 	}
 
-	TArray<FString> Names;
-	for (ABHPlayerState* Student : Students)
-	{
-		if (Student && OutPlayerIds.Contains(Student->GetPlayerId()))
-		{
-			Names.Add(Student->GetPlayerName());
-		}
-	}
 	OutSummary = FString::Join(Names, TEXT(", "));
 	return OutPlayerIds.Num() > 0;
 }

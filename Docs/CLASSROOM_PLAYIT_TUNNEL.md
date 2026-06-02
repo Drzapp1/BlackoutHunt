@@ -12,9 +12,12 @@ which is what the tunnel forwards.
  (types blackouthunt.playit.plus:24761)                      (must forward to 127.0.0.1:7777)
 ```
 
-The game hosts a listen server bound to `127.0.0.1:7777` (loopback‑only is the shipped default and is
-**fine**, because the playit agent runs on the same PC and forwards to loopback). Students never need the
-teacher's real IP — they only ever use the public tunnel address.
+The game hosts a listen server on `:7777`. The shipped default is now `bClassroomLoopbackOnlyHost=False`,
+which binds **all interfaces** — the playit agent still forwards correctly to `127.0.0.1:7777` on the same
+PC, **and** same-LAN students can additionally join by the teacher's LAN IP. (Set
+`bClassroomLoopbackOnlyHost=True` for a strict tunnel-only deployment: the server then binds loopback only,
+so the tunnel is the *sole* way in and there is **no LAN fallback**.) Students never need the teacher's real
+IP — they only ever use the public tunnel address.
 
 ## ⚠️ REQUIRED ONE-TIME SETUP — the tunnel mapping must exist in the playit.gg account
 

@@ -247,15 +247,17 @@ namespace
 	{
 		if (GameState && GameState->RevisionContributionTarget > 0)
 		{
-			return FMath::Clamp(GameState->RevisionContributionTarget, 1, 4);
+			return FMath::Clamp(GameState->RevisionContributionTarget, 1, 6);
 		}
 
+		// Fallback only until the server replicates the frozen target: mirror the authority formula in
+		// ABHGameMode::ComputeLiveRevisionContributionTarget (5, plus one more on later stages) so the HUD
+		// never under-promises a contribution gate the server actually enforces at 5-6. (Previously this
+		// estimated from questions-per-node and capped at 4, which disagreed with the real requirement.)
 		const int32 ParticipantCount = CountRevisionParticipants(GameState);
+		(void)ParticipantCount;
 		const int32 StageIndex = GameState ? FMath::Clamp(GameState->TrainStageIndex, 0, 2) : 0;
-		const int32 QuestionsPerNode = ParticipantCount >= 10
-			? (StageIndex <= 0 ? 2 : 3)
-			: (ParticipantCount >= 6 ? 3 : 2);
-		return FMath::Clamp(QuestionsPerNode - 1 + StageIndex, 1, 4);
+		return FMath::Clamp(5 + FMath::Clamp(StageIndex, 0, 1), 1, 6);
 	}
 
 	float GuidanceDistanceMeters(float DistanceCm)
@@ -2416,7 +2418,7 @@ void ABHHUD::DrawInteractionPrompt(ABHCharacter* Character)
 			}
 			else if (!bCanViewStationQuestion && !BHPS->IsAliveSurvivor())
 			{
-				PromptInfo.DisabledReason = FText::FromString(BHPS->PlayerRole == EBHPlayerRole::FakeHunter ? TEXT("CONTRIBUTE IN PHYSICS CLASSROOM") : TEXT("SURVIVOR OBJECTIVE"));
+				PromptInfo.DisabledReason = FText::FromString(BHPS->PlayerRole == EBHPlayerRole::FakeHunter ? TEXT("SURVIVORS FINISH THIS NODE") : TEXT("SURVIVOR OBJECTIVE"));
 			}
 			else if (!PromptStation->IsQuestionSolved() && PromptStation->GetQuestionChoiceCount() > 0)
 			{
@@ -2467,46 +2469,53 @@ void ABHHUD::DrawInteractionPrompt(ABHCharacter* Character)
 		? FString::Printf(TEXT("%s / %s%s"), *KeyText, *Prompt, *DistanceText)
 		: FString::Printf(TEXT("NO / %s%s"), *Prompt, *DistanceText);
 
-	float TextW = 0.0f;
-	float TextH = 0.0f;
-	const float Scale = bCanInteract ? 0.68f : 0.62f;
-	Canvas->TextSize(GEngine->GetSmallFont(), PromptLine, TextW, TextH, Scale, Scale);
-
-	const float PromptX = (Canvas->ClipX - TextW) * 0.5f;
-	const float PromptY = Canvas->ClipY * 0.5f + 29.0f;
-	const FLinearColor PromptColor = bHighContrastHud
-		? (bCanInteract ? FLinearColor(0.94f, 1.0f, 0.86f, 1.0f) : FLinearColor(0.82f, 0.84f, 0.82f, 0.92f))
-		: (bCanInteract ? FLinearColor(0.82f, 0.78f, 0.66f, 0.88f) : FLinearColor(0.54f, 0.50f, 0.45f, 0.72f));
-	DrawHudText(PromptLine, PromptX + 1.0f, PromptY + 1.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.42f), GEngine->GetSmallFont(), Scale);
-	DrawHudText(PromptLine, PromptX, PromptY, PromptColor, GEngine->GetSmallFont(), Scale);
-	if (bCanInteract)
+	// While the question panel is on screen (a survivor or monitor reading a node's question), suppress this
+	// centered interaction prompt: it otherwise renders behind the opaque panel (worse at higher HUD scale)
+	// and the panel already carries its own "press 1-4 / Tab" controls hint. Every other interactable (and the
+	// solved/blocked node states, which show no panel) keep their prompt and disabled-reason line.
+	if (!bStationQuestionPrompt)
 	{
-		const float ScratchY = PromptY + TextH + 3.0f;
-		const FLinearColor ScratchColor = PromptInfo.bDangerous || PromptInfo.bNoisy ? FLinearColor(0.92f, 0.14f, 0.08f, 0.62f) : FLinearColor(0.82f, 0.18f, 0.12f, 0.44f);
-		DrawLine(PromptX + TextW * 0.18f, ScratchY, PromptX + TextW * 0.82f, ScratchY + 1.0f, ScratchColor, 1.0f);
-		if (PromptInfo.Progress > 0.01f)
+		float TextW = 0.0f;
+		float TextH = 0.0f;
+		const float Scale = bCanInteract ? 0.68f : 0.62f;
+		Canvas->TextSize(GEngine->GetSmallFont(), PromptLine, TextW, TextH, Scale, Scale);
+
+		const float PromptX = (Canvas->ClipX - TextW) * 0.5f;
+		const float PromptY = Canvas->ClipY * 0.5f + 29.0f;
+		const FLinearColor PromptColor = bHighContrastHud
+			? (bCanInteract ? FLinearColor(0.94f, 1.0f, 0.86f, 1.0f) : FLinearColor(0.82f, 0.84f, 0.82f, 0.92f))
+			: (bCanInteract ? FLinearColor(0.82f, 0.78f, 0.66f, 0.88f) : FLinearColor(0.54f, 0.50f, 0.45f, 0.72f));
+		DrawHudText(PromptLine, PromptX + 1.0f, PromptY + 1.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.42f), GEngine->GetSmallFont(), Scale);
+		DrawHudText(PromptLine, PromptX, PromptY, PromptColor, GEngine->GetSmallFont(), Scale);
+		if (bCanInteract)
 		{
-			DrawLine(PromptX + TextW * 0.18f, ScratchY + 4.0f, PromptX + TextW * FMath::Lerp(0.18f, 0.82f, PromptInfo.Progress), ScratchY + 4.0f, FLinearColor(0.78f, 0.88f, 0.62f, 0.76f), 2.0f);
+			const float ScratchY = PromptY + TextH + 3.0f;
+			const FLinearColor ScratchColor = PromptInfo.bDangerous || PromptInfo.bNoisy ? FLinearColor(0.92f, 0.14f, 0.08f, 0.62f) : FLinearColor(0.82f, 0.18f, 0.12f, 0.44f);
+			DrawLine(PromptX + TextW * 0.18f, ScratchY, PromptX + TextW * 0.82f, ScratchY + 1.0f, ScratchColor, 1.0f);
+			if (PromptInfo.Progress > 0.01f)
+			{
+				DrawLine(PromptX + TextW * 0.18f, ScratchY + 4.0f, PromptX + TextW * FMath::Lerp(0.18f, 0.82f, PromptInfo.Progress), ScratchY + 4.0f, FLinearColor(0.78f, 0.88f, 0.62f, 0.76f), 2.0f);
+			}
 		}
-	}
 
-	const FText DetailText = bCanInteract ? PromptInfo.RiskText : PromptInfo.DisabledReason;
-	if (!DetailText.IsEmpty())
-	{
-		const FString DetailLine = DetailText.ToString().ToUpper();
-		float DetailW = 0.0f;
-		float DetailH = 0.0f;
-		const float DetailScale = 0.50f;
-		Canvas->TextSize(GEngine->GetSmallFont(), DetailLine, DetailW, DetailH, DetailScale, DetailScale);
-		const float DetailX = (Canvas->ClipX - DetailW) * 0.5f;
-		const float DetailY = PromptY + TextH + 8.0f;
-		const FLinearColor DetailColor = bCanInteract
-			? (PromptInfo.bNoisy || PromptInfo.bDangerous
-				? (bHighContrastHud ? FLinearColor(1.0f, 0.42f, 0.24f, 1.0f) : FLinearColor(0.96f, 0.28f, 0.14f, 0.84f))
-				: (bHighContrastHud ? FLinearColor(0.82f, 0.94f, 0.86f, 0.96f) : FLinearColor(0.66f, 0.72f, 0.66f, 0.88f)))
-			: (bHighContrastHud ? FLinearColor(0.92f, 0.74f, 0.52f, 0.96f) : FLinearColor(0.70f, 0.64f, 0.56f, 0.88f));
-		DrawHudText(DetailLine, DetailX + 1.0f, DetailY + 1.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.46f), GEngine->GetSmallFont(), DetailScale);
-		DrawHudText(DetailLine, DetailX, DetailY, DetailColor, GEngine->GetSmallFont(), DetailScale);
+		const FText DetailText = bCanInteract ? PromptInfo.RiskText : PromptInfo.DisabledReason;
+		if (!DetailText.IsEmpty())
+		{
+			const FString DetailLine = DetailText.ToString().ToUpper();
+			float DetailW = 0.0f;
+			float DetailH = 0.0f;
+			const float DetailScale = 0.50f;
+			Canvas->TextSize(GEngine->GetSmallFont(), DetailLine, DetailW, DetailH, DetailScale, DetailScale);
+			const float DetailX = (Canvas->ClipX - DetailW) * 0.5f;
+			const float DetailY = PromptY + TextH + 8.0f;
+			const FLinearColor DetailColor = bCanInteract
+				? (PromptInfo.bNoisy || PromptInfo.bDangerous
+					? (bHighContrastHud ? FLinearColor(1.0f, 0.42f, 0.24f, 1.0f) : FLinearColor(0.96f, 0.28f, 0.14f, 0.84f))
+					: (bHighContrastHud ? FLinearColor(0.82f, 0.94f, 0.86f, 0.96f) : FLinearColor(0.66f, 0.72f, 0.66f, 0.88f)))
+				: (bHighContrastHud ? FLinearColor(0.92f, 0.74f, 0.52f, 0.96f) : FLinearColor(0.70f, 0.64f, 0.56f, 0.88f));
+			DrawHudText(DetailLine, DetailX + 1.0f, DetailY + 1.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.46f), GEngine->GetSmallFont(), DetailScale);
+			DrawHudText(DetailLine, DetailX, DetailY, DetailColor, GEngine->GetSmallFont(), DetailScale);
+		}
 	}
 
 	if (const ABHObjectiveStation* Station = Cast<ABHObjectiveStation>(Target); Station && bCanViewStationQuestion)
@@ -2873,7 +2882,12 @@ void ABHHUD::DrawQuestionPanel(const ABHObjectiveStation* Station)
 			*CounterText);
 		DrawRightAlignedText(Meta, PanelX + PanelW - 22.0f * S, PanelY + 16.0f * S, FLinearColor(0.78f, 0.86f, 0.94f, 1.0f), GEngine->GetSmallFont(), 0.76f * S);
 	}
-	DrawWrappedHudText(Station->GetPhysicalTaskInstruction(), PanelX + 22.0f * S, PanelY + 42.0f * S, PanelW - 44.0f * S, FLinearColor(0.74f, 0.88f, 0.88f, 1.0f), GEngine->GetSmallFont(), 0.72f * S, 13.0f * S, 1);
+	// The hold-E task is survivor-only, so show Hall Monitors what their role actually does at this node
+	// rather than a "hold E to ..." instruction they can never follow (which read as a contradiction sitting
+	// right next to the "press 1-4 to answer" controls).
+	const ABHPlayerState* PanelViewerPS = LocalChar ? LocalChar->GetBHPlayerState() : nullptr;
+	const bool bMonitorViewer = PanelViewerPS && PanelViewerPS->PlayerRole == EBHPlayerRole::FakeHunter;
+	DrawWrappedHudText(bMonitorViewer ? FString(TEXT("You answer to contribute; a survivor holds E to finish this node.")) : Station->GetPhysicalTaskInstruction(), PanelX + 22.0f * S, PanelY + 42.0f * S, PanelW - 44.0f * S, FLinearColor(0.74f, 0.88f, 0.88f, 1.0f), GEngine->GetSmallFont(), 0.72f * S, 13.0f * S, 1);
 	DrawWrappedHudText(Station->GetQuestionPrompt(), PanelX + 22.0f * S, PanelY + 62.0f * S, PanelW - 44.0f * S, MainText(), GEngine->GetSmallFont(), 0.92f * S, 17.0f * S, 2);
 
 	float ChoiceStartY = PanelY + 112.0f * S;

@@ -36,7 +36,10 @@ namespace
 {
 	const FName BHOnlineLevelSetting(TEXT("BHLEVEL"));
 	const FName BHOnlineBuildSetting(TEXT("BHBUILD"));
-	const FString BHOnlineBuildId(TEXT("BlackoutHunt-0.7.2"));
+	// Gates EOS/Steam session discovery/matching only (direct-IP/LAN/tunnel use the engine's native net
+	// version check). MUST be bumped with ProjectVersion in Config/DefaultGame.ini so mismatched online
+	// builds don't match — and so a half-updated build can still find sessions. Keep these in lockstep.
+	const FString BHOnlineBuildId(TEXT("BlackoutHunt-0.8.1"));
 	constexpr int32 BHOnlineMaxSearchResults = 25;
 
 	FString NormalizeRuntimeLevelName(FString LevelName)
@@ -1009,6 +1012,23 @@ bool UBHGameInstance::RestoreTravelPlayerState(ABHPlayerState* PlayerState, bool
 	const FString StableId = TravelStableIdForPlayerState(PlayerState);
 	const FString PlayerName = PlayerState->GetPlayerName();
 	const FString ReconnectToken = PlayerState->ReconnectToken;
+
+	// Identity safety: only restore banked progress (points / powerups / revision stats) when the player can
+	// be matched by a STRONG identity — the server-issued reconnect token (carried in the travel login URL,
+	// parsed in InitNewPlayer before this runs) or a real online unique-net-id. On the direct-IP / Playit /
+	// OSS-Null classroom path GetUniqueId() is empty and TravelStableIdForPlayerState falls back to the typed
+	// display name, so a name match here would let a brand-new student who reused a prior student's name
+	// inherit their points/powerups and clobber the freshly-reset revision stats (corrupting the class CSV).
+	// A legitimate cross-stage traveler always presents its token at this point, so this never blocks them;
+	// a client that genuinely lost its token (crash / manual rejoin) cleanly starts fresh rather than guessed
+	// by name — mirroring the token-only mid-round reconnect path (TryGetReconnectProgress).
+	const bool bHasRealUniqueId = PlayerState->GetUniqueId().IsValid()
+		&& !PlayerState->GetUniqueId()->ToString().IsEmpty();
+	if (ReconnectToken.IsEmpty() && !bHasRealUniqueId)
+	{
+		return false;
+	}
+
 	const FBHTravelPlayerProgress* Existing = TravelPlayerProgress.FindByPredicate([&](const FBHTravelPlayerProgress& Progress)
 	{
 		return TravelEntryMatches(Progress, ReconnectToken, StableId, PlayerName);
@@ -1137,6 +1157,37 @@ void UBHGameInstance::ClearReconnectMark(const ABHPlayerState* PlayerState)
 	{
 		Existing->LeftServerWorldTime = -1.0f;
 	}
+}
+
+int32 UBHGameInstance::CountReconnectableAliveSurvivors(float GraceSeconds) const
+{
+	if (GraceSeconds <= 0.0f)
+	{
+		return 0;
+	}
+
+	// Same monotonic clock and window the grace check uses (see TryGetReconnectProgress), so a survivor who
+	// just dropped counts as "still coming back" until their 120 s window truly elapses.
+	const double NowSeconds = (ReconnectClockOverrideSeconds >= 0.0) ? ReconnectClockOverrideSeconds : FPlatformTime::Seconds();
+	int32 Count = 0;
+	for (const FBHTravelPlayerProgress& Progress : TravelPlayerProgress)
+	{
+		if (Progress.LeftServerWorldTime < 0.0)
+		{
+			continue;
+		}
+		const double Elapsed = NowSeconds - Progress.LeftServerWorldTime;
+		if (Elapsed < 0.0 || Elapsed > static_cast<double>(GraceSeconds))
+		{
+			continue;
+		}
+		if (Progress.LifeState == EBHPlayerLifeState::Alive
+			&& (Progress.PlayerRole == EBHPlayerRole::Survivor || Progress.PlayerRole == EBHPlayerRole::Tester))
+		{
+			++Count;
+		}
+	}
+	return Count;
 }
 
 void UBHGameInstance::SetReconnectClockOverrideForTest(double NowSeconds)

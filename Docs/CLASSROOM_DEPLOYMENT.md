@@ -10,7 +10,7 @@ This guide is for live classroom use where one teacher machine hosts Blackout Hu
 - Local username/password profiles remain available on each machine.
 - Network hosting, direct-IP join, and the Playit tunnel fallback remain available without requiring administrator rights.
 - The classroom package disables Unreal UDP Messaging and game-target Unreal Trace so the game does not open engine diagnostic sockets at launch.
-- Live Classroom hosts bind to `127.0.0.1` by default through `bClassroomLoopbackOnlyHost=True`, then publish the configured Playit endpoint. This avoids the Windows Defender Firewall public/private networks prompt on locked-down school PCs.
+- Live Classroom hosts now bind **all interfaces by default** (`bClassroomLoopbackOnlyHost=False`) and publish the configured Playit endpoint, so students can join by **LAN IP** (same room/switch) **or** the **Playit tunnel / BH1 code** (off-LAN). The tradeoff is a one-time Windows Defender Firewall "Allow" on the host PC. Set `bClassroomLoopbackOnlyHost=True` to revert to loopback-only (`127.0.0.1`, tunnel-mandatory, no LAN fallback, no firewall prompt) for a strict tunnel-only deployment.
 - Session/admin controls are host-machine-only. Students can still play the in-game Teacher role when assigned, but that role does not grant admin controls.
 - Host force-start is disabled for classroom releases. Keep `bAllowHostForceStart=False` for live classes.
 - The Live Classroom menu buttons let the host choose Facility, Substation, or Foggrounds with the selected lesson preset. Built-in presets include `Electricity easy`, `Mixed exam prep`, `Low scare`, and `Hard mode`.
@@ -131,9 +131,9 @@ The game verifies the bundled `playit.exe` hash before launching it. If verifica
 
 ## Direct LAN and Firewall Prompts
 
-The school-safe Live Classroom path is tunnel-only by default. It binds the listen server to `127.0.0.1`, so Windows should not ask a standard student or teacher account to allow inbound public/private network access.
+Live Classroom now binds all network interfaces by default (`bClassroomLoopbackOnlyHost=False`), so it listens on UDP `7777` on the teacher machine's interfaces — letting same-LAN students join by IP without an IT-managed build — and can trigger a one-time Windows Firewall consent prompt. On locked-down school PCs, have IT pre-authorize the executable / UDP `7777`. If direct LAN is **not** needed (everyone joins over the Playit tunnel), set `bClassroomLoopbackOnlyHost=True` to bind `127.0.0.1` only: no firewall prompt, but the tunnel is then the sole way in (no LAN fallback — if the school blocks Playit/UDP nobody can join).
 
-Direct LAN hosting still exists through `Host LAN`, normal direct-IP host commands, or by setting `bClassroomLoopbackOnlyHost=False` in an IT-managed build. Those paths listen on UDP `7777` on the teacher machine network interface and can trigger the Windows Firewall consent prompt. On school PCs, do not rely on the game to create that firewall rule; have IT pre-authorize the executable/port or use the default Playit classroom endpoint.
+Direct LAN hosting is also available through `Host LAN` and normal direct-IP host commands, which likewise listen on UDP `7777`. On school PCs, do not rely on the game to create the firewall rule; have IT pre-authorize the executable/port or use the Playit classroom endpoint.
 
 ## Low-Spec And Locked-Down Machines
 

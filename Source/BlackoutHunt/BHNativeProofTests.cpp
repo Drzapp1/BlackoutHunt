@@ -1013,6 +1013,9 @@ bool FBHLateJoinerMidRoundStaysSpectatorTest::RunTest(const FString& Parameters)
 	SourcePS->SetDesiredRole(EBHPlayerRole::Survivor);
 	SourcePS->SetLifeState(EBHPlayerLifeState::Alive);
 	SourcePS->AddQuestionPoints(40);
+	// A legitimate returner carries the server-issued reconnect token (echoed in the travel login URL); restore
+	// keys on that strong identity, not the display name, so both the persisted entry and the returners set it.
+	SourcePS->ReconnectToken = TEXT("travel-token-returner");
 	GameInstance->PersistTravelPlayerState(SourcePS);
 
 	// Active-round late join: PostLogin has already placed the returning player into Spectator +
@@ -1024,6 +1027,7 @@ bool FBHLateJoinerMidRoundStaysSpectatorTest::RunTest(const FString& Parameters)
 	if (ActiveJoinPS)
 	{
 		ActiveJoinPS->SetPlayerName(TEXT("Mid Round Returner"));
+		ActiveJoinPS->ReconnectToken = TEXT("travel-token-returner");
 		ActiveJoinPS->SetRole(EBHPlayerRole::Spectator);
 		ActiveJoinPS->SetDesiredRole(EBHPlayerRole::Survivor);
 		ActiveJoinPS->SetLifeState(EBHPlayerLifeState::Captured);
@@ -1041,6 +1045,7 @@ bool FBHLateJoinerMidRoundStaysSpectatorTest::RunTest(const FString& Parameters)
 	if (LobbyJoinPS)
 	{
 		LobbyJoinPS->SetPlayerName(TEXT("Mid Round Returner"));
+		LobbyJoinPS->ReconnectToken = TEXT("travel-token-returner");
 		LobbyJoinPS->SetRole(EBHPlayerRole::Spectator);
 		LobbyJoinPS->SetLifeState(EBHPlayerLifeState::Captured);
 
@@ -1048,6 +1053,19 @@ bool FBHLateJoinerMidRoundStaysSpectatorTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Cross-travel restore returns the player to their live role."), LobbyJoinPS->PlayerRole, EBHPlayerRole::Survivor);
 		TestEqual(TEXT("Cross-travel restore returns the player to alive."), LobbyJoinPS->LifeState, EBHPlayerLifeState::Alive);
 		TestEqual(TEXT("Cross-travel restore also carries banked question points."), LobbyJoinPS->QuestionPoints, 40);
+	}
+
+	// Security (0.8.1): a brand-new student who merely reuses an earlier student's display name - with NO
+	// reconnect token and no real online id (the OSS-Null / LAN / Playit classroom path) - must NOT inherit
+	// that student's banked progress. Restore refuses the weak name-only match, so the imposter stays at zero.
+	ABHPlayerState* ImposterPS = NewObject<ABHPlayerState>();
+	TestNotNull(TEXT("Imposter player state can be created."), ImposterPS);
+	if (ImposterPS)
+	{
+		ImposterPS->SetPlayerName(TEXT("Mid Round Returner"));
+		ImposterPS->SetLifeState(EBHPlayerLifeState::Alive);
+		TestFalse(TEXT("A tokenless same-named joiner does not match the persisted entry."), GameInstance->RestoreTravelPlayerState(ImposterPS, /*bApplyRoleAndLifeState=*/true));
+		TestEqual(TEXT("A tokenless same-named joiner inherits no banked question points."), ImposterPS->QuestionPoints, 0);
 	}
 
 	return true;
