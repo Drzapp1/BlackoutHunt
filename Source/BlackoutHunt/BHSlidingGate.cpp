@@ -26,10 +26,15 @@ ABHSlidingGate::ABHSlidingGate()
 void ABHSlidingGate::BeginPlay()
 {
 	Super::BeginPlay();
+	// OnRep_Open is suppressed until bClosedMeshLocationCaptured is set, so the mesh is still at its authored
+	// closed relative location here (component-relative transforms are not part of the spawn bunch) rather
+	// than a value a premature OnRep lifted from a zero baseline — which would otherwise bake the lift height
+	// into the "closed" position for late-joining clients.
 	if (Mesh)
 	{
 		ClosedMeshLocation = Mesh->GetRelativeLocation();
 	}
+	bClosedMeshLocationCaptured = true;
 	ApplyGateState();
 }
 
@@ -87,6 +92,12 @@ void ABHSlidingGate::SetOpen(bool bNewOpen)
 
 void ABHSlidingGate::OnRep_Open()
 {
+	// For a dynamically-replicated gate, OnRep can arrive before BeginPlay. Defer until BeginPlay has
+	// captured the closed relative location; its own ApplyGateState() then renders the correct state.
+	if (!bClosedMeshLocationCaptured)
+	{
+		return;
+	}
 	ApplyGateState();
 }
 

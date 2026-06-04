@@ -26,7 +26,13 @@ ABHDoor::ABHDoor()
 void ABHDoor::BeginPlay()
 {
 	Super::BeginPlay();
-	ClosedRotation = GetActorRotation();
+	// GetActorRotation() is the door's current pose. On a late-joining client the replicated spawn transform
+	// is the server's CURRENT pose, which may already be open (a survivor opened the door before this client
+	// connected), so back out the open offset to recover the true closed pose. OnRep_Open is suppressed until
+	// bClosedRotationCaptured is set, so this reads the clean spawn transform rather than a value a premature
+	// OnRep wrote from the zero-default baseline.
+	ClosedRotation = bOpen ? GetActorRotation() - FRotator(0.0f, 90.0f, 0.0f) : GetActorRotation();
+	bClosedRotationCaptured = true;
 	ApplyDoorState();
 }
 
@@ -113,6 +119,12 @@ bool ABHDoor::IsOpen() const
 
 void ABHDoor::OnRep_Open()
 {
+	// For a dynamically-replicated door, OnRep can arrive before BeginPlay. Defer until BeginPlay has
+	// captured the closed pose; its own ApplyDoorState() then renders the correct state.
+	if (!bClosedRotationCaptured)
+	{
+		return;
+	}
 	ApplyDoorState();
 }
 
