@@ -750,6 +750,14 @@ void ABHBotController::Think()
 	ABHGameState* BHGS = GetBHGameState();
 	if (!BotCharacter || !BotPS || !BHGS || BotPS->LifeState != EBHPlayerLifeState::Alive)
 	{
+		// A bot captured/benched mid-objective keeps its pawn (no EndPlay runs), so release any claimed
+		// objective here too — otherwise the rest of the bot team treats that station/breaker as taken and
+		// avoids it until the time-boxed claim expires (~13s). Mirrors EndPlay's release.
+		if (ABHGameMode* BHGM = GetBHGameMode())
+		{
+			BHGM->ReleaseBotObjective(this);
+		}
+		CurrentClaimTarget.Reset();
 		ClearInteraction();
 		StopMovement();
 		return;
