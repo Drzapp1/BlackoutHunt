@@ -1319,7 +1319,10 @@ void ABHGameMode::Logout(AController* Exiting)
 				const int32 PendingSurvivors = (BHGI && GraceSeconds > 0.0f) ? BHGI->CountReconnectableAliveSurvivors(GraceSeconds) : 0;
 				if (PendingSurvivors <= 0)
 				{
-					EndRound(EBHRoundPhase::HunterWin);
+					// Evacuate-together: an already-escaped survivor (LifeState Escaped, so not counted as
+					// "alive") still wins the round for the class. Mirror the Hunt-tick and standard-capture
+					// resolution rather than handing the Teacher a win the class actually earned.
+					EndRound(CountEscapedSurvivors() > 0 ? EBHRoundPhase::SurvivorsWin : EBHRoundPhase::HunterWin);
 				}
 				else
 				{
@@ -1524,7 +1527,9 @@ void ABHGameMode::NotifySurvivorCaptured(ABHCharacter* Survivor, ABHCharacter* C
 
 		if (CountAliveSurvivors() <= 0)
 		{
-			EndRound(EBHRoundPhase::HunterWin);
+			// Evacuate-together: a survivor who already escaped still wins for the class even if the last
+			// inside survivor is infected here. Mirror the standard capture path's resolution below.
+			EndRound(CountEscapedSurvivors() > 0 ? EBHRoundPhase::SurvivorsWin : EBHRoundPhase::HunterWin);
 		}
 		return;
 	}
@@ -9904,7 +9909,12 @@ void ABHGameMode::PrepareRoundDirector()
 	{
 		ActiveSideObjectiveCount = FMath::Max(1, ObjectiveIntensity - 1);
 	}
-	ActiveBreakerCount = bTestMode ? BreakerActors.Num() : (bRevisionMode ? 0 : FMath::Clamp(RequiredBreakers - FMath::Min(2, ActiveSideObjectiveCount), 2, FMath::Max(1, BreakerActors.Num())));
+	// Never require more active breakers than physically exist. The inner Clamp floors the requirement at 2,
+	// but FMath::Clamp(X, 2, Max(1, N)) has min>max when N<=1 and then returns the min (2) — so a map with a
+	// single breaker (e.g. an authored map, or a partial spawn failure) would require 2 completions from 1
+	// breaker and the exit could never unlock (unwinnable). Wrapping in Min(N, ...) is a no-op for the shipped
+	// 7-8 breaker maps (the clamp result is already <= N there) and makes the degenerate cases satisfiable.
+	ActiveBreakerCount = bTestMode ? BreakerActors.Num() : (bRevisionMode ? 0 : FMath::Min(BreakerActors.Num(), FMath::Clamp(RequiredBreakers - FMath::Min(2, ActiveSideObjectiveCount), 2, FMath::Max(1, BreakerActors.Num()))));
 	TSet<int32> ActiveBreakerIndexes;
 	for (int32 Index = 0; Index < ActiveBreakerCount && BreakerOrder.IsValidIndex(Index); ++Index)
 	{
