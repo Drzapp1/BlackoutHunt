@@ -9,15 +9,15 @@ Method: **static analysis only** (no engine build — the project's own build lo
 
 ## Headline
 
-**This codebase is exceptionally defensive and well-engineered.** Across 120 source files I (and a fleet of 11 parallel deep-auditor passes) found **no high-severity crash, no authority/anti-cheat hole, and no win/loss-breaking logic bug.** The server-authoritative model is applied consistently: every client action goes `input → ServerXxx RPC → XxxAuthority()` with role/phase/distance/line-of-sight/cooldown re-validation; every host/admin action funnels through `RequireHostAdmin`; answer-bearing fields are `COND_Never`/owner-only; timers and delegates are cleared in `EndPlay`; weak pointers are validated; divisors are floored; enum-indexed tables are clamped.
+**This codebase is exceptionally defensive and well-engineered.** Across 120 source files I (and a fleet of 15 parallel deep-auditor passes + my own line read of the core) found **no crash worse than a latent out-of-range index, and no authority / anti-cheat hole.** The server-authoritative model is applied consistently: every client action goes `input → ServerXxx RPC → XxxAuthority()` with role/phase/distance/line-of-sight/cooldown re-validation; every host/admin action funnels through `RequireHostAdmin`; answer-bearing fields are `COND_Never`/owner-only; timers and delegates are cleared in `EndPlay`; weak pointers are validated; divisors are floored; enum-indexed tables are clamped.
 
-The defects that exist are a small number of **latent crashes (out-of-range inputs), late-join replication-ordering glitches, and education-bank robustness gaps** — plus a long tail of low-severity polish/perf/UX items.
+The most consequential defects are a small set of **round-outcome (win/loss) logic bugs** — the round-end resolution in `Logout` and the infection-capture path credited the Teacher a win the class had actually earned (a survivor had already escaped). Beyond those: **latent crashes (out-of-range inputs), an unwinnable single-breaker map, late-join replication-ordering glitches, and education-bank robustness gaps** — plus a long tail of low-severity polish/perf/UX items.
 
 | | Count |
 |---|---|
-| **Fixed & committed** | 6 issues (3 commits) |
-| **Reported, not fixed** (recommended) | ~24 items, all Low / Low-Medium |
-| High / Critical found | **0** |
+| **Fixed & committed** | 10 issues (7 commits) |
+| **Reported, not fixed** (recommended) | ~30 items, all Low / Low-Medium |
+| Highest severity found | **High** (one win/loss bug, fixed) — no Critical, no crash-on-normal-play |
 
 ---
 
@@ -25,9 +25,9 @@ The defects that exist are a small number of **latent crashes (out-of-range inpu
 
 **Personally deep-read (authority/replication/lifetime core):** `BHGameState`, `BHPlayerState`, `BHGameInstance` (travel/reconnect/online sessions), `BHNetworkSupport`, `BHCharacter` RPC/authority surface (capture, scan, hunter power, decoy, interaction, answer, powerup), `BHGameModeHostControls` (full), `BHGameMode` win/loss (`NotifySurvivorCaptured`/`Escaped`), `BHPlayerController` Server-RPC bridge, `BHDoor`/`BHSlidingGate`/`BHFlickerLight`, plus the revision-bank select/parse/validate paths.
 
-**Audited by 11 parallel read-only deep-auditor passes (each read its files in full):** interactables/objectives · security/CCTV · train/final-escape · bot AI · atmosphere/horror/jumpscare · main menu Slate (all 11.5k lines) · HUD/diagram/classroom-board · revision/lessons/tutorial/feedback · powerups/cosmetics/account+crypto · level/props/movement assets · settings/types/commandlets/automation.
+**Audited by 15 parallel read-only deep-auditor passes (each read its files in full):** interactables/objectives · security/CCTV · train/final-escape · bot AI · atmosphere/horror/jumpscare · main menu Slate (all 11.5k lines) · HUD/diagram/classroom-board · revision/lessons/tutorial/feedback · powerups/cosmetics/account+crypto · level/props/movement assets · settings/types/commandlets/automation · **`BHGameMode.cpp` lifecycle/director/capture-escape half (1–7200)** · **`BHGameMode.cpp` level-gen/revision/reporting half (7000–end)** · **`BHPlayerController.cpp` in full (all 8.7k lines)** · **GameMode BotServices + TrainFlow partials + all 10 automation test files**.
 
-**Not exhaustively line-read by me personally** (covered by the agents + spot reads): the full 14k-line `BHGameMode.cpp` director/level-gen body, full `BHPlayerController.cpp`, the BotServices/TrainFlow partials, and the automation test suite. No defect was found in the parts that were read; the unread remainder is lower-risk (cosmetic/generation code) but is the main residual blind spot.
+**Coverage is now effectively complete.** A final wave closed the original blind spot — both halves of the 14k-line `BHGameMode.cpp`, the full `BHPlayerController.cpp`, the BotServices/TrainFlow partials, and the test suite were all read in full. The test suite was specifically checked for wrong-expected assertions that could mask a regression — none found.
 
 ---
 
@@ -53,6 +53,18 @@ For a dynamically-replicated door, `OnRep_Open` can fire **before** `BeginPlay`.
 
 ### 6. Captured/benched bots don't release their objective claim — *Low (AI)*
 `Source/BlackoutHunt/BHBotController.cpp::Think` (~751). A bot captured mid-objective keeps its pawn, so `EndPlay` never runs and its time-boxed claim (~13 s) lingered; the rest of the bot team treated the station/breaker as taken and avoided it. Now releases the claim on the not-alive early-out, mirroring `EndPlay`. **Commit `dafc7b9`.**
+
+### 7. Round credited to the Teacher on disconnect when a survivor already escaped — *High (win/loss)*
+`Source/BlackoutHunt/BHGameMode.cpp::Logout` (~1322). "Evacuate-together" means an escaped survivor (LifeState `Escaped`, so not counted as alive) has already won for the class. If the *last alive* survivor then disconnects (and isn't reconnectable), `CountAliveSurvivors() <= 0` fired `EndRound(HunterWin)` — discarding the escapee's win. Every other terminal check disambiguates with `CountEscapedSurvivors()` (Hunt tick :13317, standard capture :1606); only `Logout` omitted it. Now `CountEscapedSurvivors() > 0 ? SurvivorsWin : HunterWin`. **Commit `eab726b`.**
+
+### 8. Same wrong-winner in the infection-mode capture path — *Medium (win/loss)*
+`BHGameMode.cpp::NotifySurvivorCaptured` infection branch (~1527). If a survivor already escaped and the last inside survivor is captured-and-infected, the round ended `HunterWin`. Same fix as #7. **Commit `eab726b`.**
+
+### 9. Single-breaker maps are unwinnable — *Medium (gameplay logic)*
+`BHGameMode.cpp::PrepareRoundDirector` (~9907). `ActiveBreakerCount = FMath::Clamp(X, 2, FMath::Max(1, BreakerActors.Num()))` — when a map has ≤1 breaker, the clamp is `Clamp(X, 2, 1)` (min>max), which UE resolves to the *min* (2). With one physical breaker `BreakersCompleted` maxes at 1 and never reaches the required 2, so the exit never unlocks. Shipped procedural maps spawn 7–8 breakers (unaffected); authored maps with ≤1 breaker, or partial spawn failures, hit it. Wrapped in `FMath::Min(BreakerActors.Num(), …)` — a no-op where the clamp result is already ≤ N. **Commit `eab726b`.**
+
+### 10. `ServerSetReady` missing the lobby-RPC flood-guard — *Low (authority)*
+`Source/BlackoutHunt/BHPlayerController.cpp::ServerSetReady_Implementation` (~7407). The one spammable lobby RPC missing `AllowLobbyActionRpc()`; a modified client could toggle ready/unready unbounded (repeated `AreAllReady()` scans + reliable churn). Added the guard to match the other lobby RPCs. **Commit `bf34adc`.**
 
 ---
 
@@ -91,6 +103,16 @@ These are real but **Low / Low-Medium** severity, and several involve changing c
 - **`EBHWarmupStep` is a flags enum without `ENUM_CLASS_FLAGS`** — `BHTypes.h:68-75`. Always hand-cast today; add the macro to prevent a future un-cast `|`.
 - Misc low-confidence defensive nits from the CCTV pass (`Tan(half-cone)` domain if a designer authors a >170° cone directly; `GetUniqueID()`-seeded fuzz can collide across actor lifetimes) — `BHSecurityCamera.cpp:690`, `BHSecurityMonitor.cpp:649`.
 
+### Final-wave additions (GameMode / PlayerController / partials)
+- **Listen-server host hit-stop dilates the *shared* world** — `BHPlayerController.cpp:8565`. `ClientPlayHorrorCue` uses `UGameplayStatics::SetGlobalTimeDilation` for the impact hit-stop; on the listen-server host (which is a client of its own world) this briefly slows the simulation for *every* student when the host is the scare target. Self-heals via a restore timer. The clean fix has tradeoffs (gating to `NM_Client` removes the host's own hit-stop; a camera/anim-only jolt avoids touching global dilation) — left for your call.
+- **~40 Server RPCs deref `GetWorld()` unchecked** — `BHPlayerController.cpp` (7409, 7436, 7444, …) do `GetWorld()->GetAuthGameMode<>()` with no null guard, while two siblings (`ServerJumpscareTest`, `ServerAtmosphereTest`) do guard. Effectively unreachable on the authority, but inconsistent. Recommend the guarded form everywhere.
+- **`BroadcastStatus`/`SpawnAmbient`/director scare iterators deref `GetWorld()` unchecked** — `BHGameMode.cpp:12419, 9850, 10853, 12320`. Same latent defensive gap as above; recommend an early `if (!GetWorld()) return;`.
+- **Solo live round with zero hunters ends instantly as SurvivorsWin** — `BHGameMode.cpp::AssignRoles` (~13198). The hunter-guarantee only runs for `Players.Num() >= 2`, so a host who sets `MinPlayers == 1` and starts a *live* (non-practice) round solo as a survivor gets an immediate `SurvivorsWin` on the first Hunt tick. Practice/Test are the intended solo modes. Recommend spawning a bot/teacher (or holding in Lobby) when a live round would start with zero hunters.
+- **`GetSpawnTransformFor` uses `INDEX_NONE` in spawn-offset math** — `BHGameMode.cpp:13714-13731`. If `PlayerArray.IndexOfByKey(BHPS)` returns -1 (a login/travel timing window), the negative index flows into the hunter-spawn offset math (no OOB — the survivor branch's `IsValidIndex(-1…)` falls back, and `BHResolveSpawnLocation` uses `FMath::Abs`), so it's at worst a slightly-wrong spawn offset. Recommend `const int32 SafeIndex = FMath::Max(0, PlayerIndex);`.
+- **`SetBotCount` clears `bBotMode` mid-round while live bots remain** — `BHGameModeBotServices.cpp:222`. Setting bot count to 0 mid-Hunt flips `bBotMode=false` (and the GameState) but the cull is deferred to round end, so `RefreshBotRoster` then early-returns and the live-bot count is never re-clamped if a human joins/leaves. Internally inconsistent, not a crash. Recommend deferring the `bBotMode` flip (like the count) when mid-round.
+- **Lesson-preset bot cap is a hardcoded `11`** — `BHLessonPreset.cpp:930` vs the GameMode's `MaxPlayers - 1` cap. Diverges if `MaxPlayers != 12`. Recommend deriving both from `UBHGameSettings::MaxPlayers`.
+- **`StartBotSoak` re-runs `RequireHostAdmin` via `ForceBotHunt`** — `BHGameModeBotServices.cpp:326` (harmless redundant authority check after the caller already gated). Optional cleanup.
+
 ---
 
 ## Notable verified-clean areas
@@ -109,9 +131,10 @@ So the report isn't read as "everything is broken," these high-risk areas were s
 
 - **Nothing here was compiled or run.** Fixes are reasoned to be correct and syntactically valid, but the user opted for static analysis. **The door/gate header changes add a member and need a normal build (UHT regen) to take effect** — they will not show up in a hot-swapped exe without a rebuild.
 - Per `AGENTS.md`, after building, the touched systems map to: `Build-Editor.ps1` (C++), and the revision/bot/objective automation suites (`BlackoutHunt.*`). A focused run of the revision and train-economy tests would cover commits 1 and 6; there is no automated coverage for the late-join door/gate ordering (commits 4–5) — those want a 2-client late-join smoke check.
-- Residual blind spot: the unread remainder of `BHGameMode.cpp`/`BHPlayerController.cpp` bodies and the test suite. Nothing read there was defective; a follow-up pass could close it.
-- The `bUseAuthoredLevels` default is documented inconsistently (ini `False` in §28 vs "on by default" narrative in §33) — worth confirming, as it changes whether the door/gate late-join path (runtime-spawned actors) is hit in shipped configs.
+- **Coverage is now effectively complete** — the original blind spot (full `BHGameMode.cpp`, `BHPlayerController.cpp`, the partials, the test suite) was closed by a final 4-pass wave. The only thing not done is a re-read of the procedural level-*geometry* builders' raw numeric constants (cosmetic), which can't harbor the bug classes hunted here.
+- The `bUseAuthoredLevels` default is documented inconsistently (ini `False` in §28 vs "on by default" narrative in §33) — worth confirming, as it changes whether the door/gate late-join path and the single-breaker case (runtime-spawned vs authored actors) are hit in shipped configs.
+- Recommended verification once you can build: the **wrong-winner fixes (#7, #8)** want a targeted test or a 2-client "escape then disconnect / infect" check; **#9** wants a 1-breaker-map round; the late-join **door/gate (#4, #5)** want a 2-client join-after-open check. None of these have existing automated coverage.
 
 ---
 
-*Generated by an automated deep audit (1 orchestrator + 11 parallel read-only auditor passes) on 2026-06-04.*
+*Generated by an automated deep audit (1 orchestrator + 15 parallel read-only auditor passes) on 2026-06-04. Branch `bugfix/deep-audit-2026-06-04`.*
