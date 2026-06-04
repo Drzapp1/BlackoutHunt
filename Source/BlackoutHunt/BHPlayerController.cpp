@@ -7406,6 +7406,13 @@ bool ABHPlayerController::AllowLobbyActionRpc(float MinIntervalSeconds)
 
 void ABHPlayerController::ServerSetReady_Implementation(bool bReady)
 {
+	// Flood-guard like every other spammable lobby RPC (display name, map/fog vote, avatar/cosmetics);
+	// without it a modified client can toggle ready/unready unbounded, forcing repeated AreAllReady() scans
+	// and reliable replication churn.
+	if (!AllowLobbyActionRpc())
+	{
+		return;
+	}
 	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
 	{
 		BHGM->SetPlayerReady(this, bReady);
