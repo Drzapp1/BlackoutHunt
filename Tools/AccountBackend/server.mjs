@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, URL, URLSearchParams } from "node:url";
@@ -148,6 +148,9 @@ const rateLimitWindowMs = clampInt(process.env.RATE_LIMIT_WINDOW_MS, 1000, 24 * 
 const pendingStates = new Map();
 const deviceAuth = new Map();
 const sessions = new Map();
+// Per-session creation time (parallel to `sessions`) so the periodic prune can bound the map and cap token
+// lifetime. Kept separate so authPlayer's lookup stays a plain token -> playerId.
+const sessionCreatedAt = new Map();
 const rateBuckets = new Map();
 let players = {};
 let stateSecret = "";
@@ -201,12 +204,23 @@ async function loadPlayers() {
     return;
   }
 
-  players = JSON.parse(await readFile(playersPath, "utf8"));
+  try {
+    players = JSON.parse(await readFile(playersPath, "utf8"));
+  } catch (error) {
+    // A truncated/corrupt players.json must not crash startup. Keep the bad file in place for recovery and
+    // start with an empty roster (the next savePlayers writes a clean file).
+    console.error(`players file ${playersPath} is unreadable/corrupt; starting with an empty roster:`, error.message);
+    players = {};
+  }
 }
 
 async function savePlayers() {
   await mkdir(dataDir, { recursive: true });
-  await writeFile(playersPath, JSON.stringify(players, null, 2));
+  // Atomic write: stage to a temp file then rename, so a crash mid-write can't leave a half-written
+  // players.json that fails to parse on the next start.
+  const tempPath = `${playersPath}.tmp`;
+  await writeFile(tempPath, JSON.stringify(players, null, 2));
+  await rename(tempPath, playersPath);
 }
 
 async function loadStateSecret() {
@@ -299,9 +313,21 @@ function clampInt(value, min, max, fallback) {
   return Math.min(max, Math.max(min, Math.round(n)));
 }
 
+function isLoopback(req) {
+  const addr = String(req.socket?.remoteAddress || "");
+  return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1" || addr.startsWith("127.");
+}
+
 function clientIp(req) {
-  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
-  return forwarded || req.socket?.remoteAddress || "unknown";
+  // Only trust X-Forwarded-For when the immediate peer is a loopback reverse proxy (the bundled Caddyfile).
+  // A direct remote client could otherwise spoof XFF to dodge the per-IP rate limit and poison logs.
+  if (isLoopback(req)) {
+    const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+    if (forwarded) {
+      return forwarded;
+    }
+  }
+  return req.socket?.remoteAddress || "unknown";
 }
 
 // Simple fixed-window per-IP limiter. Keeps abusive clients from filling the log.
@@ -696,7 +722,7 @@ async function handleAuthStart(provider, url, res) {
   try {
     config = providerConfig(provider);
   } catch (error) {
-    deviceAuth.set(deviceId, { status: "failed", provider, error: error.message });
+    deviceAuth.set(deviceId, { status: "failed", provider, error: error.message, createdAt: Date.now() });
     if (provider === "google") {
       html(res, 500, googleSetupPage(error.message));
       return;
@@ -708,7 +734,7 @@ async function handleAuthStart(provider, url, res) {
 
   const state = createLoginState(provider, deviceId);
   pendingStates.set(state, { provider, deviceId, createdAt: Date.now() });
-  deviceAuth.set(deviceId, { status: "pending", provider });
+  deviceAuth.set(deviceId, { status: "pending", provider, createdAt: Date.now() });
 
   const authUrl = new URL(config.authorizeUrl);
   authUrl.searchParams.set("client_id", config.clientId);
@@ -757,16 +783,18 @@ async function handleAuthCallback(provider, url, res) {
 
     const sessionToken = newToken();
     sessions.set(sessionToken, playerId);
+    sessionCreatedAt.set(sessionToken, Date.now());
     deviceAuth.set(pending.deviceId, {
       status: "authorized",
       session_token: sessionToken,
       player,
+      createdAt: Date.now(),
     });
 
     html(res, 200, successPage(player.display_name));
   } catch (error) {
-    deviceAuth.set(pending.deviceId, { status: "failed", error: error.message });
-    html(res, 500, `<h1>Login failed</h1><p>${String(error.message)}</p>`);
+    deviceAuth.set(pending.deviceId, { status: "failed", error: error.message, createdAt: Date.now() });
+    html(res, 500, `<h1>Login failed</h1><p>${escapeHtml(String(error.message))}</p>`);
   }
 }
 
@@ -1041,6 +1069,13 @@ async function route(req, res) {
   }
 
   if (req.method === "POST" && url.pathname === "/setup/google") {
+    // Writing the OAuth client config rewrites .env, so never accept it from an arbitrary remote caller on a
+    // 0.0.0.0 deploy. Local setup (loopback) is allowed; a remote admin must present the admin token
+    // (Authorization: Bearer <token> or ?key=<token>).
+    if (!isLoopback(req) && !adminAuthorized(req, url)) {
+      json(res, 403, { error: "forbidden: /setup/google requires a loopback connection or the admin token" });
+      return;
+    }
     await handleGoogleSetup(req, res);
     return;
   }
@@ -1059,7 +1094,18 @@ async function route(req, res) {
 
   const deviceMatch = /^\/auth\/device\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
   if (req.method === "GET" && deviceMatch) {
-    json(res, 200, deviceAuth.get(deviceMatch[1]) || { status: "pending" });
+    const entry = deviceAuth.get(deviceMatch[1]);
+    if (!entry) {
+      json(res, 200, { status: "pending" });
+      return;
+    }
+    // Single-use: a completed result carries the session token + profile, so return it exactly once and then
+    // drop it. The device id travels in the OAuth start URL (browser history / logs), so a leaked id must not
+    // be replayable to lift the token after the real client has collected it.
+    if (entry.status === "authorized" || entry.status === "failed") {
+      deviceAuth.delete(deviceMatch[1]);
+    }
+    json(res, 200, entry);
     return;
   }
 
@@ -1150,3 +1196,32 @@ createServer((req, res) => {
   console.log(`Feedback dashboard: ${publicBaseUrl}/admin?key=${adminToken}`);
   console.log(`Feedback email backup: ${emailConfigured() ? `enabled -> ${process.env.FEEDBACK_EMAIL_TO}` : "disabled (set SMTP_PASS + FEEDBACK_EMAIL_TO in .env)"}`);
 });
+
+// Periodically bound the in-memory maps and cap token / login-flow lifetime (none of these were ever pruned).
+// Sessions get a generous TTL so active users aren't disrupted; the in-flight OAuth maps expire quickly.
+function pruneExpired() {
+  const now = Date.now();
+  const sessionTtlMs = 90 * 24 * 60 * 60 * 1000; // 90 days
+  const transientTtlMs = 10 * 60 * 1000; // 10 minutes for in-flight login state
+  for (const [token, createdAt] of sessionCreatedAt) {
+    if (now - createdAt > sessionTtlMs) {
+      sessions.delete(token);
+      sessionCreatedAt.delete(token);
+    }
+  }
+  for (const [deviceId, entry] of deviceAuth) {
+    if (entry && typeof entry.createdAt === "number" && now - entry.createdAt > transientTtlMs) {
+      deviceAuth.delete(deviceId);
+    }
+  }
+  for (const [state, entry] of pendingStates) {
+    if (entry && typeof entry.createdAt === "number" && now - entry.createdAt > transientTtlMs) {
+      pendingStates.delete(state);
+    }
+  }
+}
+
+const pruneTimer = setInterval(pruneExpired, 15 * 60 * 1000);
+if (typeof pruneTimer.unref === "function") {
+  pruneTimer.unref();
+}
