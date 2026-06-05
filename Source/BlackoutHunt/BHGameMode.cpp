@@ -1150,6 +1150,24 @@ void ABHGameMode::PostLogin(APlayerController* NewPlayer)
 			{
 				Entry.CooldownEndServerTime = 0.0f;
 			}
+
+			// Reconnected into an ALREADY-RESOLVED round (EndRound latched a *Win phase, within its ~8s
+			// pre-travel window). Don't put a restored-Alive survivor back in play as a capturable target
+			// in a decided round; mark them out of play. (An Escaped/Captured outcome is preserved.) Banked
+			// points/stats restored above still carry to the next round.
+			const ABHGameState* ResolvedCheckBHGS = GetGameState<ABHGameState>();
+			if (ResolvedCheckBHGS
+				&& (ResolvedCheckBHGS->RoundPhase == EBHRoundPhase::HunterWin || ResolvedCheckBHGS->RoundPhase == EBHRoundPhase::SurvivorsWin))
+			{
+				if (BHPS->LifeState == EBHPlayerLifeState::Alive)
+				{
+					BHPS->SetLifeState(EBHPlayerLifeState::Captured);
+				}
+				if (ABHPlayerController* ResultPC = Cast<ABHPlayerController>(NewPlayer))
+				{
+					ResultPC->ClientRecordRoundResult(BHPS->PlayerRole, BHPS->LifeState, ResolvedCheckBHGS->RoundPhase);
+				}
+			}
 			if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
 			{
 				BHGI->ClearReconnectMark(BHPS);

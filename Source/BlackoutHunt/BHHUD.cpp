@@ -1148,15 +1148,29 @@ void ABHHUD::DrawHUD()
 				? FString::Printf(TEXT("MARKED %.0fs"), Character->GetDetentionMarkRemaining())
 				: (Character->IsHiddenInLocker() ? FString(TEXT("CONCEALED")) : FString(TEXT("STATUS")));
 			DrawHudText(VitalsTitle.ToUpper(), SafePad, VitalsY - 19.0f, Character->IsDetentionMarked() ? FLinearColor(1.0f, 0.20f, 0.12f, 0.96f) : FLinearColor(0.76f, 0.72f, 0.64f, 0.84f), GEngine->GetSmallFont(), 0.66f);
+			// BATTERY + STAMINA are relevant to every role (the Teacher has a flashlight/blackout and sprints),
+			// but TEACHER proximity / FEAR / DREAD are survivor-only and sat dead at 0 for the Teacher / Hall
+			// Monitor (most visible in their tutorials). Gate those three by survivor role and re-flow the panel
+			// with a running Y so a non-survivor sees a compact BATTERY+STAMINA panel with no empty gaps. A
+			// survivor still gets the exact original layout.
 			DrawProgressBar(TEXT("BATTERY"), Character->GetFlashlightBattery(), SafePad, VitalsY, MeterW, FLinearColor(0.80f, 0.82f, 0.70f, 0.88f));
-
-			const FString TeacherText = TeacherProximity.bFound
-				? FString::Printf(TEXT("%s %.0fm"), TeacherProximity.bLineOfSight ? TEXT("VISIBLE") : TEXT("NEAR"), TeacherProximity.DistanceCm / 100.0f)
-				: FString(TEXT("CLEAR"));
-			DrawProgressBar(TEXT("TEACHER"), TeacherProximity.ProximityPercent, SafePad, VitalsY + 32.0f, MeterW, FLinearColor(0.90f, 0.36f, 0.22f, 0.90f), TeacherText);
-			DrawRawMeter(TEXT("STAMINA"), Character->GetStaminaPercent(), SafePad, VitalsY + 68.0f, MeterW, FLinearColor(0.75f, 0.83f, 0.54f, 0.88f), false);
-			DrawRawMeter(TEXT("FEAR"), Character->GetFear(), SafePad, VitalsY + 86.0f, MeterW, FLinearColor(0.92f, 0.28f, 0.20f, 0.88f), true);
-			DrawRawMeter(TEXT("DREAD"), Character->GetDread(), SafePad, VitalsY + 104.0f, MeterW, FLinearColor(0.84f, 0.18f, 0.14f, 0.90f), true);
+			float MeterY = VitalsY + 32.0f;
+			if (bShowSurvivorWarnings)
+			{
+				const FString TeacherText = TeacherProximity.bFound
+					? FString::Printf(TEXT("%s %.0fm"), TeacherProximity.bLineOfSight ? TEXT("VISIBLE") : TEXT("NEAR"), TeacherProximity.DistanceCm / 100.0f)
+					: FString(TEXT("CLEAR"));
+				DrawProgressBar(TEXT("TEACHER"), TeacherProximity.ProximityPercent, SafePad, MeterY, MeterW, FLinearColor(0.90f, 0.36f, 0.22f, 0.90f), TeacherText);
+				MeterY += 36.0f;
+			}
+			DrawRawMeter(TEXT("STAMINA"), Character->GetStaminaPercent(), SafePad, MeterY, MeterW, FLinearColor(0.75f, 0.83f, 0.54f, 0.88f), false);
+			MeterY += 18.0f;
+			if (bShowSurvivorWarnings)
+			{
+				DrawRawMeter(TEXT("FEAR"), Character->GetFear(), SafePad, MeterY, MeterW, FLinearColor(0.92f, 0.28f, 0.20f, 0.88f), true);
+				MeterY += 18.0f;
+				DrawRawMeter(TEXT("DREAD"), Character->GetDread(), SafePad, MeterY, MeterW, FLinearColor(0.84f, 0.18f, 0.14f, 0.90f), true);
+			}
 			FString StressHint;
 			if (bShowSurvivorWarnings && (Character->GetFear() >= HudFearPanicHintThreshold || Character->GetDread() >= HudDreadPanicHintThreshold))
 			{

@@ -57,6 +57,10 @@ struct FBHTravelPlayerProgress
 	// where the new world's GetTimeSeconds() resets to ~0 and would otherwise make the elapsed time
 	// negative and silently bypass the grace check.
 	double LeftServerWorldTime = -1.0;
+	// Monotonic wall-clock time (FPlatformTime::Seconds) this entry was last persisted. Used to bound the
+	// TravelPlayerProgress list over a long, churny session: a connected player is re-persisted on every
+	// ServerTravel, so the oldest LastPersistedWallTime values are departed players safe to evict.
+	double LastPersistedWallTime = -1.0;
 };
 
 USTRUCT()

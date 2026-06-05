@@ -965,6 +965,55 @@ void UBHGameInstance::RequestCleanExit(const FString& Reason)
 	FPlatformMisc::RequestExit(false);
 }
 
+// Bound TravelPlayerProgress so a long, churny host session (mid-round drops, rejoins, name changes, lost
+// tokens) can't grow it without limit -- it was only ever appended to. Two rules, neither of which can evict
+// a within-grace pending reconnect or a recently-refreshed (still-connected) player.
+static void BHPruneStaleTravelProgress(TArray<FBHTravelPlayerProgress>& Entries, double NowWallSeconds)
+{
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	const double GraceSeconds = Settings ? static_cast<double>(Settings->ReconnectGraceSeconds) : 120.0;
+
+	// 1) Drop pending mid-round-disconnect marks aged well past the grace window: that player can no longer
+	//    grace-reconnect (a fresh rejoin issues a new token + entry), so the entry is dead weight.
+	const double PendingDeadline = GraceSeconds * 4.0 + 60.0;
+	Entries.RemoveAll([&](const FBHTravelPlayerProgress& Entry)
+	{
+		return Entry.LeftServerWorldTime >= 0.0 && (NowWallSeconds - Entry.LeftServerWorldTime) > PendingDeadline;
+	});
+
+	// 2) Generous backstop cap: evict the OLDEST-persisted, NON-pending snapshot entries that also haven't
+	//    been refreshed in the last few minutes. Connected players are re-persisted on every ServerTravel, so
+	//    they sort newest and stay protected; we never force-evict a protected entry (better to slightly
+	//    exceed the cap than drop a current player's banked progress).
+	constexpr int32 MaxEntries = 256;
+	constexpr double RecentProtectWindow = 300.0;
+	if (Entries.Num() > MaxEntries)
+	{
+		Entries.StableSort([](const FBHTravelPlayerProgress& A, const FBHTravelPlayerProgress& B)
+		{
+			return A.LastPersistedWallTime < B.LastPersistedWallTime; // oldest first
+		});
+		for (int32 Index = 0; Index < Entries.Num() && Entries.Num() > MaxEntries; )
+		{
+			const FBHTravelPlayerProgress& Entry = Entries[Index];
+			const bool bPending = Entry.LeftServerWorldTime >= 0.0;
+			const bool bRecent = Entry.LastPersistedWallTime >= 0.0 && (NowWallSeconds - Entry.LastPersistedWallTime) <= RecentProtectWindow;
+			if (!bPending && !bRecent)
+			{
+				Entries.RemoveAt(Index);
+			}
+			else
+			{
+				++Index;
+			}
+		}
+		if (Entries.Num() > MaxEntries)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[BlackoutHunt] TravelPlayerProgress still has %d entries after pruning (all pending/recent); cap %d."), Entries.Num(), MaxEntries);
+		}
+	}
+}
+
 void UBHGameInstance::PersistTravelPlayerState(const ABHPlayerState* PlayerState)
 {
 	if (!PlayerState)
@@ -985,6 +1034,7 @@ void UBHGameInstance::PersistTravelPlayerState(const ABHPlayerState* PlayerState
 		return TravelEntryMatches(Progress, ReconnectToken, StableId, PlayerName);
 	});
 
+	const double NowWall = (ReconnectClockOverrideSeconds >= 0.0) ? ReconnectClockOverrideSeconds : FPlatformTime::Seconds();
 	FBHTravelPlayerProgress& Progress = Existing ? *Existing : TravelPlayerProgress.AddDefaulted_GetRef();
 	Progress.StableId = StableId;
 	Progress.PlayerName = PlayerName;
@@ -1000,6 +1050,12 @@ void UBHGameInstance::PersistTravelPlayerState(const ABHPlayerState* PlayerState
 	Progress.LifetimeHunterPoints = PlayerState->LifetimeHunterPoints;
 	Progress.Powerups = PlayerState->Powerups;
 	Progress.ReconnectToken = PlayerState->ReconnectToken;
+	Progress.LastPersistedWallTime = NowWall;
+
+	// Keep TravelPlayerProgress bounded over a long, churny host session. Safe: never evicts a within-grace
+	// pending reconnect or an entry refreshed in the last few minutes. Done after the write above so the
+	// just-persisted entry (NowWall timestamp) is protected.
+	BHPruneStaleTravelProgress(TravelPlayerProgress, NowWall);
 }
 
 bool UBHGameInstance::RestoreTravelPlayerState(ABHPlayerState* PlayerState, bool bApplyRoleAndLifeState) const
