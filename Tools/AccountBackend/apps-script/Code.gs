@@ -30,7 +30,7 @@
 var EMAIL_KINDS = ['bug', 'idea', 'praise', 'other'];
 var SPREADSHEET_NAME = 'BlackoutHunt Feedback';
 // Bump this on each change. GET the /exec URL to read it back and confirm which code is live.
-var SCRIPT_VERSION = '2026-06-01-graphics';
+var SCRIPT_VERSION = '2026-06-05-csv-injection-guard';
 
 function doPost(e) {
   try {
@@ -67,6 +67,22 @@ function doGet(e) {
 
 function jsonOut_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+
+// Spreadsheet formula-injection guard. Feedback/telemetry fields are attacker-controllable (a modified
+// client can send any string), and a value that begins with = + - @ (or a leading control char) is
+// otherwise evaluated as a LIVE formula the moment you open the Sheet — e.g. =IMPORTRANGE(...) exfiltrates
+// data or =HYPERLINK(...) phishes, executing in your authenticated Google session. Prefixing a single
+// quote forces Sheets to store the value as text (the quote itself is not displayed). Non-strings
+// (the Date / numeric cells) pass through unchanged.
+function safeCell_(v) {
+  if (v === null || v === undefined) return '';
+  if (typeof v !== 'string') return v;
+  return /^[=+\-@\t\r\n]/.test(v) ? ("'" + v) : v;
+}
+
+function safeRow_(arr) {
+  return arr.map(safeCell_);
 }
 
 function spreadsheet_() {
@@ -126,9 +142,9 @@ function logFeedback_(b) {
   var gr = d.graphics || {};
   var perfStr = perf.avg_fps ? ('avg ' + perf.avg_fps + ' / min ' + perf.min_fps + ' / 1%low ' + (perf.p1_low_fps || '') + ' / ' + (perf.hitches || 0) + ' hitches') : '';
   tab_('feedback', ['received_at', 'kind', 'rating', 'message', 'contact', 'player', 'level', 'role', 'app_version', 'platform', 'cpu', 'gpu', 'ram_gb', 'os', 'perf', 'graphics'])
-    .appendRow([new Date(), b.kind || '', b.rating || '', b.message || '', b.contact || '',
+    .appendRow(safeRow_([new Date(), b.kind || '', b.rating || '', b.message || '', b.contact || '',
                 c.player_name || '', c.level || '', c.role || '', c.app_version || '', c.platform || '',
-                dev.cpu || '', dev.gpu || '', dev.ram_gb || '', dev.os || '', perfStr, graphicsSummary_(gr)]);
+                dev.cpu || '', dev.gpu || '', dev.ram_gb || '', dev.os || '', perfStr, graphicsSummary_(gr)]));
 }
 
 function logTelemetry_(b) {
@@ -137,7 +153,7 @@ function logTelemetry_(b) {
     ? b.round_results.map(function (r) { return (r.level || '?') + ':' + (r.role || '?') + '->' + (r.result || '?'); }).join(' | ')
     : '';
   tab_('telemetry', ['received_at', 'reason', 'app_version', 'platform', 'session_id', 'rounds', 'perf'])
-    .appendRow([new Date(), b.reason || '', b.app_version || '', b.platform || '', b.session_id || '', rounds, perf]);
+    .appendRow(safeRow_([new Date(), b.reason || '', b.app_version || '', b.platform || '', b.session_id || '', rounds, perf]));
 }
 
 function emailFeedback_(kind, b) {
