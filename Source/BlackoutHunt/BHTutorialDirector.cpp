@@ -748,6 +748,15 @@ void ABHTutorialDirector::PublishStepBeat() const
 		{
 			if (const ABHCharacter* Student = FindStudentCharacter())
 			{
+				// The Counterplay lesson deliberately hides the AI student in a locker to teach that a
+				// concealed student drops off the Teacher's sight. Keep the marker honest: while they're
+				// hidden, clear the beat so they appear "lost" rather than pinning a labelled marker on the
+				// locker, which would contradict the very lesson being taught.
+				if (TeacherStep == ETeacherStep::Counterplay && Student->IsHiddenInLocker())
+				{
+					ClearBeats();
+					return;
+				}
 				SetSingleBeat(TEXT("Student"), Student->GetActorLocation());
 				return;
 			}
