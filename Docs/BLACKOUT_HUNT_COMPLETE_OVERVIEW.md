@@ -564,7 +564,7 @@ The tunables live in `Config/DefaultGame.ini` under `[/Script/BlackoutHunt.BHGam
 
 Other config: `DefaultEngine.ini` (GameMode/GameInstance classes, NetServerMaxTickRate 30, `DefaultPlatformService=Null`, DX11 default RHI, dynamic navmesh, UDP messaging disabled), `DefaultInput.ini` (the key bindings below), `DefaultScalability.ini` (low-end-friendly buckets). Account settings (`BackendBaseUrl=""`, external login off) and feedback settings (HTTPS endpoint, enable flags) have their own sections.
 
-**Controls:** WASD move, mouse look, Enter ready, E interact/repair/exit-locker, F flashlight, 1-4 answer, M/I map, V crosshair, F1–F6 powerups, Space jump/bunny-hop, Shift sprint, Ctrl crouch/roll, Alt prone/slide (+Space dive), Mouse1 Teacher capture, Q scan / real hint, R blackout / false hint, G decoy / trap, B classroom board, H/T/Y/U spectator support & role requests, Esc menu.
+**Controls:** WASD move, mouse look, Enter ready, E interact/repair/exit-locker, F flashlight, 1-4 answer, Tab question cursor, N node marker, M/I map, V crosshair, F1–F6 powerups, Space jump/bunny-hop, Shift sprint, Ctrl crouch/roll, Alt prone/slide (+Space dive), Mouse1 Teacher capture, Q scan / real hint, R blackout / false hint, G decoy / trap, B classroom board, H/T/Y/U spectator support & role requests, Esc menu.
 
 ---
 
