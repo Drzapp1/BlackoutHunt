@@ -5480,7 +5480,10 @@ void ABHCharacter::ApplyTeacherWeaponVisuals(const ABHPlayerState* BHPS)
 void ABHCharacter::PlayTeacherMeleeSwingLocal(bool bConfirmedHit)
 {
 	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
-	if (!BHPS || BHPS->PlayerRole != EBHPlayerRole::Hunter || BHPS->LifeState != EBHPlayerLifeState::Alive)
+	// Use IsAliveHunter() (which includes Tester) so the axe swing animates for every role that can actually
+	// capture — the capture gameplay in TryCaptureAuthority gates on IsAliveHunter(), so a swinging Tester
+	// previously saw no animation/trail/flash for a swing the server accepted.
+	if (!BHPS || !BHPS->IsAliveHunter())
 	{
 		return;
 	}
@@ -5526,9 +5529,8 @@ void ABHCharacter::UpdateTeacherWeaponSwingVisuals()
 	};
 
 	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
-	const bool bShowWeapon = BHPS
-		&& BHPS->PlayerRole == EBHPlayerRole::Hunter
-		&& BHPS->LifeState == EBHPlayerLifeState::Alive;
+	// IsAliveHunter() includes Tester, matching the capture/swing gameplay predicate (see PlayTeacherMeleeSwingLocal).
+	const bool bShowWeapon = BHPS && BHPS->IsAliveHunter();
 	if (!bShowWeapon)
 	{
 		TeacherWeaponRoot->SetRelativeLocation(BHTeacherWeaponIdleLocation);
