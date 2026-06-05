@@ -583,6 +583,9 @@ protected:
 	float LastPresenceWhisperTime;
 	float LastWhisperJumpscareTime;
 	float LastPresenceSpikeTime;
+	// Last UpdatePresenceDirector wall-clock time, so the presence decay can be time-based instead of a flat
+	// per-tick drop (the director interval is mode-dependent, ~7s normal vs ~4s revision intensity-3).
+	float LastPresenceDirectorTime = -1.0f;
 	float LastTeacherCounterScareTime;
 	// Cooldown clock for the occasional "scare the Teacher too" beat (a proper scare on a random alive hunter).
 	float LastTeacherProperScareTime = -999.0f;

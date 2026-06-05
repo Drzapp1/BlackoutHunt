@@ -244,6 +244,11 @@ void ABHGameMode::TriggerFinalEscapeIfNeeded()
 		return;
 	}
 
+	// No EscapeStationManager on this map (procedural maps always spawn one; an authored final map must place
+	// one). The manager-less fallback below skips the manager's cutscene, hunter-freeze, and anti-camp, so log
+	// loudly to flag the malformed map -- mirrors the other authored-level discovery warnings.
+	UE_LOG(LogTemp, Warning, TEXT("[BlackoutHunt] Final escape on '%s' has no ABHEscapeStationManager; using the manager-less fallback (no cutscene / hunter-freeze / anti-camp). Place an escape station manager on this final map."), *RuntimeLevelName);
+
 	BHGS->SetRoundPhase(EBHRoundPhase::FinalEscape);
 	BHGS->SetExitUnlocked(true);
 	BHGS->SetFinalEscapeState(EBHFinalEscapeState::EscapeActive, 0.0f, 0.0f, 0.0f);

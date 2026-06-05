@@ -1069,10 +1069,15 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 		}
 
 		RevisionTeamVotes.Add(PlayerId, AnswerIndex);
-		int32 ChoiceVotes[4] = {0, 0, 0, 0};
+		// Size the tally to the actual choice count (floored at 4) rather than a fixed [4]. A drag/ordering
+		// question can ship more than 4 candidates; with a hard [4] a correct answer at index >=4 could never
+		// be counted, so the team could never vote the node through (soft-lock).
+		const int32 ChoiceCount = FMath::Max(QuestionChoices.Num(), 4);
+		TArray<int32> ChoiceVotes;
+		ChoiceVotes.Init(0, ChoiceCount);
 		for (const TPair<int32, int32>& Vote : RevisionTeamVotes)
 		{
-			if (Vote.Value >= 0 && Vote.Value < 4)
+			if (Vote.Value >= 0 && Vote.Value < ChoiceVotes.Num())
 			{
 				++ChoiceVotes[Vote.Value];
 			}
@@ -1081,7 +1086,7 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 		const int32 TeamSize = FMath::Max(1, RevisionTeamPlayerIds.Num());
 		const int32 MajorityNeeded = FMath::Clamp((TeamSize / 2) + 1, 1, TeamSize);
 		int32 BestChoice = INDEX_NONE;
-		for (int32 ChoiceIndex = 0; ChoiceIndex < 4; ++ChoiceIndex)
+		for (int32 ChoiceIndex = 0; ChoiceIndex < ChoiceVotes.Num(); ++ChoiceIndex)
 		{
 			if (ChoiceVotes[ChoiceIndex] >= MajorityNeeded)
 			{

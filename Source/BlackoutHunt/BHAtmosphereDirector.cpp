@@ -86,24 +86,30 @@ void UBHAtmosphereDirector::ReportAtmosphereStimulus(EBHAtmosphereStimulusType T
 		OwnerGameMode->ApplyPresenceSpike(Location, PresenceSpike, FString::Printf(TEXT("%s pressure: %s"), *BHAtmosphereStimulusName(Type), Reason.IsEmpty() ? TEXT("unknown") : *Reason));
 	}
 
-	if (Type == EBHAtmosphereStimulusType::CCTV && LastStimulusTime - LastCCTVGlitchTime > 8.0f)
+	// CCTV glitch cue is throttled PER PLAYER (the 8s cooldown lives in the target survivor's scare memory),
+	// so one survivor's camera cue no longer suppresses everyone else's for 8s -- matching the per-player
+	// scare budgets. A CCTV stimulus still within this survivor's cooldown falls through to the pressure cue
+	// below, exactly as before.
+	ABHCharacter* CCTVTarget = Cast<ABHCharacter>(TargetActor);
+	FBHPlayerScareMemory* CCTVMemory = (Type == EBHAtmosphereStimulusType::CCTV && CCTVTarget)
+		? &GetOrCreateMemory(CCTVTarget, LastStimulusTime)
+		: nullptr;
+	const float TargetLastCCTVGlitch = CCTVMemory ? CCTVMemory->LastCCTVGlitchTime : -9999.0f;
+	if (Type == EBHAtmosphereStimulusType::CCTV && CCTVMemory && LastStimulusTime - TargetLastCCTVGlitch > 8.0f)
 	{
-		if (ABHCharacter* Target = Cast<ABHCharacter>(TargetActor))
+		FBHScareEventSpec Spec;
+		Spec.EventType = EBHScareEventType::CCTVGlitch;
+		Spec.Target = CCTVTarget;
+		Spec.Origin = Location;
+		Spec.Intensity = FMath::Clamp(Strength, 0.15f, 1.0f);
+		Spec.Message = TEXT("Security feed distortion: something saw you first.");
+		const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+		Spec.AudioAsset = Settings && !Settings->CCTVStaticSound.IsNull()
+			? Settings->CCTVStaticSound
+			: TSoftObjectPtr<USoundBase>(FSoftObjectPath(BHCCTVStaticSoundPath));
+		if (TriggerAtmosphereCue(Spec))
 		{
-			FBHScareEventSpec Spec;
-			Spec.EventType = EBHScareEventType::CCTVGlitch;
-			Spec.Target = Target;
-			Spec.Origin = Location;
-			Spec.Intensity = FMath::Clamp(Strength, 0.15f, 1.0f);
-			Spec.Message = TEXT("Security feed distortion: something saw you first.");
-			const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
-			Spec.AudioAsset = Settings && !Settings->CCTVStaticSound.IsNull()
-				? Settings->CCTVStaticSound
-				: TSoftObjectPtr<USoundBase>(FSoftObjectPath(BHCCTVStaticSoundPath));
-			if (TriggerAtmosphereCue(Spec))
-			{
-				LastCCTVGlitchTime = LastStimulusTime;
-			}
+			CCTVMemory->LastCCTVGlitchTime = LastStimulusTime;
 		}
 	}
 	else if (LastStimulusTime - LastPressureCueAttemptTime > 7.5f)

@@ -40,6 +40,9 @@ private:
 		float LastHeavyCueTime = -9999.0f;
 		float LastJumpscareTime = -9999.0f;
 		float LastRejectedTime = -9999.0f;
+		// Per-player CCTV-glitch throttle (moved off the director-wide member so one survivor's camera
+		// cue no longer suppresses everyone else's for 8s).
+		float LastCCTVGlitchTime = -9999.0f;
 		EBHScareEventType LastCueType = EBHScareEventType::Ambient;
 		FVector LastCueLocation = FVector::ZeroVector;
 		TArray<EBHScareEventType> RecentCueTypes;
@@ -88,5 +91,4 @@ private:
 	float LastCueTime = -9999.0f;
 	float LastPressureCueAttemptTime = -9999.0f;
 	float LastManualScareTime = -9999.0f;
-	float LastCCTVGlitchTime = -9999.0f;
 };

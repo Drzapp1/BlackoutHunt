@@ -240,7 +240,6 @@ bool ABHTrainBonusQuestionTerminal::SubmitAnswer(ABHCharacter* Character, int32 
 	{
 		return false;
 	}
-	LastAnswerTimeByPlayerId.Add(PlayerId, Now);
 
 	// One answer per student per shared question: prevents point-farming and keeps the prompt stable
 	// for everyone else still reading it (we no longer re-roll the shared question on each answer).
@@ -253,18 +252,9 @@ bool ABHTrainBonusQuestionTerminal::SubmitAnswer(ABHCharacter* Character, int32 
 		return false;
 	}
 
-	// Per-player anti-gaming correction hold: after a wrong answer, block THIS student's resubmission
-	// for a few seconds so they read the correction instead of cycling 1-4. Never pins the player, and
-	// per-player so one student's wrong answer cannot hold up the rest of the class.
-	const float CorrectionHoldUntil = CorrectionHoldUntilByPlayerId.FindRef(PlayerId);
-	if (Now < CorrectionHoldUntil)
-	{
-		if (PC)
-		{
-			PC->ClientShowStatusMessage(FString::Printf(TEXT("Read the correction first. Retry in %.0fs."), FMath::Max(0.0f, CorrectionHoldUntil - Now) + 0.5f), 2.0f);
-		}
-		return false;
-	}
+	// Record the per-player rate-limit timestamp only AFTER the reject guards above, so a throttled /
+	// already-answered attempt doesn't advance the 0.35s window and swallow the student's next press.
+	LastAnswerTimeByPlayerId.Add(PlayerId, Now);
 
 	if (!ServerQuestion.Answer.Choices.IsValidIndex(ServerQuestion.Answer.CorrectChoiceIndex))
 	{
@@ -318,9 +308,11 @@ bool ABHTrainBonusQuestionTerminal::SubmitAnswer(ABHCharacter* Character, int32 
 	else
 	{
 		Character->AddFear(4.0f);
-		// Hold this student's resubmission so they read the correction before retrying.
-		CorrectionHoldUntilByPlayerId.Add(PlayerId, Now + 4.0f);
-		FeedbackText = FString::Printf(TEXT("Wrong. No bonus points; pressure rises and mastery dipped. Answer: %s. %s Read the correction before retrying."), *CorrectChoice, *Question.Explanation);
+		// One answer per student per shared question: the one-answer guard above blocks any retry of THIS
+		// question, and the shared prompt only re-rolls at the next stage. So there is nothing to "hold" --
+		// just be honest that the next bonus question arrives at the next stage (the missed one returns via
+		// spaced repetition at the stations).
+		FeedbackText = FString::Printf(TEXT("Wrong. No bonus points; pressure rises and mastery dipped. Answer: %s. %s Read the correction -- a new bonus question loads at the next stage."), *CorrectChoice, *Question.Explanation);
 	}
 	bFeedbackCorrect = bCorrect;
 
@@ -409,11 +401,10 @@ void ABHTrainBonusQuestionTerminal::LoadQuestion(EBHPhysicsTopic PreferredTopic,
 		Question.Answer.NumericAnswer = 0.0f;
 		bCurrentQuestionIsReview = bReviewSelected;
 		// A new shared question is shown: everyone may answer it once. Also clear the per-player throttle
-		// maps so they cannot accumulate stale entries for departed/reconnected PlayerIds over a long host
-		// session — the cooldown / correction-hold only need to be valid for the currently shown question.
+		// map so it cannot accumulate stale entries for departed/reconnected PlayerIds over a long host
+		// session — the cooldown only needs to be valid for the currently shown question.
 		PlayersAnsweredCurrentQuestion.Reset();
 		LastAnswerTimeByPlayerId.Reset();
-		CorrectionHoldUntilByPlayerId.Reset();
 	}
 	RefreshDisplay();
 }

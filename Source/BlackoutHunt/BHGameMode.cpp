@@ -10435,7 +10435,16 @@ void ABHGameMode::UpdatePresenceDirector()
 	}
 
 	const float CurrentPresence = BHGS->PresenceLevel;
-	const float DecayedPresence = FMath::Max(0.0f, CurrentPresence - 10.0f);
+	// Time-based decay: the director runs on a mode-dependent interval (~7s normal, ~4s in revision
+	// intensity-3), so a flat per-call drop bled presence off at different real-world rates. Use a per-second
+	// rate calibrated to the old ~10-per-tick at the 7s normal interval, scaled by the actual elapsed time
+	// (clamped so a long suppressed / non-Hunt gap can't over-decay in one step; still floored by DesiredPresence).
+	const float PresenceNow = GetWorld()->GetTimeSeconds();
+	const float PresenceElapsed = (LastPresenceDirectorTime >= 0.0f)
+		? FMath::Clamp(PresenceNow - LastPresenceDirectorTime, 0.0f, 30.0f)
+		: 7.0f;
+	LastPresenceDirectorTime = PresenceNow;
+	const float DecayedPresence = FMath::Max(0.0f, CurrentPresence - (10.0f / 7.0f) * PresenceElapsed);
 	const float NewPresence = FMath::Clamp(FMath::Max(DesiredPresence, DecayedPresence), 0.0f, 100.0f);
 
 	FString PresenceText = TEXT("The building is listening.");
@@ -13380,6 +13389,17 @@ void ABHGameMode::TickRoundTimer()
 		else if (BHGS->RemainingTime <= 0)
 		{
 			EndRound(EBHRoundPhase::HunterWin);
+		}
+	}
+	else if (BHGS->RoundPhase == EBHRoundPhase::FinalEscape)
+	{
+		// Backstop only. The escape-station manager's expiry timer (or the manager-less fallback timer) and the
+		// per-survivor escape/capture events drive the normal FinalEscape resolution. But if every alive survivor
+		// leaves the in-play set by a path that fires no escape/capture event (e.g. an admin role change),
+		// nothing else here resolves the round until that expiry. Mirror the Hunt tie-break so it ends promptly.
+		if (CountAliveSurvivors() <= 0)
+		{
+			EndRound(CountEscapedSurvivors() > 0 ? EBHRoundPhase::SurvivorsWin : EBHRoundPhase::HunterWin);
 		}
 	}
 }
