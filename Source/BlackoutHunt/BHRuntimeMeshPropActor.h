@@ -19,6 +19,7 @@ public:
 	ABHRuntimeMeshPropActor();
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual void BeginPlay() override;
 
 	void ConfigureProp(
 		const FString& NewMeshAssetPath,

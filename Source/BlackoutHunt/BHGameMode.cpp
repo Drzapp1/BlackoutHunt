@@ -3,6 +3,7 @@
 // Unauthorized copying or distribution is strictly prohibited.
 
 #include "BHGameMode.h"
+#include "HAL/IConsoleManager.h"
 #include "BHAlarmTrap.h"
 #include "BHAtmosphereDirector.h"
 #include "BHAmbientEmitter.h"
@@ -9881,9 +9882,19 @@ void ABHGameMode::SpawnAmbient(const FVector& Location, float Frequency, float V
 	}
 }
 
+// QA / replay reproduction: RoundSeed is logged into telemetry but sourced from FMath::Rand(), so a recorded
+// round can't be re-run. Set bh.RoundSeedOverride to a logged value (>= 0) to force that seed; -1 (default)
+// keeps the per-round randomness. Downstream derivation is already deterministic per-seed.
+static TAutoConsoleVariable<int32> CVarBHRoundSeedOverride(
+	TEXT("bh.RoundSeedOverride"),
+	-1,
+	TEXT("If >= 0, forces the per-round RoundSeed to this value so a recorded round can be reproduced (replay/QA). -1 = random."),
+	ECVF_Default);
+
 void ABHGameMode::PrepareRoundDirector()
 {
-	RoundSeed = FMath::Rand();
+	const int32 RoundSeedOverride = CVarBHRoundSeedOverride.GetValueOnGameThread();
+	RoundSeed = (RoundSeedOverride >= 0) ? RoundSeedOverride : FMath::Rand();
 	FRandomStream Stream(RoundSeed);
 	const EBHRoundModifier ChosenModifier = bPracticeMode ? PracticeRoundModifier : ChooseRoundModifier(Stream);
 	ApplyRoundCCTVVisibility(ChosenModifier);

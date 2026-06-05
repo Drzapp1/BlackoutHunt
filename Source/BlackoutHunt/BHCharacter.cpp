@@ -2581,7 +2581,10 @@ float ABHCharacter::ComputeBlackoutFlashlightFlicker() const
 	const float Stutter = 0.5f + 0.5f * FMath::Sin(T * 51.0f) * FMath::Sin(T * 23.0f + 1.3f);   // [0..1]
 	const float Cutout = FMath::Square(FMath::Max(0.0f, FMath::Sin(T * 9.0f + 0.7f)));            // occasional [0..1]
 	const float Flicker = FMath::Lerp(0.35f, 1.6f, Stutter) * FMath::Lerp(1.0f, 0.12f, Cutout);
-	return FMath::Clamp(Floor * Flicker, 0.02f, 0.55f);
+	// Floor the flicker just under the configured near-dead level, not at a fixed 0.02 -- so a config that
+	// sets BlackoutFlashlightStrengthScale=0 (the beam should fully die in the blackout) is honoured instead
+	// of being clamped back up to 0.02. The default (0.15) still keeps the original ~0.02 minimum.
+	return FMath::Clamp(Floor * Flicker, FMath::Min(Floor, 0.02f), 0.55f);
 }
 
 float ABHCharacter::GetFlashlightTuningValue(FName ParameterName) const

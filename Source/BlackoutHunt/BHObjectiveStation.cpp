@@ -1890,7 +1890,7 @@ void ABHObjectiveStation::ConfigureQuestion()
 			RevisionQuestionsRequired = FMath::Max(1, RevisionQuestionsRequired);
 			FBHRevisionQuestion Selected;
 			const FVector Location = GetActorLocation();
-			const int32 LocationSeed = FMath::Abs(FMath::RoundToInt(Location.X * 0.13f + Location.Y * 0.07f + static_cast<int32>(StationType) * 131.0f + RevisionQuestionStep * 911.0f + FMath::RandRange(0, 100000)));
+			const int32 LocationSeed = FMath::Abs(FMath::RoundToInt(Location.X * 0.13f + Location.Y * 0.07f + static_cast<int32>(StationType) * 131.0f + RevisionQuestionStep * 911.0f + static_cast<float>(FMath::Abs(BHGM->GetRoundSeed()) % 100000)));
 
 			// Spaced repetition: if the targeted participant has a previously missed
 			// question queued, re-ask that exact question before normal selection.

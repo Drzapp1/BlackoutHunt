@@ -167,6 +167,9 @@ public:
 	// slots as more humans join, so a full lobby naturally makes room for late arrivals.
 	void FillBotsToCapacity(ABHPlayerController* RequestingController);
 	bool IsRevisionMode() const;
+	// The per-round master seed (see PrepareRoundDirector). Exposed so other actors can derive
+	// reproducible per-round variety from it (e.g. revision question selection).
+	int32 GetRoundSeed() const { return RoundSeed; }
 	EBHRevisionDifficultyMix GetRevisionDifficultyMix() const;
 	TArray<EBHPhysicsTopic> GetRevisionWeakTopics() const;
 	int32 GetRevisionQuestionTargetPerNode() const;
