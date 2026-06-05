@@ -12949,6 +12949,11 @@ void ABHGameMode::StartHuntPhase()
 	TelemetryCompletedObjectiveKeys.Reset();
 	TelemetrySnapshotKeys.Reset();
 	RecordPlaytestTelemetryMarker(TEXT("round_start"), HunterSpawn, TEXT("hunt"));
+	// Arm the round ticker explicitly (idempotent — SetTimer replaces the handle), like
+	// StartHuntPhaseImmediately, rather than relying on the looping timer armed back in StartPrepPhase. If any
+	// Prep-phase path cleared RoundTimerHandle, the live Hunt would otherwise have no ticker and the
+	// win/loss/time conditions in TickRoundTimer would never evaluate (round hangs).
+	GetWorldTimerManager().SetTimer(RoundTimerHandle, this, &ABHGameMode::TickRoundTimer, 1.0f, true);
 	StartDirectorTimer();
 
 	// First live Hunt of the install: remember it so the extended first-play warmup auto-enables
