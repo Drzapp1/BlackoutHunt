@@ -3231,6 +3231,32 @@ bool SBHMainMenu::SupportsKeyboardFocus() const
 
 FReply SBHMainMenu::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
 {
+	// Easter egg: the Konami code. Tracked on every key without consuming it (so normal menu nav still
+	// works); only the final key is consumed, to reveal a hidden line. Cosmetic; gated by bh.EasterEggs.
+	if (BHAreEasterEggsEnabled())
+	{
+		static const FKey KonamiSequence[] = {
+			EKeys::Up, EKeys::Up, EKeys::Down, EKeys::Down,
+			EKeys::Left, EKeys::Right, EKeys::Left, EKeys::Right,
+			EKeys::B, EKeys::A
+		};
+		const FKey Pressed = InKeyEvent.GetKey();
+		if (Pressed == KonamiSequence[KonamiProgress])
+		{
+			++KonamiProgress;
+			if (KonamiProgress >= static_cast<int32>(UE_ARRAY_COUNT(KonamiSequence)))
+			{
+				KonamiProgress = 0;
+				StatusText = FText::FromString(TEXT("Up Up Down Down Left Right Left Right B A  --  the faculty sees you. no cheats here, just a quiet nod. well played."));
+				return FReply::Handled();
+			}
+		}
+		else
+		{
+			KonamiProgress = (Pressed == KonamiSequence[0]) ? 1 : 0;
+		}
+	}
+
 	if (bShowingStartScreen)
 	{
 		if (InKeyEvent.GetKey() == EKeys::Enter || InKeyEvent.GetKey() == EKeys::SpaceBar)

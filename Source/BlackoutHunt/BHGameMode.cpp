@@ -9909,6 +9909,20 @@ static TAutoConsoleVariable<int32> CVarBHRoundSeedOverride(
 	TEXT("If >= 0, forces the per-round RoundSeed to this value so a recorded round can be reproduced (replay/QA). -1 = random."),
 	ECVF_Default);
 
+// Cosmetic-only easter eggs (locker graffiti, physicist-name nods, a rare calm whisper, a menu code). These
+// never affect scoring, mastery, reports, fairness, or stability. Default on; a teacher can disable them all
+// with `bh.EasterEggs 0`. See Docs/EASTER_EGGS.md.
+static TAutoConsoleVariable<int32> CVarBHEasterEggs(
+	TEXT("bh.EasterEggs"),
+	1,
+	TEXT("1 (default) = harmless cosmetic easter eggs on; 0 = off (for a strictly plain classroom session)."),
+	ECVF_Default);
+
+bool BHAreEasterEggsEnabled()
+{
+	return CVarBHEasterEggs.GetValueOnGameThread() != 0;
+}
+
 void ABHGameMode::PrepareRoundDirector()
 {
 	const int32 RoundSeedOverride = CVarBHRoundSeedOverride.GetValueOnGameThread();
@@ -10527,6 +10541,21 @@ void ABHGameMode::UpdatePresenceDirector()
 			TEXT("The sensor sees a line through the dark.")
 		};
 		PresenceText = SelectPromptLine(SuspicionLines, UE_ARRAY_COUNT(SuspicionLines), PresenceTextSalt);
+	}
+
+	// Easter egg ("a whisper in the static"): only at CALM presence (so it can never replace a real threat
+	// warning set above) and rarely, swap the idle line for a hidden one. Cosmetic; gated by bh.EasterEggs.
+	if (NewPresence < 30.0f && BHAreEasterEggsEnabled() && FMath::FRand() < 0.025f)
+	{
+		static const TCHAR* WhisperLines[] = {
+			TEXT("the building hums at 50 Hz, like the lights."),
+			TEXT("something in the walls is solving for x."),
+			TEXT("the heat trace spells a word, then forgets it."),
+			TEXT("a draft moves through a room with no doors."),
+			TEXT("the sensors blink in threes, then stop."),
+			TEXT("for a moment, the map shows a room that isn't there.")
+		};
+		PresenceText = SelectPromptLine(WhisperLines, UE_ARRAY_COUNT(WhisperLines), PresenceTextSalt + 7);
 	}
 
 	const bool bPulse = NewPresence >= 72.0f || FMath::Abs(NewPresence - CurrentPresence) >= 18.0f;

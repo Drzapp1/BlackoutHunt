@@ -1136,6 +1136,62 @@ void ABHHUD::DrawHUD()
 
 	if (Character)
 	{
+		// Easter egg ("the faculty remembers"): a one-time, client-local nod when the local player's name
+		// matches a famous physicist. Pure cosmetic status line; never affects gameplay. Gated by bh.EasterEggs.
+		if (!bShownPhysicistGreeting && BHAreEasterEggsEnabled())
+		{
+			const ABHPlayerState* GreetPS = Character->GetBHPlayerState();
+			const FString LowerName = GreetPS ? GreetPS->GetPlayerName().ToLower() : FString();
+			if (!LowerName.IsEmpty())
+			{
+				bShownPhysicistGreeting = true; // resolved once the name has replicated; never re-scans
+				FString PhysicistLine;
+				if (LowerName == TEXT("newton")) { PhysicistLine = TEXT("Somewhere, an apple falls in your honour."); }
+				else if (LowerName == TEXT("einstein")) { PhysicistLine = TEXT("Time runs a little strangely around you."); }
+				else if (LowerName == TEXT("curie")) { PhysicistLine = TEXT("You glow faintly in the dark. (It's fine.)"); }
+				else if (LowerName == TEXT("tesla")) { PhysicistLine = TEXT("The lights flicker when you arrive. They like you."); }
+				else if (LowerName == TEXT("feynman")) { PhysicistLine = TEXT("There's plenty of room at the bottom -- of that locker."); }
+				else if (LowerName == TEXT("bohr")) { PhysicistLine = TEXT("Classically, your exact position is uncertain."); }
+				else if (LowerName == TEXT("schrodinger")) { PhysicistLine = TEXT("You are both hidden and found until someone opens the locker."); }
+				else if (LowerName == TEXT("hawking")) { PhysicistLine = TEXT("Even the dark radiates, given enough time."); }
+				else if (LowerName == TEXT("galileo")) { PhysicistLine = TEXT("And yet, the exit moves."); }
+				else if (LowerName == TEXT("faraday")) { PhysicistLine = TEXT("You induce a quiet current of dread in the Teacher."); }
+				else if (LowerName == TEXT("maxwell")) { PhysicistLine = TEXT("A small demon sorts the fast students from the slow."); }
+				else if (LowerName == TEXT("planck")) { PhysicistLine = TEXT("Reality is grainier than it looks. So is this building."); }
+				if (!PhysicistLine.IsEmpty())
+				{
+					if (ABHPlayerController* GreetPC = Cast<ABHPlayerController>(PlayerOwner))
+					{
+						GreetPC->ShowLocalStatusMessage(PhysicistLine, 5.0f);
+					}
+				}
+			}
+		}
+
+		// Easter egg ("scratched into the locker"): while hidden, a faint message someone left in the wood.
+		// Stable per-locker (hashed from the spot you're hiding in) so each locker keeps its own "graffiti".
+		// Cosmetic; visible only to you, only while concealed. Gated by bh.EasterEggs.
+		if (Character->IsHiddenInLocker() && BHAreEasterEggsEnabled())
+		{
+			static const TCHAR* LockerScratches[] = {
+				TEXT("scratched here: \"g = 9.81. it still pulls, even down here.\""),
+				TEXT("carved deep: \"sound needs a medium. screams travel anyway.\""),
+				TEXT("a faded note: \"the quieter you are, the louder it gets.\""),
+				TEXT("etched small: \"F = ma. fear has mass too.\""),
+				TEXT("shaky letters: \"I counted to 96. don't.\""),
+				TEXT("someone wrote: \"revise. it's the only way out.\""),
+				TEXT("a student carved: \"the train always comes. eventually.\""),
+				TEXT("barely visible: \"light has no mass, but it still leaves.\""),
+				TEXT("cut with a key: \"the answer is 42. find the question.\""),
+				TEXT("tiny letters: \"Schrodinger hid here. or did he?\""),
+				TEXT("worn smooth: \"energy is conserved. courage isn't.\""),
+				TEXT("fresh marks: \"you are not the first to wait in the dark.\"")
+			};
+			const FVector HideSpot = Character->GetActorLocation();
+			const int32 ScratchIndex = FMath::Abs(FMath::FloorToInt(HideSpot.X) * 73 + FMath::FloorToInt(HideSpot.Y) * 31) % static_cast<int32>(UE_ARRAY_COUNT(LockerScratches));
+			DrawWrappedHudText(LockerScratches[ScratchIndex], Canvas->ClipX * 0.5f - 230.0f, Canvas->ClipY * 0.60f, 460.0f, FLinearColor(0.62f, 0.58f, 0.52f, 0.42f), GEngine->GetSmallFont(), 0.52f, 12.0f, 2);
+		}
+
 		// Probe teacher proximity once -- it feeds both the vitals meter and the threat arrow,
 		// so it stays outside the per-element visibility gates below.
 		const FBHTeacherProximityReadout TeacherProximity = FindTeacherProximity(GetWorld(), Character);

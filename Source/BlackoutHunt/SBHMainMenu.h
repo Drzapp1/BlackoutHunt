@@ -368,6 +368,8 @@ private:
 	EBHMainMenuTab ActiveMenuTab = EBHMainMenuTab::Play;
 	bool bShowingStartScreen = false;
 	bool bShowStartCredentials = false;
+	// Progress through the Konami code (easter egg, cosmetic). See Docs/EASTER_EGGS.md.
+	int32 KonamiProgress = 0;
 	// When the local player is the listen-server host, leaving ends the whole class session,
 	// so the first LEAVE press only arms a confirm prompt; the second press actually leaves.
 	bool bLeaveConfirmPending = false;

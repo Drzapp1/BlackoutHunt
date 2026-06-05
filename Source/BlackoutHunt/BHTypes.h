@@ -77,6 +77,11 @@ enum class EBHWarmupStep : uint8
 // un-cast `A | B` can't silently fall back to int). Values above are powers of two.
 ENUM_CLASS_FLAGS(EBHWarmupStep);
 
+// Are the cosmetic-only easter eggs enabled? Backed by the `bh.EasterEggs` cvar (default on); defined in
+// BHGameMode.cpp. Easter eggs never touch scoring, mastery, reports, fairness, or stability -- a teacher can
+// set `bh.EasterEggs 0` to turn them all off. See Docs/EASTER_EGGS.md.
+bool BHAreEasterEggsEnabled();
+
 // The warmup steps expected for a role. Drives the checklist total and the "you're ready" signal.
 // Returns 0 for roles with no checklist (Spectator/Unassigned).
 inline uint8 BHWarmupExpectedMask(EBHPlayerRole Role)
