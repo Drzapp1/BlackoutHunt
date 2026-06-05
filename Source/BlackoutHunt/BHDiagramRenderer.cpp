@@ -291,16 +291,19 @@ void FBHDiagramRenderer::GetClickableRegions(
 			TEXT("radio"), TEXT("microwave"), TEXT("infrared"), TEXT("visible"),
 			TEXT("ultraviolet"), TEXT("x-ray"), TEXT("gamma")
 		};
+		// Derive the band count from the table so this loop and the segment divisor can't drift past
+		// the array if the spectrum table is ever re-sized (the Draw() path mirrors this layout).
+		const int32 NumBands = UE_ARRAY_COUNT(BandNames);
 		const float MidY = Y + H * 0.52f;
 		const float Left = X + 26.0f * S;
 		const float Right = X + W - 26.0f * S;
-		const float SegmentW = (Right - Left) / 7.0f;
+		const float SegmentW = (Right - Left) / static_cast<float>(NumBands);
 		if (SegmentW <= 1.0f)
 		{
 			return;
 		}
 		const float SegInner = SegmentW - 3.0f * S;
-		for (int32 Index = 0; Index < 7; ++Index)
+		for (int32 Index = 0; Index < NumBands; ++Index)
 		{
 			const float SX = Left + SegmentW * Index;
 			FBHDiagramClickRegion Region;
@@ -704,8 +707,12 @@ void FBHDiagramRenderer::Draw(
 			FLinearColor(0.46f, 0.64f, 0.92f, 1.0f), // x-ray - light blue
 			FLinearColor(0.80f, 0.82f, 0.96f, 1.0f)  // gamma - white-violet
 		};
-		const float SegmentW = (Right - Left) / 7.0f;
-		for (int32 Index = 0; Index < 7; ++Index)
+		// Labels[] and BandCols[] must stay the same length; drive the loop and divisor from the table
+		// so a future edit to one can't read past the other (the click-region builder uses 7 bands too).
+		static_assert(UE_ARRAY_COUNT(Labels) == UE_ARRAY_COUNT(BandCols), "EMSpectrum label/colour tables must match");
+		const int32 NumBands = UE_ARRAY_COUNT(BandCols);
+		const float SegmentW = (Right - Left) / static_cast<float>(NumBands);
+		for (int32 Index = 0; Index < NumBands; ++Index)
 		{
 			const float SX = Left + SegmentW * Index;
 			const float SegInner = SegmentW - 3.0f * S;

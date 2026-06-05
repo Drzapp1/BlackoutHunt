@@ -1534,6 +1534,16 @@ void ABHGameMode::NotifySurvivorCaptured(ABHCharacter* Survivor, ABHCharacter* C
 		return;
 	}
 
+	// Defense in depth: the live capture path below penalises points, credits the hunter, and MarkCaptured()s
+	// the survivor -- all wrong if they are already out of play (a survivor who reached the exit being
+	// "captured" here would lose their escape). Every current caller only fires for an in-play survivor;
+	// guard so a future caller can't double-process one. (Practice/test/infection paths above handle their
+	// own non-alive cases and have already returned.)
+	if (!SurvivorPS || !SurvivorPS->IsAliveSurvivor())
+	{
+		return;
+	}
+
 	const bool bCanReturnAsFakeHunter = BHGS && BHGS->RoundPhase == EBHRoundPhase::Hunt && SurvivorPS && SurvivorPS->IsAliveSurvivor() && SurvivorController;
 	const FVector CaptureLocation = Survivor->GetActorLocation();
 	const int32 LostQuestionPoints = SurvivorPS ? SurvivorPS->ApplyCaughtQuestionPointPenalty(0.25f) : 0;
@@ -1631,6 +1641,15 @@ void ABHGameMode::NotifySurvivorEscaped(ABHCharacter* Survivor)
 			BHGS->SetExitUnlocked(bTestMode);
 			BHGS->SetPresenceState(FMath::Max(BHGS->PresenceLevel, 64.0f), bTestMode ? TEXT("Test escape complete. Exit remains open.") : TEXT("Practice escape complete. Resetting the exit."), BHGS->PresencePulse + 1);
 		}
+		return;
+	}
+
+	// Defense in depth: MarkEscaped() + the win check below assume an in-play survivor. Every current caller
+	// only fires for one, but guard so a future caller can't re-escape someone already out of play (which
+	// would re-run the round-end check). The practice/test path above handles its own case and returned.
+	const ABHPlayerState* EscapingPS = Survivor->GetPlayerState<ABHPlayerState>();
+	if (!EscapingPS || !EscapingPS->IsAliveSurvivor())
+	{
 		return;
 	}
 
@@ -13751,6 +13770,9 @@ FTransform ABHGameMode::GetSpawnTransformFor(AController* Controller) const
 	{
 		PlayerIndex = GameState->PlayerArray.IndexOfByKey(BHPS);
 	}
+	// IndexOfByKey returns INDEX_NONE (-1) in a brief login/travel window before the player is in the
+	// array; a negative index yields a wrong spawn offset (and a negative modulo below), so floor to 0.
+	PlayerIndex = FMath::Max(0, PlayerIndex);
 
 	if (BHPS && (BHPS->PlayerRole == EBHPlayerRole::Hunter || BHPS->PlayerRole == EBHPlayerRole::FakeHunter))
 	{

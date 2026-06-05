@@ -479,6 +479,24 @@ namespace
 		return AtomicSaveStringToFile(JsonObjectToString(Root), Path);
 	}
 
+	// Constant-time compare of two equal-length ASCII strings (used for the credential MAC). FString's
+	// operator!= short-circuits on the first differing byte, which leaks a byte-by-byte timing oracle;
+	// the loop below always visits every byte. Marginal here (the MAC key is machine-bound and any
+	// attacker is already local), but cheap to do right.
+	bool BHConstantTimeStringEquals(const FString& A, const FString& B)
+	{
+		if (A.Len() != B.Len())
+		{
+			return false;
+		}
+		uint32 Accumulator = 0;
+		for (int32 Index = 0; Index < A.Len(); ++Index)
+		{
+			Accumulator |= static_cast<uint32>(A[Index] ^ B[Index]);
+		}
+		return Accumulator == 0;
+	}
+
 	// Parse a single encrypted credential file: decode, verify the MAC, decrypt, and apply the record.
 	// Returns false if the file is missing/unreadable or fails any integrity/decrypt step.
 	bool TryLoadEncryptedCredentialFile(const FString& Path, FBHLocalCredentialRecord& OutRecord)
@@ -503,7 +521,7 @@ namespace
 		}
 
 		const FString ExpectedMac = JsonString(Root, TEXT("mac")).ToLower();
-		if (ExpectedMac.IsEmpty() || ExpectedMac != MakePayloadMac(Iv, Ciphertext))
+		if (ExpectedMac.IsEmpty() || !BHConstantTimeStringEquals(ExpectedMac, MakePayloadMac(Iv, Ciphertext)))
 		{
 			return false;
 		}
@@ -579,6 +597,14 @@ void UBHAccountSubsystem::LoginMicrosoft()
 
 void UBHAccountSubsystem::AccountPollLogin()
 {
+	// Stop an abandoned sign-in from polling indefinitely (the backend can keep replying "pending").
+	if (LoginPollDeadlineSeconds > 0.0 && FPlatformTime::Seconds() > LoginPollDeadlineSeconds)
+	{
+		StopLoginPolling();
+		SetLastAccountMessage(TEXT("Sign-in timed out. Re-open the login to try again."));
+		return;
+	}
+
 	FString Message;
 	PollProviderLogin(Message);
 }
@@ -1012,7 +1038,12 @@ void UBHAccountSubsystem::RecordRoundResult(EBHPlayerRole Role, EBHPlayerLifeSta
 		return;
 	}
 
-	++Progress.RoundsPlayed;
+	// Saturating increments: overflow is unreachable (~7.8M rounds) but mirror the BHSaturatingAddPoints
+	// posture used for in-round points so a wrap can never flip a lifetime stat negative.
+	if (Progress.RoundsPlayed < MAX_int32)
+	{
+		++Progress.RoundsPlayed;
+	}
 	int32 EarnedXP = 25;
 
 	if (Role == EBHPlayerRole::Hunter && ResultPhase == EBHRoundPhase::HunterWin)
@@ -1032,7 +1063,7 @@ void UBHAccountSubsystem::RecordRoundResult(EBHPlayerRole Role, EBHPlayerLifeSta
 		EarnedXP += 50;
 	}
 
-	Progress.XP += EarnedXP;
+	Progress.XP = (EarnedXP > 0 && Progress.XP > MAX_int32 - EarnedXP) ? MAX_int32 : Progress.XP + EarnedXP;
 	Progress.LastUpdatedUtc = UtcNowString();
 	SanitizeProgressCosmetics();
 	SaveProgress();
@@ -1234,6 +1265,9 @@ void UBHAccountSubsystem::StartLoginPolling()
 {
 	const UBHAccountSettings* Settings = GetDefault<UBHAccountSettings>();
 	const float PollSeconds = Settings ? FMath::Max(1.0f, Settings->LoginPollSeconds) : 2.0f;
+	// Give up after ~5 minutes of "pending" so an abandoned browser sign-in stops polling the backend
+	// forever. Comfortably longer than any real OAuth completion; the user can re-launch login to retry.
+	LoginPollDeadlineSeconds = FPlatformTime::Seconds() + 300.0;
 	UWorld* World = GetGameInstance() ? GetGameInstance()->GetWorld() : nullptr;
 	if (World)
 	{
@@ -1252,6 +1286,7 @@ void UBHAccountSubsystem::StopLoginPolling()
 	bLoginPending = false;
 	bLoginStartRequestInFlight = false;
 	bLoginRequestInFlight = false;
+	LoginPollDeadlineSeconds = 0.0;
 	PendingProvider.Reset();
 }
 

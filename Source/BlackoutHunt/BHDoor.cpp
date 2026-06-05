@@ -14,6 +14,9 @@ namespace
 {
 constexpr float BHDoorSlamTeacherInterruptRange = 380.0f;
 constexpr float BHDoorSlamTeacherRecoverySeconds = 1.20f;
+// The open pose is the closed pose yawed by this; BeginPlay backs it out of the replicated spawn
+// transform and ApplyDoorState adds it back. Shared so the two can't drift.
+constexpr float BHDoorOpenYawDegrees = 90.0f;
 }
 
 ABHDoor::ABHDoor()
@@ -31,7 +34,7 @@ void ABHDoor::BeginPlay()
 	// connected), so back out the open offset to recover the true closed pose. OnRep_Open is suppressed until
 	// bClosedRotationCaptured is set, so this reads the clean spawn transform rather than a value a premature
 	// OnRep wrote from the zero-default baseline.
-	ClosedRotation = bOpen ? GetActorRotation() - FRotator(0.0f, 90.0f, 0.0f) : GetActorRotation();
+	ClosedRotation = bOpen ? GetActorRotation() - FRotator(0.0f, BHDoorOpenYawDegrees, 0.0f) : GetActorRotation();
 	bClosedRotationCaptured = true;
 	ApplyDoorState();
 }
@@ -130,5 +133,5 @@ void ABHDoor::OnRep_Open()
 
 void ABHDoor::ApplyDoorState()
 {
-	SetActorRotation(bOpen ? ClosedRotation + FRotator(0.0f, 90.0f, 0.0f) : ClosedRotation);
+	SetActorRotation(bOpen ? ClosedRotation + FRotator(0.0f, BHDoorOpenYawDegrees, 0.0f) : ClosedRotation);
 }

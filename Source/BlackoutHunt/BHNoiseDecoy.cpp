@@ -137,3 +137,15 @@ void ABHNoiseDecoy::Tick(float DeltaSeconds)
 		BHPropVisuals::TintPart(SignalLight, FLinearColor(0.22f, 0.85f, 1.0f, 1.0f), 1.4f + Pulse);
 	}
 }
+
+void ABHNoiseDecoy::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	// Defensive: actor destruction auto-clears actor-bound timers, but clear explicitly so an early
+	// EndPlay (level transition / manual destroy before the lifespan elapses) can never leave the
+	// repeating noise timer pinging the perception system.
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(NoiseTimerHandle);
+	}
+	Super::EndPlay(EndPlayReason);
+}

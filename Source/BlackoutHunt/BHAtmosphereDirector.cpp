@@ -376,7 +376,10 @@ ABHCharacter* UBHAtmosphereDirector::ResolveTarget(ABHCharacter* PreferredTarget
 	if (PreferredTarget)
 	{
 		const ABHPlayerState* PreferredPS = PreferredTarget->GetPlayerState<ABHPlayerState>();
-		if (!PreferredPS || PreferredPS->LifeState == EBHPlayerLifeState::Alive)
+		// Align with the scan branch below: only return the preferred target if it is itself a valid,
+		// non-hidden, alive survivor. A null-PS or non-survivor preferred target now falls through to
+		// pick a real survivor (or nullptr) instead of being scared.
+		if (PreferredPS && PreferredPS->IsAliveSurvivor() && !PreferredTarget->IsHiddenInLocker())
 		{
 			return PreferredTarget;
 		}

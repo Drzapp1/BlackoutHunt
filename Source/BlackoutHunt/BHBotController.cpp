@@ -2208,6 +2208,11 @@ FVector ABHBotController::BuildAmbushLocation(const FVector& SeenLocation, const
 
 void ABHBotController::HandleSurvivorThreat(ABHCharacter* BotCharacter, ABHCharacter* Threat)
 {
+	if (!BotCharacter || !Threat)
+	{
+		return;
+	}
+
 	if (ABHLocker* Locker = FindNearestLocker(true, false, 950.0f))
 	{
 		if (IsCloseTo(Locker, 260.0f))

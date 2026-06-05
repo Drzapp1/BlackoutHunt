@@ -35,6 +35,11 @@ ABHExitGate::ABHExitGate()
 void ABHExitGate::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	// Cosmetic only (status-light pulse + dynamic-material tint); no viewers on a dedicated server.
+	if (GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
 	ApplyExitGateVisuals();
 }
 

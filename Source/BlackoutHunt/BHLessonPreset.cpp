@@ -927,7 +927,10 @@ FBHLessonPreset FBHLessonPresetStore::ValidatePreset(const FBHLessonPreset& Pres
 		CleanPreset.MapName = CleanMapName;
 	}
 
-	const int32 CleanBotCount = FMath::Clamp(CleanPreset.BotCount, 0, 11);
+	// Derive the bot cap from the class size (MaxPlayers - 1) rather than a hardcoded 11, so it tracks
+	// UBHGameSettings::MaxPlayers if that ever changes from the default 12 (matches the GameMode cap).
+	const int32 MaxBots = FMath::Max(0, UBHGameSettings::GetClampedClassMaxPlayers() - 1);
+	const int32 CleanBotCount = FMath::Clamp(CleanPreset.BotCount, 0, MaxBots);
 	if (CleanBotCount != CleanPreset.BotCount)
 	{
 		bAdjusted = true;

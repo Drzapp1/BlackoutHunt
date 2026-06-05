@@ -181,7 +181,14 @@ int32 UBHGameSettings::GetClampedClassMaxPlayers()
 
 void UBHGameSettings::AppendMaxPlayersOption(FString& Options)
 {
-	if (!Options.Contains(TEXT("MaxPlayers=")))
+	// Boundary-aware check: a bare Contains("MaxPlayers=") would also match a colliding option key
+	// such as "?GameMaxPlayers=" and silently skip the append, re-introducing the engine's default
+	// 16-player cap this function exists to lift. Require the option to begin at a URL delimiter.
+	const bool bHasMaxPlayers =
+		Options.StartsWith(TEXT("MaxPlayers="), ESearchCase::IgnoreCase) ||
+		Options.Contains(TEXT("?MaxPlayers="), ESearchCase::IgnoreCase) ||
+		Options.Contains(TEXT("&MaxPlayers="), ESearchCase::IgnoreCase);
+	if (!bHasMaxPlayers)
 	{
 		Options += FString::Printf(TEXT("?MaxPlayers=%d"), GetClampedClassMaxPlayers());
 	}

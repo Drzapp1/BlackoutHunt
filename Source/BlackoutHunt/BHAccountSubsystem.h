@@ -189,4 +189,8 @@ private:
 	bool bLoginRequestInFlight = false;
 	bool bSyncRequestInFlight = false;
 	FTimerHandle LoginPollTimerHandle;
+
+	// Wall-clock deadline (FPlatformTime::Seconds) after which the repeating login poll gives up, so an
+	// abandoned OAuth flow that keeps returning "pending" can't poll the backend forever in the background.
+	double LoginPollDeadlineSeconds = 0.0;
 };
