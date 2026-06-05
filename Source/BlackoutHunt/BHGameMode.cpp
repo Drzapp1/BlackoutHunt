@@ -13329,7 +13329,27 @@ void ABHGameMode::TickRoundTimer()
 			// Evacuate-together: everyone still inside has either escaped or been caught. Survivors win only
 			// if at least one student made it out to the exit; if every survivor was captured, the hunters
 			// win. (The first survivor to escape no longer ends the round for the whole class.)
-			EndRound(CountEscapedSurvivors() > 0 ? EBHRoundPhase::SurvivorsWin : EBHRoundPhase::HunterWin);
+			if (CountEscapedSurvivors() > 0)
+			{
+				EndRound(EBHRoundPhase::SurvivorsWin);
+			}
+			else
+			{
+				// Don't hand the Teacher an instant win while dropped survivor(s) are still inside their
+				// reconnect grace window — a transient classroom Wi-Fi blip can knock out the last survivors
+				// together. Logout already defers this, but TickRoundTimer was overriding that defer ~1s later
+				// (it re-checked CountAliveSurvivors with no grace guard), defeating it. Mirror the Logout
+				// guard here; the Hunt RemainingTime timeout is the no-hang backstop, so this only ever delays
+				// a HunterWin (never prevents a legitimate one, and never overruns the round timer).
+				const UBHGameSettings* GraceSettings = GetDefault<UBHGameSettings>();
+				const float GraceSeconds = GraceSettings ? GraceSettings->ReconnectGraceSeconds : 0.0f;
+				const UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>();
+				const int32 PendingSurvivors = (BHGI && GraceSeconds > 0.0f) ? BHGI->CountReconnectableAliveSurvivors(GraceSeconds) : 0;
+				if (PendingSurvivors <= 0 || BHGS->RemainingTime <= 0)
+				{
+					EndRound(EBHRoundPhase::HunterWin);
+				}
+			}
 		}
 		else if (CountAliveHunters() <= 0)
 		{
