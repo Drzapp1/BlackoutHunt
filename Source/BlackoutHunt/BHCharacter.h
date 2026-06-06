@@ -242,6 +242,12 @@ public:
 	bool IsQuestionCursorActive() const { return bQuestionCursorActive; }
 	int32 GetQuestionDraggedPiece() const { return QuestionDraggedPiece; }
 	const TArray<int32>& GetQuestionArrangement() const { return QuestionArrangement; }
+
+	// Easter-egg hook (PUBLIC so external interactables can call it -- e.g. the train-roof hatch): the server
+	// tells the owning client to unlock a (cosmetic) achievement and toast it. Cosmetic only; account progress
+	// is client-local, so the server can't write it directly -- it asks the owning client to.
+	UFUNCTION(Client, Reliable)
+	void ClientGrantAchievement(FName AchievementId, const FString& ToastMessage);
 protected:
 	void UsePowerupSlotOne();
 	void UsePowerupSlotTwo();

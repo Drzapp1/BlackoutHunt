@@ -54,6 +54,7 @@
 #include "BHTrainDisplayActor.h"
 #include "BHTrainDoor.h"
 #include "BHTrainIntermissionManager.h"
+#include "BHTrainRoofHatch.h"
 #include "BHTrainTunnelMotionActor.h"
 #include "Components/BoxComponent.h"
 #include "Components/BrushComponent.h"
@@ -159,12 +160,14 @@ FLinearColor AvatarColorForIndex(int32 Index)
 		FLinearColor(0.84f, 0.75f, 0.24f, 1.0f),
 		FLinearColor(0.28f, 0.68f, 0.62f, 1.0f),
 		FLinearColor(0.76f, 0.76f, 0.80f, 1.0f),
-		// Hidden prestige tints (indices 8..11) -- must match the ShirtColor entries in BHCosmeticUnlocks.cpp
+		// Hidden prestige tints (indices 8..13) -- must match the ShirtColor entries in BHCosmeticUnlocks.cpp
 		// and the identical palettes in BHCharacter/BHPlayerController.
 		FLinearColor(0.86f, 0.90f, 0.82f, 1.0f), // Chalk
 		FLinearColor(0.95f, 0.22f, 0.62f, 1.0f), // Arcade
 		FLinearColor(0.18f, 0.92f, 0.45f, 1.0f), // Exit Sign
-		FLinearColor(0.42f, 0.86f, 1.00f, 1.0f)  // Afterimage
+		FLinearColor(0.42f, 0.86f, 1.00f, 1.0f), // Afterimage
+		FLinearColor(0.64f, 0.44f, 0.22f, 1.0f), // Veteran
+		FLinearColor(0.40f, 0.12f, 0.20f, 1.0f)  // Faculty
 	};
 
 	return Palette[FMath::Abs(Index) % UE_ARRAY_COUNT(Palette)];
@@ -8130,6 +8133,32 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 		{
 			Activity->ConfigureActivity(Spec.Type, RoundSeed + RuntimeStageIndex * 101 + Spec.SeedOffset);
 		}
+	}
+
+	// =====================================================================================================
+	// EASTER EGG: a hidden "maintenance hatch" in the front cab corner lifts a passenger up onto the TRAIN
+	// ROOF (the ceiling slab top, ~z316, is already a walkable collidable surface). Cosmetic only -- the
+	// intermission advances on its own timer, so a roof visit never blocks boarding or touches scoring. It
+	// awards the "roof_rider" achievement (-> the Top Hat headwear). See Docs/EASTER_EGGS.md.
+	// =====================================================================================================
+	if (BHAreEasterEggsEnabled())
+	{
+		const FVector HatchLocation(-3600.0f, -282.0f, 110.0f);
+		if (ABHTrainRoofHatch* RoofHatch = GetWorld()->SpawnActor<ABHTrainRoofHatch>(HatchLocation, FRotator::ZeroRotator))
+		{
+			// Lift straight up above the hatch onto the roof slab top (z316), reusing the surface->capsule
+			// offset spawns use (floor top z2 -> survivor spawn z124, i.e. +122).
+			RoofHatch->ConfigureHatch(FVector(HatchLocation.X, 0.0f, 438.0f));
+		}
+
+		// Low safety rails around the roof walkway (the slab top spans y[-310,310], x[-3750,3750]) so a curious
+		// passenger doesn't stroll off into the tunnel trench. They sit OUTSIDE the tube, so they're never seen
+		// from the interior.
+		const FLinearColor RoofRailTint(0.10f, 0.11f, 0.12f, 1.0f);
+		SpawnBlock(FVector(0.0f, 300.0f, 346.0f), FVector(TubeLen, 0.08f, 0.60f), RoofRailTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(0.0f, -300.0f, 346.0f), FVector(TubeLen, 0.08f, 0.60f), RoofRailTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(TubeMaxX - 30.0f, 0.0f, 346.0f), FVector(0.08f, 6.0f, 0.60f), RoofRailTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(TubeMinX + 30.0f, 0.0f, 346.0f), FVector(0.08f, 6.0f, 0.60f), RoofRailTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
 	}
 
 	SpawnBlock(FVector(3300.0f, -760.0f, CenterZForBlockTop(0.0f, 0.22f)), FVector(20.0f, 6.0f, 0.22f), PlatformTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);

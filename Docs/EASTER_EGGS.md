@@ -53,6 +53,15 @@ You get a hidden thank-you line in the menu status — a quiet nod to anyone who
 it unlocks nothing and changes no settings. Normal menu navigation still works while you enter it. *(`SBHMainMenu.cpp`,
 `OnKeyDown`.)*
 
+### 5. The train roof
+**How to find it:** during a **subway intermission** (the between-stages ride), go exploring in the **front cab
+corner** — tucked against the wall is a small, dark **maintenance hatch**. Look at it and interact, and you're
+lifted **out onto the roof of the train**: a low-railed walkway above the carriages with the tunnel rushing past.
+It's a quiet vantage to enjoy while the timer runs (the rails are there so you don't wander off into the trench).
+First time up earns the **Roof Rider** achievement (→ the **Top Hat** headwear). Cosmetic only: the intermission
+advances on its **own timer**, so a roof visit never blocks boarding, changes scoring, or affects the round.
+*(`BHTrainRoofHatch.cpp`, spawned in `BuildTrainIntermissionLevel`; gated by `bh.EasterEggs`.)*
+
 ## Cosmetic achievements & hidden tints
 
 Some rewards are gated behind **achievements** rather than raw XP — earning one unlocks a hidden avatar
@@ -68,12 +77,17 @@ play. None affect scoring, fairness, or stability.
 | **Perfect Chain** | Nail the momentum tech below (frame-perfect). | **Afterimage** tint + **Spacesuit** outfit + 80 XP |
 | **Last One Standing** | Win a Hunt as a survivor. | **Suit** outfit + 50 XP |
 | **Spelunker** | Hide in a locker. | 20 XP |
+| **Roof Rider** | Find the hidden hatch and get onto the train roof (egg #5). | **Top Hat** headwear + 70 XP |
+| **Veteran** | Play 25 rounds. | **Veteran** tint + 60 XP |
+| **Top of the Class** | Win a Hunt as the Teacher (Hunter). | **Faculty** tint + 50 XP |
 
-The four hidden **tints** (Chalk / Arcade / Exit Sign / Afterimage) appear as locked swatches in the **Shirt**
-colour picker until earned, then become selectable like any colour and persist. Their exact colour shows on
-**nameplates, the lobby roster, and map blips**; on the 8-material Quaternius body mesh they map to the
-nearest base material (a tint needs its own body material to render exactly on the 3D model — easy to add
-later with the Quaternius art). Two **prestige outfits** are also achievement-locked rather than XP-gated:
+The six hidden **tints** (Chalk / Arcade / Exit Sign / Afterimage / Veteran / Faculty) appear as locked swatches
+in the **Shirt** colour picker until earned, then become selectable like any colour and persist. Their exact
+colour shows on **nameplates, the lobby roster, and map blips**; on the 8-material Quaternius body mesh they map
+to the nearest base material (a tint needs its own body material to render exactly on the 3D model — easy to add
+later with the Quaternius art). There is also a procedural **Top Hat** in the **Headwear** picker (a tall crown +
+brim with a hatband in your shirt tint), unlocked by **Roof Rider**. Two **prestige outfits** are also
+achievement-locked rather than XP-gated:
 **Suit** (Last One Standing) and **Spacesuit** (Perfect Chain) — they sit locked in the outfit picker until
 earned. Achievements live in a small registry in `BHAccountSubsystem.cpp`; `UnlockAchievement()` is idempotent
 and toasts on first earn.
@@ -99,8 +113,8 @@ normal cooldown message (no penalty). You can chain up to **3** links before a r
 ## Notes for the owner
 
 - Toggles: `bh.EasterEggs` (the four cosmetic eggs) and `bh.MomentumTech` (the movement tech) are independent.
-  Achievements aren't separately toggle-gated, but the two tied to easter eggs (Honorary Faculty, Codebreaker)
-  can only be earned while `bh.EasterEggs` is on, since their trigger *is* the egg.
+  Achievements aren't separately toggle-gated, but the three tied to easter eggs (Honorary Faculty, Codebreaker,
+  Roof Rider) can only be earned while `bh.EasterEggs` is on, since their trigger *is* the egg.
 - The physicist list and the locker/whisper messages are plain string tables in the source — easy to add to,
   reword, or trim to taste.
 - If you ever want an egg that *does* affect play (a cosmetic unlock, a hidden avatar tint, a secret room in an

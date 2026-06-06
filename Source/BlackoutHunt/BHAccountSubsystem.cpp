@@ -82,7 +82,11 @@ namespace
 		{ TEXT("escape_artist"),    TEXT("Escape Artist"),     TEXT("Reached the exit and made it out."),      60 },
 		{ TEXT("survivor"),         TEXT("Last One Standing"), TEXT("Won a Hunt as a survivor."),              50 },
 		{ TEXT("spelunker"),        TEXT("Spelunker"),         TEXT("Hid in a locker. The dark is patient."),  20 },
-		{ TEXT("perfect_chain"),    TEXT("Perfect Chain"),     TEXT("Nailed a frame-perfect momentum chain."), 80 }
+		{ TEXT("perfect_chain"),    TEXT("Perfect Chain"),     TEXT("Nailed a frame-perfect momentum chain."), 80 },
+		// Newer achievements (rewards: Veteran / Faculty tints + the Top Hat headwear). See Docs/EASTER_EGGS.md.
+		{ TEXT("veteran"),          TEXT("Veteran"),           TEXT("Played 25 rounds. A familiar face."),     60 },
+		{ TEXT("top_of_the_class"), TEXT("Top of the Class"),  TEXT("Won a Hunt as the Teacher."),             50 },
+		{ TEXT("roof_rider"),       TEXT("Roof Rider"),        TEXT("Found a way onto the train roof."),       70 }
 	};
 	const FBHAchievementDef* BHFindAchievement(FName Id)
 	{
@@ -1110,6 +1114,16 @@ void UBHAccountSubsystem::RecordRoundResult(EBHPlayerRole Role, EBHPlayerLifeSta
 	if (Role == EBHPlayerRole::Survivor && ResultPhase == EBHRoundPhase::SurvivorsWin)
 	{
 		UnlockAchievement(FName(TEXT("survivor")));
+	}
+	// Teacher (Hunter) win -> the Faculty tint.
+	if (Role == EBHPlayerRole::Hunter && ResultPhase == EBHRoundPhase::HunterWin)
+	{
+		UnlockAchievement(FName(TEXT("top_of_the_class")));
+	}
+	// Milestone: 25 rounds played -> the Veteran tint (idempotent, so it only toasts once at round 25).
+	if (Progress.RoundsPlayed >= 25)
+	{
+		UnlockAchievement(FName(TEXT("veteran")));
 	}
 }
 

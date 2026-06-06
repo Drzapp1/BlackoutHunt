@@ -750,12 +750,14 @@ FLinearColor BHAvatarPaletteColor(int32 Index)
 		FLinearColor(0.84f, 0.75f, 0.24f, 1.0f),
 		FLinearColor(0.28f, 0.68f, 0.62f, 1.0f),
 		FLinearColor(0.76f, 0.76f, 0.80f, 1.0f),
-		// Hidden prestige tints (indices 8..11) -- must match the ShirtColor entries in BHCosmeticUnlocks.cpp
+		// Hidden prestige tints (indices 8..13) -- must match the ShirtColor entries in BHCosmeticUnlocks.cpp
 		// and the identical palettes in BHGameMode/BHCharacter.
 		FLinearColor(0.86f, 0.90f, 0.82f, 1.0f), // Chalk
 		FLinearColor(0.95f, 0.22f, 0.62f, 1.0f), // Arcade
 		FLinearColor(0.18f, 0.92f, 0.45f, 1.0f), // Exit Sign
-		FLinearColor(0.42f, 0.86f, 1.00f, 1.0f)  // Afterimage
+		FLinearColor(0.42f, 0.86f, 1.00f, 1.0f), // Afterimage
+		FLinearColor(0.64f, 0.44f, 0.22f, 1.0f), // Veteran
+		FLinearColor(0.40f, 0.12f, 0.20f, 1.0f)  // Faculty
 	};
 
 	return Palette[FMath::Abs(Index) % UE_ARRAY_COUNT(Palette)];

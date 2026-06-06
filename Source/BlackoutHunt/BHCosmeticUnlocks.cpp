@@ -40,18 +40,22 @@ const FBHCosmeticUnlockDefinition* BHCosmeticDefinitions(EBHCosmeticCategory Cat
 		// Hidden "prestige" tints -- unlocked by ACHIEVEMENTS, not XP (see Docs/EASTER_EGGS.md). Their exact
 		// colour shows on nameplates / roster / blips; on the 8-material Quaternius body it maps to the nearest
 		// base material until matching body materials are authored. This index order MUST match the palette
-		// tables in BHGameMode/BHCharacter/BHPlayerController (entries 8..11).
+		// tables in BHGameMode/BHCharacter/BHPlayerController (entries 8..13).
 		{ TEXT("Chalk"), 0, TEXT("honorary_faculty") },
 		{ TEXT("Arcade"), 0, TEXT("codebreaker") },
 		{ TEXT("Exit Sign"), 0, TEXT("escape_artist") },
-		{ TEXT("Afterimage"), 0, TEXT("perfect_chain") }
+		{ TEXT("Afterimage"), 0, TEXT("perfect_chain") },
+		{ TEXT("Veteran"), 0, TEXT("veteran") },
+		{ TEXT("Faculty"), 0, TEXT("top_of_the_class") }
 	};
 	static const FBHCosmeticUnlockDefinition HeadwearDefinitions[] = {
 		{ TEXT("None"), 0 },
 		{ TEXT("Cap"), 150 },
 		{ TEXT("Glasses"), 300 },
 		{ TEXT("Beanie"), 500 },
-		{ TEXT("Visor"), 750 }
+		{ TEXT("Visor"), 750 },
+		// Achievement-gated headwear (procedural top hat -- the Roof Rider reward). See Docs/EASTER_EGGS.md.
+		{ TEXT("Top Hat"), 0, TEXT("roof_rider") }
 	};
 	static const FBHCosmeticUnlockDefinition GearDefinitions[] = {
 		{ TEXT("None"), 0 }

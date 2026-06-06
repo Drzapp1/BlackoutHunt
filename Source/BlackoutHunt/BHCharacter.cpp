@@ -265,12 +265,14 @@ FLinearColor BHAvatarPaletteColor(int32 Index)
 		FLinearColor(0.84f, 0.75f, 0.24f, 1.0f),
 		FLinearColor(0.28f, 0.68f, 0.62f, 1.0f),
 		FLinearColor(0.76f, 0.76f, 0.80f, 1.0f),
-		// Hidden prestige tints (indices 8..11) -- must match the ShirtColor entries in BHCosmeticUnlocks.cpp
+		// Hidden prestige tints (indices 8..13) -- must match the ShirtColor entries in BHCosmeticUnlocks.cpp
 		// and the identical palettes in BHGameMode/BHPlayerController.
 		FLinearColor(0.86f, 0.90f, 0.82f, 1.0f), // Chalk
 		FLinearColor(0.95f, 0.22f, 0.62f, 1.0f), // Arcade
 		FLinearColor(0.18f, 0.92f, 0.45f, 1.0f), // Exit Sign
-		FLinearColor(0.42f, 0.86f, 1.00f, 1.0f)  // Afterimage
+		FLinearColor(0.42f, 0.86f, 1.00f, 1.0f), // Afterimage
+		FLinearColor(0.64f, 0.44f, 0.22f, 1.0f), // Veteran
+		FLinearColor(0.40f, 0.12f, 0.20f, 1.0f)  // Faculty
 	};
 
 	return Palette[FMath::Abs(Index) % UE_ARRAY_COUNT(Palette)];
@@ -3142,6 +3144,26 @@ void ABHCharacter::ClientNotifyPerfectChain_Implementation(int32 ChainCount)
 	}
 }
 
+void ABHCharacter::ClientGrantAchievement_Implementation(FName AchievementId, const FString& ToastMessage)
+{
+	// Cosmetic only: unlock the given achievement on the owning client (account progress is client-local, so the
+	// server can't write it directly -- it asks the owning client to, here).
+	if (UWorld* World = GetWorld())
+	{
+		if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+		{
+			Account->UnlockAchievement(AchievementId);
+		}
+	}
+	if (!ToastMessage.IsEmpty())
+	{
+		if (ABHPlayerController* BHPC = Cast<ABHPlayerController>(GetController()))
+		{
+			BHPC->ShowLocalStatusMessage(ToastMessage, 3.0f);
+		}
+	}
+}
+
 void ABHCharacter::StartCosmeticSpecialMove(EBHMovementSpecialState State)
 {
 	if (HasAuthority() || !BHIsTransientSpecialMove(State))
@@ -5927,6 +5949,14 @@ void ABHCharacter::ApplyAvatarStyle()
 			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCube, AccessoryBlack, RoleAccessoryLocation(FVector(11.0f, 0.0f, 67.0f)), FRotator::ZeroRotator, FVector(0.045f, 0.40f, 0.080f), true);
 			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCube, AccessoryLight, RoleAccessoryLocation(FVector(23.0f, 0.0f, 64.0f)), FRotator::ZeroRotator, FVector(0.055f, 0.42f, 0.115f), true);
 			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessoryCube, AccessoryMetal, RoleAccessoryLocation(FVector(24.0f, 0.0f, 57.0f)), FRotator::ZeroRotator, FVector(0.018f, 0.36f, 0.012f), true);
+		}
+		else if (HeadwearIndex == 5)
+		{
+			// Top Hat -- the Roof Rider achievement reward. A tall cylinder crown + a wide flat disc brim, with a
+			// thin hatband in the player's shirt tint. Offsets use the head-anchored convention (preview-Z 78 ~= head top).
+			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCylinder, AccessoryBlack, RoleAccessoryLocation(FVector(6.0f, 0.0f, 90.0f)), FRotator::ZeroRotator, FVector(0.26f, 0.26f, 0.22f), true);
+			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCylinder, AccessoryBlack, RoleAccessoryLocation(FVector(6.0f, 0.0f, 75.0f)), FRotator::ZeroRotator, FVector(0.48f, 0.48f, 0.02f), true);
+			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessoryCylinder, AccessoryColor, RoleAccessoryLocation(FVector(6.0f, 0.0f, 80.0f)), FRotator::ZeroRotator, FVector(0.29f, 0.29f, 0.035f), true);
 		}
 	}
 
