@@ -24,8 +24,9 @@ const FBHCosmeticUnlockDefinition* BHCosmeticDefinitions(EBHCosmeticCategory Cat
 		{ TEXT("Farmer"), 250 },
 		{ TEXT("Beach"), 450 },
 		{ TEXT("Punk"), 700 },
-		{ TEXT("Suit"), 950 },
-		{ TEXT("Spacesuit"), 1250 }
+		// Prestige outfits -- unlocked by ACHIEVEMENTS instead of XP (see Docs/EASTER_EGGS.md).
+		{ TEXT("Suit"), 0, TEXT("survivor") },
+		{ TEXT("Spacesuit"), 0, TEXT("perfect_chain") }
 	};
 	static const FBHCosmeticUnlockDefinition ShirtColorDefinitions[] = {
 		{ TEXT("Blue"), 0 },

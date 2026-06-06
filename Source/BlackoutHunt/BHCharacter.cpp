@@ -5837,15 +5837,34 @@ void ABHCharacter::ApplyAvatarStyle()
 	const int32 GearIndex = 0;
 	const bool bShowRoleAccessories = bUsingRoleModel;
 	FVector RoleAccessoryBaseOffset = FVector::ZeroVector;
-	if (bShowRoleAccessories)
+	if (bShowRoleAccessories && RoleModelRoot)
 	{
+		USceneComponent* VisibleRoleMesh = nullptr;
 		if (RoleSkeletalMesh && RoleSkeletalMesh->IsVisible())
 		{
-			RoleAccessoryBaseOffset = RoleSkeletalMesh->GetRelativeLocation();
+			VisibleRoleMesh = RoleSkeletalMesh;
 		}
 		else if (RoleStaticMesh && RoleStaticMesh->IsVisible())
 		{
-			RoleAccessoryBaseOffset = RoleStaticMesh->GetRelativeLocation();
+			VisibleRoleMesh = RoleStaticMesh;
+		}
+
+		if (VisibleRoleMesh)
+		{
+			RoleAccessoryBaseOffset = VisibleRoleMesh->GetRelativeLocation();
+			// The preview offsets (Z ~67..85) assume a small preview head, but the in-game role mesh varies a
+			// lot in size/scale (survivor 1.0, hunter 0.11, hider static), so a fixed Z left the hat down at the
+			// torso -- inside the body. Anchor the hat to the TOP of the mesh's runtime bounds (~the head)
+			// instead, keeping the preview offsets' relative shape. The preview crown/skull-top is ~78 (the cap
+			// crown), so seat that at the mesh's head top; brims/glasses cluster below it and a beanie bobble (~85)
+			// pokes just above -- all on the head rather than inside the body.
+			const FBoxSphereBounds RoleBounds = VisibleRoleMesh->CalcBounds(VisibleRoleMesh->GetComponentTransform());
+			if (RoleBounds.BoxExtent.Z > KINDA_SMALL_NUMBER)
+			{
+				const float HeadTopWorldZ = RoleBounds.Origin.Z + RoleBounds.BoxExtent.Z;
+				const float HeadTopRelZ = HeadTopWorldZ - RoleModelRoot->GetComponentLocation().Z;
+				RoleAccessoryBaseOffset.Z = HeadTopRelZ - 78.0f;
+			}
 		}
 	}
 	const auto RoleAccessoryLocation = [&RoleAccessoryBaseOffset](const FVector& PreviewLocation)

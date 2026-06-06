@@ -1213,7 +1213,7 @@ bool UBHAccountSubsystem::SetSelectedCosmetic(EBHCosmeticCategory Category, int3
 		if (RequiredAchievement && RequiredAchievement[0] != TEXT('\0'))
 		{
 			OutMessage = FString::Printf(
-				TEXT("%s %s is a hidden tint -- earn the matching achievement to unlock it."),
+				TEXT("%s %s is an achievement reward -- earn the matching achievement to unlock it."),
 				BHCosmeticCategoryName(Category),
 				BHCosmeticItemName(Category, ClampedIndex));
 		}
