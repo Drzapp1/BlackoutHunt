@@ -3248,6 +3248,13 @@ FReply SBHMainMenu::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKe
 			{
 				KonamiProgress = 0;
 				StatusText = FText::FromString(TEXT("Up Up Down Down Left Right Left Right B A  --  the faculty sees you. no cheats here, just a quiet nod. well played."));
+				if (ABHPlayerController* KonamiPC = PlayerController.Get())
+				{
+					if (UBHAccountSubsystem* Account = KonamiPC->GetGameInstance() ? KonamiPC->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+					{
+						Account->UnlockAchievement(FName(TEXT("codebreaker"))); // unlocks the Arcade tint
+					}
+				}
 				return FReply::Handled();
 			}
 		}

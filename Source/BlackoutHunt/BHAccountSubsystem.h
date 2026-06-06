@@ -86,6 +86,11 @@ struct FBHAccountProgress
 
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	FString LastUpdatedUtc;
+
+	// Cosmetic achievements earned (ids; see the registry in BHAccountSubsystem.cpp). Some unlock the hidden
+	// prestige tints. Local + persisted; never affect gameplay.
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	TArray<FName> UnlockedAchievements;
 };
 
 UCLASS()
@@ -138,6 +143,11 @@ public:
 	bool ResetLocalClassroomData(FString& OutMessage);
 	bool SetLocalDisplayName(const FString& DisplayName, FString& OutMessage);
 	void RecordRoundResult(EBHPlayerRole Role, EBHPlayerLifeState LifeState, EBHRoundPhase ResultPhase);
+
+	// Cosmetic achievements (local, persisted). UnlockAchievement is idempotent: the first time only, it awards
+	// the achievement's XP, unlocks any tint gated on it, saves, and shows a one-line toast. Never affects play.
+	void UnlockAchievement(FName AchievementId);
+	bool HasAchievement(FName AchievementId) const;
 
 	const FBHAccountProfile& GetProfile() const;
 	const FBHAccountProgress& GetProgress() const;

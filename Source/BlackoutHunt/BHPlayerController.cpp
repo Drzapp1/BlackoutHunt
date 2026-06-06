@@ -749,7 +749,13 @@ FLinearColor BHAvatarPaletteColor(int32 Index)
 		FLinearColor(0.52f, 0.44f, 0.86f, 1.0f),
 		FLinearColor(0.84f, 0.75f, 0.24f, 1.0f),
 		FLinearColor(0.28f, 0.68f, 0.62f, 1.0f),
-		FLinearColor(0.76f, 0.76f, 0.80f, 1.0f)
+		FLinearColor(0.76f, 0.76f, 0.80f, 1.0f),
+		// Hidden prestige tints (indices 8..11) -- must match the ShirtColor entries in BHCosmeticUnlocks.cpp
+		// and the identical palettes in BHGameMode/BHCharacter.
+		FLinearColor(0.86f, 0.90f, 0.82f, 1.0f), // Chalk
+		FLinearColor(0.95f, 0.22f, 0.62f, 1.0f), // Arcade
+		FLinearColor(0.18f, 0.92f, 0.45f, 1.0f), // Exit Sign
+		FLinearColor(0.42f, 0.86f, 1.00f, 1.0f)  // Afterimage
 	};
 
 	return Palette[FMath::Abs(Index) % UE_ARRAY_COUNT(Palette)];
@@ -4113,7 +4119,7 @@ bool ABHPlayerController::CycleAvatarForMenu(FString& OutMessage)
 	const int32 CurrentAvatar = BHPS ? BHPS->AvatarIndex : 0;
 	const UBHAccountSubsystem* ReadOnlyAccountSubsystem = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr;
 	const int32 XP = ReadOnlyAccountSubsystem ? ReadOnlyAccountSubsystem->GetProgress().XP : TNumericLimits<int32>::Max();
-	const int32 NextAvatar = BHCosmeticNextUnlockedIndex(EBHCosmeticCategory::Outfit, CurrentAvatar, XP);
+	const int32 NextAvatar = BHCosmeticNextUnlockedIndex(EBHCosmeticCategory::Outfit, CurrentAvatar, XP, ReadOnlyAccountSubsystem ? &ReadOnlyAccountSubsystem->GetProgress().UnlockedAchievements : nullptr);
 	if (UBHAccountSubsystem* AccountSubsystem = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
 	{
 		if (!AccountSubsystem->SetSelectedCosmetic(EBHCosmeticCategory::Outfit, NextAvatar, OutMessage))
@@ -5686,13 +5692,13 @@ void ABHPlayerController::PushLocalCosmeticsToServer(bool bAnnounce)
 
 	const int32 XP = Progress ? Progress->XP : TNumericLimits<int32>::Max();
 	const int32 AvatarIndex = Progress
-		? BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Outfit, Progress->SelectedAvatarIndex, XP)
+		? BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Outfit, Progress->SelectedAvatarIndex, XP, &Progress->UnlockedAchievements)
 		: BHCosmeticClampIndex(EBHCosmeticCategory::Outfit, CurrentBHPS ? CurrentBHPS->AvatarIndex : 0);
 	const int32 ColorIndex = Progress
-		? BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::ShirtColor, Progress->SelectedAvatarColorIndex, XP)
+		? BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::ShirtColor, Progress->SelectedAvatarColorIndex, XP, &Progress->UnlockedAchievements)
 		: BHCosmeticClampIndex(EBHCosmeticCategory::ShirtColor, CurrentBHPS ? BHNearestAvatarColorIndex(CurrentBHPS->AvatarColor) : 0);
 	const int32 HeadwearIndex = Progress
-		? BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Headwear, Progress->SelectedAvatarHeadwearIndex, XP)
+		? BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Headwear, Progress->SelectedAvatarHeadwearIndex, XP, &Progress->UnlockedAchievements)
 		: BHCosmeticClampIndex(EBHCosmeticCategory::Headwear, CurrentBHPS ? CurrentBHPS->AvatarHeadwearIndex : 0);
 	const int32 GearIndex = 0;
 	const FLinearColor AvatarColor = BHAvatarPaletteColor(ColorIndex);

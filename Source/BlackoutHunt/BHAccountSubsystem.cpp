@@ -5,6 +5,7 @@
 #include "BHAccountSubsystem.h"
 
 #include "BHAccountSettings.h"
+#include "BHPlayerController.h"
 #include "Containers/StringConv.h"
 #include "Dom/JsonObject.h"
 #include "HAL/PlatformMisc.h"
@@ -63,7 +64,37 @@ namespace
 	// Highest progress schema version this build understands. If a save declares a higher version we
 	// refuse to parse it with the old schema and refuse to overwrite it (avoids silently wiping a
 	// newer build's data when an older build runs against the same profile).
-	constexpr int32 BHCurrentProgressVersion = 1;
+	// v2 added unlocked_achievements (cosmetic achievements + the hidden prestige tints they unlock).
+	constexpr int32 BHCurrentProgressVersion = 2;
+
+	// Cosmetic achievement registry. Earning one awards XP (so achievements feed the same economy as play) and
+	// unlocks any tint gated on its id (see BHCosmeticUnlocks.cpp). Purely cosmetic -- never affects gameplay.
+	struct FBHAchievementDef
+	{
+		const TCHAR* Id;
+		const TCHAR* Title;
+		const TCHAR* Description;
+		int32 XPReward;
+	};
+	const FBHAchievementDef GBHAchievements[] = {
+		{ TEXT("honorary_faculty"), TEXT("Honorary Faculty"), TEXT("Played under a famous physicist's name."), 40 },
+		{ TEXT("codebreaker"),      TEXT("Codebreaker"),       TEXT("Found the code that asks for nothing."),  30 },
+		{ TEXT("escape_artist"),    TEXT("Escape Artist"),     TEXT("Reached the exit and made it out."),      60 },
+		{ TEXT("survivor"),         TEXT("Last One Standing"), TEXT("Won a Hunt as a survivor."),              50 },
+		{ TEXT("spelunker"),        TEXT("Spelunker"),         TEXT("Hid in a locker. The dark is patient."),  20 },
+		{ TEXT("perfect_chain"),    TEXT("Perfect Chain"),     TEXT("Nailed a frame-perfect momentum chain."), 80 }
+	};
+	const FBHAchievementDef* BHFindAchievement(FName Id)
+	{
+		for (const FBHAchievementDef& Def : GBHAchievements)
+		{
+			if (Id == FName(Def.Id))
+			{
+				return &Def;
+			}
+		}
+		return nullptr;
+	}
 
 	FString JsonObjectToString(const TSharedRef<FJsonObject>& JsonObject)
 	{
@@ -1070,6 +1101,54 @@ void UBHAccountSubsystem::RecordRoundResult(EBHPlayerRole Role, EBHPlayerLifeSta
 
 	FString Message;
 	SyncProgress(Message);
+
+	// Cosmetic achievements (idempotent; each first-time-only awards XP + unlocks its tint + toasts).
+	if (Role == EBHPlayerRole::Survivor && LifeState == EBHPlayerLifeState::Escaped)
+	{
+		UnlockAchievement(FName(TEXT("escape_artist")));
+	}
+	if (Role == EBHPlayerRole::Survivor && ResultPhase == EBHRoundPhase::SurvivorsWin)
+	{
+		UnlockAchievement(FName(TEXT("survivor")));
+	}
+}
+
+void UBHAccountSubsystem::UnlockAchievement(FName AchievementId)
+{
+	if (AchievementId.IsNone() || Progress.UnlockedAchievements.Contains(AchievementId))
+	{
+		return;
+	}
+
+	Progress.UnlockedAchievements.AddUnique(AchievementId);
+	const FBHAchievementDef* Def = BHFindAchievement(AchievementId);
+	if (Def && Def->XPReward > 0)
+	{
+		Progress.XP = (Progress.XP > MAX_int32 - Def->XPReward) ? MAX_int32 : Progress.XP + Def->XPReward;
+	}
+	Progress.LastUpdatedUtc = UtcNowString();
+	SaveProgress();
+
+	// Toast on the menu status line + the local player's HUD (this subsystem is per-client, so the "first"
+	// controller here is the local player whose progress this is). Purely cosmetic feedback.
+	const FString Title = Def ? FString(Def->Title) : AchievementId.ToString();
+	const FString Toast = FString::Printf(TEXT("Achievement unlocked: %s"), *Title);
+	SetLastAccountMessage(Toast);
+	if (const UGameInstance* GameInstance = GetGameInstance())
+	{
+		if (UWorld* World = GameInstance->GetWorld())
+		{
+			if (ABHPlayerController* LocalPC = Cast<ABHPlayerController>(World->GetFirstPlayerController()))
+			{
+				LocalPC->ShowLocalStatusMessage(Toast, 4.5f);
+			}
+		}
+	}
+}
+
+bool UBHAccountSubsystem::HasAchievement(FName AchievementId) const
+{
+	return Progress.UnlockedAchievements.Contains(AchievementId);
 }
 
 const FBHAccountProfile& UBHAccountSubsystem::GetProfile() const
@@ -1104,7 +1183,7 @@ bool UBHAccountSubsystem::HasLocalCredential() const
 
 bool UBHAccountSubsystem::IsCosmeticUnlocked(EBHCosmeticCategory Category, int32 Index) const
 {
-	return BHCosmeticIsUnlocked(Category, Index, Progress.XP);
+	return BHCosmeticIsUnlocked(Category, Index, Progress.XP, &Progress.UnlockedAchievements);
 }
 
 int32 UBHAccountSubsystem::GetSelectedCosmeticIndex(EBHCosmeticCategory Category) const
@@ -1112,11 +1191,11 @@ int32 UBHAccountSubsystem::GetSelectedCosmeticIndex(EBHCosmeticCategory Category
 	switch (Category)
 	{
 	case EBHCosmeticCategory::Outfit:
-		return BHCosmeticClampUnlockedIndex(Category, Progress.SelectedAvatarIndex, Progress.XP);
+		return BHCosmeticClampUnlockedIndex(Category, Progress.SelectedAvatarIndex, Progress.XP, &Progress.UnlockedAchievements);
 	case EBHCosmeticCategory::ShirtColor:
-		return BHCosmeticClampUnlockedIndex(Category, Progress.SelectedAvatarColorIndex, Progress.XP);
+		return BHCosmeticClampUnlockedIndex(Category, Progress.SelectedAvatarColorIndex, Progress.XP, &Progress.UnlockedAchievements);
 	case EBHCosmeticCategory::Headwear:
-		return BHCosmeticClampUnlockedIndex(Category, Progress.SelectedAvatarHeadwearIndex, Progress.XP);
+		return BHCosmeticClampUnlockedIndex(Category, Progress.SelectedAvatarHeadwearIndex, Progress.XP, &Progress.UnlockedAchievements);
 	case EBHCosmeticCategory::Gear:
 		return 0;
 	default:
@@ -1128,14 +1207,25 @@ bool UBHAccountSubsystem::SetSelectedCosmetic(EBHCosmeticCategory Category, int3
 {
 	const int32 ClampedIndex = BHCosmeticClampIndex(Category, Index);
 	const int32 RequiredXP = BHCosmeticRequiredXP(Category, ClampedIndex);
-	if (!BHCosmeticIsUnlocked(Category, ClampedIndex, Progress.XP))
+	if (!BHCosmeticIsUnlocked(Category, ClampedIndex, Progress.XP, &Progress.UnlockedAchievements))
 	{
-		OutMessage = FString::Printf(
-			TEXT("%s %s unlocks at %d XP. Current XP: %d."),
-			BHCosmeticCategoryName(Category),
-			BHCosmeticItemName(Category, ClampedIndex),
-			RequiredXP,
-			Progress.XP);
+		const TCHAR* RequiredAchievement = BHCosmeticRequiredAchievement(Category, ClampedIndex);
+		if (RequiredAchievement && RequiredAchievement[0] != TEXT('\0'))
+		{
+			OutMessage = FString::Printf(
+				TEXT("%s %s is a hidden tint -- earn the matching achievement to unlock it."),
+				BHCosmeticCategoryName(Category),
+				BHCosmeticItemName(Category, ClampedIndex));
+		}
+		else
+		{
+			OutMessage = FString::Printf(
+				TEXT("%s %s unlocks at %d XP. Current XP: %d."),
+				BHCosmeticCategoryName(Category),
+				BHCosmeticItemName(Category, ClampedIndex),
+				RequiredXP,
+				Progress.XP);
+		}
 		SetLastAccountMessage(OutMessage);
 		return false;
 	}
@@ -1334,9 +1424,9 @@ void UBHAccountSubsystem::SaveProgress() const
 void UBHAccountSubsystem::SanitizeProgressCosmetics()
 {
 	Progress.XP = FMath::Max(0, Progress.XP);
-	Progress.SelectedAvatarIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Outfit, Progress.SelectedAvatarIndex, Progress.XP);
-	Progress.SelectedAvatarColorIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::ShirtColor, Progress.SelectedAvatarColorIndex, Progress.XP);
-	Progress.SelectedAvatarHeadwearIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Headwear, Progress.SelectedAvatarHeadwearIndex, Progress.XP);
+	Progress.SelectedAvatarIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Outfit, Progress.SelectedAvatarIndex, Progress.XP, &Progress.UnlockedAchievements);
+	Progress.SelectedAvatarColorIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::ShirtColor, Progress.SelectedAvatarColorIndex, Progress.XP, &Progress.UnlockedAchievements);
+	Progress.SelectedAvatarHeadwearIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Headwear, Progress.SelectedAvatarHeadwearIndex, Progress.XP, &Progress.UnlockedAchievements);
 	Progress.SelectedAvatarGearIndex = 0;
 }
 
@@ -1371,6 +1461,12 @@ TSharedRef<FJsonObject> UBHAccountSubsystem::ProgressToJson() const
 	JsonObject->SetNumberField(TEXT("selected_avatar_headwear_index"), Progress.SelectedAvatarHeadwearIndex);
 	JsonObject->SetNumberField(TEXT("selected_avatar_gear_index"), Progress.SelectedAvatarGearIndex);
 	JsonObject->SetStringField(TEXT("last_updated_utc"), Progress.LastUpdatedUtc);
+	TArray<TSharedPtr<FJsonValue>> AchievementsJson;
+	for (const FName& Achievement : Progress.UnlockedAchievements)
+	{
+		AchievementsJson.Add(MakeShared<FJsonValueString>(Achievement.ToString()));
+	}
+	JsonObject->SetArrayField(TEXT("unlocked_achievements"), AchievementsJson);
 	return JsonObject;
 }
 
@@ -1419,6 +1515,19 @@ void UBHAccountSubsystem::ApplyProgressJson(const TSharedPtr<FJsonObject>& JsonO
 	Progress.SelectedAvatarHeadwearIndex = JsonInt(JsonObject, TEXT("selected_avatar_headwear_index"));
 	Progress.SelectedAvatarGearIndex = JsonInt(JsonObject, TEXT("selected_avatar_gear_index"));
 	Progress.LastUpdatedUtc = JsonString(JsonObject, TEXT("last_updated_utc"));
+	Progress.UnlockedAchievements.Reset();
+	const TArray<TSharedPtr<FJsonValue>>* AchievementsJson = nullptr;
+	if (JsonObject.IsValid() && JsonObject->TryGetArrayField(TEXT("unlocked_achievements"), AchievementsJson) && AchievementsJson)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *AchievementsJson)
+		{
+			FString AchievementId;
+			if (Value.IsValid() && Value->TryGetString(AchievementId) && !AchievementId.IsEmpty())
+			{
+				Progress.UnlockedAchievements.AddUnique(FName(AchievementId));
+			}
+		}
+	}
 	SanitizeProgressCosmetics();
 }
 

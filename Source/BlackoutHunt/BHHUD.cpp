@@ -3,6 +3,7 @@
 // Unauthorized copying or distribution is strictly prohibited.
 
 #include "BHHUD.h"
+#include "BHAccountSubsystem.h"
 #include "BHBreakableGlassPane.h"
 #include "BHCharacter.h"
 #include "BHBreaker.h"
@@ -1164,6 +1165,27 @@ void ABHHUD::DrawHUD()
 					{
 						GreetPC->ShowLocalStatusMessage(PhysicistLine, 5.0f);
 					}
+					// Cosmetic achievement: unlocks the "Chalk" tint.
+					if (UWorld* World = GetWorld())
+					{
+						if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+						{
+							Account->UnlockAchievement(FName(TEXT("honorary_faculty")));
+						}
+					}
+				}
+			}
+		}
+
+		// Achievement: hid in a locker (a gameplay achievement, so NOT gated by the cosmetic easter-egg toggle).
+		// UnlockAchievement is idempotent, so the per-frame call no-ops after the first hide.
+		if (Character->IsHiddenInLocker())
+		{
+			if (UWorld* World = GetWorld())
+			{
+				if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+				{
+					Account->UnlockAchievement(FName(TEXT("spelunker")));
 				}
 			}
 		}

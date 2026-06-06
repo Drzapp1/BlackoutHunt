@@ -16,9 +16,13 @@ enum class EBHCosmeticCategory : uint8
 
 BLACKOUTHUNT_API int32 BHCosmeticMaxIndex(EBHCosmeticCategory Category);
 BLACKOUTHUNT_API int32 BHCosmeticClampIndex(EBHCosmeticCategory Category, int32 Index);
-BLACKOUTHUNT_API int32 BHCosmeticClampUnlockedIndex(EBHCosmeticCategory Category, int32 Index, int32 XP);
 BLACKOUTHUNT_API int32 BHCosmeticRequiredXP(EBHCosmeticCategory Category, int32 Index);
-BLACKOUTHUNT_API bool BHCosmeticIsUnlocked(EBHCosmeticCategory Category, int32 Index, int32 XP);
-BLACKOUTHUNT_API int32 BHCosmeticNextUnlockedIndex(EBHCosmeticCategory Category, int32 CurrentIndex, int32 XP);
+// An item can be gated by an ACHIEVEMENT instead of XP (returns the achievement id, or nullptr/empty for the
+// usual XP gate). Achievement-gated items are the hidden "prestige" tints; pass the player's unlocked set to
+// the unlock checks below so they resolve. The optional UnlockedAchievements is null-safe (treated as locked).
+BLACKOUTHUNT_API const TCHAR* BHCosmeticRequiredAchievement(EBHCosmeticCategory Category, int32 Index);
+BLACKOUTHUNT_API bool BHCosmeticIsUnlocked(EBHCosmeticCategory Category, int32 Index, int32 XP, const TArray<FName>* UnlockedAchievements = nullptr);
+BLACKOUTHUNT_API int32 BHCosmeticClampUnlockedIndex(EBHCosmeticCategory Category, int32 Index, int32 XP, const TArray<FName>* UnlockedAchievements = nullptr);
+BLACKOUTHUNT_API int32 BHCosmeticNextUnlockedIndex(EBHCosmeticCategory Category, int32 CurrentIndex, int32 XP, const TArray<FName>* UnlockedAchievements = nullptr);
 BLACKOUTHUNT_API const TCHAR* BHCosmeticCategoryName(EBHCosmeticCategory Category);
 BLACKOUTHUNT_API const TCHAR* BHCosmeticItemName(EBHCosmeticCategory Category, int32 Index);
