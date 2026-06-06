@@ -75,18 +75,21 @@ namespace
 		const TCHAR* Title;
 		const TCHAR* Description;
 		int32 XPReward;
+		int32 Difficulty;          // 1..5 -- the badge's star meter + tier colour in the Achievements tab
+		const TCHAR* RewardLabel;  // cosmetic reward shown on the badge ("" if the reward is XP only)
+		bool bHidden;              // a secret achievement: the tab shows "???" until it is earned
 	};
 	const FBHAchievementDef GBHAchievements[] = {
-		{ TEXT("honorary_faculty"), TEXT("Honorary Faculty"), TEXT("Played under a famous physicist's name."), 40 },
-		{ TEXT("codebreaker"),      TEXT("Codebreaker"),       TEXT("Found the code that asks for nothing."),  30 },
-		{ TEXT("escape_artist"),    TEXT("Escape Artist"),     TEXT("Reached the exit and made it out."),      60 },
-		{ TEXT("survivor"),         TEXT("Last One Standing"), TEXT("Won a Hunt as a survivor."),              50 },
-		{ TEXT("spelunker"),        TEXT("Spelunker"),         TEXT("Hid in a locker. The dark is patient."),  20 },
-		{ TEXT("perfect_chain"),    TEXT("Perfect Chain"),     TEXT("Nailed a frame-perfect momentum chain."), 80 },
+		{ TEXT("honorary_faculty"), TEXT("Honorary Faculty"), TEXT("Played under a famous physicist's name."), 40, 1, TEXT("Chalk tint"),                  true  },
+		{ TEXT("codebreaker"),      TEXT("Codebreaker"),       TEXT("Found the code that asks for nothing."),  30, 2, TEXT("Arcade tint"),                 true  },
+		{ TEXT("escape_artist"),    TEXT("Escape Artist"),     TEXT("Reached the exit and made it out."),      60, 2, TEXT("Exit Sign tint"),              false },
+		{ TEXT("survivor"),         TEXT("Last One Standing"), TEXT("Won a Hunt as a survivor."),              50, 3, TEXT("Suit outfit"),                 false },
+		{ TEXT("spelunker"),        TEXT("Spelunker"),         TEXT("Hid in a locker. The dark is patient."),  20, 1, TEXT(""),                            false },
+		{ TEXT("perfect_chain"),    TEXT("Perfect Chain"),     TEXT("Nailed a frame-perfect momentum chain."), 80, 5, TEXT("Afterimage tint + Spacesuit"), false },
 		// Newer achievements (rewards: Veteran / Faculty tints + the Top Hat headwear). See Docs/EASTER_EGGS.md.
-		{ TEXT("veteran"),          TEXT("Veteran"),           TEXT("Played 25 rounds. A familiar face."),     60 },
-		{ TEXT("top_of_the_class"), TEXT("Top of the Class"),  TEXT("Won a Hunt as the Teacher."),             50 },
-		{ TEXT("roof_rider"),       TEXT("Roof Rider"),        TEXT("Found a way onto the train roof."),       70 }
+		{ TEXT("veteran"),          TEXT("Veteran"),           TEXT("Played 25 rounds. A familiar face."),     60, 2, TEXT("Veteran tint"),                false },
+		{ TEXT("top_of_the_class"), TEXT("Top of the Class"),  TEXT("Won a Hunt as the Teacher."),             50, 3, TEXT("Faculty tint"),                false },
+		{ TEXT("roof_rider"),       TEXT("Roof Rider"),        TEXT("Found a way onto the train roof."),       70, 3, TEXT("Top Hat"),                     true  }
 	};
 	const FBHAchievementDef* BHFindAchievement(FName Id)
 	{
@@ -1163,6 +1166,38 @@ void UBHAccountSubsystem::UnlockAchievement(FName AchievementId)
 bool UBHAccountSubsystem::HasAchievement(FName AchievementId) const
 {
 	return Progress.UnlockedAchievements.Contains(AchievementId);
+}
+
+TArray<FBHAchievementDisplay> UBHAccountSubsystem::GetAchievementsForDisplay() const
+{
+	TArray<FBHAchievementDisplay> Result;
+	Result.Reserve(UE_ARRAY_COUNT(GBHAchievements));
+	for (const FBHAchievementDef& Def : GBHAchievements)
+	{
+		FBHAchievementDisplay Display;
+		Display.Id = FName(Def.Id);
+		Display.Title = Def.Title;
+		Display.Description = Def.Description;
+		Display.RewardLabel = Def.RewardLabel ? Def.RewardLabel : TEXT("");
+		Display.Difficulty = Def.Difficulty;
+		Display.bHidden = Def.bHidden;
+		Display.bUnlocked = Progress.UnlockedAchievements.Contains(Display.Id);
+		Result.Add(MoveTemp(Display));
+	}
+	return Result;
+}
+
+void UBHAccountSubsystem::GetAchievementCounts(int32& OutEarned, int32& OutTotal) const
+{
+	OutTotal = UE_ARRAY_COUNT(GBHAchievements);
+	OutEarned = 0;
+	for (const FBHAchievementDef& Def : GBHAchievements)
+	{
+		if (Progress.UnlockedAchievements.Contains(FName(Def.Id)))
+		{
+			++OutEarned;
+		}
+	}
 }
 
 const FBHAccountProfile& UBHAccountSubsystem::GetProfile() const

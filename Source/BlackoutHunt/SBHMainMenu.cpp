@@ -2833,6 +2833,12 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 					.AutoWidth()
 					.Padding(0.0f, 0.0f, 8.0f, 0.0f)
 					[
+						BuildMenuTabButton(EBHMainMenuTab::Achievements, FText::FromString(TEXT("Awards")))
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+					[
 						BuildMenuTabButton(EBHMainMenuTab::Match, FText::FromString(TEXT("Match")))
 					]
 					+ SHorizontalBox::Slot()
@@ -3184,6 +3190,20 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 							+ SScrollBox::Slot()
 							[
 								BuildFeedbackPanel()
+							]
+						]
+					]
+					+ SWidgetSwitcher::Slot()
+					[
+						SNew(SBorder)
+						.BorderImage(WhiteBrush())
+						.BorderBackgroundColor(FLinearColor(0.026f, 0.032f, 0.038f, 0.94f))
+						.Padding(16.0f)
+						[
+							SNew(SScrollBox)
+							+ SScrollBox::Slot()
+							[
+								BuildAchievementsPanel()
 							]
 						]
 					]
@@ -3566,6 +3586,8 @@ int32 SBHMainMenu::MenuTabToWidgetIndex(EBHMainMenuTab Tab)
 		return 8;
 	case EBHMainMenuTab::Feedback:
 		return 9;
+	case EBHMainMenuTab::Achievements:
+		return 10;
 	default:
 		return 8;
 	}
@@ -3884,6 +3906,174 @@ TSharedRef<SWidget> SBHMainMenu::BuildEndOfRoundSurveyPanel()
 						.Text(FText::FromString(TEXT("NO THANKS")))
 					]
 				]
+			]
+		];
+}
+
+namespace
+{
+	// Difficulty -> tier colour (Bronze..Mythic) used for the badge spine + difficulty pips.
+	FLinearColor BHAchievementTierColor(int32 Difficulty)
+	{
+		switch (FMath::Clamp(Difficulty, 1, 5))
+		{
+		case 1:  return FLinearColor(0.62f, 0.44f, 0.26f, 1.0f); // Bronze
+		case 2:  return FLinearColor(0.70f, 0.72f, 0.78f, 1.0f); // Silver
+		case 3:  return FLinearColor(0.90f, 0.72f, 0.28f, 1.0f); // Gold
+		case 4:  return FLinearColor(0.40f, 0.84f, 0.92f, 1.0f); // Platinum
+		default: return FLinearColor(0.74f, 0.52f, 0.98f, 1.0f); // Mythic (5 stars)
+		}
+	}
+	FString BHAchievementTierName(int32 Difficulty)
+	{
+		switch (FMath::Clamp(Difficulty, 1, 5))
+		{
+		case 1:  return TEXT("BRONZE");
+		case 2:  return TEXT("SILVER");
+		case 3:  return TEXT("GOLD");
+		case 4:  return TEXT("PLATINUM");
+		default: return TEXT("MYTHIC");
+		}
+	}
+}
+
+TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
+{
+	const ABHPlayerController* PC = PlayerController.Get();
+	const UGameInstance* GameInstance = PC ? PC->GetGameInstance() : nullptr;
+	const UBHAccountSubsystem* AccountSubsystem = GameInstance ? GameInstance->GetSubsystem<UBHAccountSubsystem>() : nullptr;
+
+	TArray<FBHAchievementDisplay> Achievements;
+	int32 Earned = 0;
+	int32 Total = 0;
+	if (AccountSubsystem)
+	{
+		Achievements = AccountSubsystem->GetAchievementsForDisplay();
+		AccountSubsystem->GetAchievementCounts(Earned, Total);
+	}
+
+	// Easiest-first so the list reads as a difficulty ramp; within a tier, earned badges float up.
+	Achievements.Sort([](const FBHAchievementDisplay& A, const FBHAchievementDisplay& B)
+	{
+		if (A.Difficulty != B.Difficulty) { return A.Difficulty < B.Difficulty; }
+		if (A.bUnlocked != B.bUnlocked) { return A.bUnlocked && !B.bUnlocked; }
+		return A.Title < B.Title;
+	});
+
+	TSharedRef<SVerticalBox> BadgeList = SNew(SVerticalBox);
+	for (const FBHAchievementDisplay& Ach : Achievements)
+	{
+		const bool bSecret = Ach.bHidden && !Ach.bUnlocked;
+		const FLinearColor TierColor = BHAchievementTierColor(Ach.Difficulty);
+		const FLinearColor TitleColor = Ach.bUnlocked ? FLinearColor(0.94f, 0.92f, 0.80f, 1.0f) : FLinearColor(0.56f, 0.59f, 0.63f, 1.0f);
+
+		// Difficulty meter: five pips, the first N filled with the tier colour.
+		TSharedRef<SHorizontalBox> Meter = SNew(SHorizontalBox);
+		for (int32 Pip = 0; Pip < 5; ++Pip)
+		{
+			const bool bFilled = Pip < Ach.Difficulty;
+			Meter->AddSlot().AutoWidth().Padding(0.0f, 0.0f, 2.0f, 0.0f)
+			[
+				SNew(SBox).WidthOverride(10.0f).HeightOverride(10.0f)
+				[
+					SNew(SBorder)
+					.BorderImage(WhiteBrush())
+					.BorderBackgroundColor(bFilled ? TierColor : FLinearColor(0.16f, 0.17f, 0.19f, 1.0f))
+				]
+			];
+		}
+
+		const FString TitleStr = bSecret ? FString(TEXT("??? (hidden)")) : Ach.Title;
+		const FString DescStr = bSecret ? FString(TEXT("A secret achievement. Keep playing to discover it.")) : Ach.Description;
+		const FString RewardStr = Ach.RewardLabel.IsEmpty() ? FString() : (FString(TEXT("Reward: ")) + Ach.RewardLabel);
+		const FString StateStr = Ach.bUnlocked ? FString(TEXT("EARNED")) : (bSecret ? FString(TEXT("???")) : BHAchievementTierName(Ach.Difficulty));
+		const FLinearColor StateColor = Ach.bUnlocked ? FLinearColor(0.40f, 0.86f, 0.52f, 1.0f) : TierColor;
+
+		BadgeList->AddSlot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 6.0f)
+		[
+			SNew(SBorder)
+			.BorderImage(WhiteBrush())
+			.BorderBackgroundColor(Ach.bUnlocked ? FLinearColor(0.055f, 0.078f, 0.066f, 0.95f) : FLinearColor(0.040f, 0.044f, 0.052f, 0.95f))
+			.Padding(9.0f)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 9.0f, 0.0f)
+				[
+					SNew(SBox).WidthOverride(5.0f)
+					[
+						SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(TierColor)
+					]
+				]
+				+ SHorizontalBox::Slot().FillWidth(1.0f)
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight()
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 8.0f, 0.0f)
+						[
+							Meter
+						]
+						+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+						[
+							SNew(STextBlock)
+							.Font(MenuFont(11, FName(TEXT("Bold"))))
+							.ColorAndOpacity(TitleColor)
+							.Text(FText::FromString(TitleStr))
+						]
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 3.0f, 0.0f, 0.0f)
+					[
+						SNew(STextBlock)
+						.AutoWrapText(true)
+						.Font(MenuFont(9))
+						.ColorAndOpacity(FLinearColor(0.66f, 0.70f, 0.74f, 1.0f))
+						.Text(FText::FromString(DescStr))
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f, 0.0f, 0.0f)
+					[
+						SNew(STextBlock)
+						.Visibility(RewardStr.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible)
+						.Font(MenuFont(9, FName(TEXT("Bold"))))
+						.ColorAndOpacity(FLinearColor(0.70f, 0.82f, 0.74f, 1.0f))
+						.Text(FText::FromString(RewardStr))
+					]
+				]
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(8.0f, 0.0f, 0.0f, 0.0f)
+				[
+					SNew(STextBlock)
+					.Font(MenuFont(9, FName(TEXT("Bold"))))
+					.ColorAndOpacity(StateColor)
+					.Text(FText::FromString(StateStr))
+				]
+			]
+		];
+	}
+
+	return SNew(SBorder)
+		.BorderImage(WhiteBrush())
+		.BorderBackgroundColor(FLinearColor(0.034f, 0.034f, 0.044f, 0.95f))
+		.Padding(10.0f)
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot().AutoHeight()
+			[
+				SNew(STextBlock)
+				.Font(MenuFont(13, FName(TEXT("Bold"))))
+				.ColorAndOpacity(FLinearColor(0.92f, 0.88f, 0.74f, 1.0f))
+				.Text(FText::FromString(TEXT("Achievements")))
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 5.0f, 0.0f, 9.0f)
+			[
+				SNew(STextBlock)
+				.AutoWrapText(true)
+				.Font(MenuFont(10))
+				.ColorAndOpacity(FLinearColor(0.66f, 0.72f, 0.78f, 1.0f))
+				.Text(FText::FromString(FString::Printf(TEXT("Earned %d of %d. Each badge shows its difficulty (more pips = harder, colour-coded by tier) and the cosmetic it unlocks. Hidden badges stay secret until you find them."), Earned, Total)))
+			]
+			+ SVerticalBox::Slot().AutoHeight()
+			[
+				BadgeList
 			]
 		];
 }

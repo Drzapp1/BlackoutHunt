@@ -23,6 +23,7 @@ class SVerticalBox;
 class SWidgetSwitcher;
 class SWidget;
 enum class EBHFeedbackKind : uint8;
+struct FBHAchievementDisplay;
 class USceneCaptureComponent2D;
 class USkeletalMeshComponent;
 class UStaticMeshComponent;
@@ -55,7 +56,8 @@ private:
 		Account,
 		Controls,
 		Settings,
-		Feedback
+		Feedback,
+		Achievements
 	};
 
 	enum class EBHClassroomRunbookStep : uint8
@@ -301,6 +303,7 @@ private:
 	TSharedRef<SWidget> BuildAccountPanel();
 	TSharedRef<SWidget> BuildLocalCredentialPanel(bool bForStartScreen);
 	TSharedRef<SWidget> BuildFeedbackPanel();
+	TSharedRef<SWidget> BuildAchievementsPanel();
 	TSharedRef<SWidget> BuildEndOfRoundSurveyPanel();
 	FSlateColor GetFeedbackKindButtonColor(EBHFeedbackKind Kind) const;
 	FSlateColor GetFeedbackRatingButtonColor(int32 Rating) const;

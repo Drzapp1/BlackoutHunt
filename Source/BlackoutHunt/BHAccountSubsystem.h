@@ -93,6 +93,19 @@ struct FBHAccountProgress
 	TArray<FName> UnlockedAchievements;
 };
 
+// One achievement's display data for the menu's Achievements tab, built from the registry + the local account's
+// earned set. Plain struct (C++/Slate only -- not exposed to Blueprint).
+struct FBHAchievementDisplay
+{
+	FName Id;
+	FString Title;
+	FString Description;
+	FString RewardLabel;   // e.g. "Top Hat", "Afterimage tint" -- empty if the reward is XP only
+	int32 Difficulty = 1;  // 1..5 (the badge's star meter + tier colour)
+	bool bUnlocked = false;
+	bool bHidden = false;  // a secret achievement: the tab shows "???" until it is earned
+};
+
 UCLASS()
 class BLACKOUTHUNT_API UBHAccountSubsystem : public UGameInstanceSubsystem
 {
@@ -148,6 +161,12 @@ public:
 	// the achievement's XP, unlocks any tint gated on it, saves, and shows a one-line toast. Never affects play.
 	void UnlockAchievement(FName AchievementId);
 	bool HasAchievement(FName AchievementId) const;
+
+	// Every achievement with its metadata + whether THIS account has earned it, for the menu's Achievements tab.
+	// Ordered hardest-last is handled by the caller; this preserves registry order.
+	TArray<FBHAchievementDisplay> GetAchievementsForDisplay() const;
+	// Earned / total counts for the tab header.
+	void GetAchievementCounts(int32& OutEarned, int32& OutTotal) const;
 
 	const FBHAccountProfile& GetProfile() const;
 	const FBHAccountProgress& GetProgress() const;
