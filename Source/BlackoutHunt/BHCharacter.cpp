@@ -5995,7 +5995,7 @@ void ABHCharacter::ApplyAvatarStyle()
 		}
 		else if (HeadwearIndex == 8)
 		{
-			// Graduation Cap (Centurion) -- a black skull-cap + a flat square mortarboard + a tassel in the tint.
+			// Graduation Cap (Graduate) -- a black skull-cap + a flat square mortarboard + a tassel in the tint.
 			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCylinder, AccessoryBlack, RoleAccessoryLocation(FVector(6.0f, 0.0f, 77.0f)), FRotator::ZeroRotator, FVector(0.27f, 0.27f, 0.06f), true);
 			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCube, AccessoryBlack, RoleAccessoryLocation(FVector(6.0f, 0.0f, 82.0f)), FRotator::ZeroRotator, FVector(0.42f, 0.42f, 0.02f), true);
 			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessoryCube, AccessoryColor, RoleAccessoryLocation(FVector(24.0f, 0.0f, 78.0f)), FRotator::ZeroRotator, FVector(0.02f, 0.02f, 0.10f), true);

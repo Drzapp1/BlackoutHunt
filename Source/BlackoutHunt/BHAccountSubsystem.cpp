@@ -96,7 +96,7 @@ namespace
 		{ TEXT("flawless_hunt"),    TEXT("Flawless Hunt"),     TEXT("Caught every survivor in one round."),    75, 4, TEXT("Apex tint"),                   false },
 		{ TEXT("tourist"),          TEXT("Tourist"),           TEXT("Tried all four train activities."),       45, 2, TEXT("Commuter tint"),               false },
 		{ TEXT("completionist"),    TEXT("Completionist"),     TEXT("Found every hidden easter egg."),         120, 5, TEXT("Halo"),                       true  },
-		{ TEXT("centurion"),        TEXT("Centurion"),         TEXT("Played 100 rounds."),                     100, 4, TEXT("Graduation Cap"),             false },
+		{ TEXT("graduate"),         TEXT("Graduate"),          TEXT("Played 50 rounds. A classroom regular."),  80, 3, TEXT("Graduation Cap"),             false },
 		{ TEXT("on_a_roll"),        TEXT("On a Roll"),         TEXT("Won three rounds in a row."),             70, 3, TEXT("Crown"),                       false }
 	};
 	const FBHAchievementDef* BHFindAchievement(FName Id)
@@ -1151,10 +1151,10 @@ void UBHAccountSubsystem::RecordRoundResult(EBHPlayerRole Role, EBHPlayerLifeSta
 	{
 		UnlockAchievement(FName(TEXT("veteran")));
 	}
-	// Milestone: 100 rounds -> the Graduation Cap.
-	if (Progress.RoundsPlayed >= 100)
+	// Milestone: 50 rounds -> the Graduation Cap (a gentler target than a literal 100 for occasional class play).
+	if (Progress.RoundsPlayed >= 50)
 	{
-		UnlockAchievement(FName(TEXT("centurion")));
+		UnlockAchievement(FName(TEXT("graduate")));
 	}
 	// Three wins in a row -> the Crown.
 	if (Progress.CurrentWinStreak >= 3)
@@ -1324,6 +1324,10 @@ int32 UBHAccountSubsystem::GetSelectedCosmeticIndex(EBHCosmeticCategory Category
 		return BHCosmeticClampUnlockedIndex(Category, Progress.SelectedAvatarHeadwearIndex, Progress.XP, &Progress.UnlockedAchievements);
 	case EBHCosmeticCategory::Gear:
 		return 0;
+	case EBHCosmeticCategory::Title:
+		return BHCosmeticClampUnlockedIndex(Category, Progress.SelectedTitleIndex, Progress.XP, &Progress.UnlockedAchievements);
+	case EBHCosmeticCategory::Emblem:
+		return BHCosmeticClampUnlockedIndex(Category, Progress.SelectedEmblemIndex, Progress.XP, &Progress.UnlockedAchievements);
 	default:
 		return 0;
 	}
@@ -1369,6 +1373,12 @@ bool UBHAccountSubsystem::SetSelectedCosmetic(EBHCosmeticCategory Category, int3
 		break;
 	case EBHCosmeticCategory::Gear:
 		Progress.SelectedAvatarGearIndex = 0;
+		break;
+	case EBHCosmeticCategory::Title:
+		Progress.SelectedTitleIndex = ClampedIndex;
+		break;
+	case EBHCosmeticCategory::Emblem:
+		Progress.SelectedEmblemIndex = ClampedIndex;
 		break;
 	default:
 		OutMessage = TEXT("Unknown cosmetic category.");
@@ -1554,6 +1564,8 @@ void UBHAccountSubsystem::SanitizeProgressCosmetics()
 	Progress.SelectedAvatarColorIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::ShirtColor, Progress.SelectedAvatarColorIndex, Progress.XP, &Progress.UnlockedAchievements);
 	Progress.SelectedAvatarHeadwearIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Headwear, Progress.SelectedAvatarHeadwearIndex, Progress.XP, &Progress.UnlockedAchievements);
 	Progress.SelectedAvatarGearIndex = 0;
+	Progress.SelectedTitleIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Title, Progress.SelectedTitleIndex, Progress.XP, &Progress.UnlockedAchievements);
+	Progress.SelectedEmblemIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Emblem, Progress.SelectedEmblemIndex, Progress.XP, &Progress.UnlockedAchievements);
 }
 
 TSharedRef<FJsonObject> UBHAccountSubsystem::ProfileToJson() const
@@ -1588,6 +1600,8 @@ TSharedRef<FJsonObject> UBHAccountSubsystem::ProgressToJson() const
 	JsonObject->SetNumberField(TEXT("selected_avatar_color_index"), Progress.SelectedAvatarColorIndex);
 	JsonObject->SetNumberField(TEXT("selected_avatar_headwear_index"), Progress.SelectedAvatarHeadwearIndex);
 	JsonObject->SetNumberField(TEXT("selected_avatar_gear_index"), Progress.SelectedAvatarGearIndex);
+	JsonObject->SetNumberField(TEXT("selected_title_index"), Progress.SelectedTitleIndex);
+	JsonObject->SetNumberField(TEXT("selected_emblem_index"), Progress.SelectedEmblemIndex);
 	JsonObject->SetStringField(TEXT("last_updated_utc"), Progress.LastUpdatedUtc);
 	TArray<TSharedPtr<FJsonValue>> AchievementsJson;
 	for (const FName& Achievement : Progress.UnlockedAchievements)
@@ -1644,6 +1658,8 @@ void UBHAccountSubsystem::ApplyProgressJson(const TSharedPtr<FJsonObject>& JsonO
 	Progress.SelectedAvatarColorIndex = JsonInt(JsonObject, TEXT("selected_avatar_color_index"));
 	Progress.SelectedAvatarHeadwearIndex = JsonInt(JsonObject, TEXT("selected_avatar_headwear_index"));
 	Progress.SelectedAvatarGearIndex = JsonInt(JsonObject, TEXT("selected_avatar_gear_index"));
+	Progress.SelectedTitleIndex = JsonInt(JsonObject, TEXT("selected_title_index"));
+	Progress.SelectedEmblemIndex = JsonInt(JsonObject, TEXT("selected_emblem_index"));
 	Progress.LastUpdatedUtc = JsonString(JsonObject, TEXT("last_updated_utc"));
 	Progress.UnlockedAchievements.Reset();
 	const TArray<TSharedPtr<FJsonValue>>* AchievementsJson = nullptr;

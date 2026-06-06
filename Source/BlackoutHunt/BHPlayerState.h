@@ -34,6 +34,9 @@ public:
 	void SetAvatarColor(const FLinearColor& NewAvatarColor);
 	void SetAvatarHeadwearIndex(int32 NewHeadwearIndex);
 	void SetAvatarGearIndex(int32 NewGearIndex);
+	// Nameplate flair (achievement-gated; 0 = none). Replicated so other players see your title/emblem.
+	void SetSelectedTitleIndex(int32 NewTitleIndex);
+	void SetSelectedEmblemIndex(int32 NewEmblemIndex);
 	void SetMapVote(const FString& NewMapVote);
 	void SetFogPresetVote(EBHFogPreset NewFogPresetVote);
 	void ClearFogPresetVote();
@@ -90,6 +93,13 @@ public:
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt")
 	int32 AvatarGearIndex;
+
+	// Nameplate flair indices (into EBHCosmeticCategory::Title / Emblem; 0 = none). Cosmetic only.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt")
+	int32 SelectedTitleIndex;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt")
+	int32 SelectedEmblemIndex;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt")
 	FString MapVote;

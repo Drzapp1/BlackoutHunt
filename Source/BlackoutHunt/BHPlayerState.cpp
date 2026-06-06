@@ -61,6 +61,8 @@ void ABHPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLi
 	DOREPLIFETIME(ABHPlayerState, AvatarColor);
 	DOREPLIFETIME(ABHPlayerState, AvatarHeadwearIndex);
 	DOREPLIFETIME(ABHPlayerState, AvatarGearIndex);
+	DOREPLIFETIME(ABHPlayerState, SelectedTitleIndex);
+	DOREPLIFETIME(ABHPlayerState, SelectedEmblemIndex);
 	DOREPLIFETIME(ABHPlayerState, MapVote);
 	DOREPLIFETIME(ABHPlayerState, bHasFogPresetVote);
 	DOREPLIFETIME(ABHPlayerState, FogPresetVote);
@@ -137,6 +139,16 @@ void ABHPlayerState::SetAvatarGearIndex(int32 NewGearIndex)
 {
 	(void)NewGearIndex;
 	AvatarGearIndex = 0;
+}
+
+void ABHPlayerState::SetSelectedTitleIndex(int32 NewTitleIndex)
+{
+	SelectedTitleIndex = BHCosmeticClampIndex(EBHCosmeticCategory::Title, NewTitleIndex);
+}
+
+void ABHPlayerState::SetSelectedEmblemIndex(int32 NewEmblemIndex)
+{
+	SelectedEmblemIndex = BHCosmeticClampIndex(EBHCosmeticCategory::Emblem, NewEmblemIndex);
 }
 
 void ABHPlayerState::SetMapVote(const FString& NewMapVote)

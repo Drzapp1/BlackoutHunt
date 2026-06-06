@@ -4191,6 +4191,40 @@ bool ABHPlayerController::SetAvatarHeadwearForMenu(int32 HeadwearIndex, FString&
 	return true;
 }
 
+bool ABHPlayerController::SetTitleForMenu(int32 TitleIndex, FString& OutMessage)
+{
+	const int32 NormalizedIndex = BHCosmeticClampIndex(EBHCosmeticCategory::Title, TitleIndex);
+	if (UBHAccountSubsystem* AccountSubsystem = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+	{
+		if (!AccountSubsystem->SetSelectedCosmetic(EBHCosmeticCategory::Title, NormalizedIndex, OutMessage))
+		{
+			ShowLocalStatusMessage(OutMessage, 4.0f);
+			return false;
+		}
+	}
+	PushLocalCosmeticsToServer(false);
+	OutMessage = FString::Printf(TEXT("Title saved: %s."), BHCosmeticItemName(EBHCosmeticCategory::Title, NormalizedIndex));
+	ShowLocalStatusMessage(OutMessage, 2.5f);
+	return true;
+}
+
+bool ABHPlayerController::SetEmblemForMenu(int32 EmblemIndex, FString& OutMessage)
+{
+	const int32 NormalizedIndex = BHCosmeticClampIndex(EBHCosmeticCategory::Emblem, EmblemIndex);
+	if (UBHAccountSubsystem* AccountSubsystem = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+	{
+		if (!AccountSubsystem->SetSelectedCosmetic(EBHCosmeticCategory::Emblem, NormalizedIndex, OutMessage))
+		{
+			ShowLocalStatusMessage(OutMessage, 4.0f);
+			return false;
+		}
+	}
+	PushLocalCosmeticsToServer(false);
+	OutMessage = FString::Printf(TEXT("Emblem saved: %s."), BHCosmeticItemName(EBHCosmeticCategory::Emblem, NormalizedIndex));
+	ShowLocalStatusMessage(OutMessage, 2.5f);
+	return true;
+}
+
 bool ABHPlayerController::SetAvatarGearForMenu(int32 GearIndex, FString& OutMessage)
 {
 	(void)GearIndex;
@@ -5707,6 +5741,12 @@ void ABHPlayerController::PushLocalCosmeticsToServer(bool bAnnounce)
 		? BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Headwear, Progress->SelectedAvatarHeadwearIndex, XP, &Progress->UnlockedAchievements)
 		: BHCosmeticClampIndex(EBHCosmeticCategory::Headwear, CurrentBHPS ? CurrentBHPS->AvatarHeadwearIndex : 0);
 	const int32 GearIndex = 0;
+	const int32 TitleIndex = Progress
+		? BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Title, Progress->SelectedTitleIndex, XP, &Progress->UnlockedAchievements)
+		: BHCosmeticClampIndex(EBHCosmeticCategory::Title, CurrentBHPS ? CurrentBHPS->SelectedTitleIndex : 0);
+	const int32 EmblemIndex = Progress
+		? BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Emblem, Progress->SelectedEmblemIndex, XP, &Progress->UnlockedAchievements)
+		: BHCosmeticClampIndex(EBHCosmeticCategory::Emblem, CurrentBHPS ? CurrentBHPS->SelectedEmblemIndex : 0);
 	const FLinearColor AvatarColor = BHAvatarPaletteColor(ColorIndex);
 
 	bool bChanged = false;
@@ -5715,11 +5755,15 @@ void ABHPlayerController::PushLocalCosmeticsToServer(bool bAnnounce)
 		bChanged = MutableBHPS->AvatarIndex != AvatarIndex
 			|| !MutableBHPS->AvatarColor.Equals(AvatarColor, 0.005f)
 			|| MutableBHPS->AvatarHeadwearIndex != HeadwearIndex
-			|| MutableBHPS->AvatarGearIndex != GearIndex;
+			|| MutableBHPS->AvatarGearIndex != GearIndex
+			|| MutableBHPS->SelectedTitleIndex != TitleIndex
+			|| MutableBHPS->SelectedEmblemIndex != EmblemIndex;
 		MutableBHPS->SetAvatarIndex(AvatarIndex);
 		MutableBHPS->SetAvatarColor(AvatarColor);
 		MutableBHPS->SetAvatarHeadwearIndex(HeadwearIndex);
 		MutableBHPS->SetAvatarGearIndex(GearIndex);
+		MutableBHPS->SetSelectedTitleIndex(TitleIndex);
+		MutableBHPS->SetSelectedEmblemIndex(EmblemIndex);
 	}
 
 	if (bChanged)
@@ -5728,6 +5772,10 @@ void ABHPlayerController::PushLocalCosmeticsToServer(bool bAnnounce)
 	}
 
 	ServerApplyAvatarCosmetics(AvatarIndex, AvatarColor, ColorIndex, HeadwearIndex, GearIndex, bAnnounce);
+	// Nameplate flair rides its own RPCs (ServerApplyAvatarCosmetics predates it); push the resolved indices so
+	// the server-side PlayerState (and thus other clients' nameplates) match the account selection.
+	ServerSetTitle(TitleIndex);
+	ServerSetEmblem(EmblemIndex);
 }
 
 void ABHPlayerController::PushLocalProfileToServer()
@@ -7538,6 +7586,42 @@ void ABHPlayerController::ServerSetAvatarHeadwear_Implementation(int32 HeadwearI
 	}
 
 	ClientShowStatusMessage(FString::Printf(TEXT("Headwear set to %s."), BHCosmeticItemName(EBHCosmeticCategory::Headwear, NormalizedIndex)), 2.5f);
+}
+
+void ABHPlayerController::ServerSetTitle_Implementation(int32 TitleIndex)
+{
+	if (!AllowLobbyActionRpc())
+	{
+		return;
+	}
+
+	ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	if (!BHPS)
+	{
+		return;
+	}
+
+	const int32 NormalizedIndex = BHCosmeticClampIndex(EBHCosmeticCategory::Title, TitleIndex);
+	BHPS->SetSelectedTitleIndex(NormalizedIndex);
+	ClientShowStatusMessage(FString::Printf(TEXT("Title set to %s."), BHCosmeticItemName(EBHCosmeticCategory::Title, NormalizedIndex)), 2.5f);
+}
+
+void ABHPlayerController::ServerSetEmblem_Implementation(int32 EmblemIndex)
+{
+	if (!AllowLobbyActionRpc())
+	{
+		return;
+	}
+
+	ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	if (!BHPS)
+	{
+		return;
+	}
+
+	const int32 NormalizedIndex = BHCosmeticClampIndex(EBHCosmeticCategory::Emblem, EmblemIndex);
+	BHPS->SetSelectedEmblemIndex(NormalizedIndex);
+	ClientShowStatusMessage(FString::Printf(TEXT("Emblem set to %s."), BHCosmeticItemName(EBHCosmeticCategory::Emblem, NormalizedIndex)), 2.5f);
 }
 
 void ABHPlayerController::ServerSetAvatarGear_Implementation(int32 GearIndex)

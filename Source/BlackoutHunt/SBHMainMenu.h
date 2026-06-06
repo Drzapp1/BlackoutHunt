@@ -168,6 +168,8 @@ private:
 	FReply OnAvatarPresetClicked(int32 AvatarIndex);
 	FReply OnAvatarColorClicked(int32 ColorIndex);
 	FReply OnAvatarHeadwearClicked(int32 HeadwearIndex);
+	FReply OnAvatarTitleClicked(int32 TitleIndex);
+	FReply OnAvatarEmblemClicked(int32 EmblemIndex);
 	FReply OnMenuTabClicked(EBHMainMenuTab NewTab);
 	FReply OnOpenClassroomBoardClicked();
 	FReply OnOpenClassroomSupportFolderClicked();

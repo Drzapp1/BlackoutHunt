@@ -62,35 +62,59 @@ First time up earns the **Roof Rider** achievement (→ the **Top Hat** headwear
 advances on its **own timer**, so a roof visit never blocks boarding, changes scoring, or affects the round.
 *(`BHTrainRoofHatch.cpp`, spawned in `BuildTrainIntermissionLevel`; gated by `bh.EasterEggs`.)*
 
-## Cosmetic achievements & hidden tints
+## Achievements — the Awards tab, tints, hats & nameplate flair
 
-Some rewards are gated behind **achievements** rather than raw XP — earning one unlocks a hidden avatar
-**tint** you can then select in the cosmetics menu. All of this is **cosmetic and persisted locally** (in your
-account progress, schema v2). Achievements also award a little XP, so they feed the same unlock economy as
-play. None affect scoring, fairness, or stability.
+Many rewards are gated behind **achievements** rather than raw XP. Earning one unlocks a cosmetic you can then
+equip in the menu (a hidden avatar **tint**, a procedural **hat**, or nameplate **flair** — see below). All of
+it is **cosmetic and persisted locally** (account progress, schema v2). Achievements also award a little XP, so
+they feed the same unlock economy as play. None affect scoring, fairness, or stability.
 
-| Achievement | How to earn it | Reward |
-| --- | --- | --- |
-| **Honorary Faculty** | Play under a famous physicist's name (egg #2). | **Chalk** tint + 40 XP |
-| **Codebreaker** | Enter the Konami code (egg #4). | **Arcade** tint + 30 XP |
-| **Escape Artist** | Reach the exit and get out of a round. | **Exit Sign** tint + 60 XP |
-| **Perfect Chain** | Nail the momentum tech below (frame-perfect). | **Afterimage** tint + **Spacesuit** outfit + 80 XP |
-| **Last One Standing** | Win a Hunt as a survivor. | **Suit** outfit + 50 XP |
-| **Spelunker** | Hide in a locker. | 20 XP |
-| **Roof Rider** | Find the hidden hatch and get onto the train roof (egg #5). | **Top Hat** headwear + 70 XP |
-| **Veteran** | Play 25 rounds. | **Veteran** tint + 60 XP |
-| **Top of the Class** | Win a Hunt as the Teacher (Hunter). | **Faculty** tint + 50 XP |
+There's a dedicated **Awards** tab in the main menu (next to *Character*) that lists every achievement as a
+badge: a **5-pip difficulty meter** colour-coded by tier (Bronze → Silver → Gold → Platinum → Mythic), the
+description, the cosmetic it unlocks, and an EARNED / locked state. Hidden ("secret") achievements show as
+**???** until you find them. The header tracks **Earned N of M**.
 
-The six hidden **tints** (Chalk / Arcade / Exit Sign / Afterimage / Veteran / Faculty) appear as locked swatches
-in the **Shirt** colour picker until earned, then become selectable like any colour and persist. Their exact
-colour shows on **nameplates, the lobby roster, and map blips**; on the 8-material Quaternius body mesh they map
-to the nearest base material (a tint needs its own body material to render exactly on the 3D model — easy to add
-later with the Quaternius art). There is also a procedural **Top Hat** in the **Headwear** picker (a tall crown +
-brim with a hatband in your shirt tint), unlocked by **Roof Rider**. Two **prestige outfits** are also
-achievement-locked rather than XP-gated:
-**Suit** (Last One Standing) and **Spacesuit** (Perfect Chain) — they sit locked in the outfit picker until
-earned. Achievements live in a small registry in `BHAccountSubsystem.cpp`; `UnlockAchievement()` is idempotent
-and toasts on first earn.
+| Achievement | Difficulty | How to earn it | Reward |
+| --- | --- | --- | --- |
+| **Spelunker** | ★ | Hide in a locker. | (XP only) |
+| **Honorary Faculty** | ★ (secret) | Play under a famous physicist's name (egg #2). | **Chalk** tint |
+| **First Blood** | ★★ | Capture your first survivor as the Teacher. | **Detention** tint |
+| **Tourist** | ★★ | Try all four train-intermission activities. | **Commuter** tint |
+| **Codebreaker** | ★★ (secret) | Enter the Konami code (egg #4). | **Arcade** tint |
+| **Escape Artist** | ★★ | Reach the exit and get out of a round. | **Exit Sign** tint |
+| **Veteran** | ★★ | Play 25 rounds. | **Veteran** tint |
+| **Last One Standing** | ★★★ | Win a Hunt as a survivor. | **Suit** outfit |
+| **Top of the Class** | ★★★ | Win a Hunt as the Teacher. | **Faculty** tint |
+| **Roof Rider** | ★★★ (secret) | Find the hatch onto the train roof (egg #5). | **Top Hat** |
+| **On a Roll** | ★★★ | Win three rounds in a row. | **Crown** |
+| **Graduate** | ★★★ | Play 50 rounds. | **Graduation Cap** |
+| **Flawless Hunt** | ★★★★ | Catch every survivor in one round (nobody escapes). | **Apex** tint |
+| **Flow Master** | ★★★★★ | Land a full three-link flow chain. | **Slipstream** tint |
+| **Perfect Chain** | ★★★★★ | Nail the momentum tech below (frame-perfect). | **Afterimage** tint + **Spacesuit** outfit |
+| **Completionist** | ★★★★★ (secret) | Earn every hidden easter-egg award. | **Halo** |
+
+The ten hidden **tints** (Chalk / Arcade / Exit Sign / Afterimage / Veteran / Faculty / Slipstream / Detention /
+Apex / Commuter) appear as locked swatches in the **Shirt** colour picker until earned, then become selectable
+like any colour and persist. Their exact colour shows on **nameplates, the lobby roster, and map blips**; on the
+8-material Quaternius body mesh they map to the nearest base material (a tint needs its own body material to render
+exactly on the 3D model — easy to add later with the Quaternius art). The **Headwear** picker also has four
+procedural achievement hats — **Top Hat** (Roof Rider), **Crown** (On a Roll), **Halo** (Completionist), and
+**Graduation Cap** (Graduate) — each built from primitives and anchored to the head. Two **prestige outfits** are
+achievement-locked rather than XP-gated: **Suit** (Last One Standing) and **Spacesuit** (Perfect Chain).
+Achievements live in a small registry in `BHAccountSubsystem.cpp`; `UnlockAchievement()` is idempotent and toasts
+on first earn.
+
+### Nameplate flair: titles & emblems
+
+Two reward types live on your **nameplate**, so *other* players see them (unlike the avatar-only tints):
+
+- A **Title** shown under your name (e.g. *Honors Student*, *The Untouchable*, *Speedrunner*, *Graduate*,
+  *Completionist*) — each gated on an achievement.
+- An **Emblem** — a small coloured badge beside your name (Chalk Star, Exit Sign, Crown, Halo, Ember).
+
+Equip the ones you've earned in the **Character** tab (the *Title* / *Emblem* rows under the cosmetics). They
+replicate via the PlayerState and are drawn in `DrawNearbyNameTags` (survivors only — Teachers / hall monitors
+stay anonymous). Cosmetic only; nothing about them touches play.
 
 ## The momentum tech (speedrun "flow chain")
 

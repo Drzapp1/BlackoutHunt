@@ -15,6 +15,7 @@
 #include "BHObjectiveStation.h"
 #include "BHPlayerController.h"
 #include "BHPlayerState.h"
+#include "BHCosmeticUnlocks.h"
 #include "BHRevisionQuestionBank.h"
 #include "BHSecurityMonitor.h"
 #include "BHTrainBonusQuestionTerminal.h"
@@ -2616,6 +2617,23 @@ void ABHHUD::DrawInteractionPrompt(ABHCharacter* Character)
 	}
 }
 
+namespace
+{
+	// Colour for an earned nameplate emblem badge (index into EBHCosmeticCategory::Emblem; 0 = none).
+	FLinearColor BHNameplateEmblemColor(int32 EmblemIndex)
+	{
+		switch (EmblemIndex)
+		{
+		case 1:  return FLinearColor(0.90f, 0.92f, 0.86f); // Chalk Star
+		case 2:  return FLinearColor(0.20f, 0.92f, 0.45f); // Exit Sign
+		case 3:  return FLinearColor(0.95f, 0.80f, 0.30f); // Crown
+		case 4:  return FLinearColor(0.45f, 0.88f, 0.95f); // Halo
+		case 5:  return FLinearColor(1.00f, 0.52f, 0.22f); // Ember
+		default: return FLinearColor(0.72f, 0.74f, 0.70f);
+		}
+	}
+}
+
 void ABHHUD::DrawNearbyNameTags(const ABHCharacter* Character)
 {
 	if (!Canvas || !GEngine || !PlayerOwner || !Character || !GetWorld())
@@ -2700,6 +2718,32 @@ void ABHHUD::DrawNearbyNameTags(const ABHCharacter* Character)
 		DrawHudText(Label, X + 1.0f, Y + 1.0f, FLinearColor(0.0f, 0.0f, 0.0f, Alpha * 0.70f), GEngine->GetSmallFont(), Scale);
 		DrawHudText(Label, X, Y, TextColor, GEngine->GetSmallFont(), Scale);
 		DrawLine(X + TextW * 0.18f, Y + TextH + 3.0f, X + TextW * 0.82f, Y + TextH + 3.0f, FLinearColor(TextColor.R, TextColor.G, TextColor.B, Alpha * 0.58f), 2.0f);
+
+		// Earned nameplate flair (survivors only -- threats show TEACHER / HALL MONITOR and stay anonymous):
+		// a small emblem badge to the left of the name, and an earned title underneath it. Cosmetic only.
+		if (!bThreatRole)
+		{
+			if (OtherPS->SelectedEmblemIndex > 0)
+			{
+				const FLinearColor EmblemColor = BHNameplateEmblemColor(OtherPS->SelectedEmblemIndex);
+				const float BadgeSize = FMath::Max(8.0f, TextH * 0.55f);
+				DrawPanel(X - BadgeSize - 5.0f, ScreenPosition.Y - BadgeSize * 0.5f, BadgeSize, BadgeSize,
+					FLinearColor(EmblemColor.R, EmblemColor.G, EmblemColor.B, Alpha),
+					FLinearColor(0.0f, 0.0f, 0.0f, Alpha * 0.55f));
+			}
+			if (OtherPS->SelectedTitleIndex > 0)
+			{
+				const FString TitleText = BHCosmeticItemName(EBHCosmeticCategory::Title, OtherPS->SelectedTitleIndex);
+				const float TitleScale = Scale * 0.78f;
+				float TitleW = 0.0f;
+				float TitleH = 0.0f;
+				Canvas->TextSize(GEngine->GetSmallFont(), TitleText, TitleW, TitleH, TitleScale, TitleScale);
+				const float TitleX = ScreenPosition.X - TitleW * 0.5f;
+				const float TitleY = Y + TextH + 6.0f;
+				DrawHudText(TitleText, TitleX + 1.0f, TitleY + 1.0f, FLinearColor(0.0f, 0.0f, 0.0f, Alpha * 0.55f), GEngine->GetSmallFont(), TitleScale);
+				DrawHudText(TitleText, TitleX, TitleY, FLinearColor(0.86f, 0.78f, 0.52f, Alpha * 0.92f), GEngine->GetSmallFont(), TitleScale);
+			}
+		}
 	}
 }
 

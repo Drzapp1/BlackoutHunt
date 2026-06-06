@@ -11,7 +11,11 @@ enum class EBHCosmeticCategory : uint8
 	Outfit,
 	ShirtColor,
 	Headwear,
-	Gear
+	Gear,
+	// Achievement-flair shown on the nameplate (not on the avatar mesh): an earned Title under your name and a
+	// small earned Emblem badge beside it. Index 0 is always "none".
+	Title,
+	Emblem
 };
 
 BLACKOUTHUNT_API int32 BHCosmeticMaxIndex(EBHCosmeticCategory Category);

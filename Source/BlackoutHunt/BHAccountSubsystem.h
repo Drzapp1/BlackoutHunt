@@ -92,6 +92,13 @@ struct FBHAccountProgress
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	int32 SelectedAvatarGearIndex = 0;
 
+	// Nameplate flair selections (achievement-gated; 0 = none). See EBHCosmeticCategory::Title / Emblem.
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	int32 SelectedTitleIndex = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	int32 SelectedEmblemIndex = 0;
+
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	FString LastUpdatedUtc;
 

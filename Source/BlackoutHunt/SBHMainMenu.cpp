@@ -6236,6 +6236,30 @@ FReply SBHMainMenu::OnAvatarHeadwearClicked(int32 HeadwearIndex)
 	return FReply::Handled();
 }
 
+FReply SBHMainMenu::OnAvatarTitleClicked(int32 TitleIndex)
+{
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		FString Message;
+		PC->SetTitleForMenu(TitleIndex, Message);
+		StatusText = FText::FromString(Message);
+	}
+
+	return FReply::Handled();
+}
+
+FReply SBHMainMenu::OnAvatarEmblemClicked(int32 EmblemIndex)
+{
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		FString Message;
+		PC->SetEmblemForMenu(EmblemIndex, Message);
+		StatusText = FText::FromString(Message);
+	}
+
+	return FReply::Handled();
+}
+
 FReply SBHMainMenu::OnGraphicsPresetClicked(int32 Quality)
 {
 	if (ABHPlayerController* PC = PlayerController.Get())
@@ -6978,6 +7002,12 @@ FSlateColor SBHMainMenu::GetCosmeticButtonColor(EBHCosmeticCategory Category, in
 			break;
 		case EBHCosmeticCategory::Headwear:
 			bSelected = BHCosmeticClampIndex(Category, BHPS->AvatarHeadwearIndex) == BHCosmeticClampIndex(Category, Index);
+			break;
+		case EBHCosmeticCategory::Title:
+			bSelected = BHCosmeticClampIndex(Category, BHPS->SelectedTitleIndex) == BHCosmeticClampIndex(Category, Index);
+			break;
+		case EBHCosmeticCategory::Emblem:
+			bSelected = BHCosmeticClampIndex(Category, BHPS->SelectedEmblemIndex) == BHCosmeticClampIndex(Category, Index);
 			break;
 		default:
 			break;
@@ -8606,6 +8636,54 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 			];
 	}
 
+	TSharedRef<SVerticalBox> TitleButtons = SNew(SVerticalBox);
+	for (int32 Index = 0; Index <= BHCosmeticMaxIndex(EBHCosmeticCategory::Title); ++Index)
+	{
+		TitleButtons->AddSlot()
+			.AutoHeight()
+			.Padding(0.0f, 0.0f, 0.0f, 4.0f)
+			[
+				SNew(SBox)
+				.HeightOverride(28.0f)
+				[
+					SNew(SBHMenuButton)
+					.IsEnabled(this, &SBHMainMenu::IsCosmeticUnlockedForMenu, EBHCosmeticCategory::Title, Index)
+					.ButtonColorAndOpacity(this, &SBHMainMenu::GetCosmeticButtonColor, EBHCosmeticCategory::Title, Index)
+					.ContentPadding(FMargin(7.0f, 4.0f))
+					.OnClicked(this, &SBHMainMenu::OnAvatarTitleClicked, Index)
+					[
+						SNew(STextBlock)
+						.Font(MenuFont(8, FName(TEXT("Bold"))))
+						.Text(this, &SBHMainMenu::GetCosmeticButtonText, EBHCosmeticCategory::Title, Index)
+					]
+				]
+			];
+	}
+
+	TSharedRef<SGridPanel> EmblemButtons = SNew(SGridPanel);
+	for (int32 Index = 0; Index <= BHCosmeticMaxIndex(EBHCosmeticCategory::Emblem); ++Index)
+	{
+		EmblemButtons->AddSlot(Index % 2, Index / 2)
+			.Padding(0.0f, 0.0f, 6.0f, 6.0f)
+			[
+				SNew(SBox)
+				.WidthOverride(118.0f)
+				.HeightOverride(30.0f)
+				[
+					SNew(SBHMenuButton)
+					.IsEnabled(this, &SBHMainMenu::IsCosmeticUnlockedForMenu, EBHCosmeticCategory::Emblem, Index)
+					.ButtonColorAndOpacity(this, &SBHMainMenu::GetCosmeticButtonColor, EBHCosmeticCategory::Emblem, Index)
+					.ContentPadding(FMargin(7.0f, 4.0f))
+					.OnClicked(this, &SBHMainMenu::OnAvatarEmblemClicked, Index)
+					[
+						SNew(STextBlock)
+						.Font(MenuFont(8, FName(TEXT("Bold"))))
+						.Text(this, &SBHMainMenu::GetCosmeticButtonText, EBHCosmeticCategory::Emblem, Index)
+					]
+				]
+			];
+	}
+
 	return SNew(SBorder)
 		.BorderImage(WhiteBrush())
 		.BorderBackgroundColor(FLinearColor(0.034f, 0.034f, 0.044f, 0.95f))
@@ -8706,6 +8784,35 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 					.Padding(0.0f, 5.0f, 0.0f, 6.0f)
 					[
 						HeadwearButtons
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 8.0f, 0.0f, 0.0f)
+					[
+						SNew(STextBlock)
+						.Font(MenuFont(10, FName(TEXT("Bold"))))
+						.ColorAndOpacity(FLinearColor(0.86f, 0.80f, 0.60f, 1.0f))
+						.Text(FText::FromString(TEXT("Title (shown on your nameplate)")))
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 5.0f, 0.0f, 6.0f)
+					[
+						TitleButtons
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						SNew(STextBlock)
+						.Font(MenuFont(10, FName(TEXT("Bold"))))
+						.ColorAndOpacity(FLinearColor(0.86f, 0.80f, 0.60f, 1.0f))
+						.Text(FText::FromString(TEXT("Emblem (nameplate badge)")))
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 5.0f, 0.0f, 6.0f)
+					[
+						EmblemButtons
 					]
 				]
 			]

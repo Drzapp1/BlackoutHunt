@@ -397,6 +397,8 @@ public:
 	bool SetAvatarForMenu(int32 AvatarIndex, FString& OutMessage);
 	bool SetAvatarColorForMenu(int32 ColorIndex, FString& OutMessage);
 	bool SetAvatarHeadwearForMenu(int32 HeadwearIndex, FString& OutMessage);
+	bool SetTitleForMenu(int32 TitleIndex, FString& OutMessage);
+	bool SetEmblemForMenu(int32 EmblemIndex, FString& OutMessage);
 	bool SetAvatarGearForMenu(int32 GearIndex, FString& OutMessage);
 	bool SetPhysicsTopicsForMenu(const FString& TopicList, FString& OutMessage);
 	bool SetRevisionDifficultyMixForMenu(EBHRevisionDifficultyMix DifficultyMix, FString& OutMessage);
@@ -541,6 +543,13 @@ public:
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetAvatarHeadwear(int32 HeadwearIndex);
+
+	// Nameplate flair (achievement-gated). Cosmetic only; replicated so other players see it.
+	UFUNCTION(Server, Reliable)
+	void ServerSetTitle(int32 TitleIndex);
+
+	UFUNCTION(Server, Reliable)
+	void ServerSetEmblem(int32 EmblemIndex);
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetAvatarGear(int32 GearIndex);

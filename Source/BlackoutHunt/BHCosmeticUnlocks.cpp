@@ -62,10 +62,30 @@ const FBHCosmeticUnlockDefinition* BHCosmeticDefinitions(EBHCosmeticCategory Cat
 		{ TEXT("Top Hat"), 0, TEXT("roof_rider") },
 		{ TEXT("Crown"), 0, TEXT("on_a_roll") },
 		{ TEXT("Halo"), 0, TEXT("completionist") },
-		{ TEXT("Graduation Cap"), 0, TEXT("centurion") }
+		{ TEXT("Graduation Cap"), 0, TEXT("graduate") }
 	};
 	static const FBHCosmeticUnlockDefinition GearDefinitions[] = {
 		{ TEXT("None"), 0 }
+	};
+	// Nameplate flair (achievement-gated; index 0 = none). Shown under the player's name / beside it, not on
+	// the avatar mesh. See Docs/EASTER_EGGS.md.
+	static const FBHCosmeticUnlockDefinition TitleDefinitions[] = {
+		{ TEXT("No Title"), 0 },
+		{ TEXT("Honors Student"), 0, TEXT("escape_artist") },
+		{ TEXT("Last One Standing"), 0, TEXT("survivor") },
+		{ TEXT("The Untouchable"), 0, TEXT("flawless_hunt") },
+		{ TEXT("Speedrunner"), 0, TEXT("flow_master") },
+		{ TEXT("Graduate"), 0, TEXT("graduate") },
+		{ TEXT("Roof Rider"), 0, TEXT("roof_rider") },
+		{ TEXT("Completionist"), 0, TEXT("completionist") }
+	};
+	static const FBHCosmeticUnlockDefinition EmblemDefinitions[] = {
+		{ TEXT("No Emblem"), 0 },
+		{ TEXT("Chalk Star"), 0, TEXT("honorary_faculty") },
+		{ TEXT("Exit Sign"), 0, TEXT("escape_artist") },
+		{ TEXT("Crown"), 0, TEXT("on_a_roll") },
+		{ TEXT("Halo"), 0, TEXT("completionist") },
+		{ TEXT("Ember"), 0, TEXT("flawless_hunt") }
 	};
 
 	switch (Category)
@@ -82,6 +102,12 @@ const FBHCosmeticUnlockDefinition* BHCosmeticDefinitions(EBHCosmeticCategory Cat
 	case EBHCosmeticCategory::Gear:
 		OutCount = UE_ARRAY_COUNT(GearDefinitions);
 		return GearDefinitions;
+	case EBHCosmeticCategory::Title:
+		OutCount = UE_ARRAY_COUNT(TitleDefinitions);
+		return TitleDefinitions;
+	case EBHCosmeticCategory::Emblem:
+		OutCount = UE_ARRAY_COUNT(EmblemDefinitions);
+		return EmblemDefinitions;
 	default:
 		OutCount = 0;
 		return nullptr;
@@ -167,6 +193,10 @@ const TCHAR* BHCosmeticCategoryName(EBHCosmeticCategory Category)
 		return TEXT("Headwear");
 	case EBHCosmeticCategory::Gear:
 		return TEXT("Gear");
+	case EBHCosmeticCategory::Title:
+		return TEXT("Title");
+	case EBHCosmeticCategory::Emblem:
+		return TEXT("Emblem");
 	default:
 		return TEXT("Cosmetic");
 	}
