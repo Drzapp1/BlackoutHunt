@@ -265,14 +265,18 @@ FLinearColor BHAvatarPaletteColor(int32 Index)
 		FLinearColor(0.84f, 0.75f, 0.24f, 1.0f),
 		FLinearColor(0.28f, 0.68f, 0.62f, 1.0f),
 		FLinearColor(0.76f, 0.76f, 0.80f, 1.0f),
-		// Hidden prestige tints (indices 8..13) -- must match the ShirtColor entries in BHCosmeticUnlocks.cpp
+		// Hidden prestige tints (indices 8..17) -- must match the ShirtColor entries in BHCosmeticUnlocks.cpp
 		// and the identical palettes in BHGameMode/BHPlayerController.
 		FLinearColor(0.86f, 0.90f, 0.82f, 1.0f), // Chalk
 		FLinearColor(0.95f, 0.22f, 0.62f, 1.0f), // Arcade
 		FLinearColor(0.18f, 0.92f, 0.45f, 1.0f), // Exit Sign
 		FLinearColor(0.42f, 0.86f, 1.00f, 1.0f), // Afterimage
 		FLinearColor(0.64f, 0.44f, 0.22f, 1.0f), // Veteran
-		FLinearColor(0.40f, 0.12f, 0.20f, 1.0f)  // Faculty
+		FLinearColor(0.40f, 0.12f, 0.20f, 1.0f), // Faculty
+		FLinearColor(0.55f, 0.86f, 0.92f, 1.0f), // Slipstream
+		FLinearColor(0.80f, 0.20f, 0.18f, 1.0f), // Detention
+		FLinearColor(0.52f, 0.10f, 0.14f, 1.0f), // Apex
+		FLinearColor(0.40f, 0.54f, 0.56f, 1.0f)  // Commuter
 	};
 
 	return Palette[FMath::Abs(Index) % UE_ARRAY_COUNT(Palette)];
@@ -3135,12 +3139,29 @@ void ABHCharacter::ClientNotifyPerfectChain_Implementation(int32 ChainCount)
 		if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
 		{
 			Account->UnlockAchievement(FName(TEXT("perfect_chain")));
+			// A full three-link chain (the cap, BHMomentumChainMaxLinks) earns Flow Master.
+			if (ChainCount >= 3)
+			{
+				Account->UnlockAchievement(FName(TEXT("flow_master")));
+			}
 		}
 	}
 	// Brief feel cue for nailing it (the achievement toast handles the first-time fanfare).
 	if (ABHPlayerController* BHPC = Cast<ABHPlayerController>(GetController()))
 	{
 		BHPC->ShowLocalStatusMessage(ChainCount >= 2 ? FString::Printf(TEXT("Perfect chain x%d"), ChainCount) : FString(TEXT("Perfect chain!")), 1.5f);
+	}
+}
+
+void ABHCharacter::ClientRecordTrainActivity_Implementation(uint8 ActivityIndex)
+{
+	// Cosmetic only: record that this client tried a train-intermission activity (-> the Tourist achievement).
+	if (UWorld* World = GetWorld())
+	{
+		if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+		{
+			Account->RecordTrainActivityUse(static_cast<int32>(ActivityIndex));
+		}
 	}
 }
 
@@ -5957,6 +5978,27 @@ void ABHCharacter::ApplyAvatarStyle()
 			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCylinder, AccessoryBlack, RoleAccessoryLocation(FVector(6.0f, 0.0f, 90.0f)), FRotator::ZeroRotator, FVector(0.26f, 0.26f, 0.22f), true);
 			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCylinder, AccessoryBlack, RoleAccessoryLocation(FVector(6.0f, 0.0f, 75.0f)), FRotator::ZeroRotator, FVector(0.48f, 0.48f, 0.02f), true);
 			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessoryCylinder, AccessoryColor, RoleAccessoryLocation(FVector(6.0f, 0.0f, 80.0f)), FRotator::ZeroRotator, FVector(0.29f, 0.29f, 0.035f), true);
+		}
+		else if (HeadwearIndex == 6)
+		{
+			// Crown (On a Roll) -- a circlet in the player's tint with a raised front point + a bright jewel.
+			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCylinder, AccessoryColor, RoleAccessoryLocation(FVector(6.0f, 0.0f, 79.0f)), FRotator::ZeroRotator, FVector(0.345f, 0.345f, 0.075f), true);
+			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCube, AccessoryColor, RoleAccessoryLocation(FVector(20.0f, 0.0f, 90.0f)), FRotator::ZeroRotator, FVector(0.05f, 0.07f, 0.16f), true);
+			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessorySphere, AccessoryLight, RoleAccessoryLocation(FVector(21.0f, 0.0f, 83.0f)), FRotator::ZeroRotator, FVector(0.07f, 0.07f, 0.07f), true);
+		}
+		else if (HeadwearIndex == 7)
+		{
+			// Halo (Completionist) -- a thin bright disc floating above the head; the accent/detail pieces are hidden.
+			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCylinder, AccessoryLight, RoleAccessoryLocation(FVector(6.0f, 0.0f, 100.0f)), FRotator::ZeroRotator, FVector(0.36f, 0.36f, 0.012f), true);
+			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCylinder, AccessoryLight, RoleAccessoryLocation(FVector(6.0f, 0.0f, 100.0f)), FRotator::ZeroRotator, FVector(0.01f, 0.01f, 0.01f), false);
+			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessoryCylinder, AccessoryLight, RoleAccessoryLocation(FVector(6.0f, 0.0f, 100.0f)), FRotator::ZeroRotator, FVector(0.01f, 0.01f, 0.01f), false);
+		}
+		else if (HeadwearIndex == 8)
+		{
+			// Graduation Cap (Centurion) -- a black skull-cap + a flat square mortarboard + a tassel in the tint.
+			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCylinder, AccessoryBlack, RoleAccessoryLocation(FVector(6.0f, 0.0f, 77.0f)), FRotator::ZeroRotator, FVector(0.27f, 0.27f, 0.06f), true);
+			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCube, AccessoryBlack, RoleAccessoryLocation(FVector(6.0f, 0.0f, 82.0f)), FRotator::ZeroRotator, FVector(0.42f, 0.42f, 0.02f), true);
+			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessoryCube, AccessoryColor, RoleAccessoryLocation(FVector(24.0f, 0.0f, 78.0f)), FRotator::ZeroRotator, FVector(0.02f, 0.02f, 0.10f), true);
 		}
 	}
 

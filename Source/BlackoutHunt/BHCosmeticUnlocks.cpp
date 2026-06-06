@@ -40,13 +40,17 @@ const FBHCosmeticUnlockDefinition* BHCosmeticDefinitions(EBHCosmeticCategory Cat
 		// Hidden "prestige" tints -- unlocked by ACHIEVEMENTS, not XP (see Docs/EASTER_EGGS.md). Their exact
 		// colour shows on nameplates / roster / blips; on the 8-material Quaternius body it maps to the nearest
 		// base material until matching body materials are authored. This index order MUST match the palette
-		// tables in BHGameMode/BHCharacter/BHPlayerController (entries 8..13).
+		// tables in BHGameMode/BHCharacter/BHPlayerController (entries 8..17).
 		{ TEXT("Chalk"), 0, TEXT("honorary_faculty") },
 		{ TEXT("Arcade"), 0, TEXT("codebreaker") },
 		{ TEXT("Exit Sign"), 0, TEXT("escape_artist") },
 		{ TEXT("Afterimage"), 0, TEXT("perfect_chain") },
 		{ TEXT("Veteran"), 0, TEXT("veteran") },
-		{ TEXT("Faculty"), 0, TEXT("top_of_the_class") }
+		{ TEXT("Faculty"), 0, TEXT("top_of_the_class") },
+		{ TEXT("Slipstream"), 0, TEXT("flow_master") },
+		{ TEXT("Detention"), 0, TEXT("first_blood") },
+		{ TEXT("Apex"), 0, TEXT("flawless_hunt") },
+		{ TEXT("Commuter"), 0, TEXT("tourist") }
 	};
 	static const FBHCosmeticUnlockDefinition HeadwearDefinitions[] = {
 		{ TEXT("None"), 0 },
@@ -54,8 +58,11 @@ const FBHCosmeticUnlockDefinition* BHCosmeticDefinitions(EBHCosmeticCategory Cat
 		{ TEXT("Glasses"), 300 },
 		{ TEXT("Beanie"), 500 },
 		{ TEXT("Visor"), 750 },
-		// Achievement-gated headwear (procedural top hat -- the Roof Rider reward). See Docs/EASTER_EGGS.md.
-		{ TEXT("Top Hat"), 0, TEXT("roof_rider") }
+		// Achievement-gated procedural headwear. See Docs/EASTER_EGGS.md.
+		{ TEXT("Top Hat"), 0, TEXT("roof_rider") },
+		{ TEXT("Crown"), 0, TEXT("on_a_roll") },
+		{ TEXT("Halo"), 0, TEXT("completionist") },
+		{ TEXT("Graduation Cap"), 0, TEXT("centurion") }
 	};
 	static const FBHCosmeticUnlockDefinition GearDefinitions[] = {
 		{ TEXT("None"), 0 }

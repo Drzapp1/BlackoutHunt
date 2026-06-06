@@ -174,6 +174,8 @@ void ABHTrainActivityStation::BeginInteract_Implementation(ABHCharacter* Charact
 	}
 
 	LastUseTimeByPlayerId.Add(BHPS->GetPlayerId(), Now);
+	// Cosmetic: tell the owning client they tried this activity (-> the Tourist achievement once all four are done).
+	Character->ClientRecordTrainActivity(static_cast<uint8>(ActivityType));
 
 	FString ResultText;
 	FLinearColor ResultAccent = BHActivityAccent(ActivityType);

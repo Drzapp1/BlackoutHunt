@@ -66,6 +66,14 @@ struct FBHAccountProgress
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	int32 Escapes = 0;
 
+	// Current consecutive-win streak (for the On a Roll achievement). Resets on any non-winning round.
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	int32 CurrentWinStreak = 0;
+
+	// Bitmask of train-intermission activity types ever completed (for the Tourist achievement). 4 low bits.
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	int32 TrainActivityMask = 0;
+
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	int32 XP = 0;
 
@@ -156,6 +164,8 @@ public:
 	bool ResetLocalClassroomData(FString& OutMessage);
 	bool SetLocalDisplayName(const FString& DisplayName, FString& OutMessage);
 	void RecordRoundResult(EBHPlayerRole Role, EBHPlayerLifeState LifeState, EBHRoundPhase ResultPhase);
+	// Records that the local player completed a train-intermission activity (type 0..3); earns Tourist once all four are done.
+	void RecordTrainActivityUse(int32 ActivityIndex);
 
 	// Cosmetic achievements (local, persisted). UnlockAchievement is idempotent: the first time only, it awards
 	// the achievement's XP, unlocks any tint gated on it, saves, and shows a one-line toast. Never affects play.

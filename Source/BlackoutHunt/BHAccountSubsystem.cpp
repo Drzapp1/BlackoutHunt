@@ -89,7 +89,15 @@ namespace
 		// Newer achievements (rewards: Veteran / Faculty tints + the Top Hat headwear). See Docs/EASTER_EGGS.md.
 		{ TEXT("veteran"),          TEXT("Veteran"),           TEXT("Played 25 rounds. A familiar face."),     60, 2, TEXT("Veteran tint"),                false },
 		{ TEXT("top_of_the_class"), TEXT("Top of the Class"),  TEXT("Won a Hunt as the Teacher."),             50, 3, TEXT("Faculty tint"),                false },
-		{ TEXT("roof_rider"),       TEXT("Roof Rider"),        TEXT("Found a way onto the train roof."),       70, 3, TEXT("Top Hat"),                     true  }
+		{ TEXT("roof_rider"),       TEXT("Roof Rider"),        TEXT("Found a way onto the train roof."),       70, 3, TEXT("Top Hat"),                     true  },
+		// Skill / Teacher / Exploration / Dedication achievements. Rewards: tints + Crown / Halo / Graduation Cap.
+		{ TEXT("flow_master"),      TEXT("Flow Master"),       TEXT("Chained a full three-link flow chain."),  90, 5, TEXT("Slipstream tint"),             false },
+		{ TEXT("first_blood"),      TEXT("First Blood"),       TEXT("Captured your first survivor as Teacher."), 40, 2, TEXT("Detention tint"),            false },
+		{ TEXT("flawless_hunt"),    TEXT("Flawless Hunt"),     TEXT("Caught every survivor in one round."),    75, 4, TEXT("Apex tint"),                   false },
+		{ TEXT("tourist"),          TEXT("Tourist"),           TEXT("Tried all four train activities."),       45, 2, TEXT("Commuter tint"),               false },
+		{ TEXT("completionist"),    TEXT("Completionist"),     TEXT("Found every hidden easter egg."),         120, 5, TEXT("Halo"),                       true  },
+		{ TEXT("centurion"),        TEXT("Centurion"),         TEXT("Played 100 rounds."),                     100, 4, TEXT("Graduation Cap"),             false },
+		{ TEXT("on_a_roll"),        TEXT("On a Roll"),         TEXT("Won three rounds in a row."),             70, 3, TEXT("Crown"),                       false }
 	};
 	const FBHAchievementDef* BHFindAchievement(FName Id)
 	{
@@ -1101,6 +1109,21 @@ void UBHAccountSubsystem::RecordRoundResult(EBHPlayerRole Role, EBHPlayerLifeSta
 		EarnedXP += 50;
 	}
 
+	// Consecutive-win streak (for On a Roll): the player's side winning extends it; anything else breaks it.
+	const bool bWonRound = (Role == EBHPlayerRole::Hunter && ResultPhase == EBHRoundPhase::HunterWin)
+		|| (Role == EBHPlayerRole::Survivor && ResultPhase == EBHRoundPhase::SurvivorsWin);
+	if (bWonRound)
+	{
+		if (Progress.CurrentWinStreak < MAX_int32)
+		{
+			++Progress.CurrentWinStreak;
+		}
+	}
+	else
+	{
+		Progress.CurrentWinStreak = 0;
+	}
+
 	Progress.XP = (EarnedXP > 0 && Progress.XP > MAX_int32 - EarnedXP) ? MAX_int32 : Progress.XP + EarnedXP;
 	Progress.LastUpdatedUtc = UtcNowString();
 	SanitizeProgressCosmetics();
@@ -1127,6 +1150,16 @@ void UBHAccountSubsystem::RecordRoundResult(EBHPlayerRole Role, EBHPlayerLifeSta
 	if (Progress.RoundsPlayed >= 25)
 	{
 		UnlockAchievement(FName(TEXT("veteran")));
+	}
+	// Milestone: 100 rounds -> the Graduation Cap.
+	if (Progress.RoundsPlayed >= 100)
+	{
+		UnlockAchievement(FName(TEXT("centurion")));
+	}
+	// Three wins in a row -> the Crown.
+	if (Progress.CurrentWinStreak >= 3)
+	{
+		UnlockAchievement(FName(TEXT("on_a_roll")));
 	}
 }
 
@@ -1160,6 +1193,50 @@ void UBHAccountSubsystem::UnlockAchievement(FName AchievementId)
 				LocalPC->ShowLocalStatusMessage(Toast, 4.5f);
 			}
 		}
+	}
+
+	// Completionist: collecting every hidden egg achievement earns it. Guarded so unlocking completionist
+	// itself can't re-enter (and UnlockAchievement is idempotent, so the recursion bottoms out immediately).
+	if (AchievementId != FName(TEXT("completionist")))
+	{
+		static const FName EggAchievements[] = {
+			FName(TEXT("spelunker")), FName(TEXT("honorary_faculty")),
+			FName(TEXT("codebreaker")), FName(TEXT("roof_rider"))
+		};
+		bool bAllEggs = true;
+		for (const FName& Egg : EggAchievements)
+		{
+			if (!Progress.UnlockedAchievements.Contains(Egg))
+			{
+				bAllEggs = false;
+				break;
+			}
+		}
+		if (bAllEggs)
+		{
+			UnlockAchievement(FName(TEXT("completionist")));
+		}
+	}
+}
+
+void UBHAccountSubsystem::RecordTrainActivityUse(int32 ActivityIndex)
+{
+	if (ActivityIndex < 0 || ActivityIndex > 3)
+	{
+		return;
+	}
+	const int32 Bit = 1 << ActivityIndex;
+	if ((Progress.TrainActivityMask & Bit) != 0)
+	{
+		return; // already recorded this activity type
+	}
+	Progress.TrainActivityMask |= Bit;
+	Progress.LastUpdatedUtc = UtcNowString();
+	SaveProgress();
+	// All four train activities tried -> Tourist.
+	if ((Progress.TrainActivityMask & 0x0F) == 0x0F)
+	{
+		UnlockAchievement(FName(TEXT("tourist")));
 	}
 }
 
@@ -1503,6 +1580,8 @@ TSharedRef<FJsonObject> UBHAccountSubsystem::ProgressToJson() const
 	JsonObject->SetNumberField(TEXT("hunter_wins"), Progress.HunterWins);
 	JsonObject->SetNumberField(TEXT("survivor_wins"), Progress.SurvivorWins);
 	JsonObject->SetNumberField(TEXT("escapes"), Progress.Escapes);
+	JsonObject->SetNumberField(TEXT("current_win_streak"), Progress.CurrentWinStreak);
+	JsonObject->SetNumberField(TEXT("train_activity_mask"), Progress.TrainActivityMask);
 	JsonObject->SetNumberField(TEXT("xp"), Progress.XP);
 	JsonObject->SetStringField(TEXT("selected_avatar_url"), Progress.SelectedAvatarUrl);
 	JsonObject->SetNumberField(TEXT("selected_avatar_index"), Progress.SelectedAvatarIndex);
@@ -1557,6 +1636,8 @@ void UBHAccountSubsystem::ApplyProgressJson(const TSharedPtr<FJsonObject>& JsonO
 	Progress.HunterWins = JsonInt(JsonObject, TEXT("hunter_wins"));
 	Progress.SurvivorWins = JsonInt(JsonObject, TEXT("survivor_wins"));
 	Progress.Escapes = JsonInt(JsonObject, TEXT("escapes"));
+	Progress.CurrentWinStreak = JsonInt(JsonObject, TEXT("current_win_streak"));
+	Progress.TrainActivityMask = JsonInt(JsonObject, TEXT("train_activity_mask"));
 	Progress.XP = JsonInt(JsonObject, TEXT("xp"));
 	Progress.SelectedAvatarUrl = JsonString(JsonObject, TEXT("selected_avatar_url"));
 	Progress.SelectedAvatarIndex = JsonInt(JsonObject, TEXT("selected_avatar_index"));

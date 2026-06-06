@@ -160,14 +160,18 @@ FLinearColor AvatarColorForIndex(int32 Index)
 		FLinearColor(0.84f, 0.75f, 0.24f, 1.0f),
 		FLinearColor(0.28f, 0.68f, 0.62f, 1.0f),
 		FLinearColor(0.76f, 0.76f, 0.80f, 1.0f),
-		// Hidden prestige tints (indices 8..13) -- must match the ShirtColor entries in BHCosmeticUnlocks.cpp
+		// Hidden prestige tints (indices 8..17) -- must match the ShirtColor entries in BHCosmeticUnlocks.cpp
 		// and the identical palettes in BHCharacter/BHPlayerController.
 		FLinearColor(0.86f, 0.90f, 0.82f, 1.0f), // Chalk
 		FLinearColor(0.95f, 0.22f, 0.62f, 1.0f), // Arcade
 		FLinearColor(0.18f, 0.92f, 0.45f, 1.0f), // Exit Sign
 		FLinearColor(0.42f, 0.86f, 1.00f, 1.0f), // Afterimage
 		FLinearColor(0.64f, 0.44f, 0.22f, 1.0f), // Veteran
-		FLinearColor(0.40f, 0.12f, 0.20f, 1.0f)  // Faculty
+		FLinearColor(0.40f, 0.12f, 0.20f, 1.0f), // Faculty
+		FLinearColor(0.55f, 0.86f, 0.92f, 1.0f), // Slipstream
+		FLinearColor(0.80f, 0.20f, 0.18f, 1.0f), // Detention
+		FLinearColor(0.52f, 0.10f, 0.14f, 1.0f), // Apex
+		FLinearColor(0.40f, 0.54f, 0.56f, 1.0f)  // Commuter
 	};
 
 	return Palette[FMath::Abs(Index) % UE_ARRAY_COUNT(Palette)];
@@ -1583,6 +1587,11 @@ void ABHGameMode::NotifySurvivorCaptured(ABHCharacter* Survivor, ABHCharacter* C
 		{
 			HunterPC->ClientShowStatusMessage(FString::Printf(TEXT("Axe capture registered. +40 capture points (%d total)."), CapturingHunterPS->HunterPoints), 3.25f);
 		}
+		// Cosmetic achievement: a real player's first capture as Teacher (-> the Detention tint).
+		if (CapturingHunter && !CapturingHunterPS->IsABot())
+		{
+			CapturingHunter->ClientGrantAchievement(FName(TEXT("first_blood")), TEXT("First capture. The hunt is on."));
+		}
 	}
 	if (ABHPlayerController* SurvivorPC = Cast<ABHPlayerController>(SurvivorController))
 	{
@@ -1643,6 +1652,12 @@ void ABHGameMode::NotifySurvivorCaptured(ABHCharacter* Survivor, ABHCharacter* C
 
 	if (CountAliveSurvivors() <= 0)
 	{
+		// Cosmetic achievement: caught everyone with nobody escaping is a Flawless Hunt (-> the Apex tint).
+		if (CountEscapedSurvivors() <= 0 && CapturingHunter && CapturingHunterPS
+			&& CapturingHunterPS->PlayerRole == EBHPlayerRole::Hunter && !CapturingHunterPS->IsABot())
+		{
+			CapturingHunter->ClientGrantAchievement(FName(TEXT("flawless_hunt")), TEXT("Flawless hunt -- nobody escaped."));
+		}
 		// Evacuate-together: when the last alive survivor is caught, the class still wins if anyone already
 		// reached the exit. Hard-coding HunterWin here would discard survivors who escaped and are waiting.
 		// Mirrors the Hunt-tick resolution.

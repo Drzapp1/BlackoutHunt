@@ -248,6 +248,10 @@ public:
 	// is client-local, so the server can't write it directly -- it asks the owning client to.
 	UFUNCTION(Client, Reliable)
 	void ClientGrantAchievement(FName AchievementId, const FString& ToastMessage);
+
+	// Easter-egg hook: the server tells the owning client it completed a train activity (type 0..3) -> Tourist progress.
+	UFUNCTION(Client, Reliable)
+	void ClientRecordTrainActivity(uint8 ActivityIndex);
 protected:
 	void UsePowerupSlotOne();
 	void UsePowerupSlotTwo();
