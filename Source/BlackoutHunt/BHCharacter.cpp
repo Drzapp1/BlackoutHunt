@@ -4,6 +4,7 @@
 
 #include "BHCharacter.h"
 #include "BHCosmeticUnlocks.h"
+#include "BHAccountSubsystem.h"
 #include "BHAlarmTrap.h"
 #include "BHBlockActor.h"
 #include "BHEscapeStationManager.h"
@@ -36,6 +37,7 @@
 #include "Components/SpotLightComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Curves/CurveFloat.h"
+#include "HAL/IConsoleManager.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/OverlapResult.h"
 #include "Engine/StaticMesh.h"
@@ -3123,6 +3125,23 @@ void ABHCharacter::ClientSpecialMoveRejected_Implementation(EBHMovementSpecialSt
 	SetMovementFailureReason(Reason);
 }
 
+void ABHCharacter::ClientNotifyPerfectChain_Implementation(int32 ChainCount)
+{
+	// Cosmetic only: unlock the perfect_chain achievement (-> the Afterimage tint) on the owning client.
+	if (UWorld* World = GetWorld())
+	{
+		if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+		{
+			Account->UnlockAchievement(FName(TEXT("perfect_chain")));
+		}
+	}
+	// Brief feel cue for nailing it (the achievement toast handles the first-time fanfare).
+	if (ABHPlayerController* BHPC = Cast<ABHPlayerController>(GetController()))
+	{
+		BHPC->ShowLocalStatusMessage(ChainCount >= 2 ? FString::Printf(TEXT("Perfect chain x%d"), ChainCount) : FString(TEXT("Perfect chain!")), 1.5f);
+	}
+}
+
 void ABHCharacter::StartCosmeticSpecialMove(EBHMovementSpecialState State)
 {
 	if (HasAuthority() || !BHIsTransientSpecialMove(State))
@@ -3281,6 +3300,20 @@ void ABHCharacter::UpdateSpecialMoveAuthority(float DeltaSeconds)
 	}
 }
 
+// Momentum "flow chain" tech. A frame-perfect transient special-move input within this window right as the
+// previous move ended bypasses the cooldown once and preserves momentum -- a hard, satisfying speedrun tech.
+// Survivor-side only; capped so it can't loop; modest speed scale. Gated by bh.MomentumTech (default on).
+// NOTE: this is the one "fun feature" that touches movement, so it WANTS balance playtesting; the cvar plus the
+// tight window + cap keep its impact small in the meantime.
+static TAutoConsoleVariable<int32> CVarBHMomentumTech(
+	TEXT("bh.MomentumTech"),
+	1,
+	TEXT("1 (default) = survivor frame-perfect momentum-chain tech on; 0 = off (plain special moves)."),
+	ECVF_Default);
+constexpr float BHMomentumChainWindowSeconds = 0.12f;
+constexpr int32 BHMomentumChainMaxLinks = 3;
+constexpr float BHMomentumChainSpeedScale = 1.15f;
+
 bool ABHCharacter::TryStartSpecialMoveAuthority(EBHMovementSpecialState RequestedState, bool bEndProne, bool bEndProneRequiresInput)
 {
 	if (!HasAuthority() || !CanAct() || !GetWorld())
@@ -3331,7 +3364,25 @@ bool ABHCharacter::TryStartSpecialMoveAuthority(EBHMovementSpecialState Requeste
 	}
 
 	const float Now = GetWorld()->GetTimeSeconds();
-	if (Now < SpecialMoveCooldownEndTime)
+
+	// Momentum "flow chain" tech: a frame-perfect transient move right as the previous one ended bypasses the
+	// cooldown once and keeps the player's momentum. Survivor-side only (never helps a Hunter capture), a tight
+	// (hard) window, and capped. SpecialMoveMomentumScale feeds the special-move speed below.
+	SpecialMoveMomentumScale = 1.0f;
+	bool bPerfectChain = false;
+	if (CVarBHMomentumTech.GetValueOnGameThread() != 0 && BHPS && BHPS->IsAliveSurvivor()
+		&& Now < SpecialMoveCooldownEndTime && LastSpecialMoveEndedTime > -900.0f
+		&& PerfectChainCount < BHMomentumChainMaxLinks)
+	{
+		const float SinceEnded = Now - LastSpecialMoveEndedTime;
+		if (SinceEnded >= 0.0f && SinceEnded <= BHMomentumChainWindowSeconds)
+		{
+			bPerfectChain = true;
+			SpecialMoveMomentumScale = BHMomentumChainSpeedScale;
+		}
+	}
+
+	if (Now < SpecialMoveCooldownEndTime && !bPerfectChain)
 	{
 		const FString CooldownLabel = BaseTuning.CooldownText.IsEmpty() ? TEXT("Movement cooling down:") : BaseTuning.CooldownText.ToString();
 		const FString Reason = FString::Printf(TEXT("%s %ds."), *CooldownLabel, FMath::CeilToInt(SpecialMoveCooldownEndTime - Now));
@@ -3383,6 +3434,16 @@ bool ABHCharacter::TryStartSpecialMoveAuthority(EBHMovementSpecialState Requeste
 		EmitSpecialMoveNoiseAuthority(RequestedState, FName(TEXT("dive launch")), 0.78f);
 	}
 
+	if (bPerfectChain)
+	{
+		++PerfectChainCount;
+		ClientNotifyPerfectChain(PerfectChainCount);
+	}
+	else
+	{
+		PerfectChainCount = 0;
+	}
+
 	ForceNetUpdate();
 	return true;
 }
@@ -3392,6 +3453,12 @@ void ABHCharacter::FinishSpecialMoveAuthority()
 	if (!HasAuthority() || !IsSpecialMoveActive())
 	{
 		return;
+	}
+
+	// Remember when this transient move ended so a frame-perfect follow-up can chain (see the momentum tech).
+	if (GetWorld())
+	{
+		LastSpecialMoveEndedTime = GetWorld()->GetTimeSeconds();
 	}
 
 	const bool bShouldEndProne = bSpecialMoveEndsProne && (!bSpecialMoveEndProneRequiresInput || bProneInputHeld);
@@ -3523,9 +3590,9 @@ void ABHCharacter::RefreshMovementSpeedFromState()
 	if (IsSpecialMoveActive())
 	{
 		const FBHMovementSpecialTuning SpecialTuning = BHGetSpecialMoveTuning(BHPS, MovementSpecialState);
-		const float SpecialMoveSpeed = SpecialTuning.DurationSeconds > KINDA_SMALL_NUMBER
+		const float SpecialMoveSpeed = (SpecialTuning.DurationSeconds > KINDA_SMALL_NUMBER
 			? SpecialTuning.Curve.Distance / SpecialTuning.DurationSeconds
-			: WalkSpeedNow;
+			: WalkSpeedNow) * SpecialMoveMomentumScale;
 		Movement->MaxWalkSpeed = FMath::Max(WalkSpeedNow, SpecialMoveSpeed);
 		return;
 	}

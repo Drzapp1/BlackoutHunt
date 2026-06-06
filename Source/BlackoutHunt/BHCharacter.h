@@ -363,6 +363,11 @@ protected:
 	UFUNCTION(Client, Reliable)
 	void ClientSpecialMoveRejected(EBHMovementSpecialState RejectedState, const FString& Reason);
 
+	// Momentum tech: the server tells the owning client they nailed a frame-perfect chain, so the client can
+	// unlock the (cosmetic) perfect_chain achievement locally and show a brief cue.
+	UFUNCTION(Client, Reliable)
+	void ClientNotifyPerfectChain(int32 ChainCount);
+
 	UFUNCTION(Server, Reliable)
 	void ServerTryCapture();
 
@@ -752,6 +757,11 @@ protected:
 	float SpecialMoveStartTime;
 	float SpecialMoveEndTime;
 	float SpecialMoveCooldownEndTime;
+	// Momentum "flow chain" tech (survivor-side, bh.MomentumTech): a frame-perfect transient move right as the
+	// previous one ends bypasses the cooldown once and preserves momentum. See Docs/EASTER_EGGS.md.
+	float LastSpecialMoveEndedTime = -999.0f;
+	int32 PerfectChainCount = 0;
+	float SpecialMoveMomentumScale = 1.0f;
 	float SpecialMoveDistanceTravelled;
 	FVector SpecialMoveDirection;
 	float LastCaptureEvasionTime;

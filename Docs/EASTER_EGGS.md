@@ -53,8 +53,52 @@ You get a hidden thank-you line in the menu status — a quiet nod to anyone who
 it unlocks nothing and changes no settings. Normal menu navigation still works while you enter it. *(`SBHMainMenu.cpp`,
 `OnKeyDown`.)*
 
+## Cosmetic achievements & hidden tints
+
+Some rewards are gated behind **achievements** rather than raw XP — earning one unlocks a hidden avatar
+**tint** you can then select in the cosmetics menu. All of this is **cosmetic and persisted locally** (in your
+account progress, schema v2). Achievements also award a little XP, so they feed the same unlock economy as
+play. None affect scoring, fairness, or stability.
+
+| Achievement | How to earn it | Reward |
+| --- | --- | --- |
+| **Honorary Faculty** | Play under a famous physicist's name (egg #2). | **Chalk** tint + 40 XP |
+| **Codebreaker** | Enter the Konami code (egg #4). | **Arcade** tint + 30 XP |
+| **Escape Artist** | Reach the exit and get out of a round. | **Exit Sign** tint + 60 XP |
+| **Perfect Chain** | Nail the momentum tech below (frame-perfect). | **Afterimage** tint + 80 XP |
+| **Last One Standing** | Win a Hunt as a survivor. | 50 XP |
+| **Spelunker** | Hide in a locker. | 20 XP |
+
+The four hidden **tints** (Chalk / Arcade / Exit Sign / Afterimage) appear as locked swatches in the **Shirt**
+colour picker until earned, then become selectable like any colour and persist. Their exact colour shows on
+**nameplates, the lobby roster, and map blips**; on the 8-material Quaternius body mesh they map to the
+nearest base material (a tint needs its own body material to render exactly on the 3D model — easy to add
+later with the Quaternius art). Achievements live in a small registry in `BHAccountSubsystem.cpp`;
+`UnlockAchievement()` is idempotent and toasts on first earn.
+
+## The momentum tech (speedrun "flow chain")
+
+**How to do it:** as a survivor, chain a special move (slide / dive / roll) into the next one
+**frame-perfectly** — input the follow-up within ~0.12 s of the previous move ending. Nail it and you
+**bypass the move cooldown once** and keep your momentum (a small speed scale), so a skilled player can *flow*
+slide → dive → slide instead of stopping. It's meant to be **hard**: miss the tiny window and you just get the
+normal cooldown message (no penalty). You can chain up to **3** links before a real cooldown resets it.
+
+- **Fair by design:** available to **every** survivor — the only gate is skill (the window), not an unlock.
+  **Survivor-side only** (a Hunter never gets it, so it can't speed up captures), the speed bonus is **modest**
+  (~+15 % on the chained move), and the chain is **capped**.
+- First clean chain unlocks the **Perfect Chain** achievement (→ the **Afterimage** tint) + a brief "Perfect
+  chain!" cue.
+- **Toggle:** `bh.MomentumTech 1` (default on) / `0` (off). *(`BHCharacter.cpp`, `TryStartSpecialMoveAuthority`.)*
+- ⚠️ **This is the one fun feature that touches movement**, so it genuinely wants **balance playtesting** before
+  you rely on it in a competitive class. The tight window + cap + modest bonus keep its impact small, and the
+  cvar turns it off instantly if it ever feels off.
+
 ## Notes for the owner
 
+- Toggles: `bh.EasterEggs` (the four cosmetic eggs) and `bh.MomentumTech` (the movement tech) are independent.
+  Achievements aren't separately toggle-gated, but the two tied to easter eggs (Honorary Faculty, Codebreaker)
+  can only be earned while `bh.EasterEggs` is on, since their trigger *is* the egg.
 - The physicist list and the locker/whisper messages are plain string tables in the source — easy to add to,
   reword, or trim to taste.
 - If you ever want an egg that *does* affect play (a cosmetic unlock, a hidden avatar tint, a secret room in an
