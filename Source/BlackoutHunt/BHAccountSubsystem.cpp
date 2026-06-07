@@ -1249,6 +1249,12 @@ void UBHAccountSubsystem::RecordQuestionResult(int32 TopicIndex, bool bCorrect)
 	{
 		return;
 	}
+	// Per-topic lifetime tallies (for the mastery readout).
+	if (Progress.TopicAnswerCounts.Num() < 4) { Progress.TopicAnswerCounts.SetNumZeroed(4); }
+	if (Progress.TopicCorrectCounts.Num() < 4) { Progress.TopicCorrectCounts.SetNumZeroed(4); }
+	if (Progress.TopicAnswerCounts[TopicIndex] < MAX_int32) { ++Progress.TopicAnswerCounts[TopicIndex]; }
+	if (bCorrect && Progress.TopicCorrectCounts[TopicIndex] < MAX_int32) { ++Progress.TopicCorrectCounts[TopicIndex]; }
+
 	if (bCorrect)
 	{
 		if (Progress.CurrentAnswerStreak < MAX_int32)
@@ -1631,6 +1637,17 @@ TSharedRef<FJsonObject> UBHAccountSubsystem::ProgressToJson() const
 	JsonObject->SetNumberField(TEXT("train_activity_mask"), Progress.TrainActivityMask);
 	JsonObject->SetNumberField(TEXT("current_answer_streak"), Progress.CurrentAnswerStreak);
 	JsonObject->SetNumberField(TEXT("topics_ever_correct_mask"), Progress.TopicsEverCorrectMask);
+	{
+		TArray<TSharedPtr<FJsonValue>> AnswerCountsJson;
+		TArray<TSharedPtr<FJsonValue>> CorrectCountsJson;
+		for (int32 TopicIdx = 0; TopicIdx < 4; ++TopicIdx)
+		{
+			AnswerCountsJson.Add(MakeShared<FJsonValueNumber>(Progress.TopicAnswerCounts.IsValidIndex(TopicIdx) ? Progress.TopicAnswerCounts[TopicIdx] : 0));
+			CorrectCountsJson.Add(MakeShared<FJsonValueNumber>(Progress.TopicCorrectCounts.IsValidIndex(TopicIdx) ? Progress.TopicCorrectCounts[TopicIdx] : 0));
+		}
+		JsonObject->SetArrayField(TEXT("topic_answer_counts"), AnswerCountsJson);
+		JsonObject->SetArrayField(TEXT("topic_correct_counts"), CorrectCountsJson);
+	}
 	JsonObject->SetNumberField(TEXT("xp"), Progress.XP);
 	JsonObject->SetStringField(TEXT("selected_avatar_url"), Progress.SelectedAvatarUrl);
 	JsonObject->SetNumberField(TEXT("selected_avatar_index"), Progress.SelectedAvatarIndex);
@@ -1691,6 +1708,26 @@ void UBHAccountSubsystem::ApplyProgressJson(const TSharedPtr<FJsonObject>& JsonO
 	Progress.TrainActivityMask = JsonInt(JsonObject, TEXT("train_activity_mask"));
 	Progress.CurrentAnswerStreak = JsonInt(JsonObject, TEXT("current_answer_streak"));
 	Progress.TopicsEverCorrectMask = JsonInt(JsonObject, TEXT("topics_ever_correct_mask"));
+	Progress.TopicAnswerCounts.Init(0, 4);
+	Progress.TopicCorrectCounts.Init(0, 4);
+	{
+		const TArray<TSharedPtr<FJsonValue>>* AnswerCountsJson = nullptr;
+		if (JsonObject.IsValid() && JsonObject->TryGetArrayField(TEXT("topic_answer_counts"), AnswerCountsJson) && AnswerCountsJson)
+		{
+			for (int32 TopicIdx = 0; TopicIdx < 4 && TopicIdx < AnswerCountsJson->Num(); ++TopicIdx)
+			{
+				Progress.TopicAnswerCounts[TopicIdx] = (*AnswerCountsJson)[TopicIdx].IsValid() ? static_cast<int32>((*AnswerCountsJson)[TopicIdx]->AsNumber()) : 0;
+			}
+		}
+		const TArray<TSharedPtr<FJsonValue>>* CorrectCountsJson = nullptr;
+		if (JsonObject.IsValid() && JsonObject->TryGetArrayField(TEXT("topic_correct_counts"), CorrectCountsJson) && CorrectCountsJson)
+		{
+			for (int32 TopicIdx = 0; TopicIdx < 4 && TopicIdx < CorrectCountsJson->Num(); ++TopicIdx)
+			{
+				Progress.TopicCorrectCounts[TopicIdx] = (*CorrectCountsJson)[TopicIdx].IsValid() ? static_cast<int32>((*CorrectCountsJson)[TopicIdx]->AsNumber()) : 0;
+			}
+		}
+	}
 	Progress.XP = JsonInt(JsonObject, TEXT("xp"));
 	Progress.SelectedAvatarUrl = JsonString(JsonObject, TEXT("selected_avatar_url"));
 	Progress.SelectedAvatarIndex = JsonInt(JsonObject, TEXT("selected_avatar_index"));

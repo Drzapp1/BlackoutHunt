@@ -82,6 +82,13 @@ struct FBHAccountProgress
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	int32 TopicsEverCorrectMask = 0;
 
+	// Per-topic lifetime answer tallies (index = EBHPhysicsTopic 0..3) behind the player's mastery readout.
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	TArray<int32> TopicAnswerCounts;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	TArray<int32> TopicCorrectCounts;
+
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	int32 XP = 0;
 

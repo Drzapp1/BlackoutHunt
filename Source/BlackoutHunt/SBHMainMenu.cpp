@@ -4050,6 +4050,54 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 		];
 	}
 
+	// Per-topic physics mastery (from in-round answers; persisted in the account).
+	static const TCHAR* BHTopicNames[4] = { TEXT("Forces & Motion"), TEXT("Electricity"), TEXT("Waves"), TEXT("Energy") };
+	TSharedRef<SVerticalBox> MasteryRows = SNew(SVerticalBox);
+	for (int32 TopicIdx = 0; TopicIdx < 4; ++TopicIdx)
+	{
+		const int32 TopicTotal = (AccountSubsystem && AccountSubsystem->GetProgress().TopicAnswerCounts.IsValidIndex(TopicIdx)) ? AccountSubsystem->GetProgress().TopicAnswerCounts[TopicIdx] : 0;
+		const int32 TopicCorrect = (AccountSubsystem && AccountSubsystem->GetProgress().TopicCorrectCounts.IsValidIndex(TopicIdx)) ? AccountSubsystem->GetProgress().TopicCorrectCounts[TopicIdx] : 0;
+		const float TopicPct = TopicTotal > 0 ? static_cast<float>(TopicCorrect) / static_cast<float>(TopicTotal) : 0.0f;
+		const FLinearColor BarColor = TopicTotal == 0
+			? FLinearColor(0.30f, 0.32f, 0.35f, 1.0f)
+			: (TopicPct >= 0.7f ? FLinearColor(0.36f, 0.82f, 0.46f, 1.0f)
+				: (TopicPct >= 0.4f ? FLinearColor(0.88f, 0.74f, 0.30f, 1.0f) : FLinearColor(0.88f, 0.44f, 0.36f, 1.0f)));
+		const FString TopicStat = TopicTotal > 0 ? FString::Printf(TEXT("%d/%d  %.0f%%"), TopicCorrect, TopicTotal, TopicPct * 100.0f) : FString(TEXT("--"));
+		MasteryRows->AddSlot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 4.0f)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+			[
+				SNew(SBox).WidthOverride(108.0f)
+				[
+					SNew(STextBlock).Font(MenuFont(9, FName(TEXT("Bold")))).ColorAndOpacity(FLinearColor(0.78f, 0.82f, 0.86f, 1.0f)).Text(FText::FromString(BHTopicNames[TopicIdx]))
+				]
+			]
+			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center).Padding(6.0f, 0.0f, 6.0f, 0.0f)
+			[
+				SNew(SBox).HeightOverride(9.0f)
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot().FillWidth(FMath::Max(TopicPct, 0.0001f))
+					[
+						SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(BarColor)
+					]
+					+ SHorizontalBox::Slot().FillWidth(FMath::Max(1.0f - TopicPct, 0.0001f))
+					[
+						SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(FLinearColor(0.13f, 0.14f, 0.16f, 1.0f))
+					]
+				]
+			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+			[
+				SNew(SBox).WidthOverride(70.0f)
+				[
+					SNew(STextBlock).Font(MenuFont(9)).ColorAndOpacity(FLinearColor(0.70f, 0.74f, 0.78f, 1.0f)).Text(FText::FromString(TopicStat))
+				]
+			]
+		];
+	}
+
 	return SNew(SBorder)
 		.BorderImage(WhiteBrush())
 		.BorderBackgroundColor(FLinearColor(0.034f, 0.034f, 0.044f, 0.95f))
@@ -4070,6 +4118,17 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 				.Font(MenuFont(10))
 				.ColorAndOpacity(FLinearColor(0.66f, 0.72f, 0.78f, 1.0f))
 				.Text(FText::FromString(FString::Printf(TEXT("Earned %d of %d. Each badge shows its difficulty (more pips = harder, colour-coded by tier) and the cosmetic it unlocks. Hidden badges stay secret until you find them."), Earned, Total)))
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 4.0f)
+			[
+				SNew(STextBlock)
+				.Font(MenuFont(11, FName(TEXT("Bold"))))
+				.ColorAndOpacity(FLinearColor(0.82f, 0.88f, 0.80f, 1.0f))
+				.Text(FText::FromString(TEXT("Your physics mastery (from in-round answers)")))
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 11.0f)
+			[
+				MasteryRows
 			]
 			+ SVerticalBox::Slot().AutoHeight()
 			[
