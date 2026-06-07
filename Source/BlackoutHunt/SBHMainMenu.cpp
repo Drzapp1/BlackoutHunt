@@ -4168,11 +4168,23 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 	// Per-topic physics mastery (from in-round answers; persisted in the account).
 	static const TCHAR* BHTopicNames[4] = { TEXT("Forces & Motion"), TEXT("Electricity"), TEXT("Waves"), TEXT("Energy") };
 	TSharedRef<SVerticalBox> MasteryRows = SNew(SVerticalBox);
+	int32 WeakestTopicIdx = INDEX_NONE;
+	float WeakestTopicPct = 2.0f;
+	int32 TopicsWithData = 0;
+	int32 MasteredTopics = 0;
 	for (int32 TopicIdx = 0; TopicIdx < 4; ++TopicIdx)
 	{
 		const int32 TopicTotal = (AccountSubsystem && AccountSubsystem->GetProgress().TopicAnswerCounts.IsValidIndex(TopicIdx)) ? AccountSubsystem->GetProgress().TopicAnswerCounts[TopicIdx] : 0;
 		const int32 TopicCorrect = (AccountSubsystem && AccountSubsystem->GetProgress().TopicCorrectCounts.IsValidIndex(TopicIdx)) ? AccountSubsystem->GetProgress().TopicCorrectCounts[TopicIdx] : 0;
 		const float TopicPct = TopicTotal > 0 ? static_cast<float>(TopicCorrect) / static_cast<float>(TopicTotal) : 0.0f;
+		// Only judge a topic once there's a little evidence (>=3 answers), so a single lucky/unlucky answer
+		// doesn't crown a "weakest" topic.
+		if (TopicTotal >= 3)
+		{
+			++TopicsWithData;
+			if (TopicPct >= 0.8f) { ++MasteredTopics; }
+			if (TopicPct < WeakestTopicPct) { WeakestTopicPct = TopicPct; WeakestTopicIdx = TopicIdx; }
+		}
 		const FLinearColor BarColor = TopicTotal == 0
 			? FLinearColor(0.30f, 0.32f, 0.35f, 1.0f)
 			: (TopicPct >= 0.7f ? FLinearColor(0.36f, 0.82f, 0.46f, 1.0f)
@@ -4211,6 +4223,22 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 				]
 			]
 		];
+	}
+
+	// Turn the passive mastery bars into a study nudge: point the student at their weakest topic (or congratulate
+	// a clean sweep). Cosmetic/local -- the student's own lifetime view, not the classroom report.
+	FString FocusStr;
+	if (TopicsWithData == 0)
+	{
+		FocusStr = TEXT("Answer a few questions in each topic and your study focus will show up here.");
+	}
+	else if (MasteredTopics >= 4)
+	{
+		FocusStr = TEXT("All four topics above 80% -- you're exam-ready. Keep them sharp.");
+	}
+	else if (WeakestTopicIdx != INDEX_NONE)
+	{
+		FocusStr = FString::Printf(TEXT("Focus next: %s (%.0f%%) -- your weakest topic right now."), BHTopicNames[WeakestTopicIdx], WeakestTopicPct * 100.0f);
 	}
 
 	return SNew(SBorder)
@@ -4285,6 +4313,21 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 11.0f)
 			[
 				MasteryRows
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 11.0f)
+			[
+				SNew(SBorder)
+				.Visibility(FocusStr.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible)
+				.BorderImage(WhiteBrush())
+				.BorderBackgroundColor(FLinearColor(0.07f, 0.09f, 0.08f, 0.95f))
+				.Padding(7.0f)
+				[
+					SNew(STextBlock)
+					.AutoWrapText(true)
+					.Font(MenuFont(10, FName(TEXT("Bold"))))
+					.ColorAndOpacity(FLinearColor(0.74f, 0.90f, 0.78f, 1.0f))
+					.Text(FText::FromString(FocusStr))
+				]
 			]
 			+ SVerticalBox::Slot().AutoHeight()
 			[
