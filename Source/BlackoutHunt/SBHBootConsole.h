@@ -120,7 +120,8 @@ private:
 	TArray<float> LineStartTimes;
 	float BootScriptDuration = 5.0f;
 	float GlitchSeconds = 2.2f;
-	float BlackHoldSeconds = 0.5f;
+	// Dead-air beat on a fully black screen after the crash, before the start screen fades in.
+	float BlackHoldSeconds = 2.0f;
 	float MenuFadeSeconds = 1.6f;
 	// Times (relative to GlitchStart) at which each stacked crash dialog pops in.
 	float CrashDialogDelays[3] = { 0.15f, 0.6f, 1.05f };

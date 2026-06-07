@@ -217,6 +217,13 @@ void ABHPlayerState::ResetRevisionStats()
 	RevisionReviewQueue.Reset();
 }
 
+void ABHPlayerState::ResetRevisionRoundContribution()
+{
+	// Per-round gate only: zero the contribution tally but keep every mastery field (and the review queue
+	// untouched), so a student's durable mastery accumulates across the session's stages.
+	RevisionStats.ContributionCount = 0;
+}
+
 void ABHPlayerState::MarkWarmupStep(EBHWarmupStep Step)
 {
 	// Server-authoritative, and only meaningful during the live role warmup (Prep, not the

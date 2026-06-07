@@ -1023,7 +1023,7 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 	}
 
 	int32 EvaluatedAnswerIndex = AnswerIndex;
-	TArray<ABHCharacter*> RevisionParticipants;
+	TArray<TPair<ABHCharacter*, bool>> RevisionParticipants;
 	const bool bActiveRevisionMode = BHGS && BHGS->bRevisionMode;
 	if (bActiveRevisionMode)
 	{
@@ -1127,9 +1127,15 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 		{
 			ABHCharacter* VoterCharacter = It->Get() ? Cast<ABHCharacter>(It->Get()->GetPawn()) : nullptr;
 			const ABHPlayerState* VoterPS = VoterCharacter ? VoterCharacter->GetPlayerState<ABHPlayerState>() : nullptr;
-			if (VoterCharacter && VoterPS && RevisionTeamVotes.Contains(VoterPS->GetPlayerId()))
+			if (VoterCharacter && VoterPS)
 			{
-				RevisionParticipants.Add(VoterCharacter);
+				if (const int32* VoterVote = RevisionTeamVotes.Find(VoterPS->GetPlayerId()))
+				{
+					// Grade each voter on THEIR OWN choice, not the team's majority: a correct team can never
+					// carry a student who personally answered wrong, and a lone correct voter inside a wrong
+					// team still earns their own credit.
+					RevisionParticipants.Add(TPair<ABHCharacter*, bool>(VoterCharacter, *VoterVote == CorrectAnswerIndex));
+				}
 			}
 		}
 		RevisionTeamVotes.Reset();
@@ -1143,7 +1149,7 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 // Shared post-evaluation path for both multiple-choice and typed-numeric answers.
 // Records the result (using the actual chosen/typed answer text for distractor
 // analytics), advances the revision node, applies feedback, and handles the wrong path.
-bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPlayerController* PC, bool bCorrect, const FString& EvaluatedSelectedAnswer, TArray<ABHCharacter*>& RevisionParticipants, bool bActiveRevisionMode, bool bVisualAnswer)
+bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPlayerController* PC, bool bCorrect, const FString& EvaluatedSelectedAnswer, TArray<TPair<ABHCharacter*, bool>>& RevisionParticipants, bool bActiveRevisionMode, bool bVisualAnswer)
 {
 	// Per-player learning record (cosmetic/local): the answer streak / topic mask behind the Honor Roll and
 	// Polymath achievements. This is the live grade path -- the warmup path returns earlier and is excluded.
@@ -1172,7 +1178,8 @@ bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPla
 				}
 				if (RevisionParticipants.IsEmpty() && Character)
 				{
-					RevisionParticipants.Add(Character);
+					// Solo / numeric / drag answer: the submitter is the only participant, graded on the evaluated result.
+					RevisionParticipants.Add(TPair<ABHCharacter*, bool>(Character, bCorrect));
 				}
 				// A correct answer counts as a correction when the loaded question was itself a
 				// re-surfaced review (a question the targeted student had previously missed).
@@ -1184,9 +1191,11 @@ bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPla
 				{
 					RevisionQuestion.MasteryWeight *= FMath::Clamp(CVarBHVisualMasteryMultiplier.GetValueOnGameThread(), 1.0f, 2.0f);
 				}
-				for (ABHCharacter* Participant : RevisionParticipants)
+				for (const TPair<ABHCharacter*, bool>& Participant : RevisionParticipants)
 				{
-					BHGM->RecordRevisionAnswer(Participant, RevisionQuestion, true, bCorrection, EvaluatedSelectedAnswer, RevisionTeamSummary);
+					// Per-voter credit: each student's own correctness drives their mastery + contribution; a
+					// correction only counts when THEY personally got the re-surfaced review question right.
+					BHGM->RecordRevisionAnswer(Participant.Key, RevisionQuestion, Participant.Value, bCorrection && Participant.Value, Participant.Value ? EvaluatedSelectedAnswer : FString(), RevisionTeamSummary);
 				}
 				PendingCorrectionCharacters.Reset();
 			}
@@ -1223,7 +1232,15 @@ bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPla
 			const int32 CompletedStep = RevisionQuestionsSolved;
 			const int32 RequiredSteps = FMath::Max(1, RevisionQuestionsRequired);
 			const FString CompletedExplanation = QuestionExplanation;
-			QueueAdaptiveQuestionForParticipants(RevisionParticipants, true);
+			TArray<ABHCharacter*> ParticipantCharacters;
+			for (const TPair<ABHCharacter*, bool>& Participant : RevisionParticipants)
+			{
+				if (Participant.Key)
+				{
+					ParticipantCharacters.Add(Participant.Key);
+				}
+			}
+			QueueAdaptiveQuestionForParticipants(ParticipantCharacters, true);
 			++RevisionQuestionStep;
 			ConfigureQuestion();
 			QuestionFeedback = FString::Printf(TEXT("Correct %d/%d: %s Next team question loaded."), CompletedStep, RequiredSteps, *CompletedExplanation);
@@ -1288,13 +1305,14 @@ bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPla
 			}
 			if (RevisionParticipants.IsEmpty() && Character)
 			{
-				RevisionParticipants.Add(Character);
+				RevisionParticipants.Add(TPair<ABHCharacter*, bool>(Character, bCorrect));
 			}
-			for (ABHCharacter* Participant : RevisionParticipants)
+			for (const TPair<ABHCharacter*, bool>& Participant : RevisionParticipants)
 			{
-				// RecordRevisionAnswer enqueues this question for spaced review and applies the
-				// topic-mastery decay; the missed question resurfaces later, not right now.
-				BHGM->RecordRevisionAnswer(Participant, RevisionQuestion, false, false, EvaluatedSelectedAnswer, RevisionTeamSummary);
+				// Per-voter grading: a student who personally picked the right answer inside a team whose
+				// majority went wrong still earns their correct credit; everyone else takes the miss
+				// (spaced-review enqueue + topic-mastery decay are handled in RecordRevisionAnswer).
+				BHGM->RecordRevisionAnswer(Participant.Key, RevisionQuestion, Participant.Value, bRevisionReviewQuestion && Participant.Value, Participant.Value ? FString() : EvaluatedSelectedAnswer, RevisionTeamSummary);
 			}
 		}
 	}
@@ -1323,7 +1341,15 @@ bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPla
 	{
 		// Anti-echo: never leave the just-revealed answer on screen to be re-entered. Load a
 		// fresh, eased adaptive question; the missed one is already queued for spaced review.
-		QueueAdaptiveQuestionForParticipants(RevisionParticipants, false);
+		TArray<ABHCharacter*> ParticipantCharacters;
+		for (const TPair<ABHCharacter*, bool>& Participant : RevisionParticipants)
+		{
+			if (Participant.Key)
+			{
+				ParticipantCharacters.Add(Participant.Key);
+			}
+		}
+		QueueAdaptiveQuestionForParticipants(ParticipantCharacters, false);
 		++RevisionQuestionStep;
 		ConfigureQuestion();
 		QuestionFeedback = FString::Printf(TEXT("Wrong. Correction (%s): %s Hint: %s A new question loaded — read the correction, then answer in %.0fs."), *MissedTopic, *MissedExplanation, *MissedHint, HoldSeconds);
@@ -1449,7 +1475,7 @@ bool ABHObjectiveStation::SubmitNumericAnswer(ABHCharacter* Character, float Val
 
 	// Numeric entry is individual (you type your own value), so credit the submitter
 	// rather than a voting team; FinalizeRevisionAnswer adds the submitter when empty.
-	TArray<ABHCharacter*> RevisionParticipants;
+	TArray<TPair<ABHCharacter*, bool>> RevisionParticipants;
 	return FinalizeRevisionAnswer(Character, PC, bWithinTolerance, TypedAnswer, RevisionParticipants, true);
 }
 

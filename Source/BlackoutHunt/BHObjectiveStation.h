@@ -154,7 +154,10 @@ protected:
 	void BuildInteractiveArrangement(int32 Seed);
 	// Server-side grade of a drag arrangement: true iff every slot holds its canonically-correct piece.
 	bool GradeArrangement(const TArray<int32>& SlotToPiece) const;
-	bool FinalizeRevisionAnswer(ABHCharacter* Character, ABHPlayerController* PC, bool bCorrect, const FString& EvaluatedSelectedAnswer, TArray<ABHCharacter*>& RevisionParticipants, bool bActiveRevisionMode, bool bVisualAnswer = false);
+	// RevisionParticipants pairs each answer-team voter with THEIR OWN correctness (vote == correct choice),
+	// so mastery/contribution is credited per student and a correct team never carries a wrong voter. The
+	// node still progresses on the team-majority result passed as bCorrect.
+	bool FinalizeRevisionAnswer(ABHCharacter* Character, ABHPlayerController* PC, bool bCorrect, const FString& EvaluatedSelectedAnswer, TArray<TPair<ABHCharacter*, bool>>& RevisionParticipants, bool bActiveRevisionMode, bool bVisualAnswer = false);
 	void QueueAdaptiveQuestionForParticipants(const TArray<ABHCharacter*>& Participants, bool bLastAnswerCorrect);
 	int32 ResolveRevisionQuestionTarget() const;
 	FString GetActionVerb() const;

@@ -48,6 +48,9 @@ public:
 	void ClearSpectatorSupportState(bool bClearRolePreference = true);
 	void AddSpectatorEncouragement();
 	void ResetRevisionStats();
+	// Clears only the per-round contribution counter (the "did real work this round" gate) while leaving
+	// durable mastery and the spaced-review queue intact, so later session stages keep cumulative mastery.
+	void ResetRevisionRoundContribution();
 	// Records that the player tried a warmup action during Prep. Server-authoritative and a
 	// no-op outside the live role warmup, so it can be called unconditionally from action sites.
 	// Never touches scoring/mastery/reports. Sends a one-time "you're ready" toast on completion.

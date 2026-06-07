@@ -9117,7 +9117,9 @@ void ABHGameMode::BuildSubstationLevel()
 		SpawnBlock(LP(0.0f, 0.0f, CenterZForBlockBottom(150.0f, 0.12f)), FVector(lenScale, 2.1f, 0.12f), DuctTint, Rot, true, EBHBlockMaterial::ConcreteWACool);
 		if (ABHCrawlSpaceVolume* Crawl = GetWorld()->SpawnActor<ABHCrawlSpaceVolume>(LP(0.0f, 0.0f, 80.0f), Rot))
 		{
-			Crawl->Configure(FVector(lenScale * 50.0f + 40.0f, 95.0f, 110.0f));
+			// Y half-extent 105 (>= the side walls at +/-100) so the whole between-walls passage is inside the
+			// shelter volume -- a prone survivor anywhere in the mouth is uncapturable, no edge margin.
+			Crawl->Configure(FVector(lenScale * 50.0f + 40.0f, 105.0f, 110.0f));
 		}
 	};
 	// Each crawl TUNNELS THROUGH an interior divider via a lintel-capped gap (the 4 split wall segments are up in
@@ -10794,7 +10796,29 @@ void ABHGameMode::PrepareRoundDirector()
 	}
 	if (bRevisionMode)
 	{
-		ResetRevisionStats();
+		// Mastery is durable for the whole session now: only the first stage wipes it. Later stages keep each
+		// student's per-topic mastery and spaced-review queue -- one cumulative climb across the session's
+		// stages -- and clear just the per-round contribution gate and per-round report bookkeeping.
+		if (RuntimeStageIndex <= 0)
+		{
+			ResetRevisionStats();
+		}
+		else
+		{
+			for (APlayerState* RawPS : GameState->PlayerArray)
+			{
+				if (ABHPlayerState* BHPS = Cast<ABHPlayerState>(RawPS))
+				{
+					BHPS->ResetRevisionRoundContribution();
+				}
+			}
+			if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
+			{
+				BHGI->ClearQuestionAttemptHistory();
+			}
+			RevisionReviewTimeRemaining = 0;
+			bRevisionReportExported = false;
+		}
 		UpdateRevisionSummary(TEXT("Physics Classroom started: solve each zone, correct mistakes, and keep every student above threshold."));
 		UpdateDirectorGameState(GetRevisionObjectiveText());
 	}

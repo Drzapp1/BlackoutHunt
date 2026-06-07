@@ -58,7 +58,8 @@ private:
 		Controls,
 		Settings,
 		Feedback,
-		Achievements
+		Achievements,
+		Mastery
 	};
 
 	enum class EBHClassroomRunbookStep : uint8
@@ -326,6 +327,9 @@ private:
 	TSharedRef<SWidget> BuildLocalCredentialPanel(bool bForStartScreen);
 	TSharedRef<SWidget> BuildFeedbackPanel();
 	TSharedRef<SWidget> BuildAchievementsPanel();
+	// Revision tab: the player's per-topic mastery (from the locally-saved account) plus a browser of
+	// example questions for every topic and difficulty level.
+	TSharedRef<SWidget> BuildMasteryPanel();
 	TSharedRef<SWidget> BuildEndOfRoundSurveyPanel();
 	FSlateColor GetFeedbackKindButtonColor(EBHFeedbackKind Kind) const;
 	FSlateColor GetFeedbackRatingButtonColor(int32 Rating) const;

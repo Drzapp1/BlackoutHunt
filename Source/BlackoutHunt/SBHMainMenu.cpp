@@ -66,8 +66,8 @@ namespace
 	TWeakObjectPtr<ABHPlayerController> GMenuButtonSoundController;
 
 	constexpr int32 MenuDefaultGamePort = 7777;
-	constexpr float MenuAvatarPreviewModelScale = 0.56f;
-	constexpr float MenuAvatarPreviewCameraDistance = 212.0f;
+	constexpr float MenuAvatarPreviewModelScale = 0.66f;
+	constexpr float MenuAvatarPreviewCameraDistance = 150.0f;
 	constexpr float MenuAvatarPreviewCameraHeight = 46.0f;
 	constexpr float MenuAvatarPreviewCameraFov = 34.0f;
 
@@ -3676,6 +3676,8 @@ int32 SBHMainMenu::MenuTabToWidgetIndex(EBHMainMenuTab Tab)
 		return 9;
 	case EBHMainMenuTab::Achievements:
 		return 10;
+	case EBHMainMenuTab::Mastery:
+		return 11;
 	default:
 		return 8;
 	}
@@ -4382,6 +4384,206 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 			[
 				BadgeList
 			]
+		];
+}
+
+TSharedRef<SWidget> SBHMainMenu::BuildMasteryPanel()
+{
+	const ABHPlayerController* PC = PlayerController.Get();
+	const UGameInstance* GameInstance = PC ? PC->GetGameInstance() : nullptr;
+	const UBHAccountSubsystem* AccountSubsystem = GameInstance ? GameInstance->GetSubsystem<UBHAccountSubsystem>() : nullptr;
+
+	// Per-topic lifetime accuracy from the locally-saved account (TopicCorrectCounts / TopicAnswerCounts).
+	TArray<int32> AnswerCounts;
+	TArray<int32> CorrectCounts;
+	if (AccountSubsystem)
+	{
+		AnswerCounts = AccountSubsystem->GetProgress().TopicAnswerCounts;
+		CorrectCounts = AccountSubsystem->GetProgress().TopicCorrectCounts;
+	}
+
+	TSharedRef<SVerticalBox> MasteryRows = SNew(SVerticalBox);
+	int32 TotalAnswers = 0;
+	int32 TotalCorrect = 0;
+	for (int32 TopicIdx = 0; TopicIdx < 4; ++TopicIdx)
+	{
+		const int32 Answered = AnswerCounts.IsValidIndex(TopicIdx) ? AnswerCounts[TopicIdx] : 0;
+		const int32 Correct = CorrectCounts.IsValidIndex(TopicIdx) ? CorrectCounts[TopicIdx] : 0;
+		TotalAnswers += Answered;
+		TotalCorrect += Correct;
+		const float Pct = Answered > 0 ? 100.0f * static_cast<float>(Correct) / static_cast<float>(Answered) : 0.0f;
+		const float FillFrac = FMath::Clamp(Pct / 100.0f, 0.0f, 1.0f);
+		const FLinearColor BarColor = Pct >= 70.0f ? FLinearColor(0.40f, 0.86f, 0.52f, 1.0f) : (Pct >= 50.0f ? FLinearColor(0.95f, 0.80f, 0.30f, 1.0f) : FLinearColor(0.86f, 0.45f, 0.42f, 1.0f));
+		const FString TopicName = FBHRevisionQuestionBank::TopicToString(static_cast<EBHPhysicsTopic>(TopicIdx));
+		MasteryRows->AddSlot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 6.0f)
+		[
+			SNew(SBorder)
+			.BorderImage(WhiteBrush())
+			.BorderBackgroundColor(FLinearColor(0.040f, 0.044f, 0.052f, 0.95f))
+			.Padding(9.0f)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().FillWidth(0.34f).VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Font(MenuFont(11, FName(TEXT("Bold"))))
+					.ColorAndOpacity(FLinearColor(0.90f, 0.92f, 0.84f, 1.0f))
+					.Text(FText::FromString(TopicName))
+				]
+				+ SHorizontalBox::Slot().FillWidth(0.46f).VAlign(VAlign_Center).Padding(8.0f, 0.0f, 8.0f, 0.0f)
+				[
+					SNew(SBorder)
+					.BorderImage(WhiteBrush())
+					.BorderBackgroundColor(FLinearColor(0.12f, 0.13f, 0.15f, 1.0f))
+					.Padding(2.0f)
+					[
+						SNew(SBox).HeightOverride(12.0f)
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot().FillWidth(FMath::Max(0.0001f, FillFrac))
+							[
+								SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(BarColor)
+							]
+							+ SHorizontalBox::Slot().FillWidth(FMath::Max(0.0001f, 1.0f - FillFrac))
+							[
+								SNew(SBox)
+							]
+						]
+					]
+				]
+				+ SHorizontalBox::Slot().FillWidth(0.20f).HAlign(HAlign_Right).VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Font(MenuFont(11))
+					.ColorAndOpacity(BarColor)
+					.Text(FText::FromString(FString::Printf(TEXT("%.0f%%  (%d/%d)"), Pct, Correct, Answered)))
+				]
+			]
+		];
+	}
+	const float OverallPct = TotalAnswers > 0 ? 100.0f * static_cast<float>(TotalCorrect) / static_cast<float>(TotalAnswers) : 0.0f;
+
+	// Example questions: the active bank grouped by topic, one example per difficulty level (which maps to
+	// the three hunt stages). Every topic is taught at every stage; the stage shifts the difficulty balance.
+	const TArray<FBHRevisionQuestion>& Questions = FBHRevisionQuestionBank::GetQuestions();
+	const EBHQuestionDifficulty Levels[3] = { EBHQuestionDifficulty::Easy, EBHQuestionDifficulty::Medium, EBHQuestionDifficulty::Hard };
+	const TCHAR* StageLabels[3] = { TEXT("Stage 1 - Facility (Easy)"), TEXT("Stage 2 - Substation (Medium)"), TEXT("Stage 3 - Foggrounds (Hard)") };
+	TSharedRef<SVerticalBox> QuestionBrowser = SNew(SVerticalBox);
+	for (int32 TopicIdx = 0; TopicIdx < 4; ++TopicIdx)
+	{
+		const EBHPhysicsTopic Topic = static_cast<EBHPhysicsTopic>(TopicIdx);
+		QuestionBrowser->AddSlot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 4.0f)
+		[
+			SNew(STextBlock)
+			.Font(MenuFont(13, FName(TEXT("Bold"))))
+			.ColorAndOpacity(FLinearColor(0.62f, 0.80f, 0.92f, 1.0f))
+			.Text(FText::FromString(FBHRevisionQuestionBank::TopicToString(Topic)))
+		];
+		for (int32 LevelIdx = 0; LevelIdx < 3; ++LevelIdx)
+		{
+			const EBHQuestionDifficulty Difficulty = Levels[LevelIdx];
+			const FBHRevisionQuestion* Example = nullptr;
+			for (const FBHRevisionQuestion& Q : Questions)
+			{
+				if (Q.Topic == Topic && Q.Difficulty == Difficulty && Q.Type == EBHQuestionType::MultipleChoice)
+				{
+					Example = &Q;
+					break;
+				}
+			}
+			if (Example == nullptr)
+			{
+				for (const FBHRevisionQuestion& Q : Questions)
+				{
+					if (Q.Topic == Topic && Q.Difficulty == Difficulty)
+					{
+						Example = &Q;
+						break;
+					}
+				}
+			}
+			if (Example == nullptr)
+			{
+				continue;
+			}
+			FString CorrectAnswer;
+			if (Example->Answer.Choices.IsValidIndex(Example->Answer.CorrectChoiceIndex))
+			{
+				CorrectAnswer = Example->Answer.Choices[Example->Answer.CorrectChoiceIndex];
+			}
+			QuestionBrowser->AddSlot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 6.0f)
+			[
+				SNew(SBorder)
+				.BorderImage(WhiteBrush())
+				.BorderBackgroundColor(FLinearColor(0.045f, 0.050f, 0.058f, 0.95f))
+				.Padding(9.0f)
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight()
+					[
+						SNew(STextBlock)
+						.Font(MenuFont(9, FName(TEXT("Bold"))))
+						.ColorAndOpacity(FLinearColor(0.70f, 0.74f, 0.50f, 1.0f))
+						.Text(FText::FromString(FString(StageLabels[LevelIdx])))
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 3.0f, 0.0f, 0.0f)
+					[
+						SNew(STextBlock)
+						.AutoWrapText(true)
+						.Font(MenuFont(11))
+						.ColorAndOpacity(FLinearColor(0.92f, 0.93f, 0.88f, 1.0f))
+						.Text(FText::FromString(Example->Prompt))
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f, 0.0f, 0.0f)
+					[
+						SNew(STextBlock)
+						.AutoWrapText(true)
+						.Font(MenuFont(10, FName(TEXT("Bold"))))
+						.ColorAndOpacity(FLinearColor(0.40f, 0.86f, 0.52f, 1.0f))
+						.Text(FText::FromString(FString::Printf(TEXT("Answer: %s"), *CorrectAnswer)))
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f, 0.0f, 0.0f)
+					[
+						SNew(STextBlock)
+						.AutoWrapText(true)
+						.Font(MenuFont(9))
+						.ColorAndOpacity(FLinearColor(0.66f, 0.70f, 0.74f, 1.0f))
+						.Text(FText::FromString(Example->Explanation))
+					]
+				]
+			];
+		}
+	}
+
+	return SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 4.0f)
+		[
+			SNew(STextBlock)
+			.Font(MenuFont(15, FName(TEXT("Bold"))))
+			.ColorAndOpacity(FLinearColor(0.94f, 0.92f, 0.80f, 1.0f))
+			.Text(FText::FromString(TEXT("YOUR MASTERY")))
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 8.0f)
+		[
+			SNew(STextBlock)
+			.Font(MenuFont(10))
+			.ColorAndOpacity(FLinearColor(0.66f, 0.70f, 0.74f, 1.0f))
+			.Text(FText::FromString(FString::Printf(TEXT("Lifetime accuracy on this device  -  overall %.0f%% (%d / %d correct)"), OverallPct, TotalCorrect, TotalAnswers)))
+		]
+		+ SVerticalBox::Slot().AutoHeight()
+		[
+			MasteryRows
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 14.0f, 0.0f, 4.0f)
+		[
+			SNew(STextBlock)
+			.Font(MenuFont(15, FName(TEXT("Bold"))))
+			.ColorAndOpacity(FLinearColor(0.94f, 0.92f, 0.80f, 1.0f))
+			.Text(FText::FromString(TEXT("EXAMPLE QUESTIONS BY TOPIC & LEVEL")))
+		]
+		+ SVerticalBox::Slot().AutoHeight()
+		[
+			QuestionBrowser
 		];
 }
 
@@ -9070,14 +9272,32 @@ TSharedRef<SWidget> SBHMainMenu::BuildThemeSection()
 			.Padding(0.0f, 0.0f, 6.0f, 0.0f)
 			[
 				SNew(SBHMenuButton)
-				.ButtonColorAndOpacity(Theme.Accent)
-				.ContentPadding(FMargin(9.0f, 4.0f))
+				.ContentPadding(FMargin(7.0f, 4.0f))
 				.OnClicked(this, &SBHMainMenu::OnThemeClicked, Index)
 				[
-					SNew(STextBlock)
-					.Font(MenuFont(8, FName(TEXT("Bold"))))
-					.ColorAndOpacity(Theme.Background)
-					.Text(FText::FromString(BHMenuThemeName(Index)))
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(0.0f, 0.0f, 5.0f, 0.0f)
+					[
+						SNew(SBox)
+						.WidthOverride(13.0f)
+						.HeightOverride(13.0f)
+						[
+							SNew(SBorder)
+							.BorderImage(WhiteBrush())
+							.BorderBackgroundColor(Theme.Accent)
+						]
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					[
+						SNew(STextBlock)
+						.Font(MenuFont(8, FName(TEXT("Bold"))))
+						.Text(FText::FromString(BHMenuThemeName(Index)))
+					]
 				]
 			];
 	}
