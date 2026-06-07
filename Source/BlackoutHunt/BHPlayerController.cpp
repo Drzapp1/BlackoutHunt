@@ -5136,6 +5136,12 @@ void ABHPlayerController::EnsureAuthoredLevelFloorFog()
 	const FLinearColor FogColor = bFacility
 		? FLinearColor(0.105f, 0.040f, 0.034f, 1.0f)   // dim warm red, matching Facility's mood
 		: FLinearColor(0.052f, 0.066f, 0.082f, 1.0f);  // cool grey-blue for Substation
+	// Self-emission: these are blackout maps, so without an emissive term the volumetric fog is only lit by
+	// the player's flashlight and stays invisible in the dark. A soft emissive makes the mist glow faintly on
+	// its own -- the "thin layer on the floor for a bit of light" -- so it reads even with every light off.
+	const FLinearColor FogEmissive = bFacility
+		? FLinearColor(0.225f, 0.070f, 0.055f, 1.0f)
+		: FLinearColor(0.070f, 0.105f, 0.150f, 1.0f);
 	FogComponent->SetFogDensity(0.060f);
 	FogComponent->SetFogHeightFalloff(0.22f);
 	FogComponent->SetFogInscatteringColor(FogColor);
@@ -5143,7 +5149,8 @@ void ABHPlayerController::EnsureAuthoredLevelFloorFog()
 	FogComponent->SetStartDistance(0.0f);
 	FogComponent->SetVolumetricFog(true);
 	FogComponent->SetVolumetricFogScatteringDistribution(0.45f);
-	FogComponent->SetVolumetricFogExtinctionScale(0.60f);
+	FogComponent->SetVolumetricFogExtinctionScale(0.80f);
+	FogComponent->SetVolumetricFogEmissive(FogEmissive);
 	FogComponent->SetVolumetricFogNearFadeInDistance(40.0f);
 	// Denser ground-pool layer for the floor-mist read when volumetric fog is on.
 	FogComponent->SetSecondFogData(FExponentialHeightFogData());

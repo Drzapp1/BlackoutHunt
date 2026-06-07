@@ -28,6 +28,11 @@ public:
 	// .umap drops the volume actor.
 	FVector GetConfiguredExtent() const;
 
+	// True when this volume is currently sheltering the character: the character overlaps the gap AND is in a
+	// state that may legitimately use it (alive Survivor/Tester in a low-profile pose, per CanCharacterUseCrawlSpace).
+	// The Teacher's capture path queries this to treat a sheltering Survivor as unreachable, mirroring locker immunity.
+	bool IsCharacterSheltering(const ABHCharacter* Character) const;
+
 #if WITH_DEV_AUTOMATION_TESTS
 	bool DebugCanCharacterUseCrawlSpace(const ABHCharacter* Character) const;
 #endif

@@ -136,6 +136,17 @@ FVector ABHCrawlSpaceVolume::GetConfiguredExtent() const
 	return Volume ? Volume->GetUnscaledBoxExtent() : FVector::ZeroVector;
 }
 
+bool ABHCrawlSpaceVolume::IsCharacterSheltering(const ABHCharacter* Character) const
+{
+	// Reuse CanCharacterUseCrawlSpace so "is sheltered" stays in lockstep with "is allowed to stay" -- the same
+	// predicate the Tick uses to decide whom to reject. Overlap is server-authoritative (the volume tracks pawn
+	// overlaps even though it never replicates), and the Teacher's capture path that calls this runs on authority.
+	return Character
+		&& Volume
+		&& Volume->IsOverlappingActor(Character)
+		&& CanCharacterUseCrawlSpace(Character);
+}
+
 #if WITH_DEV_AUTOMATION_TESTS
 bool ABHCrawlSpaceVolume::DebugCanCharacterUseCrawlSpace(const ABHCharacter* Character) const
 {

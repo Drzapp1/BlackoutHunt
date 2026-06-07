@@ -7,6 +7,7 @@
 #include "BHAccountSubsystem.h"
 #include "BHAlarmTrap.h"
 #include "BHBlockActor.h"
+#include "BHCrawlSpaceVolume.h"
 #include "BHEscapeStationManager.h"
 #include "BHFootstepSurfaceComponent.h"
 #include "BHGameMode.h"
@@ -3305,11 +3306,11 @@ void ABHCharacter::SetRoofServiceLightsLocal(bool bOn)
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.Owner = this;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	// Span wide enough to cover both the 5-car intermission roof and the longer 7-car lobby roof. Modules past a
+	// Span wide enough to cover both the intermission roof and the longer 9-car lobby roof. Modules past a
 	// shorter roof's end simply illuminate nothing (no visible surface), so over-covering is harmless.
-	for (int32 Index = 0; Index < 12; ++Index)
+	for (int32 Index = 0; Index < 15; ++Index)
 	{
-		const FVector RoofLightLocation(-4950.0f + Index * 900.0f, 0.0f, 486.0f);
+		const FVector RoofLightLocation(-6300.0f + Index * 900.0f, 0.0f, 486.0f);
 		if (ABHTrainServiceLight* RoofLight = World->SpawnActor<ABHTrainServiceLight>(RoofLightLocation, FRotator::ZeroRotator, SpawnParams))
 		{
 			RoofLight->SetRoofModeImmediate();
@@ -6238,9 +6239,9 @@ void ABHCharacter::ApplyAvatarStyle()
 		}
 		else if (HeadwearIndex == 2)
 		{
-			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCube, AccessoryBlack, RoleAccessoryLocation(FVector(23.0f, -8.0f, 60.0f)), FRotator::ZeroRotator, FVector(0.025f, 0.070f, 0.035f), true);
-			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCube, AccessoryBlack, RoleAccessoryLocation(FVector(23.0f, 8.0f, 60.0f)), FRotator::ZeroRotator, FVector(0.025f, 0.070f, 0.035f), true);
-			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessoryCube, AccessoryMetal, RoleAccessoryLocation(FVector(24.0f, 0.0f, 60.0f)), FRotator::ZeroRotator, FVector(0.018f, 0.050f, 0.014f), true);
+			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCube, AccessoryBlack, RoleAccessoryLocation(FVector(23.0f, -8.0f, 72.0f)), FRotator::ZeroRotator, FVector(0.025f, 0.070f, 0.035f), true);
+			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCube, AccessoryBlack, RoleAccessoryLocation(FVector(23.0f, 8.0f, 72.0f)), FRotator::ZeroRotator, FVector(0.025f, 0.070f, 0.035f), true);
+			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessoryCube, AccessoryMetal, RoleAccessoryLocation(FVector(24.0f, 0.0f, 72.0f)), FRotator::ZeroRotator, FVector(0.018f, 0.050f, 0.014f), true);
 		}
 		else if (HeadwearIndex == 3)
 		{
@@ -6250,9 +6251,9 @@ void ABHCharacter::ApplyAvatarStyle()
 		}
 		else if (HeadwearIndex == 4)
 		{
-			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCube, AccessoryBlack, RoleAccessoryLocation(FVector(11.0f, 0.0f, 67.0f)), FRotator::ZeroRotator, FVector(0.045f, 0.40f, 0.080f), true);
-			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCube, AccessoryLight, RoleAccessoryLocation(FVector(23.0f, 0.0f, 64.0f)), FRotator::ZeroRotator, FVector(0.055f, 0.42f, 0.115f), true);
-			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessoryCube, AccessoryMetal, RoleAccessoryLocation(FVector(24.0f, 0.0f, 57.0f)), FRotator::ZeroRotator, FVector(0.018f, 0.36f, 0.012f), true);
+			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCube, AccessoryBlack, RoleAccessoryLocation(FVector(11.0f, 0.0f, 77.0f)), FRotator::ZeroRotator, FVector(0.045f, 0.40f, 0.080f), true);
+			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCube, AccessoryLight, RoleAccessoryLocation(FVector(23.0f, 0.0f, 74.0f)), FRotator::ZeroRotator, FVector(0.055f, 0.42f, 0.115f), true);
+			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessoryCube, AccessoryMetal, RoleAccessoryLocation(FVector(24.0f, 0.0f, 67.0f)), FRotator::ZeroRotator, FVector(0.018f, 0.36f, 0.012f), true);
 		}
 		else if (HeadwearIndex == 5)
 		{
@@ -7122,6 +7123,29 @@ bool ABHCharacter::IsTeacherCaptureCandidateAuthority(const ABHCharacter* Target
 	if (!TargetPS || !TargetPS->IsAliveSurvivor() || Target->IsHiddenInLocker())
 	{
 		return false;
+	}
+
+	// A Survivor properly sheltering in a crawl space is a sanctuary the Teacher cannot reach into, the same way
+	// IsHiddenInLocker() above shields one inside a locker. The volume shoves the Teacher's body out to the gap's
+	// mouth, but the capture reach (CaptureDistance + forgiveness) still overlaps the inside -- so without this a
+	// Teacher at the mouth could tag a prone student just past it. Gated on a low-profile pose (the only states
+	// CanCharacterUseCrawlSpace permits) so the volume scan is skipped for the common standing case, and a Survivor
+	// merely standing at the lip earns no free pass.
+	const EBHMovementSpecialState TargetSpecialState = Target->GetMovementSpecialState();
+	if (TargetSpecialState == EBHMovementSpecialState::Prone
+		|| TargetSpecialState == EBHMovementSpecialState::Sliding
+		|| TargetSpecialState == EBHMovementSpecialState::Diving)
+	{
+		if (UWorld* World = GetWorld())
+		{
+			for (TActorIterator<ABHCrawlSpaceVolume> It(World); It; ++It)
+			{
+				if (It->IsCharacterSheltering(Target))
+				{
+					return false;
+				}
+			}
+		}
 	}
 
 	const FVector Delta = Target->GetActorLocation() - GetActorLocation();

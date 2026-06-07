@@ -393,6 +393,8 @@ private:
 	int32 KonamiProgress = 0;
 	// Per-part recolour: which skin material slot (a BHColorableMaterialNames registry index) the swatches recolour.
 	int32 RecolorSelectedSlot = INDEX_NONE;
+	// Rebuildable container for the recolour parts, so switching skin re-enumerates the new skin's slots.
+	TSharedPtr<SBox> RecolorSectionBox;
 	// When the local player is the listen-server host, leaving ends the whole class session,
 	// so the first LEAVE press only arms a confirm prompt; the second press actually leaves.
 	bool bLeaveConfirmPending = false;

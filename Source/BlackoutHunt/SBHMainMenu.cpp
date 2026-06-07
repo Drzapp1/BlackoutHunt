@@ -6515,6 +6515,15 @@ FReply SBHMainMenu::OnAvatarPresetClicked(int32 AvatarIndex)
 		StatusText = FText::FromString(Message);
 	}
 
+	// Skin changed -> rebuild the recolour parts for the new skin's slots and refresh the preview.
+	RecolorSelectedSlot = INDEX_NONE;
+	if (RecolorSectionBox.IsValid())
+	{
+		RecolorSectionBox->SetContent(BuildRecolorSection());
+	}
+	LastAvatarPreviewColor = FLinearColor::Transparent;
+	UpdateAvatarPreviewMesh();
+
 	return FReply::Handled();
 }
 
@@ -8497,9 +8506,9 @@ void SBHMainMenu::UpdateAvatarPreviewMesh()
 			MenuApplyPreviewPiece(HeadwearDetailComponent, AccessoryCube, AccessoryWhite, FVector(6.0f, 0.0f, 78.0f), FRotator::ZeroRotator, FVector(0.055f, 0.055f, 0.018f), true);
 			break;
 		case 2:
-			MenuApplyPreviewPiece(HeadwearComponent, AccessoryCube, AccessoryBlack, FVector(23.0f, -8.0f, 60.0f), FRotator::ZeroRotator, FVector(0.025f, 0.070f, 0.035f), true);
-			MenuApplyPreviewPiece(HeadwearAccentComponent, AccessoryCube, AccessoryBlack, FVector(23.0f, 8.0f, 60.0f), FRotator::ZeroRotator, FVector(0.025f, 0.070f, 0.035f), true);
-			MenuApplyPreviewPiece(HeadwearDetailComponent, AccessoryCube, AccessoryMetal, FVector(24.0f, 0.0f, 60.0f), FRotator::ZeroRotator, FVector(0.018f, 0.050f, 0.014f), true);
+			MenuApplyPreviewPiece(HeadwearComponent, AccessoryCube, AccessoryBlack, FVector(23.0f, -8.0f, 72.0f), FRotator::ZeroRotator, FVector(0.025f, 0.070f, 0.035f), true);
+			MenuApplyPreviewPiece(HeadwearAccentComponent, AccessoryCube, AccessoryBlack, FVector(23.0f, 8.0f, 72.0f), FRotator::ZeroRotator, FVector(0.025f, 0.070f, 0.035f), true);
+			MenuApplyPreviewPiece(HeadwearDetailComponent, AccessoryCube, AccessoryMetal, FVector(24.0f, 0.0f, 72.0f), FRotator::ZeroRotator, FVector(0.018f, 0.050f, 0.014f), true);
 			break;
 		case 3:
 			MenuApplyPreviewPiece(HeadwearComponent, AccessoryCylinder, AccessoryColor, FVector(6.0f, 0.0f, 77.0f), FRotator::ZeroRotator, FVector(0.32f, 0.32f, 0.095f), true);
@@ -8507,9 +8516,9 @@ void SBHMainMenu::UpdateAvatarPreviewMesh()
 			MenuApplyPreviewPiece(HeadwearDetailComponent, AccessorySphere, AccessoryColor, FVector(3.0f, 0.0f, 85.0f), FRotator::ZeroRotator, FVector(0.055f, 0.055f, 0.055f), true);
 			break;
 		case 4:
-			MenuApplyPreviewPiece(HeadwearComponent, AccessoryCube, AccessoryBlack, FVector(11.0f, 0.0f, 67.0f), FRotator::ZeroRotator, FVector(0.045f, 0.40f, 0.080f), true);
-			MenuApplyPreviewPiece(HeadwearAccentComponent, AccessoryCube, AccessoryLight, FVector(23.0f, 0.0f, 64.0f), FRotator::ZeroRotator, FVector(0.055f, 0.42f, 0.115f), true);
-			MenuApplyPreviewPiece(HeadwearDetailComponent, AccessoryCube, AccessoryMetal, FVector(24.0f, 0.0f, 57.0f), FRotator::ZeroRotator, FVector(0.018f, 0.36f, 0.012f), true);
+			MenuApplyPreviewPiece(HeadwearComponent, AccessoryCube, AccessoryBlack, FVector(11.0f, 0.0f, 77.0f), FRotator::ZeroRotator, FVector(0.045f, 0.40f, 0.080f), true);
+			MenuApplyPreviewPiece(HeadwearAccentComponent, AccessoryCube, AccessoryLight, FVector(23.0f, 0.0f, 74.0f), FRotator::ZeroRotator, FVector(0.055f, 0.42f, 0.115f), true);
+			MenuApplyPreviewPiece(HeadwearDetailComponent, AccessoryCube, AccessoryMetal, FVector(24.0f, 0.0f, 67.0f), FRotator::ZeroRotator, FVector(0.018f, 0.36f, 0.012f), true);
 			break;
 		default:
 			break;
@@ -9373,7 +9382,10 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 					+ SVerticalBox::Slot()
 					.AutoHeight()
 					[
-						BuildRecolorSection()
+						SAssignNew(RecolorSectionBox, SBox)
+						[
+							BuildRecolorSection()
+						]
 					]
 					+ SVerticalBox::Slot()
 					.AutoHeight()

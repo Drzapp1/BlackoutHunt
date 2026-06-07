@@ -8311,9 +8311,9 @@ void ABHGameMode::BuildTrainLobbyLevel()
 	const FLinearColor SkirtTint(0.05f, 0.055f, 0.05f, 1.0f);
 
 	// Seven cars, kept symmetric about x=0 so the full-length shell pieces below stay aligned. Car i centre = -4500 + i*1500.
-	const int32 NumCars = 7;
-	const float TubeMinX = -5250.0f;
-	const float TubeMaxX = 5250.0f;
+	const int32 NumCars = 9;
+	const float TubeMinX = -6750.0f;
+	const float TubeMaxX = 6750.0f;
 	const float TubeLen = (TubeMaxX - TubeMinX) / 100.0f;
 	const float WallY = 300.0f;
 	const float CeilZ = 300.0f;
@@ -8420,9 +8420,13 @@ void ABHGameMode::BuildTrainLobbyLevel()
 		}
 	}
 
-	// Larger social lounge in the three central cars: facing booth benches around a low table, so groups can sit
-	// together. Tables sit at +/-300 off the car centre, leaving the centre and outer aisle clear to walk.
-	for (int32 LoungeCar = 2; LoungeCar <= 4; ++LoungeCar)
+	// A large social / DECOMPRESS zone: booth seating (facing benches around a low table) through most of the
+	// (now longer) carriage so groups can sit together and unwind while they wait, plus planters for a calmer
+	// lounge feel. Booths sit +/-300 off each car centre, leaving the centre aisle (and the per-car spawn point)
+	// clear; planters tuck near the gangway ends, clear of the wall benches at y=+/-262.
+	const FLinearColor PlanterTint(0.16f, 0.18f, 0.17f, 1.0f);
+	const FLinearColor FoliageTint(0.14f, 0.42f, 0.20f, 1.0f);
+	for (int32 LoungeCar = 1; LoungeCar <= NumCars - 2; ++LoungeCar)
 	{
 		const float CenterX = TubeMinX + 750.0f + LoungeCar * 1500.0f;
 		for (float BoothX : {CenterX - 300.0f, CenterX + 300.0f})
@@ -8431,6 +8435,11 @@ void ABHGameMode::BuildTrainLobbyLevel()
 			SpawnBlock(FVector(BoothX, 0.0f, 30.0f), FVector(0.18f, 0.18f, 0.56f), TableTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
 			SpawnBlock(FVector(BoothX, -120.0f, 44.0f), FVector(0.95f, 0.4f, 0.30f), SeatTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
 			SpawnBlock(FVector(BoothX, 120.0f, 44.0f), FVector(0.95f, 0.4f, 0.30f), SeatTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+		}
+		for (float PlanterX : {CenterX - 620.0f, CenterX + 620.0f})
+		{
+			SpawnBlock(FVector(PlanterX, 200.0f, 30.0f), FVector(0.28f, 0.28f, 0.50f), PlanterTint, FRotator::ZeroRotator, true, EBHBlockMaterial::RustedMetal);
+			SpawnBlock(FVector(PlanterX, 200.0f, 72.0f), FVector(0.5f, 0.5f, 0.5f), FoliageTint, FRotator::ZeroRotator, false, EBHBlockMaterial::Tiles);
 		}
 	}
 
@@ -8505,35 +8514,87 @@ void ABHGameMode::BuildTrainRoofExtras(float TubeMinX, float TubeMaxX, const FVe
 	// --- Calm stargazing decorations (solid props; lit once a passenger throws the roof-light breaker). Kept on
 	// the -Y half, clear of the centreline hatch, the +Y breaker, and the parkour run.
 	const float DecorX = HatchLocation.X + 2700.0f;
-	// A little telescope: a stubby tripod stand + a tilted barrel pointed at the sky.
-	SpawnBlock(FVector(DecorX, -150.0f, CenterZForBlockBottom(RoofTopZ, 0.60f)), FVector(0.34f, 0.34f, 0.60f), DarkMetal, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
-	SpawnBlock(FVector(DecorX, -150.0f, RoofTopZ + 95.0f), FVector(0.22f, 0.22f, 1.05f), MetalTint, FRotator(38.0f, 0.0f, 0.0f), false, EBHBlockMaterial::PaintedMetal);
-	// Deck seating to stargaze from, facing the telescope/sky.
-	SpawnBlock(FVector(DecorX - 220.0f, -210.0f, CenterZForBlockBottom(RoofTopZ, 0.40f)), FVector(1.4f, 0.5f, 0.40f), SeatTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
-	SpawnBlock(FVector(DecorX + 220.0f, -210.0f, CenterZForBlockBottom(RoofTopZ, 0.40f)), FVector(1.4f, 0.5f, 0.40f), SeatTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
-	// Antenna mast cluster in the back corner.
+	// Telescope: prefer the imported CC0 telescope mesh; fall back to a built-up procedural one (tripod + hub +
+	// tilted tube + dew-shield + eyepiece) -- much more than the old two rectangles -- if the asset isn't present.
+	const FString TelescopeMeshPath = TEXT("/Game/BlackoutHunt/Art/Roof/SM_BH_Telescope.SM_BH_Telescope");
+	if (LoadObject<UStaticMesh>(nullptr, *TelescopeMeshPath))
+	{
+		// Imported CC0 Kenney satellite-dish (reads as a roof observatory). Kenney FBX import large, so scale it
+		// down to ~2.5 m. (Scale/pivot may want a small eyeball tweak -- it's this one number.)
+		SpawnRuntimeMeshProp(FVector(DecorX, -150.0f, RoofTopZ), FRotator(0.0f, 180.0f, 0.0f), TelescopeMeshPath, FString(),
+			FVector(0.04f, 0.04f, 0.04f), true, FVector(0.3f, 0.3f, 1.4f), MetalTint, EBHBlockMaterial::PaintedMetal);
+	}
+	else
+	{
+		const FVector ScopeBase(DecorX, -150.0f, RoofTopZ);
+		const float HubZ = RoofTopZ + 100.0f;
+		for (int32 Leg = 0; Leg < 3; ++Leg)
+		{
+			const float LegAngle = FMath::DegreesToRadians(90.0f + Leg * 120.0f);
+			SpawnBlock(FVector(ScopeBase.X + 26.0f * FMath::Cos(LegAngle), ScopeBase.Y + 26.0f * FMath::Sin(LegAngle), RoofTopZ + 48.0f),
+				FVector(0.06f, 0.06f, 1.05f), DarkMetal, FRotator(16.0f, FMath::RadiansToDegrees(LegAngle), 0.0f), true, EBHBlockMaterial::PaintedMetal);
+		}
+		SpawnBlock(FVector(ScopeBase.X, ScopeBase.Y, HubZ), FVector(0.22f, 0.22f, 0.22f), MetalTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		// Tilted optical tube (pitched up at the sky) + a wider dew-shield at the front and an eyepiece nub at the back.
+		const FRotator TubeRot(42.0f, 0.0f, 0.0f);
+		const FVector TubeAxis(FMath::Cos(FMath::DegreesToRadians(42.0f)), 0.0f, FMath::Sin(FMath::DegreesToRadians(42.0f)));
+		const FVector TubeCenter(ScopeBase.X, ScopeBase.Y, HubZ + 28.0f);
+		SpawnBlock(TubeCenter, FVector(0.9f, 0.22f, 0.22f), MetalTint, TubeRot, false, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(TubeCenter + TubeAxis * 48.0f, FVector(0.14f, 0.30f, 0.30f), DarkMetal, TubeRot, false, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(TubeCenter - TubeAxis * 46.0f, FVector(0.14f, 0.10f, 0.10f), DarkMetal, TubeRot, false, EBHBlockMaterial::RustedMetal);
+	}
+	// Stargazing seating: imported CC0 Kenney stools (fall back to a bench block if the mesh is absent). Kenney
+	// FBX import large, so scaled down; base-pivot assumed so they sit on the roof (small z tweak if needed).
+	const FString StoolPath = TEXT("/Game/BlackoutHunt/Art/Roof/SM_BH_RoofStool.SM_BH_RoofStool");
+	SpawnRuntimeMeshProp(FVector(DecorX - 240.0f, -215.0f, RoofTopZ), FRotator(0.0f, -90.0f, 0.0f), StoolPath, FString(), FVector(0.05f, 0.05f, 0.05f), true, FVector(0.55f, 0.55f, 0.45f), SeatTint, EBHBlockMaterial::Tiles);
+	SpawnRuntimeMeshProp(FVector(DecorX + 30.0f, -240.0f, RoofTopZ), FRotator(0.0f, -90.0f, 0.0f), StoolPath, FString(), FVector(0.05f, 0.05f, 0.05f), true, FVector(0.55f, 0.55f, 0.45f), SeatTint, EBHBlockMaterial::Tiles);
+	SpawnRuntimeMeshProp(FVector(DecorX + 290.0f, -215.0f, RoofTopZ), FRotator(0.0f, -90.0f, 0.0f), StoolPath, FString(), FVector(0.05f, 0.05f, 0.05f), true, FVector(0.55f, 0.55f, 0.45f), SeatTint, EBHBlockMaterial::Tiles);
+	// Imported CC0 antenna/wireless dish in the back corner (fall back to a mast block).
 	const float AntennaX = HatchLocation.X + 3100.0f;
-	SpawnBlock(FVector(AntennaX, 215.0f, CenterZForBlockBottom(RoofTopZ, 2.6f)), FVector(0.06f, 0.06f, 2.6f), DarkMetal, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
-	SpawnBlock(FVector(AntennaX + 130.0f, 215.0f, CenterZForBlockBottom(RoofTopZ, 2.0f)), FVector(0.05f, 0.05f, 2.0f), MetalTint, FRotator::ZeroRotator, false, EBHBlockMaterial::RustedMetal);
-	SpawnBlock(FVector(AntennaX - 130.0f, 215.0f, CenterZForBlockBottom(RoofTopZ, 2.2f)), FVector(0.05f, 0.05f, 2.2f), MetalTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+	SpawnRuntimeMeshProp(FVector(AntennaX, 215.0f, RoofTopZ), FRotator::ZeroRotator, TEXT("/Game/BlackoutHunt/Art/Roof/SM_BH_RoofAntenna.SM_BH_RoofAntenna"), FString(), FVector(0.05f, 0.05f, 0.05f), true, FVector(0.06f, 0.06f, 2.6f), DarkMetal, EBHBlockMaterial::PaintedMetal);
+	// Imported CC0 space rocks + a meteor as stargazing scenery (fall back to plain rock blocks).
+	SpawnRuntimeMeshProp(FVector(DecorX - 540.0f, -240.0f, RoofTopZ), FRotator(0.0f, 35.0f, 0.0f), TEXT("/Game/BlackoutHunt/Art/Roof/SM_BH_RoofRocks.SM_BH_RoofRocks"), FString(), FVector(0.03f, 0.03f, 0.03f), true, FVector(0.7f, 0.7f, 0.5f), DarkMetal, EBHBlockMaterial::Concrete);
+	SpawnRuntimeMeshProp(FVector(DecorX + 560.0f, -250.0f, RoofTopZ), FRotator(0.0f, 120.0f, 0.0f), TEXT("/Game/BlackoutHunt/Art/Roof/SM_BH_RoofMeteor.SM_BH_RoofMeteor"), FString(), FVector(0.027f, 0.027f, 0.027f), true, FVector(0.7f, 0.7f, 0.6f), DarkMetal, EBHBlockMaterial::Concrete);
 	// A utility/AC box and a couple of low roof vents for industrial flavour.
 	SpawnBlock(FVector(HatchLocation.X + 1300.0f, 215.0f, CenterZForBlockBottom(RoofTopZ, 0.9f)), FVector(1.6f, 1.2f, 0.9f), MetalTint, FRotator::ZeroRotator, true, EBHBlockMaterial::RustedMetal);
 	SpawnBlock(FVector(HatchLocation.X + 600.0f, -120.0f, CenterZForBlockBottom(RoofTopZ, 0.35f)), FVector(0.8f, 0.8f, 0.35f), MetalTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
 	SpawnBlock(FVector(HatchLocation.X + 2000.0f, -150.0f, CenterZForBlockBottom(RoofTopZ, 0.35f)), FVector(0.8f, 0.8f, 0.35f), MetalTint, FRotator::ZeroRotator, false, EBHBlockMaterial::RustedMetal);
 
-	// --- Short parkour course: five ascending platforms ending in a glowing finish gate. Heights/gaps are kept
-	// forgiving (rises ~45cm) so it is completable; the top platform is too high to reach without the climb, so
-	// reaching the finish proves the run. Runs along y near the centreline, clear of the breaker (+Y) and edge.
-	const float CourseX = HatchLocation.X + 700.0f;
-	const float PlatformTops[] = { RoofTopZ + 45.0f, RoofTopZ + 90.0f, RoofTopZ + 135.0f, RoofTopZ + 180.0f, RoofTopZ + 225.0f };
-	const float PlatformYs[] = { 0.0f, 120.0f, 0.0f, -120.0f, 0.0f };
-	for (int32 Step = 0; Step < 5; ++Step)
+	// --- "Tower of Doom" obby: a neon spiral of small platforms climbing high above the roof, finishing in a
+	// glowing gate at the very top. Gaps/rises are kept forgiving (small hops, ~55cm rise, ~130cm reach) so it's
+	// completable, but the top is unreachable without the climb so the finish can't be cheesed. (Jump feel may
+	// want a playtest pass.)
+	const FVector TowerCenter(HatchLocation.X + 1200.0f, 0.0f, RoofTopZ);
+	const FLinearColor ObbyColors[] = {
+		FLinearColor(1.00f, 0.25f, 0.30f, 1.0f), FLinearColor(1.00f, 0.65f, 0.15f, 1.0f),
+		FLinearColor(0.30f, 0.85f, 1.00f, 1.0f), FLinearColor(0.45f, 1.00f, 0.40f, 1.0f),
+		FLinearColor(0.80f, 0.45f, 1.00f, 1.0f), FLinearColor(1.00f, 0.92f, 0.30f, 1.0f)
+	};
+	const int32 ObbyPlatforms = 18;
+	const float ObbyRadius = 130.0f;
+	const float ObbyRise = 55.0f;
+	const float ObbyStepDeg = 60.0f;
+	// A slim central mast for the tower silhouette (non-colliding so it never blocks a jump).
+	const float MastHeight = (ObbyPlatforms * ObbyRise + 160.0f) / 100.0f;
+	SpawnBlock(FVector(TowerCenter.X, TowerCenter.Y, CenterZForBlockBottom(RoofTopZ, MastHeight)), FVector(0.16f, 0.16f, MastHeight), DarkMetal, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+	float ObbyTopZ = RoofTopZ;
+	float FinalX = TowerCenter.X;
+	float FinalY = TowerCenter.Y;
+	for (int32 Step = 0; Step < ObbyPlatforms; ++Step)
 	{
-		SpawnBlock(FVector(CourseX + Step * 300.0f, PlatformYs[Step], CenterZForBlockTop(PlatformTops[Step], 0.20f)), FVector(1.4f, 1.4f, 0.20f), MetalTint, FRotator::ZeroRotator, true, EBHBlockMaterial::DiamondPlate);
+		const float AngleRad = FMath::DegreesToRadians(Step * ObbyStepDeg);
+		const float Px = TowerCenter.X + ObbyRadius * FMath::Cos(AngleRad);
+		const float Py = TowerCenter.Y + ObbyRadius * FMath::Sin(AngleRad);
+		const float TopZ = RoofTopZ + 45.0f + Step * ObbyRise;
+		ObbyTopZ = TopZ;
+		FinalX = Px;
+		FinalY = Py;
+		// Every sixth platform is a larger "rest" pad to catch your breath each lap.
+		const float PadScale = (Step % 6 == 5) ? 1.6f : 1.0f;
+		SpawnBlock(FVector(Px, Py, CenterZForBlockTop(TopZ, 0.18f)), FVector(PadScale, PadScale, 0.18f), ObbyColors[Step % UE_ARRAY_COUNT(ObbyColors)], FRotator::ZeroRotator, true, EBHBlockMaterial::DiamondPlate);
 	}
-	// Finish gate on the highest platform (its base sits on that platform's top).
-	const float FinishTop = PlatformTops[4];
-	GetWorld()->SpawnActor<ABHTrainRoofParkourGate>(FVector(CourseX + 4 * 300.0f, 0.0f, FinishTop + 70.0f), FRotator::ZeroRotator, RoofSpawnParams);
+	// Finish gate on the top platform (its base sits on that platform's top).
+	GetWorld()->SpawnActor<ABHTrainRoofParkourGate>(FVector(FinalX, FinalY, ObbyTopZ + 70.0f), FRotator::ZeroRotator, RoofSpawnParams);
 }
 
 void ABHGameMode::AddFoggroundsMoodPass()
@@ -8633,13 +8694,16 @@ void ABHGameMode::AddFoggroundsModeledFog()
 
 void ABHGameMode::BuildSubstationLevel()
 {
+	// Clean spawn muster: a tidy 3x4 grid in the foyer just WEST of the platform, clear of the station furniture
+	// (pillars/benches sit further east on the platform), but still right by the locked exit. Replaces the old
+	// layout where survivors spawned scattered on top of the platform itself.
 	SurvivorSpawns = {
-		FVector(4860.0f, -1420.0f, 120.0f), FVector(5120.0f, -1040.0f, 120.0f), FVector(5380.0f, -660.0f, 120.0f),
-		FVector(4860.0f, -240.0f, 120.0f), FVector(5120.0f, 180.0f, 120.0f), FVector(5380.0f, 580.0f, 120.0f),
-		FVector(4860.0f, 980.0f, 120.0f), FVector(5120.0f, 1380.0f, 120.0f), FVector(4560.0f, -980.0f, 120.0f),
-		FVector(4560.0f, 980.0f, 120.0f), FVector(5480.0f, -1260.0f, 120.0f), FVector(5480.0f, 1260.0f, 120.0f)
+		FVector(4150.0f, -1300.0f, 120.0f), FVector(4400.0f, -1300.0f, 120.0f), FVector(4650.0f, -1300.0f, 120.0f),
+		FVector(4150.0f, -450.0f, 120.0f), FVector(4400.0f, -450.0f, 120.0f), FVector(4650.0f, -450.0f, 120.0f),
+		FVector(4150.0f, 450.0f, 120.0f), FVector(4400.0f, 450.0f, 120.0f), FVector(4650.0f, 450.0f, 120.0f),
+		FVector(4150.0f, 1300.0f, 120.0f), FVector(4400.0f, 1300.0f, 120.0f), FVector(4650.0f, 1300.0f, 120.0f)
 	};
-	HunterSpawn = FVector(-5600.0f, -1200.0f, 120.0f);
+	HunterSpawn = FVector(-5650.0f, -1250.0f, 120.0f);
 
 	const FLinearColor Concrete(0.11f, 0.12f, 0.125f, 1.0f);
 	const FLinearColor Ceiling(0.045f, 0.050f, 0.055f, 1.0f);
@@ -8662,15 +8726,21 @@ void ABHGameMode::BuildSubstationLevel()
 	SpawnBlock(FVector(6100.0f, 0.0f, CenterZForBlockBottom(0.0f, 3.5f)), FVector(0.35f, 92.0f, 3.5f), Wall, FRotator::ZeroRotator, true, EBHBlockMaterial::ConcreteWACool);
 	AddMapContainment(6100.0f, 4600.0f);
 
+	// ---- OPEN-UP redesign: short wall segments arranged so EVERY room has 2-3 entrances (loops, no dead-ends),
+	// with a continuous west cable gallery (column at X<-4500 left open) and a big open central transformer hall
+	// (X=-500 and Y=0 dividers removed across the middle for long sightlines). Generated + connectivity-verified
+	// in Tools/MapAnalysis/substation_proposed.py (0 single-entrance rooms, down from 14). ----
 	const TArray<TPair<FVector, FVector>> Walls = {
-		{FVector(-4400.0f, -2500.0f, 175.0f), FVector(34.0f, 0.30f, 3.25f)}, {FVector(-900.0f, -2500.0f, 175.0f), FVector(24.0f, 0.30f, 3.25f)}, {FVector(3200.0f, -2500.0f, 175.0f), FVector(40.0f, 0.30f, 3.25f)},
-		{FVector(-4200.0f, 0.0f, 175.0f), FVector(36.0f, 0.30f, 3.25f)}, {FVector(100.0f, 0.0f, 175.0f), FVector(28.0f, 0.30f, 3.25f)}, {FVector(4300.0f, 0.0f, 175.0f), FVector(28.0f, 0.30f, 3.25f)},
-		{FVector(-4100.0f, 2500.0f, 175.0f), FVector(38.0f, 0.30f, 3.25f)}, {FVector(250.0f, 2500.0f, 175.0f), FVector(34.0f, 0.30f, 3.25f)}, {FVector(4450.0f, 2500.0f, 175.0f), FVector(30.0f, 0.30f, 3.25f)},
-		{FVector(-4500.0f, -3400.0f, 175.0f), FVector(0.30f, 24.0f, 3.25f)}, {FVector(-4500.0f, 1200.0f, 175.0f), FVector(0.30f, 34.0f, 3.25f)},
-		{FVector(-2500.0f, -1200.0f, 175.0f), FVector(0.30f, 26.0f, 3.25f)}, {FVector(-2500.0f, 3400.0f, 175.0f), FVector(0.30f, 24.0f, 3.25f)},
-		{FVector(-500.0f, -3400.0f, 175.0f), FVector(0.30f, 24.0f, 3.25f)}, {FVector(-500.0f, 1250.0f, 175.0f), FVector(0.30f, 33.0f, 3.25f)},
-		{FVector(1800.0f, -1400.0f, 175.0f), FVector(0.30f, 32.0f, 3.25f)}, {FVector(1800.0f, 3600.0f, 175.0f), FVector(0.30f, 20.0f, 3.25f)},
-		{FVector(3900.0f, -3400.0f, 175.0f), FVector(0.30f, 24.0f, 3.25f)}, {FVector(3900.0f, 1300.0f, 175.0f), FVector(0.30f, 32.0f, 3.25f)}
+		// Vertical dividers (run along Y) -- doorway/arch gaps leave each flanking room open on >=2 sides.
+		{FVector(-4500.0f, -4150.0f, 175.0f), FVector(0.30f, 9.0f, 3.25f)}, {FVector(-4500.0f, -2400.0f, 175.0f), FVector(0.30f, 20.0f, 3.25f)}, {FVector(-4500.0f, 0.0f, 175.0f), FVector(0.30f, 22.0f, 3.25f)}, {FVector(-4500.0f, 2250.0f, 175.0f), FVector(0.30f, 17.0f, 3.25f)}, {FVector(-4500.0f, 4300.0f, 175.0f), FVector(0.30f, 6.0f, 3.25f)},
+		{FVector(-2500.0f, -4300.0f, 175.0f), FVector(0.30f, 6.0f, 3.25f)}, {FVector(-2500.0f, -2250.0f, 175.0f), FVector(0.30f, 17.0f, 3.25f)}, {FVector(-2500.0f, 0.0f, 175.0f), FVector(0.30f, 22.0f, 3.25f)}, {FVector(-2500.0f, 2250.0f, 175.0f), FVector(0.30f, 17.0f, 3.25f)}, {FVector(-2500.0f, 4300.0f, 175.0f), FVector(0.30f, 6.0f, 3.25f)},
+		{FVector(-500.0f, -4150.0f, 175.0f), FVector(0.30f, 9.0f, 3.25f)}, {FVector(-500.0f, -2950.0f, 175.0f), FVector(0.30f, 9.0f, 3.25f)}, {FVector(-500.0f, 2950.0f, 175.0f), FVector(0.30f, 9.0f, 3.25f)}, {FVector(-500.0f, 4150.0f, 175.0f), FVector(0.30f, 9.0f, 3.25f)},
+		{FVector(1800.0f, -4300.0f, 175.0f), FVector(0.30f, 6.0f, 3.25f)}, {FVector(1800.0f, -2250.0f, 175.0f), FVector(0.30f, 17.0f, 3.25f)}, {FVector(1800.0f, 0.0f, 175.0f), FVector(0.30f, 22.0f, 3.25f)}, {FVector(1800.0f, 2250.0f, 175.0f), FVector(0.30f, 17.0f, 3.25f)}, {FVector(1800.0f, 4300.0f, 175.0f), FVector(0.30f, 6.0f, 3.25f)},
+		{FVector(3900.0f, -4300.0f, 175.0f), FVector(0.30f, 6.0f, 3.25f)}, {FVector(3900.0f, -2250.0f, 175.0f), FVector(0.30f, 17.0f, 3.25f)}, {FVector(3900.0f, -450.0f, 175.0f), FVector(0.30f, 13.0f, 3.25f)}, {FVector(3900.0f, 1225.0f, 175.0f), FVector(0.30f, 14.5f, 3.25f)}, {FVector(3900.0f, 2675.0f, 175.0f), FVector(0.30f, 8.5f, 3.25f)}, {FVector(3900.0f, 4300.0f, 175.0f), FVector(0.30f, 6.0f, 3.25f)},
+		// Horizontal dividers (run along X) -- span X[-4500,6100] only, leaving the west gallery open top-to-bottom.
+		{FVector(-4075.0f, -2500.0f, 175.0f), FVector(8.5f, 0.30f, 3.25f)}, {FVector(-2500.0f, -2500.0f, 175.0f), FVector(17.0f, 0.30f, 3.25f)}, {FVector(-375.0f, -2500.0f, 175.0f), FVector(19.5f, 0.30f, 3.25f)}, {FVector(1675.0f, -2500.0f, 175.0f), FVector(15.5f, 0.30f, 3.25f)}, {FVector(3775.0f, -2500.0f, 175.0f), FVector(10.5f, 0.30f, 3.25f)}, {FVector(5900.0f, -2500.0f, 175.0f), FVector(4.0f, 0.30f, 3.25f)},
+		{FVector(-4075.0f, 0.0f, 175.0f), FVector(8.5f, 0.30f, 3.25f)}, {FVector(-2750.0f, 0.0f, 175.0f), FVector(12.0f, 0.30f, 3.25f)}, {FVector(2425.0f, 0.0f, 175.0f), FVector(5.5f, 0.30f, 3.25f)}, {FVector(3250.0f, 0.0f, 175.0f), FVector(5.0f, 0.30f, 3.25f)}, {FVector(5900.0f, 0.0f, 175.0f), FVector(4.0f, 0.30f, 3.25f)},
+		{FVector(-4075.0f, 2500.0f, 175.0f), FVector(8.5f, 0.30f, 3.25f)}, {FVector(-2500.0f, 2500.0f, 175.0f), FVector(17.0f, 0.30f, 3.25f)}, {FVector(-375.0f, 2500.0f, 175.0f), FVector(19.5f, 0.30f, 3.25f)}, {FVector(1675.0f, 2500.0f, 175.0f), FVector(15.5f, 0.30f, 3.25f)}, {FVector(3775.0f, 2500.0f, 175.0f), FVector(10.5f, 0.30f, 3.25f)}, {FVector(5900.0f, 2500.0f, 175.0f), FVector(4.0f, 0.30f, 3.25f)}
 	};
 	// Dress every interior wall so it doesn't read as one flat grey slab: a tiled wainscot (lower band, breaks the
 	// concrete with a different texture), a painted accent stripe that alternates amber/teal for colour variety,
@@ -8700,27 +8770,29 @@ void ABHGameMode::BuildSubstationLevel()
 		DressWall(WallSpec.Key.X, WallSpec.Key.Y, WallSpec.Value, WallIdx++);
 	}
 
-	// ---- A little more closed (less "chasey"): extra partial walls that break the long open lanes in the outer
-	// rooms and the central aisles into more corners/cover, while leaving generous end gaps so every route still
-	// connects (no sealed rooms). Dressed like the rest. ----
-	const TArray<TPair<FVector, FVector>> ExtraWalls = {
-		{FVector(-2000.0f, -3500.0f, 175.0f), FVector(0.30f, 13.0f, 3.25f)}, {FVector(1300.0f, -3500.0f, 175.0f), FVector(0.30f, 13.0f, 3.25f)},
-		{FVector(-2000.0f, 3500.0f, 175.0f), FVector(0.30f, 13.0f, 3.25f)}, {FVector(1300.0f, 3500.0f, 175.0f), FVector(0.30f, 13.0f, 3.25f)},
-		{FVector(-3300.0f, -1900.0f, 175.0f), FVector(11.0f, 0.30f, 3.25f)}, {FVector(3000.0f, 1900.0f, 175.0f), FVector(11.0f, 0.30f, 3.25f)}
+	// Freestanding half-height cover so the opened-up flanking rooms and hall aren't a bare field (anti-chasey):
+	// short crate/cabinet stacks that block a sightline but not a route. Non-grid, placed clear of doorways.
+	const TArray<TPair<FVector, FVector>> CoverBlocks = {
+		{FVector(-3500.0f, -1900.0f, 0.0f), FVector(2.2f, 0.9f, 1.55f)}, {FVector(-3500.0f, 1900.0f, 0.0f), FVector(2.2f, 0.9f, 1.55f)},
+		{FVector(2850.0f, -1900.0f, 0.0f), FVector(2.2f, 0.9f, 1.55f)}, {FVector(2850.0f, 1900.0f, 0.0f), FVector(2.2f, 0.9f, 1.55f)},
+		{FVector(-1500.0f, -700.0f, 0.0f), FVector(0.9f, 2.4f, 1.55f)}, {FVector(1100.0f, 700.0f, 0.0f), FVector(0.9f, 2.4f, 1.55f)}
 	};
-	for (const TPair<FVector, FVector>& WallSpec : ExtraWalls)
+	for (const TPair<FVector, FVector>& CoverSpec : CoverBlocks)
 	{
-		SpawnBlock(FVector(WallSpec.Key.X, WallSpec.Key.Y, CenterZForBlockBottom(0.0f, WallSpec.Value.Z)), WallSpec.Value, Wall, FRotator::ZeroRotator, true, EBHBlockMaterial::ConcreteWACool);
-		DressWall(WallSpec.Key.X, WallSpec.Key.Y, WallSpec.Value, WallIdx++);
+		SpawnBlock(FVector(CoverSpec.Key.X, CoverSpec.Key.Y, CenterZForBlockBottom(0.0f, CoverSpec.Value.Z)), CoverSpec.Value, Steel, FRotator(0.0f, 8.0f * WallIdx++, 0.0f), true, EBHBlockMaterial::DiamondPlate);
 	}
 
+	// Doors at the narrow openings (the 3 wider shutter passages are spawned separately below). Vertical-wall
+	// doorways use ZeroRotator; horizontal-wall doorways face 90 deg -- matching positions verified in the model.
 	const TArray<TPair<FVector, FRotator>> Doors = {
-		{FVector(-2400.0f, -2500.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)}, {FVector(750.0f, -2500.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)},
-		{FVector(-1850.0f, 0.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)}, {FVector(2200.0f, 0.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)},
-		{FVector(-1825.0f, 2500.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)}, {FVector(2450.0f, 2500.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)},
-		{FVector(-4500.0f, -1350.0f, 120.0f), FRotator::ZeroRotator}, {FVector(-2500.0f, 1150.0f, 120.0f), FRotator::ZeroRotator},
-		{FVector(-500.0f, -1300.0f, 120.0f), FRotator::ZeroRotator}, {FVector(1800.0f, 1400.0f, 120.0f), FRotator::ZeroRotator},
-		{FVector(3900.0f, -1250.0f, 120.0f), FRotator::ZeroRotator}
+		{FVector(-4500.0f, -3550.0f, 120.0f), FRotator::ZeroRotator}, {FVector(-4500.0f, -1250.0f, 120.0f), FRotator::ZeroRotator}, {FVector(-4500.0f, 1250.0f, 120.0f), FRotator::ZeroRotator},
+		{FVector(-2500.0f, 1250.0f, 120.0f), FRotator::ZeroRotator},
+		{FVector(-500.0f, -3550.0f, 120.0f), FRotator::ZeroRotator}, {FVector(-500.0f, 3550.0f, 120.0f), FRotator::ZeroRotator},
+		{FVector(1800.0f, -1250.0f, 120.0f), FRotator::ZeroRotator},
+		{FVector(3900.0f, -1250.0f, 120.0f), FRotator::ZeroRotator}, {FVector(3900.0f, 2100.0f, 120.0f), FRotator::ZeroRotator},
+		{FVector(-3500.0f, -2500.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)}, {FVector(-1500.0f, -2500.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)}, {FVector(750.0f, -2500.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)},
+		{FVector(-3500.0f, 0.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)}, {FVector(2850.0f, 0.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)},
+		{FVector(-3500.0f, 2500.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)}, {FVector(-1500.0f, 2500.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)}, {FVector(750.0f, 2500.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)}
 	};
 	for (const TPair<FVector, FRotator>& Door : Doors)
 	{
@@ -8731,10 +8803,10 @@ void ABHGameMode::BuildSubstationLevel()
 	}
 
 	const TArray<TPair<FVector, FRotator>> Breakers = {
-		{FVector(-5550.0f, -3650.0f, 80.0f), FRotator(0.0f, 90.0f, 0.0f)}, {FVector(-5400.0f, 3650.0f, 80.0f), FRotator(0.0f, 90.0f, 0.0f)},
-		{FVector(-850.0f, -3800.0f, 80.0f), FRotator(0.0f, 180.0f, 0.0f)}, {FVector(850.0f, 3800.0f, 80.0f), FRotator::ZeroRotator},
-		{FVector(3300.0f, -3750.0f, 80.0f), FRotator(0.0f, -90.0f, 0.0f)}, {FVector(5450.0f, 3300.0f, 80.0f), FRotator(0.0f, -90.0f, 0.0f)},
-		{FVector(5200.0f, 350.0f, 80.0f), FRotator(0.0f, -90.0f, 0.0f)}
+		{FVector(-5650.0f, -3400.0f, 80.0f), FRotator(0.0f, 90.0f, 0.0f)}, {FVector(-5650.0f, 3400.0f, 80.0f), FRotator(0.0f, 90.0f, 0.0f)},
+		{FVector(-1500.0f, -3700.0f, 80.0f), FRotator::ZeroRotator}, {FVector(2850.0f, -3700.0f, 80.0f), FRotator::ZeroRotator},
+		{FVector(750.0f, 3700.0f, 80.0f), FRotator(0.0f, 180.0f, 0.0f)}, {FVector(2850.0f, 3700.0f, 80.0f), FRotator(0.0f, 180.0f, 0.0f)},
+		{FVector(5300.0f, -1700.0f, 80.0f), FRotator(0.0f, -90.0f, 0.0f)}, {FVector(5300.0f, 1700.0f, 80.0f), FRotator(0.0f, -90.0f, 0.0f)}
 	};
 	for (const TPair<FVector, FRotator>& Breaker : Breakers)
 	{
@@ -8745,34 +8817,23 @@ void ABHGameMode::BuildSubstationLevel()
 	}
 
 	const TArray<TPair<FVector, EBHObjectiveStationType>> ObjectiveStationSpecs = {
-		{FVector(-5850.0f, -1650.0f, 95.0f), EBHObjectiveStationType::Valve},
-		{FVector(-5850.0f, 1650.0f, 95.0f), EBHObjectiveStationType::Terminal},
-		{FVector(-1200.0f, -3650.0f, 95.0f), EBHObjectiveStationType::Antenna},
-		{FVector(1650.0f, 3650.0f, 95.0f), EBHObjectiveStationType::Evidence},
-		{FVector(5350.0f, -1700.0f, 95.0f), EBHObjectiveStationType::Terminal},
-		{FVector(5300.0f, 2100.0f, 95.0f), EBHObjectiveStationType::Valve},
-		{FVector(-3600.0f, -1250.0f, 95.0f), EBHObjectiveStationType::Evidence},
-		{FVector(-3600.0f, 1250.0f, 95.0f), EBHObjectiveStationType::Antenna},
-		{FVector(-1200.0f, -1250.0f, 95.0f), EBHObjectiveStationType::Valve},
-		{FVector(-1200.0f, 1250.0f, 95.0f), EBHObjectiveStationType::Terminal},
-		{FVector(1450.0f, -1250.0f, 95.0f), EBHObjectiveStationType::Antenna},
-		{FVector(1450.0f, 1250.0f, 95.0f), EBHObjectiveStationType::Evidence},
-		{FVector(3700.0f, -1250.0f, 95.0f), EBHObjectiveStationType::Valve},
-		{FVector(3700.0f, 1250.0f, 95.0f), EBHObjectiveStationType::Terminal},
-		{FVector(-5550.0f, -3650.0f, 95.0f), EBHObjectiveStationType::Valve},
-		{FVector(-5400.0f, 3650.0f, 95.0f), EBHObjectiveStationType::Evidence},
-		{FVector(-2500.0f, -3650.0f, 95.0f), EBHObjectiveStationType::Terminal},
-		{FVector(-2500.0f, 3650.0f, 95.0f), EBHObjectiveStationType::Antenna},
-		{FVector(-500.0f, -3650.0f, 95.0f), EBHObjectiveStationType::Evidence},
-		{FVector(-500.0f, 3650.0f, 95.0f), EBHObjectiveStationType::Valve},
-		{FVector(1800.0f, -3650.0f, 95.0f), EBHObjectiveStationType::Terminal},
-		{FVector(1800.0f, 3650.0f, 95.0f), EBHObjectiveStationType::Antenna},
-		{FVector(5350.0f, 350.0f, 95.0f), EBHObjectiveStationType::Evidence},
-		{FVector(3900.0f, 3650.0f, 95.0f), EBHObjectiveStationType::Valve},
-		{FVector(3900.0f, -3650.0f, 95.0f), EBHObjectiveStationType::Terminal},
-		{FVector(5450.0f, -3300.0f, 95.0f), EBHObjectiveStationType::Antenna},
-		{FVector(-5850.0f, 0.0f, 95.0f), EBHObjectiveStationType::Valve},
-		{FVector(5350.0f, 3900.0f, 95.0f), EBHObjectiveStationType::Evidence}
+		// 16 stations (down from 28) -- enough work for a full class without choking the space; 4 per topic.
+		{FVector(-5650.0f, 0.0f, 95.0f), EBHObjectiveStationType::Valve},        // west gallery
+		{FVector(-5650.0f, -1700.0f, 95.0f), EBHObjectiveStationType::Terminal},
+		{FVector(-5650.0f, 1700.0f, 95.0f), EBHObjectiveStationType::Antenna},
+		{FVector(-3500.0f, -1250.0f, 95.0f), EBHObjectiveStationType::Evidence}, // C1 rooms
+		{FVector(-3500.0f, 1250.0f, 95.0f), EBHObjectiveStationType::Valve},
+		{FVector(-3500.0f, -3550.0f, 95.0f), EBHObjectiveStationType::Terminal},
+		{FVector(-3500.0f, 3550.0f, 95.0f), EBHObjectiveStationType::Antenna},
+		{FVector(-1200.0f, 0.0f, 95.0f), EBHObjectiveStationType::Evidence},     // central hall
+		{FVector(1100.0f, 0.0f, 95.0f), EBHObjectiveStationType::Valve},
+		{FVector(-350.0f, -1900.0f, 95.0f), EBHObjectiveStationType::Terminal},
+		{FVector(-350.0f, 1900.0f, 95.0f), EBHObjectiveStationType::Antenna},
+		{FVector(2850.0f, -1250.0f, 95.0f), EBHObjectiveStationType::Evidence},  // C4 rooms
+		{FVector(2850.0f, 1250.0f, 95.0f), EBHObjectiveStationType::Valve},
+		{FVector(750.0f, -3700.0f, 95.0f), EBHObjectiveStationType::Terminal},   // bands
+		{FVector(-1500.0f, 3700.0f, 95.0f), EBHObjectiveStationType::Antenna},
+		{FVector(4250.0f, 0.0f, 95.0f), EBHObjectiveStationType::Evidence}       // muster foyer
 	};
 	for (const TPair<FVector, EBHObjectiveStationType>& Spec : ObjectiveStationSpecs)
 	{

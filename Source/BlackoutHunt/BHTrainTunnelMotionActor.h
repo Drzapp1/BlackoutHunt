@@ -9,6 +9,7 @@
 #include "BHTrainTunnelMotionActor.generated.h"
 
 class UStaticMeshComponent;
+class UMaterialInstanceDynamic;
 
 UCLASS()
 class BLACKOUTHUNT_API ABHTrainTunnelMotionActor : public AActor
@@ -18,6 +19,7 @@ class BLACKOUTHUNT_API ABHTrainTunnelMotionActor : public AActor
 public:
 	ABHTrainTunnelMotionActor();
 
+	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
@@ -28,8 +30,21 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<USceneComponent> SceneRoot;
 
+	// Far layer: horizontal light bars on the tunnel wall.
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TArray<TObjectPtr<UStaticMeshComponent>> LightStrips;
+
+	// Near layer: vertical support pillars that sweep past FASTER than the light bars, so the windows read as a
+	// real rushing tunnel (parallax sells the motion).
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TArray<TObjectPtr<UStaticMeshComponent>> Pillars;
+
+	// Cached dynamic materials (created once in BeginPlay, not per tick).
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> StripMaterials;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> PillarMaterials;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Train")
 	bool bMoving;
@@ -41,4 +56,5 @@ protected:
 	float MotionSpeed;
 
 	float MotionOffset;
+	float PillarOffset;
 };
