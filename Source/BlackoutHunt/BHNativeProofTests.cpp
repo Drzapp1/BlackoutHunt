@@ -755,6 +755,59 @@ bool FBHCosmeticUnlockThresholdTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// Locks the achievement-gating path added for the prestige tints, the Top Hat headwear, and the new
+// Title / Emblem nameplate-flair categories: these ignore XP entirely and are gated on an achievement id.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHCosmeticAchievementGateTest,
+	"BlackoutHunt.Account.CosmeticAchievementGating",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHCosmeticAchievementGateTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const TArray<FName> NoAchievements;
+	TArray<FName> WithChalk;
+	WithChalk.Add(FName(TEXT("honorary_faculty")));
+	TArray<FName> WithRoofRider;
+	WithRoofRider.Add(FName(TEXT("roof_rider")));
+
+	// Base shirt colours (0..7) need neither XP nor an achievement.
+	TestTrue(TEXT("Base shirt colour 0 is always unlocked."),
+		BHCosmeticIsUnlocked(EBHCosmeticCategory::ShirtColor, 0, 0, &NoAchievements));
+
+	// The Chalk tint (index 8) is gated on honorary_faculty: XP is irrelevant, the achievement is everything.
+	TestFalse(TEXT("Chalk tint is locked without its achievement, even at max XP."),
+		BHCosmeticIsUnlocked(EBHCosmeticCategory::ShirtColor, 8, MAX_int32, &NoAchievements));
+	TestTrue(TEXT("Chalk tint unlocks with its achievement, at zero XP."),
+		BHCosmeticIsUnlocked(EBHCosmeticCategory::ShirtColor, 8, 0, &WithChalk));
+	TestFalse(TEXT("Chalk tint is locked when no achievement set is supplied (null = locked)."),
+		BHCosmeticIsUnlocked(EBHCosmeticCategory::ShirtColor, 8, MAX_int32, nullptr));
+
+	// The Top Hat headwear (index 5) is gated on roof_rider.
+	TestFalse(TEXT("Top Hat is locked without roof_rider."),
+		BHCosmeticIsUnlocked(EBHCosmeticCategory::Headwear, 5, MAX_int32, &NoAchievements));
+	TestTrue(TEXT("Top Hat unlocks with roof_rider."),
+		BHCosmeticIsUnlocked(EBHCosmeticCategory::Headwear, 5, 0, &WithRoofRider));
+
+	// Title / Emblem flair categories: index 0 ("None") is always available; index 1+ is achievement-gated.
+	TestTrue(TEXT("'No Title' (index 0) is always available."),
+		BHCosmeticIsUnlocked(EBHCosmeticCategory::Title, 0, 0, &NoAchievements));
+	TestFalse(TEXT("An earned title is locked without its achievement."),
+		BHCosmeticIsUnlocked(EBHCosmeticCategory::Title, 1, MAX_int32, &NoAchievements));
+	TestTrue(TEXT("'No Emblem' (index 0) is always available."),
+		BHCosmeticIsUnlocked(EBHCosmeticCategory::Emblem, 0, 0, &NoAchievements));
+	TestFalse(TEXT("An earned emblem is locked without its achievement."),
+		BHCosmeticIsUnlocked(EBHCosmeticCategory::Emblem, 1, MAX_int32, &NoAchievements));
+
+	// Clamp drops a locked achievement-gated selection back to default, and keeps an unlocked one.
+	TestEqual(TEXT("Locked tint clamps to default without the achievement."),
+		BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::ShirtColor, 8, MAX_int32, &NoAchievements), 0);
+	TestEqual(TEXT("Unlocked tint stays selected with the achievement."),
+		BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::ShirtColor, 8, 0, &WithChalk), 8);
+
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHObjectiveStationPhysicsTaskIdentityTest,
 	"BlackoutHunt.Objectives.PhysicsTaskIdentity",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
