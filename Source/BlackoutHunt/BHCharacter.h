@@ -109,6 +109,17 @@ public:
 	static constexpr int32 TutorialActSlideBit = 1 << 1;
 	static constexpr int32 TutorialActDiveBit = 1 << 2;
 	static constexpr int32 TutorialActBhopBit = 1 << 3;
+	// Advanced micro-technique latches (each set at its specific code path so the tutorial detects the TECHNIQUE,
+	// not just "a roll"): drop-roll on landing, slide-stop early brake, a clean (quiet) roll, locker roll-out, and a
+	// frame-perfect momentum flow-chain.
+	static constexpr int32 TutorialActDropRollBit = 1 << 4;
+	static constexpr int32 TutorialActSlideStopBit = 1 << 5;
+	static constexpr int32 TutorialActQuietRollBit = 1 << 6;
+	static constexpr int32 TutorialActLockerRollBit = 1 << 7;
+	static constexpr int32 TutorialActFlowChainBit = 1 << 8;
+	// Sprint latch: set authoritatively while actually running at sprint speed (the same gate the stamina drain
+	// uses), so the Sprint tutorial step detects from the real, map-scale-correct speed rather than a fixed cm/s.
+	static constexpr int32 TutorialActSprintBit = 1 << 9;
 	int32 GetTutorialActionMask() const { return TutorialActionMask; }
 	void ResetTutorialActionMask() { TutorialActionMask = 0; TutorialBhopChain = 0; LastTutorialJumpServerTime = -999.0f; }
 	void MarkTutorialAction(int32 Bit) { TutorialActionMask |= Bit; }
@@ -174,9 +185,22 @@ public:
 	// FOVPunchDegrees<=0 uses the default punch; Intensity (0..1) scales magnitude. Honors reduced-camera-shake comfort.
 	void PlayJumpscareCameraImpact(float Intensity, float FOVPunchDegrees = -1.0f);
 
+	// Current cosmetic first-person VIEW ROLL in degrees -- the lateral barrel roll during a dodge roll. The camera
+	// uses bUsePawnControlRotation (which clobbers component-relative roll), so ABHPlayerCameraManager reads this in
+	// ProcessViewRotation and stamps it onto the view rotation. 0 whenever no roll effect is active.
+	float GetViewRollOffsetDeg() const { return ViewRollOffsetDeg; }
+
+	// Server-authoritative crawl-space entry assist: if this is an eligible survivor not already in a low-profile
+	// pose, auto-drop to prone so a player sprinting at a crawl mouth flows into cover instead of being bounced off
+	// the lip by the volume. Returns true if now (or already) in a sheltering pose. Called by ABHCrawlSpaceVolume.
+	bool TryEnterCrawlSpacePose();
+
 #if WITH_DEV_AUTOMATION_TESTS
 	bool TryStartSpecialMoveForTest(EBHMovementSpecialState RequestedState, bool bEndProne);
 	bool TrySetProneForTest(bool bNewProne);
+	// Exposes IsTeacherCaptureCandidateAuthority so a test can assert a prone survivor sheltering in a crawl is
+	// uncapturable (i.e. the Teacher cannot tag them).
+	bool DebugIsTeacherCaptureCandidateForTest(const ABHCharacter* Target) const;
 	float DebugGetAntiCampIdleSecondsForTest() const;
 	float DebugGetAntiCampMoveBurstSecondsForTest() const { return AntiCampMoveBurstSeconds; }
 	FString DebugGetInteractionFailureReasonForTest(AActor* Target) const { return GetInteractionFailureReason(Target); }
@@ -369,6 +393,13 @@ protected:
 	void ApplyMovementSpecialState();
 	void RefreshMovementSpeedFromState();
 	void SetProneCollisionApplied(bool bApplied);
+	// Functional first-person sit (a lobby relax pose): lowers the eye height and freezes movement
+	// server-side; pressing a movement key stands you back up. No body animation (the game is first-person).
+	void ToggleSit();
+	void SetSeatedAuthority(bool bNewSeated);
+	// Cosmetic third-person seated pose (no sit animation needed): hide the leg bones and drop the torso to
+	// the seat so other players see a seated upper body instead of a standing-locked one.
+	void ApplySeatedAvatar(bool bSeatedNow);
 	void ApplyFlashlightState();
 	void ApplyHiddenState();
 	void UpdateHunterVisualCue();
@@ -404,6 +435,9 @@ protected:
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetProneInputHeld(bool bHeld);
+
+	UFUNCTION(Server, Reliable)
+	void ServerSetSeated(bool bNewSeated);
 
 	UFUNCTION(Client, Reliable)
 	void ClientSpecialMoveRejected(EBHMovementSpecialState RejectedState, const FString& Reason);
@@ -723,6 +757,16 @@ protected:
 	UPROPERTY(ReplicatedUsing = OnRep_OutOfPlay, BlueprintReadOnly, Category = "Round")
 	bool bOutOfPlay;
 
+	// Functional first-person sit: replicated so the lowered eye height applies on the owning client
+	// (read each frame in UpdateViewFeel). Movement is frozen server-side while true.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Movement")
+	bool bSeated = false;
+
+	// Cosmetic seated-pose tracking for the third-person avatar (not replicated; derived from bSeated).
+	bool bSeatedAvatarApplied = false;
+	bool bRoleMeshStandCaptured = false;
+	FVector RoleMeshStandOffset = FVector::ZeroVector;
+
 	UPROPERTY()
 	TObjectPtr<AActor> CurrentInteractTarget;
 
@@ -800,6 +844,9 @@ protected:
 	FVector ViewFeelCameraLocation;
 	FRotator POVAnimRotationCurrent;
 	FVector POVAnimLocationCurrent;
+	// Cosmetic first-person view-roll (degrees), updated each frame in UpdatePOVAnimation and read by
+	// ABHPlayerCameraManager (the camera's bUsePawnControlRotation ignores component-relative roll). See GetViewRollOffsetDeg.
+	float ViewRollOffsetDeg = 0.0f;
 	float SmoothedBaseFOV = 0.0f;
 	float JumpscareImpactStartTime = -1.0f;
 	float JumpscareImpactIntensity = 0.0f;
@@ -867,6 +914,9 @@ protected:
 	bool bBHopJumpQueued;
 	bool bSprintInputHeld;
 	bool bProneInputHeld;
+	// True while the Crouch key is physically held (set in StartCrouch / cleared in StopCrouch), so a drop-roll can
+	// fire on landing for a player holding Sprint+Crouch through the fall, rather than relying on a tight tap window.
+	bool bCrouchInputHeld = false;
 	bool bSpecialMoveEndsProne;
 	bool bSpecialMoveEndProneRequiresInput;
 	bool bProneCollisionApplied;

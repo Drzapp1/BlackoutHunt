@@ -48,6 +48,11 @@ protected:
 	void DrawHeatSensor(const ABHCharacter* Character, const class ABHGameState* GameState, float X, float Y);
 	void DrawObjectiveBeats(const ABHCharacter* Character, const class ABHGameState* GameState);
 	void DrawInteractionPrompt(ABHCharacter* Character);
+	// Bottom-left readout for the minigame the local player is at (blackjack hand/chips, or the chess board
+	// oriented for their colour + whose move). Driven by ABHPlayerState::ActiveMinigameTable.
+	void DrawMinigameStatus(ABHCharacter* Character);
+	// "Press O to return to the cabin" banner shown while the local player is up on the train roof (Z > 320).
+	void DrawRoofPrompt(ABHCharacter* Character);
 	void DrawNearbyNameTags(const ABHCharacter* Character);
 	void DrawEquipmentStrip(const class ABHGameState* GameState);
 	void DrawSpectatorSupportPanel(const class ABHGameState* GameState, const class ABHPlayerState* PlayerState);

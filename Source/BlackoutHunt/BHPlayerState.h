@@ -73,6 +73,11 @@ public:
 	void SetPowerupCooldown(EBHPowerupType Type, float CooldownEndServerTime);
 	float GetPowerupCooldownEnd(EBHPowerupType Type) const;
 
+	// The minigame table (blackjack / chess) this player is currently using. Set server-side by the table
+	// actors so the owning client's HUD can draw the player's hand/board status on-screen.
+	void SetActiveMinigameTable(AActor* Table);
+	AActor* GetActiveMinigameTable() const { return ActiveMinigameTable; }
+
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt")
 	bool bReady;
 
@@ -160,6 +165,11 @@ public:
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Powerups")
 	TArray<FBHPowerupInventoryEntry> Powerups;
+
+	// The minigame table (blackjack / chess) this player is currently using; see SetActiveMinigameTable.
+	// Owner-only so only the player's own HUD reads it.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Minigame")
+	TObjectPtr<AActor> ActiveMinigameTable;
 
 	// Server-side only (deliberately NOT replicated): the secret per-client reconnect token. Set from the
 	// join URL in ABHGameMode::InitNewPlayer when a client echoes a prior token, or freshly generated in

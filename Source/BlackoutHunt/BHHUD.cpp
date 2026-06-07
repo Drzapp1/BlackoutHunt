@@ -18,6 +18,9 @@
 #include "BHCosmeticUnlocks.h"
 #include "BHRevisionQuestionBank.h"
 #include "BHSecurityMonitor.h"
+#include "BHTrainBlackjackTable.h"
+#include "BHTrainChessTable.h"
+#include "BHTrainTicTacToeTable.h"
 #include "BHTrainBonusQuestionTerminal.h"
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
@@ -1430,6 +1433,9 @@ void ABHHUD::DrawHUD()
 		}
 	}
 
+	DrawMinigameStatus(Character);
+	DrawRoofPrompt(Character);
+
 	DrawPhaseBanner(BHGS, Character);
 	DrawRoleIntroCard(BHPC, BHGS);
 	DrawDiagramPreview();
@@ -1437,6 +1443,114 @@ void ABHHUD::DrawHUD()
 	DrawTutorialPrompt(BHPC);
 	// Drawn last so the transition snapshot sits on top of the whole HUD.
 	DrawTutorialCard(BHPC);
+}
+
+void ABHHUD::DrawMinigameStatus(ABHCharacter* Character)
+{
+	if (!Canvas || !GEngine || !Character)
+	{
+		return;
+	}
+	const ABHPlayerState* BHPS = Character->GetBHPlayerState();
+	if (!BHPS)
+	{
+		return;
+	}
+	AActor* Table = BHPS->GetActiveMinigameTable();
+	if (!Table)
+	{
+		return;
+	}
+	// Hide the readout once the player walks away from the table they last sat at.
+	if (FVector::Dist(Character->GetActorLocation(), Table->GetActorLocation()) > 750.0f)
+	{
+		return;
+	}
+
+	TArray<FString> Lines;
+	FLinearColor Accent(0.70f, 0.85f, 1.0f, 1.0f);
+	if (ABHTrainBlackjackTable* Blackjack = Cast<ABHTrainBlackjackTable>(Table))
+	{
+		Blackjack->GetHudLinesForPlayer(BHPS->GetPlayerId(), Lines, Accent);
+	}
+	else if (ABHTrainChessTable* Chess = Cast<ABHTrainChessTable>(Table))
+	{
+		Chess->GetHudBoardLines(BHPS->GetPlayerId(), Lines, Accent);
+	}
+	else if (ABHTrainTicTacToeTable* TicTacToe = Cast<ABHTrainTicTacToeTable>(Table))
+	{
+		TicTacToe->GetHudLinesForPlayer(BHPS->GetPlayerId(), Lines, Accent);
+	}
+	if (Lines.Num() == 0)
+	{
+		return;
+	}
+
+	// Monospace layout (fixed per-character advance) so the chess board columns align under a proportional font.
+	const UFont* Font = GEngine->GetSmallFont();
+	const float Scale = HudTextScale;
+	float CharW = 0.0f;
+	float CharH = 0.0f;
+	Canvas->TextSize(Font, TEXT("W"), CharW, CharH, Scale, Scale);
+	if (CharW <= 0.0f)
+	{
+		return;
+	}
+	const float LineH = CharH * 1.15f;
+
+	int32 MaxLen = 0;
+	for (const FString& Line : Lines)
+	{
+		MaxLen = FMath::Max(MaxLen, Line.Len());
+	}
+
+	const float Pad = 16.0f * Scale;
+	const float SafePad = FMath::Max(18.0f, Canvas->ClipX * 0.014f);
+	const float PanelW = MaxLen * CharW + Pad * 2.0f;
+	const float PanelH = Lines.Num() * LineH + Pad * 2.0f;
+	const float PanelX = SafePad;
+	const float PanelY = Canvas->ClipY * 0.96f - PanelH;   // bottom-left, clear of the centre crosshair/prompt
+
+	DrawPanel(PanelX, PanelY, PanelW, PanelH, FLinearColor(0.02f, 0.03f, 0.05f, 0.86f), FLinearColor(Accent.R, Accent.G, Accent.B, 0.95f));
+
+	for (int32 LineIndex = 0; LineIndex < Lines.Num(); ++LineIndex)
+	{
+		const FString& Line = Lines[LineIndex];
+		const FLinearColor Color = (LineIndex == 0) ? Accent : FLinearColor(0.92f, 0.95f, 0.99f, 1.0f);
+		const float Y = PanelY + Pad + LineIndex * LineH;
+		for (int32 CharIndex = 0; CharIndex < Line.Len(); ++CharIndex)
+		{
+			DrawHudText(FString::Chr(Line[CharIndex]), PanelX + Pad + CharIndex * CharW, Y, Color, Font, Scale);
+		}
+	}
+}
+
+void ABHHUD::DrawRoofPrompt(ABHCharacter* Character)
+{
+	if (!Canvas || !GEngine || !Character)
+	{
+		return;
+	}
+	// The walkable roof slab top is Z=316 and a standing player inside is ~212, so Z>320 cleanly means "on the
+	// roof". O is already bound to ResetToTrain (-> RequestResetToTrainInterior), which teleports back inside.
+	if (Character->GetActorLocation().Z <= 320.0f)
+	{
+		return;
+	}
+
+	const FString Message = TEXT("Press  O  to return to the cabin");
+	const UFont* Font = GEngine->GetLargeFont() ? GEngine->GetLargeFont() : GEngine->GetSmallFont();
+	const float Scale = FMath::Max(HudWidgetScale, HudTextScale);
+	float TextW = 0.0f;
+	float TextH = 0.0f;
+	Canvas->TextSize(Font, Message, TextW, TextH, Scale, Scale);
+
+	const float PanelW = TextW + 56.0f * Scale;
+	const float PanelH = TextH + 28.0f * Scale;
+	const float PanelX = (Canvas->ClipX - PanelW) * 0.5f;
+	const float PanelY = Canvas->ClipY * 0.16f;
+	DrawPanel(PanelX, PanelY, PanelW, PanelH, FLinearColor(0.03f, 0.04f, 0.06f, 0.88f), FLinearColor(1.0f, 0.82f, 0.34f, 0.96f));
+	DrawHudText(Message, PanelX + 28.0f * Scale, PanelY + 14.0f * Scale, FLinearColor(1.0f, 0.94f, 0.62f, 1.0f), Font, Scale);
 }
 
 FLinearColor ABHHUD::MainText() const

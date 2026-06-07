@@ -279,7 +279,8 @@ FLinearColor BHAvatarPaletteColor(int32 Index)
 		FLinearColor(0.55f, 0.86f, 0.92f, 1.0f), // Slipstream
 		FLinearColor(0.80f, 0.20f, 0.18f, 1.0f), // Detention
 		FLinearColor(0.52f, 0.10f, 0.14f, 1.0f), // Apex
-		FLinearColor(0.40f, 0.54f, 0.56f, 1.0f)  // Commuter
+		FLinearColor(0.40f, 0.54f, 0.56f, 1.0f), // Commuter
+		FLinearColor(0.02f, 0.02f, 0.02f, 1.0f)  // Black (index 18; near-black routes to the Black material)
 	};
 
 	return Palette[FMath::Abs(Index) % UE_ARRAY_COUNT(Palette)];
@@ -316,8 +317,16 @@ UMaterialInterface* BHQuaterniusPaletteMaterial(const FLinearColor& Color)
 		TEXT("/Game/BlackoutHunt/Art/Characters/Quaternius/Meshes/Purple.Purple"),
 		TEXT("/Game/BlackoutHunt/Art/Characters/Quaternius/Meshes/Gold.Gold"),
 		TEXT("/Game/BlackoutHunt/Art/Characters/Quaternius/Meshes/LightGreen.LightGreen"),
-		TEXT("/Game/BlackoutHunt/Art/Characters/Quaternius/Meshes/White.White")
+		TEXT("/Game/BlackoutHunt/Art/Characters/Quaternius/Meshes/White.White"),
+		TEXT("/Game/BlackoutHunt/Art/Characters/Quaternius/Meshes/Black.Black")
 	};
+
+	// Black has no near match among the 8 base palette colours, so route near-black recolours straight to the
+	// dedicated Black material (the nearest-of-8 scan can never return this appended last index).
+	if (Color.R < 0.08f && Color.G < 0.08f && Color.B < 0.08f)
+	{
+		return LoadObject<UMaterialInterface>(nullptr, MaterialPaths[UE_ARRAY_COUNT(MaterialPaths) - 1]);
+	}
 
 	return LoadObject<UMaterialInterface>(nullptr, MaterialPaths[BHNearestAvatarColorIndex(Color) % UE_ARRAY_COUNT(MaterialPaths)]);
 }
@@ -456,6 +465,36 @@ static FName BHFindHeadBone(const USkeletalMeshComponent* Mesh)
 		}
 	}
 	return NAME_None;
+}
+
+// Collect the leg bones (and their descendants are hidden automatically) so a seated avatar can drop the
+// "don't render the lower body" trick on any skeleton. Matches by keyword so it works across Quaternius /
+// UE-Mannequin / Mixamo naming without hard-coding a single rig.
+static TArray<FName> BHCollectLegBones(const USkeletalMeshComponent* Mesh)
+{
+	TArray<FName> Result;
+	const USkeletalMesh* Asset = Mesh ? Mesh->GetSkeletalMeshAsset() : nullptr;
+	if (!Asset)
+	{
+		return Result;
+	}
+	static const TCHAR* Keys[] = { TEXT("thigh"), TEXT("upleg"), TEXT("calf"), TEXT("shin"), TEXT("foot"), TEXT("toe"), TEXT("knee"), TEXT("leg") };
+	const FReferenceSkeleton& RefSkel = Asset->GetRefSkeleton();
+	const int32 BoneCount = RefSkel.GetNum();
+	for (int32 BoneIdx = 0; BoneIdx < BoneCount; ++BoneIdx)
+	{
+		const FName BoneName = RefSkel.GetBoneName(BoneIdx);
+		const FString BoneString = BoneName.ToString();
+		for (const TCHAR* Key : Keys)
+		{
+			if (BoneString.Contains(Key, ESearchCase::IgnoreCase))
+			{
+				Result.Add(BoneName);
+				break;
+			}
+		}
+	}
+	return Result;
 }
 
 const TCHAR* BHSelectQuaterniusMeshPath(const ABHPlayerState* BHPS)
@@ -2076,6 +2115,7 @@ void ABHCharacter::Tick(float DeltaSeconds)
 		{
 			if (bTryingToSprint)
 			{
+				MarkTutorialAction(TutorialActSprintBit); // movement-tutorial: actually running at sprint speed
 				const float DrainMultiplier = BHRoleSprintDrainMultiplier(BHPS)
 					* (PowerupComponent ? PowerupComponent->GetStaminaDrainMultiplier() : 1.0f)
 					* BHHorrorStaminaDrainMultiplier(this, BHPS);
@@ -2241,8 +2281,8 @@ static TAutoConsoleVariable<float> CVarBHSlideStopWindow(
 // hard-landing noise (a skill-timed silent landing). 0 disables drop-roll buffering.
 static TAutoConsoleVariable<float> CVarBHDropRollWindow(
 	TEXT("bh.DropRollWindow"),
-	0.18f,
-	TEXT("Buffer a roll requested within this many seconds of landing and fire it on touchdown (silent landing). 0 = off. (Default 0.18)"),
+	0.45f,
+	TEXT("Buffer a roll requested within this many seconds of landing and fire it on touchdown (silent landing). 0 = off. (Default 0.45)"),
 	ECVF_Default);
 // Roll-out-of-locker: holding Sprint while leaving a locker fires a capture-immune forward roll instead of the
 // exposed standing pop. 1 = on.
@@ -2291,13 +2331,19 @@ void ABHCharacter::Landed(const FHitResult& Hit)
 	// AFTER touchdown, so it gets its normal i-frame window -- not a perpetual airborne capture shield.
 	const float DropRollWindow = CVarBHDropRollWindow.GetValueOnGameThread();
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
-	if (DropRollWindow > 0.0f && BHPS && BHPS->IsAliveSurvivor()
-		&& (Now - LastDropRollInputTime) >= 0.0f && (Now - LastDropRollInputTime) <= DropRollWindow
-		&& !IsSpecialMoveActive() && !IsProne())
+	// Drop-roll engages two ways: the player is HOLDING Sprint+Crouch as they touch down (the reliable path -- no
+	// timing needed, just hold both through the fall), OR they tapped Sprint+Crouch within the buffer window just
+	// before landing. Either converts the landing into a silent roll. Works for any role that can roll; the roll's
+	// own gates (TryStartSpecialMoveAuthority) still apply.
+	const bool bHeldDropRoll = bSprintInputHeld && bCrouchInputHeld;
+	const bool bBufferedDropRoll = DropRollWindow > 0.0f
+		&& (Now - LastDropRollInputTime) >= 0.0f && (Now - LastDropRollInputTime) <= DropRollWindow;
+	if ((bHeldDropRoll || bBufferedDropRoll) && !IsSpecialMoveActive() && !IsProne())
 	{
 		LastDropRollInputTime = -999.0f;
 		if (TryStartSpecialMoveAuthority(EBHMovementSpecialState::Rolling, false, false))
 		{
+			MarkTutorialAction(TutorialActDropRollBit); // movement-tutorial: a drop-roll specifically fired
 			return; // silent landing: the roll-start stimulus replaces the hard-landing thud
 		}
 	}
@@ -2384,6 +2430,8 @@ void ABHCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCompone
 	// choices / drags arrangement pieces. Number keys 1-4 still work, so keyboard/bots are unaffected.
 	PlayerInputComponent->BindAction(TEXT("NodeMarker"), IE_Pressed, this, &ABHCharacter::UseNodeMarker);
 	PlayerInputComponent->BindAction(TEXT("ResetToTrain"), IE_Pressed, this, &ABHCharacter::RequestResetToTrainInterior);
+	// Functional sit toggle (C). Free key -- Crouch is LeftCtrl. Pressing a movement key stands you back up.
+	PlayerInputComponent->BindKey(EKeys::C, IE_Pressed, this, &ABHCharacter::ToggleSit);
 	PlayerInputComponent->BindKey(EKeys::Tab, IE_Pressed, this, &ABHCharacter::ToggleQuestionCursor);
 	PlayerInputComponent->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &ABHCharacter::OnQuestionPointerDown);
 	PlayerInputComponent->BindKey(EKeys::LeftMouseButton, IE_Released, this, &ABHCharacter::OnQuestionPointerUp);
@@ -2415,6 +2463,7 @@ void ABHCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 	DOREPLIFETIME(ABHCharacter, TeacherCaptureNextAllowedServerTime);
 	DOREPLIFETIME(ABHCharacter, bHiddenInLocker);
 	DOREPLIFETIME(ABHCharacter, bOutOfPlay);
+	DOREPLIFETIME(ABHCharacter, bSeated);
 }
 
 void ABHCharacter::EnterLocker(ABHLocker* Locker)
@@ -2527,7 +2576,10 @@ void ABHCharacter::ExitLocker(bool bAllowMovementExit)
 		&& !IsProne() && !IsSpecialMoveActive() && CanAct()
 		&& GetCharacterMovement() && GetCharacterMovement()->IsMovingOnGround())
 	{
-		TryStartSpecialMoveAuthority(EBHMovementSpecialState::Rolling, false, false);
+		if (TryStartSpecialMoveAuthority(EBHMovementSpecialState::Rolling, false, false))
+		{
+			MarkTutorialAction(TutorialActLockerRollBit); // movement-tutorial: a roll-out-of-locker specifically fired
+		}
 	}
 }
 
@@ -2910,10 +2962,22 @@ float ABHCharacter::DebugGetAntiCampIdleSecondsForTest() const
 		? FMath::Max(0.0f, GetWorld()->GetTimeSeconds() - AntiCampLastSatisfiedTime)
 		: 0.0f;
 }
+
+bool ABHCharacter::DebugIsTeacherCaptureCandidateForTest(const ABHCharacter* Target) const
+{
+	float Score = 0.0f;
+	return IsTeacherCaptureCandidateAuthority(Target, Score);
+}
 #endif
 
 void ABHCharacter::MoveForward(float Value)
 {
+	// A seated player stands up the instant they try to move (see ToggleSit / ServerSetSeated).
+	if (bSeated && Value != 0.0f)
+	{
+		ServerSetSeated(false);
+		return;
+	}
 	if (Value != 0.0f && CanAct() && !IsSpecialMoveActive())
 	{
 		AddMovementInput(GetActorForwardVector(), Value);
@@ -2924,6 +2988,11 @@ void ABHCharacter::MoveForward(float Value)
 
 void ABHCharacter::MoveRight(float Value)
 {
+	if (bSeated && Value != 0.0f)
+	{
+		ServerSetSeated(false);
+		return;
+	}
 	if (Value != 0.0f && CanAct() && !IsSpecialMoveActive())
 	{
 		AddMovementInput(GetActorRightVector(), Value);
@@ -3110,6 +3179,12 @@ void ABHCharacter::ToggleFlashlight()
 	ServerSetFlashlight(!bFlashlightOn);
 }
 
+void ABHCharacter::ToggleSit()
+{
+	// Local input -> server. The server re-validates (CanAct) and owns the authoritative seated state.
+	ServerSetSeated(!bSeated);
+}
+
 void ABHCharacter::StartJump()
 {
 	if (IsSpecialMoveActive())
@@ -3117,14 +3192,7 @@ void ABHCharacter::StartJump()
 		return;
 	}
 
-	const bool bHasDiveIntent = GetVelocity().SizeSquared2D() > FMath::Square(30.0f) || GetLastMovementInputVector().SizeSquared2D() > 0.01f;
-	if (bProneInputHeld && CanAct() && bHasDiveIntent)
-	{
-		StartCosmeticSpecialMove(EBHMovementSpecialState::Diving);
-		ServerStartSpecialMove(EBHMovementSpecialState::Diving, true, false);
-		return;
-	}
-
+	// Space stands you up from prone. (Dive is bound to Space-then-Alt: jump here, then press Alt -- see StartProne.)
 	if (IsProne())
 	{
 		ServerSetProne(false);
@@ -3158,15 +3226,25 @@ void ABHCharacter::OnJumped_Implementation()
 		const float Cost = BHJumpStaminaCost / FMath::Max(0.01f, BHLevelStaminaScale(BHPS));
 		Stamina = FMath::Max(0.0f, Stamina - Cost);
 
-		// Movement-tutorial telemetry: count rapid consecutive jumps as a bunny-hop chain. Hops landing within ~1.1s
-		// of each other extend the chain; a gap resets it. Three linked hops latches the Bhop bit for the tutorial.
+		// Movement-tutorial telemetry: count a real bunny-hop chain -- consecutive jumps taken AT SPRINT SPEED within
+		// ~1.1s of each other (so a stationary player tapping Space three times does NOT count; they must be carrying
+		// speed through the hops). A slow jump, or a gap, resets the chain. Three linked sprint-speed hops latch it.
 		const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
-		TutorialBhopChain = (Now - LastTutorialJumpServerTime <= 1.1f) ? TutorialBhopChain + 1 : 1;
-		LastTutorialJumpServerTime = Now;
-		if (TutorialBhopChain >= 3)
+		const float RoughSprintSpeed = FMath::Max(1.0f, BHRoleSprintSpeed(BHPS, SprintSpeed));
+		const bool bAtSprintSpeed = GetVelocity().Size2D() >= 0.8f * RoughSprintSpeed;
+		if (bAtSprintSpeed)
 		{
-			MarkTutorialAction(TutorialActBhopBit);
+			TutorialBhopChain = (Now - LastTutorialJumpServerTime <= 1.1f) ? TutorialBhopChain + 1 : 1;
+			if (TutorialBhopChain >= 3)
+			{
+				MarkTutorialAction(TutorialActBhopBit);
+			}
 		}
+		else
+		{
+			TutorialBhopChain = 0;
+		}
+		LastTutorialJumpServerTime = Now;
 	}
 }
 
@@ -3220,6 +3298,8 @@ void ABHCharacter::StopSprint()
 
 void ABHCharacter::StartCrouch()
 {
+	bCrouchInputHeld = true; // tracked so a drop-roll can fire on landing while Sprint+Crouch are held through a fall
+
 	if (IsSpecialMoveActive())
 	{
 		return;
@@ -3246,6 +3326,7 @@ void ABHCharacter::StartCrouch()
 
 void ABHCharacter::StopCrouch()
 {
+	bCrouchInputHeld = false;
 	if (!IsProne())
 	{
 		UnCrouch();
@@ -3267,6 +3348,24 @@ void ABHCharacter::StartProne()
 		StartCosmeticSpecialMove(EBHMovementSpecialState::Sliding);
 		ServerStartSpecialMove(EBHMovementSpecialState::Sliding, true, true);
 		return;
+	}
+
+	// DIVE -- bound to Space-then-Alt: if the player just jumped (or is otherwise airborne) and is moving, Alt
+	// launches a forward dive instead of toggling prone. Press Space to leap, then Alt to dive. A grounded or
+	// stationary Alt just toggles prone as before.
+	if (!IsProne())
+	{
+		const UCharacterMovementComponent* Move = GetCharacterMovement();
+		const bool bAirborne = Move && Move->IsFalling();
+		const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+		const bool bRecentJump = (Now - LastBHopJumpInputTime) >= 0.0f && (Now - LastBHopJumpInputTime) <= 0.6f;
+		const bool bMoving = GetVelocity().SizeSquared2D() > FMath::Square(30.0f) || GetLastMovementInputVector().SizeSquared2D() > 0.01f;
+		if ((bAirborne || bRecentJump) && bMoving)
+		{
+			StartCosmeticSpecialMove(EBHMovementSpecialState::Diving);
+			ServerStartSpecialMove(EBHMovementSpecialState::Diving, true, false);
+			return;
+		}
 	}
 
 	ServerSetProne(!IsProne());
@@ -3644,6 +3743,10 @@ void ABHCharacter::UpdateSpecialMoveAuthority(float DeltaSeconds)
 		const float CleanScale = FMath::Clamp(CVarBHQuietRollCleanScale.GetValueOnGameThread(), 0.0f, 1.0f);
 		const float RollImpactMult = (bSpecialMoveHitWall ? 1.0f : CleanScale) * SpecialMoveNoiseScale;
 		EmitSpecialMoveNoiseAuthority(MovementSpecialState, FName(TEXT("roll impact")), RollImpactMult);
+		if (!bSpecialMoveHitWall)
+		{
+			MarkTutorialAction(TutorialActQuietRollBit); // movement-tutorial: a clean (quiet) roll, no wall bonk
+		}
 	}
 	else if (MovementSpecialState == EBHMovementSpecialState::Sliding && NormalizedTime >= 0.42f && !(SpecialMoveNoiseEventMask & 0x02))
 	{
@@ -3750,7 +3853,9 @@ bool ABHCharacter::TryStartSpecialMoveAuthority(EBHMovementSpecialState Requeste
 	}
 
 	UCharacterMovementComponent* Movement = GetCharacterMovement();
-	if (!Movement || !Movement->IsMovingOnGround())
+	// Diving may launch from the AIR (it is bound to Space-then-Alt: jump, then dive). Roll/Slide still require
+	// solid ground -- a roll requested in the air is instead buffered for a drop-roll on landing.
+	if (!Movement || (!Movement->IsMovingOnGround() && RequestedState != EBHMovementSpecialState::Diving))
 	{
 		// Drop-roll: a roll requested in the air (Sprint held + Crouch) just before landing is BUFFERED rather than
 		// simply rejected, so Landed() can fire it on touchdown and suppress the hard-landing noise. Only the roll,
@@ -3759,6 +3864,9 @@ bool ABHCharacter::TryStartSpecialMoveAuthority(EBHMovementSpecialState Requeste
 			&& CVarBHDropRollWindow.GetValueOnGameThread() > 0.0f)
 		{
 			LastDropRollInputTime = GetWorld()->GetTimeSeconds();
+			// Armed for a drop-roll on landing; clear the predicted cosmetic but show NO failure nag.
+			ClientSpecialMoveRejected(RequestedState, FString());
+			return false;
 		}
 		ClientSpecialMoveRejected(RequestedState, TEXT("Get your footing first."));
 		return false;
@@ -3878,6 +3986,7 @@ bool ABHCharacter::TryStartSpecialMoveAuthority(EBHMovementSpecialState Requeste
 	{
 		++PerfectChainCount;
 		ClientNotifyPerfectChain(PerfectChainCount);
+		MarkTutorialAction(TutorialActFlowChainBit); // movement-tutorial: a frame-perfect flow-chain link landed
 		// Greed tell: the link that reaches the chain cap broadcasts a single loud "overextension" burst, so a master
 		// who pushes the chain to its limit pays the noise economy back even though the earlier links were quiet.
 		if (PerfectChainCount >= CVarBHMomentumChainMaxLinks.GetValueOnGameThread())
@@ -3987,6 +4096,28 @@ bool ABHCharacter::SetProneAuthority(bool bNewProne, bool bShowFailureMessages)
 	ApplyMovementSpecialState();
 	ForceNetUpdate();
 	return true;
+}
+
+bool ABHCharacter::TryEnterCrawlSpacePose()
+{
+	if (!HasAuthority())
+	{
+		return false;
+	}
+
+	// Already low-profile (prone/sliding/diving) -> already sheltering; nothing to do.
+	const EBHMovementSpecialState State = GetMovementSpecialState();
+	if (State == EBHMovementSpecialState::Prone
+		|| State == EBHMovementSpecialState::Sliding
+		|| State == EBHMovementSpecialState::Diving)
+	{
+		return true;
+	}
+
+	// Auto-drop to prone (bShowFailureMessages=false): lets a survivor sprinting at a crawl mouth flow straight
+	// into cover instead of being hard-stopped and shoved back by the volume. Returns false if they can't prone
+	// this instant (mid roll / cannot act); the volume then decides whether to wait a tick or eject.
+	return SetProneAuthority(true, false);
 }
 
 bool ABHCharacter::CanStandFromProne() const
@@ -5344,6 +5475,9 @@ void ABHCharacter::UpdateRoleSkeletalAnimation(float Speed2D, float MoveAlpha, f
 		return;
 	}
 
+	// Seated cosmetic pose: hide the legs + drop the torso to the seat (runs on every client).
+	ApplySeatedAvatar(bSeated);
+
 	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
 	if (UBHMovementAnimInstance* MovementAnim = Cast<UBHMovementAnimInstance>(RoleSkeletalMesh->GetAnimInstance()))
 	{
@@ -5402,6 +5536,40 @@ void ABHCharacter::UpdateRoleSkeletalAnimation(float Speed2D, float MoveAlpha, f
 	RoleSkeletalMesh->SetPlayRate(DesiredPlayRate);
 }
 
+void ABHCharacter::ApplySeatedAvatar(bool bSeatedNow)
+{
+	if (!RoleSkeletalMesh)
+	{
+		return;
+	}
+
+	// Hide/show the leg bones only on a state change (HideBoneByName also hides their children).
+	if (bSeatedNow != bSeatedAvatarApplied)
+	{
+		bSeatedAvatarApplied = bSeatedNow;
+		const TArray<FName> LegBones = BHCollectLegBones(RoleSkeletalMesh);
+		for (const FName& BoneName : LegBones)
+		{
+			if (bSeatedNow)
+			{
+				RoleSkeletalMesh->HideBoneByName(BoneName, PBO_None);
+			}
+			else
+			{
+				RoleSkeletalMesh->UnHideBoneByName(BoneName);
+			}
+		}
+	}
+
+	// Drop the (legless) torso so it rests at seat height; restore the standing offset when up. ~32cm reads as
+	// sitting on the lobby stools (seat ~60cm) -- tune this single value if the pose sits high/low.
+	if (bRoleMeshStandCaptured)
+	{
+		const float SeatedDropZ = 32.0f;
+		RoleSkeletalMesh->SetRelativeLocation(bSeatedNow ? (RoleMeshStandOffset - FVector(0.0f, 0.0f, SeatedDropZ)) : RoleMeshStandOffset);
+	}
+}
+
 void ABHCharacter::SetLowPolyAvatarVisible(bool bVisible)
 {
 	UStaticMeshComponent* Parts[] = {
@@ -5442,6 +5610,9 @@ void ABHCharacter::ApplyRoleModelVisuals(const ABHPlayerState* BHPS, const FLine
 	bool bAppliedRoleModel = false;
 	bool bAppliedSkeletalModel = false;
 	const FVector RoleModelFeetOffset = BHRoleModelFeetAtCapsuleBaseOffset(GetCapsuleComponent(), AvatarRoot);
+	// Remember the standing mesh offset so ApplySeatedAvatar can drop to the seat and restore on stand.
+	RoleMeshStandOffset = RoleModelFeetOffset;
+	bRoleMeshStandCaptured = true;
 
 	if (RoleModelRoot)
 	{
@@ -5564,6 +5735,9 @@ void ABHCharacter::UpdateViewFeel(float DeltaSeconds)
 	const float StressTremor = (FMath::Sin(FlashlightPulseTime * 13.0f) + FMath::Sin(FlashlightPulseTime * 19.7f) * 0.45f)
 		* (FearPanicAlpha * 0.82f + DreadStrainAlpha * 0.34f);
 	const float CrouchOffset = bIsCrouched ? -14.0f : 0.0f;
+	// Functional sit lowers the first-person eye height to a seated level (no body animation needed). Smoothed
+	// into the camera via the interpolation below, so sitting/standing eases the view down/up.
+	const float SeatedOffset = bSeated ? -22.0f : 0.0f;
 	const EBHMovementSpecialState VisualSpecialState = MovementSpecialState != EBHMovementSpecialState::None ? MovementSpecialState : CosmeticMovementSpecialState;
 	const float SpecialOffset = VisualSpecialState == EBHMovementSpecialState::Prone
 		? BHProneCameraOffsetZ
@@ -5571,7 +5745,7 @@ void ABHCharacter::UpdateViewFeel(float DeltaSeconds)
 			? BHSlideCameraOffsetZ
 			: (VisualSpecialState == EBHMovementSpecialState::Diving ? BHDiveCameraOffsetZ : 0.0f));
 	const FVector TargetCameraLocation = DefaultCameraLocation
-		+ FVector(0.0f, BobY - SmoothedStrafeAlpha * 1.65f, CrouchOffset + SpecialOffset + BobZ + StressTremor);
+		+ FVector(0.0f, BobY - SmoothedStrafeAlpha * 1.65f, CrouchOffset + SeatedOffset + SpecialOffset + BobZ + StressTremor);
 
 	// Interpolate the base view-feel location into a member; UpdatePOVAnimation owns the single
 	// final SetRelativeLocation so the additive POV punch doesn't fight the bob interpolation.
@@ -5609,6 +5783,9 @@ void ABHCharacter::UpdatePOVAnimation(float DeltaSeconds)
 
 	FRotator TargetRot = FRotator::ZeroRotator;
 	FVector TargetLoc = FVector::ZeroVector;
+	// The roll's barrel spin is driven directly (see the Rolling case) and applied after the interpolation below,
+	// because RInterpTo normalizes rotators and would collapse a full-revolution target to a tiny lean.
+	float SpecialMoveCameraRollDeg = 0.0f;
 
 	if (Tuning.bEnablePOVAnimation && GetWorld())
 	{
@@ -5631,9 +5808,15 @@ void ABHCharacter::UpdatePOVAnimation(float DeltaSeconds)
 			{
 			case EBHMovementSpecialState::Rolling:
 			{
-				// Roll-axis tumble that sweeps once and eases back to ~0 before the move ends.
-				const float Sweep = FMath::InterpEaseInOut(0.0f, 1.0f, P, 2.0f) * (1.0f - Settle);
-				TargetRot.Roll = Sweep * Tuning.RollSpinDegrees;
+				// Forward SOMERSAULT: sweep a clean 0..RollSpinDegrees (360 = one full forward revolution, ending
+				// upright) over the move. Published to ABHPlayerCameraManager, which pitches the view about its local
+				// right axis (down -> over -> up) on the final POV -- it can't be done on the camera component here
+				// because bUsePawnControlRotation overwrites component rotation each frame. Disabled under
+				// reduced-motion (a tumbling horizon is nausea-inducing).
+				if (!IsReducedCameraShakeLocal())
+				{
+					SpecialMoveCameraRollDeg = FMath::InterpEaseInOut(0.0f, 1.0f, P, 1.8f) * Tuning.RollSpinDegrees;
+				}
 				TargetRot.Pitch = -Bell * Tuning.RollPitchDipDeg;
 				TargetLoc.Z = -Bell * Tuning.RollPosPunchCm;
 				break;
@@ -5696,6 +5879,10 @@ void ABHCharacter::UpdatePOVAnimation(float DeltaSeconds)
 	POVAnimLocationCurrent = FMath::VInterpTo(POVAnimLocationCurrent, TargetLoc, DeltaSeconds, FMath::Max(0.1f, Tuning.PosInterpSpeed));
 	// The jumpscare flinch is a sharp, damped impulse applied directly (not through the slow
 	// POV interpolation) so the recoil reads as an instant jolt rather than a smooth lean.
+	// The first-person camera uses bUsePawnControlRotation, which overwrites component-relative ROTATION every frame,
+	// so the barrel roll can't be applied on the camera component here -- publish it to ABHPlayerCameraManager, which
+	// stamps it onto the view rotation in ProcessViewRotation. (Relative LOCATION still survives, so keep that.)
+	ViewRollOffsetDeg = SpecialMoveCameraRollDeg;
 	Camera->SetRelativeRotation(POVAnimRotationCurrent + ComputeJumpscareCameraFlinch());
 	Camera->SetRelativeLocation(ViewFeelCameraLocation + POVAnimLocationCurrent);
 }
@@ -7006,6 +7193,46 @@ void ABHCharacter::ServerSetFlashlight_Implementation(bool bNewOn)
 	}
 }
 
+void ABHCharacter::ServerSetSeated_Implementation(bool bNewSeated)
+{
+	SetSeatedAuthority(bNewSeated);
+}
+
+void ABHCharacter::SetSeatedAuthority(bool bNewSeated)
+{
+	if (!HasAuthority() || bNewSeated == bSeated)
+	{
+		return;
+	}
+	// You can only sit when otherwise free to act (not captured/frozen/in a locker); standing is always allowed.
+	if (bNewSeated && !CanAct())
+	{
+		return;
+	}
+
+	bSeated = bNewSeated;
+
+	// Freeze/restore movement server-side using the same idiom the rest of the class uses (DisableMovement sets
+	// MovementMode = MOVE_None). The lowered eye height is cosmetic and handled per-frame in UpdateViewFeel.
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		if (bSeated)
+		{
+			Movement->StopMovementImmediately();
+			Movement->DisableMovement();
+		}
+		else if (Movement->MovementMode == MOVE_None)
+		{
+			Movement->SetMovementMode(MOVE_Walking);
+		}
+	}
+
+	if (bSeated)
+	{
+		SendStatusMessage(TEXT("Seated. Move to stand up."));
+	}
+}
+
 void ABHCharacter::ServerBeginInteract_Implementation(AActor* Target)
 {
 	BeginInteractAuthority(Target, true, true);
@@ -7220,6 +7447,7 @@ void ABHCharacter::ServerSetProneInputHeld_Implementation(bool bHeld)
 			if (NormalizedTime <= Window)
 			{
 				bSpecialMoveEarlyBrake = true;
+				MarkTutorialAction(TutorialActSlideStopBit); // movement-tutorial: a silent slide-stop specifically fired
 				SpecialMoveEndTime = GetWorld()->GetTimeSeconds(); // cut the dash now; the Tick finisher settles to crouch
 			}
 		}

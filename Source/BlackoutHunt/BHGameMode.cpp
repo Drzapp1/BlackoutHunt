@@ -59,6 +59,9 @@
 #include "BHTrainRoofHatch.h"
 #include "BHTrainRoofParkourGate.h"
 #include "BHTrainServiceLight.h"
+#include "BHTrainBlackjackTable.h"
+#include "BHTrainChessTable.h"
+#include "BHTrainTicTacToeTable.h"
 #include "BHTrainTunnelMotionActor.h"
 #include "Components/BoxComponent.h"
 #include "Components/BrushComponent.h"
@@ -175,7 +178,8 @@ FLinearColor AvatarColorForIndex(int32 Index)
 		FLinearColor(0.55f, 0.86f, 0.92f, 1.0f), // Slipstream
 		FLinearColor(0.80f, 0.20f, 0.18f, 1.0f), // Detention
 		FLinearColor(0.52f, 0.10f, 0.14f, 1.0f), // Apex
-		FLinearColor(0.40f, 0.54f, 0.56f, 1.0f)  // Commuter
+		FLinearColor(0.40f, 0.54f, 0.56f, 1.0f), // Commuter
+		FLinearColor(0.02f, 0.02f, 0.02f, 1.0f)  // Black (index 18; recolour-only)
 	};
 
 	return Palette[FMath::Abs(Index) % UE_ARRAY_COUNT(Palette)];
@@ -8478,7 +8482,7 @@ void ABHGameMode::BuildTrainLobbyLevel()
 
 		// Spawn points along the aisle. The two GAME cars (CarIndex 2 & 4) carry a centred feature table, so skip
 		// their centre spawn to avoid materialising a player on top of the table; the side spawns stay clear.
-		const bool bGameCar = (CarIndex == 2 || CarIndex == 4);
+		const bool bGameCar = (CarIndex == 2 || CarIndex == 3 || CarIndex == 4 || CarIndex == 5 || CarIndex == 6);
 		if (!bGameCar)
 		{
 			SurvivorSpawns.Add(FVector(CenterX, 0.0f, 124.0f));
@@ -8504,70 +8508,56 @@ void ABHGameMode::BuildTrainLobbyLevel()
 	const FLinearColor PlanterTint(0.16f, 0.18f, 0.17f, 1.0f);
 	const FLinearColor FoliageTint(0.14f, 0.42f, 0.20f, 1.0f);
 
-	// A big chess table: pedestal, an 8x8 checkered top, a back rank of pieces per side, and two stools.
+	// A real, PLAYABLE fast-chess table actor (5x5 minichess; solo vs AI or human PvP). Look at a square and
+	// TAP to select/move, HOLD to deselect. Stools sit opposite each other so two players can face off.
 	auto AddChessTable = [&](float TX)
 	{
-		const FLinearColor Light(0.82f, 0.78f, 0.66f, 1.0f);
-		const FLinearColor Dark(0.18f, 0.14f, 0.11f, 1.0f);
-		const FLinearColor Frame(0.30f, 0.22f, 0.14f, 1.0f);
-		SpawnBlock(FVector(TX, 0.0f, 30.0f), FVector(0.32f, 0.32f, 0.58f), Frame, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
-		SpawnBlock(FVector(TX, 0.0f, 60.0f), FVector(1.55f, 1.55f, 0.10f), Frame, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
-		const float Cell = 13.0f;                       // 13cm squares -> ~104cm board
-		const float Origin = -3.5f * Cell;              // centre the 8x8 grid on TX / y=0
-		for (int32 Row = 0; Row < 8; ++Row)
-		{
-			for (int32 Col = 0; Col < 8; ++Col)
-			{
-				const bool bLightCell = ((Row + Col) % 2) == 0;
-				SpawnBlock(FVector(TX + Origin + Col * Cell, Origin + Row * Cell, 66.0f),
-					FVector(Cell / 100.0f * 0.96f, Cell / 100.0f * 0.96f, 0.03f), bLightCell ? Light : Dark, FRotator::ZeroRotator, false, EBHBlockMaterial::Tiles);
-			}
-		}
-		for (int32 Col = 0; Col < 8; ++Col)
-		{
-			SpawnBlock(FVector(TX + Origin + Col * Cell, Origin, 73.0f), FVector(0.05f, 0.05f, 0.11f), Light, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
-			SpawnBlock(FVector(TX + Origin + Col * Cell, -Origin, 73.0f), FVector(0.05f, 0.05f, 0.11f), Dark, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
-		}
-		SpawnBlock(FVector(TX - 115.0f, 0.0f, 40.0f), FVector(0.42f, 0.42f, 0.40f), CarAccents[1], FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
-		SpawnBlock(FVector(TX + 115.0f, 0.0f, 40.0f), FVector(0.42f, 0.42f, 0.40f), CarAccents[1], FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+		GetWorld()->SpawnActor<ABHTrainChessTable>(FVector(TX, 0.0f, 0.0f), FRotator::ZeroRotator);
+		SpawnBlock(FVector(TX, -150.0f, 40.0f), FVector(0.42f, 0.42f, 0.40f), CarAccents[1], FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+		SpawnBlock(FVector(TX, 150.0f, 40.0f), FVector(0.42f, 0.42f, 0.40f), CarAccents[1], FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
 	};
 
 	// A blackjack / card table: green felt top on a wood base, chip stacks, a couple of dealt cards, and stools.
-	auto AddCardTable = [&](float TX)
+	// The blackjack car spawns the real, PLAYABLE table actor (server-authoritative; tap = Hit/Deal, hold =
+	// Stand) plus a ring of stools to gather around.
+	auto AddBlackjackCar = [&](float TX)
 	{
-		const FLinearColor Felt(0.05f, 0.30f, 0.15f, 1.0f);
-		const FLinearColor Wood(0.26f, 0.16f, 0.10f, 1.0f);
-		const FLinearColor ChipR(0.85f, 0.18f, 0.18f, 1.0f);
-		const FLinearColor ChipW(0.90f, 0.88f, 0.82f, 1.0f);
-		const FLinearColor ChipB(0.16f, 0.20f, 0.55f, 1.0f);
-		SpawnBlock(FVector(TX, 0.0f, 30.0f), FVector(0.32f, 0.32f, 0.56f), Wood, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
-		SpawnBlock(FVector(TX, 0.0f, 58.0f), FVector(1.8f, 1.15f, 0.10f), Wood, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
-		SpawnBlock(FVector(TX, 0.0f, 64.0f), FVector(1.62f, 0.98f, 0.02f), Felt, FRotator::ZeroRotator, false, EBHBlockMaterial::Tiles);
-		SpawnBlock(FVector(TX - 45.0f, -28.0f, 68.0f), FVector(0.07f, 0.07f, 0.06f), ChipR, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
-		SpawnBlock(FVector(TX, -32.0f, 69.0f), FVector(0.07f, 0.07f, 0.08f), ChipB, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
-		SpawnBlock(FVector(TX + 45.0f, -28.0f, 67.0f), FVector(0.07f, 0.07f, 0.05f), ChipW, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
-		SpawnBlock(FVector(TX + 55.0f, 22.0f, 66.0f), FVector(0.10f, 0.15f, 0.01f), ChipW, FRotator(0.0f, 16.0f, 0.0f), false, EBHBlockMaterial::Tiles);
-		SpawnBlock(FVector(TX + 74.0f, 26.0f, 66.0f), FVector(0.10f, 0.15f, 0.01f), ChipW, FRotator(0.0f, 30.0f, 0.0f), false, EBHBlockMaterial::Tiles);
-		for (float SX : {-130.0f, 0.0f, 130.0f})
+		GetWorld()->SpawnActor<ABHTrainBlackjackTable>(FVector(TX, 0.0f, 0.0f), FRotator::ZeroRotator);
+		// Stools on both sides so several players can ring the multi-seat table.
+		for (float SX : {-150.0f, 0.0f, 150.0f})
 		{
-			SpawnBlock(FVector(TX + SX, -150.0f, 40.0f), FVector(0.42f, 0.42f, 0.40f), CarAccents[3], FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+			SpawnBlock(FVector(TX + SX, -165.0f, 40.0f), FVector(0.42f, 0.42f, 0.40f), CarAccents[3], FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+			SpawnBlock(FVector(TX + SX, 165.0f, 40.0f), FVector(0.42f, 0.42f, 0.40f), CarAccents[3], FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
 		}
+	};
+
+	// A tic-tac-toe table: same look-and-tap flow as chess (solo vs AI or PvP), with stools either side.
+	auto AddTicTacToeTable = [&](float TX)
+	{
+		GetWorld()->SpawnActor<ABHTrainTicTacToeTable>(FVector(TX, 0.0f, 0.0f), FRotator::ZeroRotator);
+		SpawnBlock(FVector(TX, -150.0f, 40.0f), FVector(0.42f, 0.42f, 0.40f), CarAccents[2], FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+		SpawnBlock(FVector(TX, 150.0f, 40.0f), FVector(0.42f, 0.42f, 0.40f), CarAccents[2], FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
 	};
 
 	for (int32 LoungeCar = 1; LoungeCar <= NumCars - 2; ++LoungeCar)
 	{
 		const float CenterX = TubeMinX + 750.0f + LoungeCar * 1500.0f;
 
-		// A couple of cars are GAME cars (chess, blackjack/cards) so there's something to gather around; they get
-		// one feature table down the centre instead of the twin booths so the table has room.
-		if (LoungeCar == 2)
+		// A couple of cars are GAME cars (chess, blackjack) so there's something to gather around; they get one
+		// feature table down the centre instead of the twin booths so the table has room.
+		if (LoungeCar == 2 || LoungeCar == 6)
 		{
 			AddChessTable(CenterX);
 			continue;
 		}
-		if (LoungeCar == 4)
+		if (LoungeCar == 3 || LoungeCar == 4)
 		{
-			AddCardTable(CenterX);
+			AddBlackjackCar(CenterX);
+			continue;
+		}
+		if (LoungeCar == 5)
+		{
+			AddTicTacToeTable(CenterX);
 			continue;
 		}
 
@@ -10696,6 +10686,15 @@ void ABHGameMode::PrepareRoundDirector()
 		{
 			FillRevisionStations(false);
 		}
+		// Every node is available in revision now: there is no random active subset. Students roam (in
+		// groups if they like) and each answers their own questions, so light up every objective station.
+		for (int32 AllIndex = 0; AllIndex < ObjectiveStations.Num(); ++AllIndex)
+		{
+			if (ObjectiveStations[AllIndex])
+			{
+				ActiveStationIndexes.Add(AllIndex);
+			}
+		}
 		ActiveSideObjectiveCount = ActiveStationIndexes.Num();
 	}
 	else
@@ -10796,29 +10795,22 @@ void ABHGameMode::PrepareRoundDirector()
 	}
 	if (bRevisionMode)
 	{
-		// Mastery is durable for the whole session now: only the first stage wipes it. Later stages keep each
-		// student's per-topic mastery and spaced-review queue -- one cumulative climb across the session's
-		// stages -- and clear just the per-round contribution gate and per-round report bookkeeping.
-		if (RuntimeStageIndex <= 0)
+		// Mastery is PERMANENT now: it is never wiped between rounds, stages, or games -- it only grows and is
+		// tracked per student (persisted to their account). Each round clears only the per-round contribution
+		// gate and per-round report bookkeeping, never the mastery fields or the spaced-review queue.
+		for (APlayerState* RawPS : GameState->PlayerArray)
 		{
-			ResetRevisionStats();
+			if (ABHPlayerState* BHPS = Cast<ABHPlayerState>(RawPS))
+			{
+				BHPS->ResetRevisionRoundContribution();
+			}
 		}
-		else
+		if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
 		{
-			for (APlayerState* RawPS : GameState->PlayerArray)
-			{
-				if (ABHPlayerState* BHPS = Cast<ABHPlayerState>(RawPS))
-				{
-					BHPS->ResetRevisionRoundContribution();
-				}
-			}
-			if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
-			{
-				BHGI->ClearQuestionAttemptHistory();
-			}
-			RevisionReviewTimeRemaining = 0;
-			bRevisionReportExported = false;
+			BHGI->ClearQuestionAttemptHistory();
 		}
+		RevisionReviewTimeRemaining = 0;
+		bRevisionReportExported = false;
 		UpdateRevisionSummary(TEXT("Physics Classroom started: solve each zone, correct mistakes, and keep every student above threshold."));
 		UpdateDirectorGameState(GetRevisionObjectiveText());
 	}

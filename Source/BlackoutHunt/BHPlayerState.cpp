@@ -84,6 +84,8 @@ void ABHPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLi
 	DOREPLIFETIME(ABHPlayerState, HunterPoints);
 	DOREPLIFETIME(ABHPlayerState, LifetimeHunterPoints);
 	DOREPLIFETIME(ABHPlayerState, Powerups);
+	// Owner-only: only the player's own HUD needs to know which minigame table to draw status for.
+	DOREPLIFETIME_CONDITION(ABHPlayerState, ActiveMinigameTable, COND_OwnerOnly);
 }
 
 bool ABHPlayerState::IsAliveSurvivor() const
@@ -144,14 +146,15 @@ void ABHPlayerState::SetAvatarGearIndex(int32 NewGearIndex)
 
 void ABHPlayerState::SetAvatarSlotColors(const TArray<uint8>& NewSlotColors)
 {
-	// Normalise to the fixed registry size and to valid values (0 = authored default; 1..18 = palette colour
-	// index+1, matching the 18 entries of BHAvatarPaletteColor). Anything else collapses to authored.
+	// Normalise to the fixed registry size and to valid values (0 = authored default; 1..N = palette colour
+	// index+1, where N = ShirtColor count, matching the entries of BHAvatarPaletteColor). Else collapses to authored.
 	const int32 Count = BHColorableMaterialCount();
+	const uint8 MaxStored = static_cast<uint8>(BHCosmeticMaxIndex(EBHCosmeticCategory::ShirtColor) + 1);
 	AvatarSlotColors.SetNumZeroed(Count);
 	for (int32 Index = 0; Index < Count; ++Index)
 	{
 		const uint8 Value = NewSlotColors.IsValidIndex(Index) ? NewSlotColors[Index] : 0;
-		AvatarSlotColors[Index] = (Value >= 1 && Value <= 18) ? Value : 0;
+		AvatarSlotColors[Index] = (Value >= 1 && Value <= MaxStored) ? Value : 0;
 	}
 }
 
@@ -423,6 +426,15 @@ void ABHPlayerState::SetPowerupCooldown(EBHPowerupType Type, float CooldownEndSe
 	NewEntry.Charges = 0;
 	NewEntry.CooldownEndServerTime = FMath::Max(0.0f, CooldownEndServerTime);
 	Powerups.Add(NewEntry);
+}
+
+void ABHPlayerState::SetActiveMinigameTable(AActor* Table)
+{
+	// Server-authoritative; replicates to the owning client whose HUD draws the minigame status overlay.
+	if (HasAuthority())
+	{
+		ActiveMinigameTable = Table;
+	}
 }
 
 float ABHPlayerState::GetPowerupCooldownEnd(EBHPowerupType Type) const
