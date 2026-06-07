@@ -21,6 +21,7 @@ class SEditableTextBox;
 class SMultiLineEditableTextBox;
 class SVerticalBox;
 class SWidgetSwitcher;
+class SBox;
 class SWidget;
 enum class EBHFeedbackKind : uint8;
 struct FBHAchievementDisplay;
@@ -239,6 +240,8 @@ private:
 	FSlateColor GetAvatarPreviewAccentColor() const;
 	FSlateColor GetCosmeticButtonColor(EBHCosmeticCategory Category, int32 Index) const;
 	FSlateColor GetMenuTabColor(EBHMainMenuTab Tab) const;
+	// Dynamic tab label: the base label, except the Awards tab appends the unlocked-but-unseen count.
+	FText GetMenuTabLabel(EBHMainMenuTab Tab, FText BaseLabel) const;
 	FSlateColor GetMenuTabTextColor(EBHMainMenuTab Tab) const;
 	static int32 MenuTabToWidgetIndex(EBHMainMenuTab Tab);
 	float GetMasterVolumeValue() const;
@@ -350,6 +353,8 @@ private:
 	TSharedPtr<SEditableTextBox> LessonPresetNameTextBox;
 	TSharedPtr<SVerticalBox> LessonPresetListBox;
 	TSharedPtr<SWidgetSwitcher> MainTabSwitcher;
+	// Awards-tab content holder so it can be rebuilt on tab-open (refreshing the "newly unlocked" markers + stats).
+	TSharedPtr<SBox> AchievementsPanelContainer;
 	TWeakObjectPtr<AActor> AvatarPreviewActor;
 	TWeakObjectPtr<USkeletalMeshComponent> AvatarPreviewMeshComponent;
 	TWeakObjectPtr<UStaticMeshComponent> AvatarPreviewHeadwearComponent;

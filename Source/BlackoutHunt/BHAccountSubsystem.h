@@ -125,6 +125,10 @@ struct FBHAccountProgress
 	// prestige tints. Local + persisted; never affect gameplay.
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	TArray<FName> UnlockedAchievements;
+
+	// Achievements already SEEN in the Awards tab (for the "newly unlocked" indicator: unlocked-but-unseen = new).
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	TArray<FName> SeenAchievements;
 };
 
 // One achievement's display data for the menu's Achievements tab, built from the registry + the local account's
@@ -142,6 +146,7 @@ struct FBHAchievementDisplay
 	// (an event/binary achievement) and the badge draws no progress bar.
 	int32 ProgressCurrent = 0;
 	int32 ProgressTarget = 0;
+	bool bIsNew = false;   // unlocked but not yet viewed in the Awards tab (drives the "NEW" marker).
 };
 
 UCLASS()
@@ -210,6 +215,11 @@ public:
 	TArray<FBHAchievementDisplay> GetAchievementsForDisplay() const;
 	// Earned / total counts for the tab header.
 	void GetAchievementCounts(int32& OutEarned, int32& OutTotal) const;
+
+	// "Newly unlocked" indicator: count of unlocked-but-unseen achievements, and a way to mark every current
+	// unlock as seen (called when the Awards tab is opened so the badge / tab count clears).
+	int32 GetUnseenAchievementCount() const;
+	void MarkAchievementsSeen();
 
 	const FBHAccountProfile& GetProfile() const;
 	const FBHAccountProgress& GetProgress() const;

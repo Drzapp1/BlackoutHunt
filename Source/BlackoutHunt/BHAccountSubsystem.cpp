@@ -1301,6 +1301,7 @@ TArray<FBHAchievementDisplay> UBHAccountSubsystem::GetAchievementsForDisplay() c
 		Display.Difficulty = Def.Difficulty;
 		Display.bHidden = Def.bHidden;
 		Display.bUnlocked = Progress.UnlockedAchievements.Contains(Display.Id);
+		Display.bIsNew = Display.bUnlocked && !Progress.SeenAchievements.Contains(Display.Id);
 		// Progress toward countable achievements (drives the Awards-tab progress bar). Event/binary ones leave
 		// ProgressTarget at 0 (no bar).
 		{
@@ -1328,6 +1329,36 @@ void UBHAccountSubsystem::GetAchievementCounts(int32& OutEarned, int32& OutTotal
 		{
 			++OutEarned;
 		}
+	}
+}
+
+int32 UBHAccountSubsystem::GetUnseenAchievementCount() const
+{
+	int32 Count = 0;
+	for (const FName& Id : Progress.UnlockedAchievements)
+	{
+		if (!Progress.SeenAchievements.Contains(Id))
+		{
+			++Count;
+		}
+	}
+	return Count;
+}
+
+void UBHAccountSubsystem::MarkAchievementsSeen()
+{
+	bool bChanged = false;
+	for (const FName& Id : Progress.UnlockedAchievements)
+	{
+		if (!Progress.SeenAchievements.Contains(Id))
+		{
+			Progress.SeenAchievements.AddUnique(Id);
+			bChanged = true;
+		}
+	}
+	if (bChanged)
+	{
+		SaveProgress();
 	}
 }
 
@@ -1677,6 +1708,12 @@ TSharedRef<FJsonObject> UBHAccountSubsystem::ProgressToJson() const
 		AchievementsJson.Add(MakeShared<FJsonValueString>(Achievement.ToString()));
 	}
 	JsonObject->SetArrayField(TEXT("unlocked_achievements"), AchievementsJson);
+	TArray<TSharedPtr<FJsonValue>> SeenJson;
+	for (const FName& Seen : Progress.SeenAchievements)
+	{
+		SeenJson.Add(MakeShared<FJsonValueString>(Seen.ToString()));
+	}
+	JsonObject->SetArrayField(TEXT("seen_achievements"), SeenJson);
 	return JsonObject;
 }
 
@@ -1762,6 +1799,19 @@ void UBHAccountSubsystem::ApplyProgressJson(const TSharedPtr<FJsonObject>& JsonO
 			if (Value.IsValid() && Value->TryGetString(AchievementId) && !AchievementId.IsEmpty())
 			{
 				Progress.UnlockedAchievements.AddUnique(FName(AchievementId));
+			}
+		}
+	}
+	Progress.SeenAchievements.Reset();
+	const TArray<TSharedPtr<FJsonValue>>* SeenJson = nullptr;
+	if (JsonObject.IsValid() && JsonObject->TryGetArrayField(TEXT("seen_achievements"), SeenJson) && SeenJson)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *SeenJson)
+		{
+			FString SeenId;
+			if (Value.IsValid() && Value->TryGetString(SeenId) && !SeenId.IsEmpty())
+			{
+				Progress.SeenAchievements.AddUnique(FName(SeenId));
 			}
 		}
 	}

@@ -3203,7 +3203,10 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 							SNew(SScrollBox)
 							+ SScrollBox::Slot()
 							[
-								BuildAchievementsPanel()
+								SAssignNew(AchievementsPanelContainer, SBox)
+								[
+									BuildAchievementsPanel()
+								]
 							]
 						]
 					]
@@ -3410,6 +3413,26 @@ FReply SBHMainMenu::OnMenuTabClicked(EBHMainMenuTab NewTab)
 		MainTabSwitcher->SetActiveWidgetIndex(MenuTabToWidgetIndex(NewTab));
 	}
 
+	// Opening the Awards tab: rebuild it so the "NEW" markers + profile/mastery reflect the latest progress,
+	// then mark all current unlocks seen so the markers and the tab count clear next time.
+	if (NewTab == EBHMainMenuTab::Achievements)
+	{
+		if (AchievementsPanelContainer.IsValid())
+		{
+			AchievementsPanelContainer->SetContent(BuildAchievementsPanel());
+		}
+		if (ABHPlayerController* PC = PlayerController.Get())
+		{
+			if (UGameInstance* GameInstance = PC->GetGameInstance())
+			{
+				if (UBHAccountSubsystem* AccountSubsystem = GameInstance->GetSubsystem<UBHAccountSubsystem>())
+				{
+					AccountSubsystem->MarkAchievementsSeen();
+				}
+			}
+		}
+	}
+
 	return FReply::Handled();
 }
 
@@ -3553,6 +3576,22 @@ FSlateColor SBHMainMenu::GetMenuTabColor(EBHMainMenuTab Tab) const
 	}
 
 	return FSlateColor(FLinearColor(0.045f, 0.052f, 0.060f, 0.96f));
+}
+
+FText SBHMainMenu::GetMenuTabLabel(EBHMainMenuTab Tab, FText BaseLabel) const
+{
+	if (Tab == EBHMainMenuTab::Achievements)
+	{
+		const ABHPlayerController* PC = PlayerController.Get();
+		const UGameInstance* GameInstance = PC ? PC->GetGameInstance() : nullptr;
+		const UBHAccountSubsystem* AccountSubsystem = GameInstance ? GameInstance->GetSubsystem<UBHAccountSubsystem>() : nullptr;
+		const int32 Unseen = AccountSubsystem ? AccountSubsystem->GetUnseenAchievementCount() : 0;
+		if (Unseen > 0)
+		{
+			return FText::FromString(FString::Printf(TEXT("%s  (%d)"), *BaseLabel.ToString(), Unseen));
+		}
+	}
+	return BaseLabel;
 }
 
 FSlateColor SBHMainMenu::GetMenuTabTextColor(EBHMainMenuTab Tab) const
@@ -4032,8 +4071,8 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 		const FString TitleStr = bSecret ? FString(TEXT("??? (hidden)")) : Ach.Title;
 		const FString DescStr = bSecret ? FString(TEXT("A secret achievement. Keep playing to discover it.")) : Ach.Description;
 		const FString RewardStr = Ach.RewardLabel.IsEmpty() ? FString() : (FString(TEXT("Reward: ")) + Ach.RewardLabel);
-		const FString StateStr = Ach.bUnlocked ? FString(TEXT("EARNED")) : (bSecret ? FString(TEXT("???")) : BHAchievementTierName(Ach.Difficulty));
-		const FLinearColor StateColor = Ach.bUnlocked ? FLinearColor(0.40f, 0.86f, 0.52f, 1.0f) : TierColor;
+		const FString StateStr = Ach.bUnlocked ? (Ach.bIsNew ? FString(TEXT("NEW!")) : FString(TEXT("EARNED"))) : (bSecret ? FString(TEXT("???")) : BHAchievementTierName(Ach.Difficulty));
+		const FLinearColor StateColor = Ach.bUnlocked ? (Ach.bIsNew ? FLinearColor(1.0f, 0.86f, 0.30f, 1.0f) : FLinearColor(0.40f, 0.86f, 0.52f, 1.0f)) : TierColor;
 		const float ProgressPct = Ach.ProgressTarget > 0 ? static_cast<float>(Ach.ProgressCurrent) / static_cast<float>(Ach.ProgressTarget) : 0.0f;
 		const FString ProgressStr = FString::Printf(TEXT("%d / %d"), Ach.ProgressCurrent, Ach.ProgressTarget);
 		const bool bShowProgress = Ach.ProgressTarget > 0 && !Ach.bUnlocked && !bSecret;
@@ -4705,7 +4744,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildMenuTabButton(EBHMainMenuTab Tab, const FT
 			SNew(STextBlock)
 			.Font(MenuFont(12, FName(TEXT("Bold"))))
 			.ColorAndOpacity(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateSP(this, &SBHMainMenu::GetMenuTabTextColor, Tab)))
-			.Text(Label)
+			.Text(TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &SBHMainMenu::GetMenuTabLabel, Tab, Label)))
 		];
 }
 
