@@ -34,7 +34,9 @@ Only you can see it, only while hidden. *(`BHHUD.cpp`, gated on `IsHiddenInLocke
 
 ### 2. The faculty remembers
 **How to find it:** set your player name to a famous physicist (case-insensitive) — `Newton`, `Einstein`,
-`Curie`, `Tesla`, `Feynman`, `Bohr`, `Schrodinger`, `Hawking`, `Galileo`, `Faraday`, `Maxwell`, or `Planck`.
+`Curie`, `Tesla`, `Feynman`, `Bohr`, `Schrodinger`, `Hawking`, `Galileo`, `Faraday`, `Maxwell`, `Planck`,
+`Lovelace`, `Noether`, `Hertz`, `Joule`, `Ohm`, `Volta`, `Ampere`, `Kelvin`, `Rutherford`, `Heisenberg`,
+`Pascal`, `Doppler` — or even a cheeky `42` / `Adams` / `Pi`.
 The first time you spawn, you get a one-time, **client-local** welcome whisper just for you — e.g. Newton →
 *"Somewhere, an apple falls in your honour."*; Bohr → *"Classically, your exact position is uncertain."*;
 Schrodinger → *"You are both hidden and found until someone opens the locker."* Purely a status line; no flair,

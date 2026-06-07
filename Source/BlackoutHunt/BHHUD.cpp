@@ -1160,6 +1160,20 @@ void ABHHUD::DrawHUD()
 				else if (LowerName == TEXT("faraday")) { PhysicistLine = TEXT("You induce a quiet current of dread in the Teacher."); }
 				else if (LowerName == TEXT("maxwell")) { PhysicistLine = TEXT("A small demon sorts the fast students from the slow."); }
 				else if (LowerName == TEXT("planck")) { PhysicistLine = TEXT("Reality is grainier than it looks. So is this building."); }
+				else if (LowerName == TEXT("lovelace")) { PhysicistLine = TEXT("You compute the escape before the Teacher takes a step."); }
+				else if (LowerName == TEXT("noether")) { PhysicistLine = TEXT("Every symmetry hides something the dark can't take from you."); }
+				else if (LowerName == TEXT("hertz")) { PhysicistLine = TEXT("Your footsteps oscillate at a frequency only the building hears."); }
+				else if (LowerName == TEXT("joule")) { PhysicistLine = TEXT("Every step you take does honest work."); }
+				else if (LowerName == TEXT("ohm")) { PhysicistLine = TEXT("You resist. The current of fear flows around you."); }
+				else if (LowerName == TEXT("volta")) { PhysicistLine = TEXT("There's a potential between you and the exit. Close it."); }
+				else if (LowerName == TEXT("ampere")) { PhysicistLine = TEXT("A steady current of nerve runs through you."); }
+				else if (LowerName == TEXT("kelvin")) { PhysicistLine = TEXT("Absolute zero is colder. Tonight, not by much."); }
+				else if (LowerName == TEXT("rutherford")) { PhysicistLine = TEXT("Most of this building is empty space. Use it."); }
+				else if (LowerName == TEXT("heisenberg")) { PhysicistLine = TEXT("The surer you are of where you're going, the less of how fast."); }
+				else if (LowerName == TEXT("pascal")) { PhysicistLine = TEXT("The pressure is equal in every direction. Even here."); }
+				else if (LowerName == TEXT("doppler")) { PhysicistLine = TEXT("Footsteps drop in pitch as the Teacher passes you by."); }
+				else if (LowerName == TEXT("42") || LowerName == TEXT("adams")) { PhysicistLine = TEXT("The answer is 42. The question is which locker."); }
+				else if (LowerName == TEXT("pi")) { PhysicistLine = TEXT("You go on forever and never quite repeat."); }
 				if (!PhysicistLine.IsEmpty())
 				{
 					if (ABHPlayerController* GreetPC = Cast<ABHPlayerController>(PlayerOwner))
@@ -1208,7 +1222,11 @@ void ABHHUD::DrawHUD()
 				TEXT("cut with a key: \"the answer is 42. find the question.\""),
 				TEXT("tiny letters: \"Schrodinger hid here. or did he?\""),
 				TEXT("worn smooth: \"energy is conserved. courage isn't.\""),
-				TEXT("fresh marks: \"you are not the first to wait in the dark.\"")
+				TEXT("fresh marks: \"you are not the first to wait in the dark.\""),
+				TEXT("deep grooves: \"momentum is conserved. so are grudges.\""),
+				TEXT("a tally of 13: \"period 5. never came back.\""),
+				TEXT("pencil, faint: \"the exit is a wave. catch it at the crest.\""),
+				TEXT("scratched twice: \"P = IV. pay the voltage, pass the test.\"")
 			};
 			const FVector HideSpot = Character->GetActorLocation();
 			const int32 ScratchIndex = FMath::Abs(FMath::FloorToInt(HideSpot.X) * 73 + FMath::FloorToInt(HideSpot.Y) * 31) % static_cast<int32>(UE_ARRAY_COUNT(LockerScratches));

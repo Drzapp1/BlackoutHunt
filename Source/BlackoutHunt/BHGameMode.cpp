@@ -10603,7 +10603,11 @@ void ABHGameMode::UpdatePresenceDirector()
 			TEXT("the heat trace spells a word, then forgets it."),
 			TEXT("a draft moves through a room with no doors."),
 			TEXT("the sensors blink in threes, then stop."),
-			TEXT("for a moment, the map shows a room that isn't there.")
+			TEXT("for a moment, the map shows a room that isn't there."),
+			TEXT("the clock ticks sixty-one seconds to the minute, just once."),
+			TEXT("a locker door breathes in, then holds it."),
+			TEXT("the chalkboard solves itself and erases the proof."),
+			TEXT("somewhere a bell rings for a period that isn't on the timetable.")
 		};
 		PresenceText = SelectPromptLine(WhisperLines, UE_ARRAY_COUNT(WhisperLines), PresenceTextSalt + 7);
 	}
