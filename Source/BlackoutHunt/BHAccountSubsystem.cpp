@@ -1126,6 +1126,7 @@ void UBHAccountSubsystem::RecordRoundResult(EBHPlayerRole Role, EBHPlayerLifeSta
 	{
 		Progress.CurrentWinStreak = 0;
 	}
+	Progress.BestWinStreak = FMath::Max(Progress.BestWinStreak, Progress.CurrentWinStreak);
 
 	Progress.XP = (EarnedXP > 0 && Progress.XP > MAX_int32 - EarnedXP) ? MAX_int32 : Progress.XP + EarnedXP;
 	Progress.LastUpdatedUtc = UtcNowString();
@@ -1646,6 +1647,7 @@ TSharedRef<FJsonObject> UBHAccountSubsystem::ProgressToJson() const
 	JsonObject->SetNumberField(TEXT("survivor_wins"), Progress.SurvivorWins);
 	JsonObject->SetNumberField(TEXT("escapes"), Progress.Escapes);
 	JsonObject->SetNumberField(TEXT("current_win_streak"), Progress.CurrentWinStreak);
+	JsonObject->SetNumberField(TEXT("best_win_streak"), Progress.BestWinStreak);
 	JsonObject->SetNumberField(TEXT("train_activity_mask"), Progress.TrainActivityMask);
 	JsonObject->SetNumberField(TEXT("current_answer_streak"), Progress.CurrentAnswerStreak);
 	JsonObject->SetNumberField(TEXT("topics_ever_correct_mask"), Progress.TopicsEverCorrectMask);
@@ -1717,6 +1719,7 @@ void UBHAccountSubsystem::ApplyProgressJson(const TSharedPtr<FJsonObject>& JsonO
 	Progress.SurvivorWins = JsonInt(JsonObject, TEXT("survivor_wins"));
 	Progress.Escapes = JsonInt(JsonObject, TEXT("escapes"));
 	Progress.CurrentWinStreak = JsonInt(JsonObject, TEXT("current_win_streak"));
+	Progress.BestWinStreak = JsonInt(JsonObject, TEXT("best_win_streak"));
 	Progress.TrainActivityMask = JsonInt(JsonObject, TEXT("train_activity_mask"));
 	Progress.CurrentAnswerStreak = JsonInt(JsonObject, TEXT("current_answer_streak"));
 	Progress.TopicsEverCorrectMask = JsonInt(JsonObject, TEXT("topics_ever_correct_mask"));

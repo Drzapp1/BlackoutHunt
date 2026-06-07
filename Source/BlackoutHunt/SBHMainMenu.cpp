@@ -3935,6 +3935,33 @@ namespace
 		default: return TEXT("MYTHIC");
 		}
 	}
+
+	// XP -> school-themed rank. Fills the current/next rank XP thresholds (for a progress-to-next bar).
+	FString BHRankForXP(int32 XP, int32& OutCurrentThreshold, int32& OutNextThreshold)
+	{
+		struct FRankTier { int32 Threshold; const TCHAR* Name; };
+		static const FRankTier Ranks[] = {
+			{ 0, TEXT("Freshman") },
+			{ 150, TEXT("Sophomore") },
+			{ 400, TEXT("Junior") },
+			{ 800, TEXT("Senior") },
+			{ 1500, TEXT("Honor Roll") },
+			{ 2800, TEXT("Dean's List") },
+			{ 5000, TEXT("Valedictorian") }
+		};
+		const int32 Num = UE_ARRAY_COUNT(Ranks);
+		int32 Idx = 0;
+		for (int32 i = 0; i < Num; ++i)
+		{
+			if (XP >= Ranks[i].Threshold)
+			{
+				Idx = i;
+			}
+		}
+		OutCurrentThreshold = Ranks[Idx].Threshold;
+		OutNextThreshold = (Idx + 1 < Num) ? Ranks[Idx + 1].Threshold : Ranks[Idx].Threshold;
+		return Ranks[Idx].Name;
+	}
 }
 
 TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
@@ -3951,6 +3978,25 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 		Achievements = AccountSubsystem->GetAchievementsForDisplay();
 		AccountSubsystem->GetAchievementCounts(Earned, Total);
 	}
+
+	// Profile header: rank from XP + lifetime stats.
+	int32 XP = 0, Rounds = 0, HunterWins = 0, SurvivorWins = 0, Escapes = 0, BestStreak = 0;
+	if (AccountSubsystem)
+	{
+		const FBHAccountProgress& Prog = AccountSubsystem->GetProgress();
+		XP = Prog.XP;
+		Rounds = Prog.RoundsPlayed;
+		HunterWins = Prog.HunterWins;
+		SurvivorWins = Prog.SurvivorWins;
+		Escapes = Prog.Escapes;
+		BestStreak = Prog.BestWinStreak;
+	}
+	int32 RankCurrent = 0;
+	int32 RankNext = 0;
+	const FString RankName = BHRankForXP(XP, RankCurrent, RankNext);
+	const float RankPct = (RankNext > RankCurrent) ? FMath::Clamp(static_cast<float>(XP - RankCurrent) / static_cast<float>(RankNext - RankCurrent), 0.0f, 1.0f) : 1.0f;
+	const FString RankXpStr = (RankNext > RankCurrent) ? FString::Printf(TEXT("%d / %d XP"), XP, RankNext) : FString::Printf(TEXT("%d XP  (max rank)"), XP);
+	const FString StatsStr = FString::Printf(TEXT("%d rounds  -  %d wins (%dT / %dS)  -  %d escapes  -  best streak %d  -  %d/%d awards"), Rounds, HunterWins + SurvivorWins, HunterWins, SurvivorWins, Escapes, BestStreak, Earned, Total);
 
 	// Easiest-first so the list reads as a difficulty ramp; within a tier, earned badges float up.
 	Achievements.Sort([](const FBHAchievementDisplay& A, const FBHAchievementDisplay& B)
@@ -4134,6 +4180,47 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 		.Padding(10.0f)
 		[
 			SNew(SVerticalBox)
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 10.0f)
+			[
+				SNew(SBorder)
+				.BorderImage(WhiteBrush())
+				.BorderBackgroundColor(FLinearColor(0.06f, 0.07f, 0.085f, 0.95f))
+				.Padding(9.0f)
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight()
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+						[
+							SNew(STextBlock).Font(MenuFont(15, FName(TEXT("Bold")))).ColorAndOpacity(FLinearColor(0.95f, 0.86f, 0.55f, 1.0f)).Text(FText::FromString(RankName))
+						]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+						[
+							SNew(STextBlock).Font(MenuFont(9)).ColorAndOpacity(FLinearColor(0.70f, 0.74f, 0.78f, 1.0f)).Text(FText::FromString(RankXpStr))
+						]
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 5.0f, 0.0f, 6.0f)
+					[
+						SNew(SBox).HeightOverride(8.0f)
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot().FillWidth(FMath::Max(RankPct, 0.0001f))
+							[
+								SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(FLinearColor(0.42f, 0.66f, 0.92f, 1.0f))
+							]
+							+ SHorizontalBox::Slot().FillWidth(FMath::Max(1.0f - RankPct, 0.0001f))
+							[
+								SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(FLinearColor(0.13f, 0.14f, 0.16f, 1.0f))
+							]
+						]
+					]
+					+ SVerticalBox::Slot().AutoHeight()
+					[
+						SNew(STextBlock).AutoWrapText(true).Font(MenuFont(9)).ColorAndOpacity(FLinearColor(0.68f, 0.72f, 0.76f, 1.0f)).Text(FText::FromString(StatsStr))
+					]
+				]
+			]
 			+ SVerticalBox::Slot().AutoHeight()
 			[
 				SNew(STextBlock)

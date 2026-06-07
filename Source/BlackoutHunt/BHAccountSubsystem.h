@@ -70,6 +70,10 @@ struct FBHAccountProgress
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	int32 CurrentWinStreak = 0;
 
+	// Best consecutive-win streak ever (lifetime stat shown on the profile).
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	int32 BestWinStreak = 0;
+
 	// Bitmask of train-intermission activity types ever completed (for the Tourist achievement). 4 low bits.
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	int32 TrainActivityMask = 0;
