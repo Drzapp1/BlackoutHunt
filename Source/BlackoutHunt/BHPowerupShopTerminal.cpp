@@ -46,13 +46,16 @@ ABHPowerupShopTerminal::ABHPowerupShopTerminal()
 	// Text sits on the +Y FRONT face (the reader's side) so the panel body never occludes it -- the body is at
 	// local Y0, the reader is on +Y, so text on +Y is in front of it. Same +Y facing as before, so it reads
 	// correctly (not mirrored). Label is 3 lines, so detail is dropped well below it to avoid overlap.
+	// World sizes are kept small enough that the longest header ("FLASHLIGHT BOOST") and the wrapped detail
+	// lines fit across the narrow (X-scale 0.75) panel face. The text uses absolute scale, so it does NOT
+	// shrink with the actor -- sizing it here is the only thing that keeps it from overrunning the pillar.
 	LabelText = CreateDefaultSubobject<UTextRenderComponent>(TEXT("LabelText"));
 	LabelText->SetupAttachment(SceneRoot);
-	BHPropVisuals::ConfigureReadableText(LabelText, FVector(-58.0f, 62.0f, 56.0f), FRotator(0.0f, 90.0f, 0.0f), 18.0f, FColor(255, 198, 74));
+	BHPropVisuals::ConfigureReadableText(LabelText, FVector(-58.0f, 62.0f, 56.0f), FRotator(0.0f, 90.0f, 0.0f), 12.0f, FColor(255, 198, 74));
 
 	DetailText = CreateDefaultSubobject<UTextRenderComponent>(TEXT("DetailText"));
 	DetailText->SetupAttachment(SceneRoot);
-	BHPropVisuals::ConfigureReadableText(DetailText, FVector(-58.0f, 62.0f, -4.0f), FRotator(0.0f, 90.0f, 0.0f), 10.5f, FColor(224, 242, 232));
+	BHPropVisuals::ConfigureReadableText(DetailText, FVector(-58.0f, 62.0f, -4.0f), FRotator(0.0f, 90.0f, 0.0f), 8.0f, FColor(224, 242, 232));
 }
 
 void ABHPowerupShopTerminal::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -250,12 +253,15 @@ FString ABHPowerupShopTerminal::BuildShopItemSummary(EBHPowerupType Type)
 	}
 
 	const bool bTeacherPowerup = FBHPowerupLibrary::IsTeacherPowerup(Type);
-	return FString::Printf(TEXT("%s\nCost %d %s / Max charges %d\n%s\nPurchase shows balance and failure reason."),
-		*Definition.Description.Left(110),
+	// Word-wrap to the panel width so the description (and cost/effect lines) break onto new lines instead
+	// of running off the right edge of the pillar. The cap keeps the wrapped block within the panel height.
+	const FString Summary = FString::Printf(TEXT("%s\nCost %d %s / Max x%d\n%s"),
+		*Definition.Description.Left(80),
 		Definition.Cost,
 		*BHShopCurrencyText(bTeacherPowerup),
 		Definition.MaxCharges,
 		*BHShopEffectText(Definition, bTeacherPowerup));
+	return BHPropVisuals::WrapTextToWidth(Summary, 28);
 }
 
 FString ABHPowerupShopTerminal::BuildPurchaseStatusText(const ABHPlayerState* PlayerState, EBHPowerupType Type)

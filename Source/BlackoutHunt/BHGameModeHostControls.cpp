@@ -154,6 +154,46 @@ void ABHGameMode::ForceStartRound(ABHPlayerController* RequestingController)
 		return;
 	}
 
+	// In the TRAIN LOBBY the round can't start "in place" -- it departs to the first hunt level. Honour the same
+	// host-admin + quorum guard as the normal lobby, then travel (the warmup happens on arrival).
+	if (bLobbyLevel)
+	{
+		if (!RequireHostAdmin(RequestingController, TEXT("depart the lobby for the first stop")))
+		{
+			return;
+		}
+
+		if (!bAllowHostForceStart)
+		{
+			int32 ReadyCount = 0;
+			if (GameState)
+			{
+				for (APlayerState* RawPS : GameState->PlayerArray)
+				{
+					const ABHPlayerState* ReadyPS = Cast<ABHPlayerState>(RawPS);
+					if (ReadyPS && ReadyPS->bReady)
+					{
+						++ReadyCount;
+					}
+				}
+			}
+			if (ReadyCount < MinPlayers)
+			{
+				if (RequestingController)
+				{
+					RequestingController->ClientShowStatusMessage(
+						FString::Printf(TEXT("Can't depart yet: need at least %d ready players (currently %d). Ready up more students, or enable force-start in settings."), MinPlayers, ReadyCount),
+						3.5f);
+				}
+				return;
+			}
+		}
+
+		BroadcastStatus(TEXT("Host departed the lobby. Loading the first stop..."), 3.5f);
+		TravelFromLobbyToFirstHunt();
+		return;
+	}
+
 	if (!bAllowHostForceStart)
 	{
 		// bAllowHostForceStart gates the UNCONDITIONAL brute force-start (launch even with nobody ready),

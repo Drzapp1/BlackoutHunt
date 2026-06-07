@@ -34,6 +34,9 @@ public:
 	void SetAvatarColor(const FLinearColor& NewAvatarColor);
 	void SetAvatarHeadwearIndex(int32 NewHeadwearIndex);
 	void SetAvatarGearIndex(int32 NewGearIndex);
+	// Per-part clothing colours (registry-indexed by BHColorableMaterialNames; value = palette colour index+1,
+	// 0 = the skin's authored colour). Replicated so other players see your recolours.
+	void SetAvatarSlotColors(const TArray<uint8>& NewSlotColors);
 	// Nameplate flair (achievement-gated; 0 = none). Replicated so other players see your title/emblem.
 	void SetSelectedTitleIndex(int32 NewTitleIndex);
 	void SetSelectedEmblemIndex(int32 NewEmblemIndex);
@@ -93,6 +96,10 @@ public:
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt")
 	int32 AvatarGearIndex;
+
+	// Per-part clothing colours; see SetAvatarSlotColors. Registry-indexed; 0 = authored, else palette index+1.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt")
+	TArray<uint8> AvatarSlotColors;
 
 	// Nameplate flair indices (into EBHCosmeticCategory::Title / Emblem; 0 = none). Cosmetic only.
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt")

@@ -4,6 +4,33 @@
 
 #include "BHCosmeticUnlocks.h"
 
+const TArray<FName>& BHColorableMaterialNames()
+{
+	// APPEND-ONLY (see header). From the Quaternius skin material-slot dump; excludes the face/skin/hair slots
+	// (Skin/Skin_Darker/Hair/Hair_White/Eye/Eyebrows/Moustache) handled by BHShouldPreserveQuaterniusMaterial.
+	static const TArray<FName> Names = {
+		FName(TEXT("Red_Dark")), FName(TEXT("White")), FName(TEXT("LightBrown")), FName(TEXT("LightBlue")),
+		FName(TEXT("Purple")), FName(TEXT("Grey")), FName(TEXT("Black")), FName(TEXT("Brown")),
+		FName(TEXT("Brown2")), FName(TEXT("Worker_Yellow")), FName(TEXT("Worker_Vest")), FName(TEXT("Green")),
+		FName(TEXT("LightGreen")), FName(TEXT("Gold")), FName(TEXT("Beige")), FName(TEXT("Red")),
+		FName(TEXT("Earrings")), FName(TEXT("Suit")), FName(TEXT("Tie")), FName(TEXT("SciFi_Light_Accent")),
+		FName(TEXT("SciFi_Light")), FName(TEXT("SciFi_Main")), FName(TEXT("SciFi_MainDark")), FName(TEXT("Swat")),
+		FName(TEXT("Swat_Black")), FName(TEXT("Visor")), FName(TEXT("Metal")), FName(TEXT("DarkBrown")),
+		FName(TEXT("Metal_Dark")), FName(TEXT("Blue"))
+	};
+	return Names;
+}
+
+int32 BHColorableMaterialCount()
+{
+	return BHColorableMaterialNames().Num();
+}
+
+int32 BHColorableMaterialIndex(FName MaterialSlotName)
+{
+	return BHColorableMaterialNames().IndexOfByKey(MaterialSlotName);
+}
+
 namespace
 {
 struct FBHCosmeticUnlockDefinition

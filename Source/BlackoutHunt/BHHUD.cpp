@@ -1012,7 +1012,11 @@ void ABHHUD::DrawHUD()
 	DrawHorrorOverlay(Character, BHGS);
 
 	const float SafePad = FMath::Max(18.0f, Canvas->ClipX * 0.014f);
-	const float ReadoutW = FMath::Clamp(Canvas->ClipX * 0.38f, 280.0f, 560.0f);
+	// Independent HUD sizes: TextScale grows readable text/labels; WidgetScale grows the chrome (meter
+	// bars, minimap, equipment) plus the readout row spacing so stacked lines never overlap when enlarged.
+	const float TextScale = HudTextScale;
+	const float WidgetScale = HudWidgetScale;
+	const float ReadoutW = FMath::Clamp(Canvas->ClipX * 0.38f, 280.0f, 560.0f) * TextScale;
 	if (BHGS && BHGS->bTutorialMode)
 	{
 		// Tutorial: the DrawTutorialPrompt banner is the sole instruction channel, so suppress the generic match
@@ -1028,18 +1032,18 @@ void ABHHUD::DrawHUD()
 		const FString DetailLine = BuildHudDetailLine(BHGS, BHPS).ToUpper();
 		const FString AuxLine = BuildHudAuxLine(BHGS).ToUpper();
 		const FLinearColor ExitColor = BHGS->bExitUnlocked ? ActivePalette.Good : ActivePalette.Bad;
-		DrawHudText(FString::Printf(TEXT("%s / %s"), *TimerText, *ExitText), SafePad, SafePad, ExitColor, GEngine->GetSmallFont(), 0.88f);
-		DrawWrappedHudText(ActionLine, SafePad, SafePad + 22.0f, ReadoutW, bHighContrastHud ? FLinearColor(0.92f, 0.98f, 0.90f, 1.0f) : FLinearColor(0.84f, 0.80f, 0.70f, 0.90f), GEngine->GetSmallFont(), 0.70f, 13.0f, 2);
-		DrawWrappedHudText(DetailLine, SafePad, SafePad + 55.0f, ReadoutW, bHighContrastHud ? FLinearColor(0.78f, 0.92f, 0.88f, 0.96f) : FLinearColor(0.72f, 0.68f, 0.60f, 0.92f), GEngine->GetSmallFont(), 0.60f, 12.0f, 1);
+		DrawHudText(FString::Printf(TEXT("%s / %s"), *TimerText, *ExitText), SafePad, SafePad, ExitColor, GEngine->GetSmallFont(), 0.88f * TextScale);
+		DrawWrappedHudText(ActionLine, SafePad, SafePad + 22.0f * TextScale, ReadoutW, bHighContrastHud ? FLinearColor(0.92f, 0.98f, 0.90f, 1.0f) : FLinearColor(0.84f, 0.80f, 0.70f, 0.90f), GEngine->GetSmallFont(), 0.70f * TextScale, 13.0f * TextScale, 2);
+		DrawWrappedHudText(DetailLine, SafePad, SafePad + 55.0f * TextScale, ReadoutW, bHighContrastHud ? FLinearColor(0.78f, 0.92f, 0.88f, 0.96f) : FLinearColor(0.72f, 0.68f, 0.60f, 0.92f), GEngine->GetSmallFont(), 0.60f * TextScale, 12.0f * TextScale, 1);
 		if (!AuxLine.IsEmpty())
 		{
-			DrawWrappedHudText(AuxLine, SafePad, SafePad + 73.0f, ReadoutW, bHighContrastHud ? FLinearColor(0.84f, 0.86f, 0.68f, 0.92f) : FLinearColor(0.80f, 0.70f, 0.60f, 0.88f), GEngine->GetSmallFont(), 0.56f, 12.0f, 1);
+			DrawWrappedHudText(AuxLine, SafePad, SafePad + 73.0f * TextScale, ReadoutW, bHighContrastHud ? FLinearColor(0.84f, 0.86f, 0.68f, 0.92f) : FLinearColor(0.80f, 0.70f, 0.60f, 0.88f), GEngine->GetSmallFont(), 0.56f * TextScale, 12.0f * TextScale, 1);
 		}
 	}
 	else
 	{
-		DrawHudText(TEXT("NO SIGNAL"), SafePad, SafePad, FLinearColor(0.96f, 0.24f, 0.16f, 0.92f), GEngine->GetSmallFont(), 0.90f);
-		DrawHudText(TEXT("HOST OR JOIN"), SafePad, SafePad + 21.0f, FLinearColor(0.72f, 0.68f, 0.60f, 0.88f), GEngine->GetSmallFont(), 0.64f);
+		DrawHudText(TEXT("NO SIGNAL"), SafePad, SafePad, FLinearColor(0.96f, 0.24f, 0.16f, 0.92f), GEngine->GetSmallFont(), 0.90f * TextScale);
+		DrawHudText(TEXT("HOST OR JOIN"), SafePad, SafePad + 21.0f * TextScale, FLinearColor(0.72f, 0.68f, 0.60f, 0.88f), GEngine->GetSmallFont(), 0.64f * TextScale);
 	}
 
 	if (BHPS)
@@ -1061,19 +1065,20 @@ void ABHHUD::DrawHUD()
 		}
 		const FString LifeName = LifeEnum ? LifeEnum->GetNameStringByValue(static_cast<int64>(BHPS->LifeState)) : TEXT("Alive");
 		const FString ReadyText = (BHGS && BHGS->bTestMode) ? TEXT("TEST") : ((BHGS && BHGS->bPracticeMode) ? TEXT("LAB") : (BHPS->bReady ? TEXT("READY") : TEXT("NOT READY")));
-		DrawRightAlignedText(RoleName.ToUpper(), Canvas->ClipX - SafePad, SafePad, FLinearColor(0.88f, 0.84f, 0.74f, 0.90f), GEngine->GetSmallFont(), 0.82f);
-		DrawRightAlignedText(FString::Printf(TEXT("%s / %s / AV%02d"), *LifeName.ToUpper(), *ReadyText, BHPS->AvatarIndex + 1), Canvas->ClipX - SafePad, SafePad + 20.0f, FLinearColor(0.66f, 0.62f, 0.56f, 0.90f), GEngine->GetSmallFont(), 0.58f);
+		DrawRightAlignedText(RoleName.ToUpper(), Canvas->ClipX - SafePad, SafePad, FLinearColor(0.88f, 0.84f, 0.74f, 0.90f), GEngine->GetSmallFont(), 0.82f * TextScale);
+		DrawRightAlignedText(FString::Printf(TEXT("%s / %s / AV%02d"), *LifeName.ToUpper(), *ReadyText, BHPS->AvatarIndex + 1), Canvas->ClipX - SafePad, SafePad + 20.0f * TextScale, FLinearColor(0.66f, 0.62f, 0.56f, 0.90f), GEngine->GetSmallFont(), 0.58f * TextScale);
 		if ((BHGS && BHGS->bTestMode) || BHPS->PlayerRole == EBHPlayerRole::Tester)
 		{
-			const float ShortcutW = FMath::Clamp(Canvas->ClipX * 0.34f, 310.0f, 540.0f);
+			// Right-pinned wrap box: widen by text size, then recompute X from the scaled width so it stays on-screen.
+			const float ShortcutW = FMath::Clamp(Canvas->ClipX * 0.34f, 310.0f, 540.0f) * TextScale;
 			DrawWrappedHudText(TEXT("TEST KEYS  INS RESET  HOME TRAIN  PGUP PHASE  END STATION  PGDN ESCAPE  DEL RECAP"),
 				Canvas->ClipX - SafePad - ShortcutW,
-				SafePad + 42.0f,
+				SafePad + 42.0f * TextScale,
 				ShortcutW,
 				FLinearColor(0.95f, 0.86f, 0.42f, 0.80f),
 				GEngine->GetSmallFont(),
-				0.50f,
-				11.0f,
+				0.50f * TextScale,
+				11.0f * TextScale,
 				2);
 		}
 		else if (Character && BHPS->IsAliveHunter())
@@ -1093,14 +1098,14 @@ void ABHHUD::DrawHUD()
 				CaptureColor = FLinearColor(0.82f, 0.62f, 0.42f, 0.82f);
 			}
 
-			DrawRightAlignedText(CaptureReadout, Canvas->ClipX - SafePad, SafePad + 42.0f, CaptureColor, GEngine->GetSmallFont(), 0.66f);
+			DrawRightAlignedText(CaptureReadout, Canvas->ClipX - SafePad, SafePad + 42.0f * TextScale, CaptureColor, GEngine->GetSmallFont(), 0.66f * TextScale);
 		}
 		else if (BHPS->PlayerRole == EBHPlayerRole::FakeHunter && !(BHGS && BHGS->bTutorialMode))
 		{
 			// In the Monitor tutorial the prompt channel narrates the tools step-by-step ("Press Q to send a REAL
 			// hint", etc.); the persistent "Q REAL R MARK G TRAP" pill would contradict the "revise to unlock tools"
 			// framing, so suppress it and let the lesson drive.
-			const float MonitorW = FMath::Clamp(Canvas->ClipX * 0.30f, 260.0f, 440.0f);
+			const float MonitorW = FMath::Clamp(Canvas->ClipX * 0.30f, 260.0f, 440.0f) * TextScale;
 			FString MonitorLine;
 			if (BHGS && BHGS->bRevisionMode)
 			{
@@ -1115,12 +1120,12 @@ void ABHHUD::DrawHUD()
 			}
 			DrawWrappedHudText(MonitorLine,
 				Canvas->ClipX - SafePad - MonitorW,
-				SafePad + 42.0f,
+				SafePad + 42.0f * TextScale,
 				MonitorW,
 				FLinearColor(0.95f, 0.70f, 0.32f, 0.82f),
 				GEngine->GetSmallFont(),
-				0.50f,
-				11.0f,
+				0.50f * TextScale,
+				11.0f * TextScale,
 				2);
 		}
 		else if (BHPS->PlayerRole == EBHPlayerRole::Spectator && BHGS && BHGS->RoundPhase != EBHRoundPhase::Lobby)
@@ -1230,7 +1235,7 @@ void ABHHUD::DrawHUD()
 			};
 			const FVector HideSpot = Character->GetActorLocation();
 			const int32 ScratchIndex = FMath::Abs(FMath::FloorToInt(HideSpot.X) * 73 + FMath::FloorToInt(HideSpot.Y) * 31) % static_cast<int32>(UE_ARRAY_COUNT(LockerScratches));
-			DrawWrappedHudText(LockerScratches[ScratchIndex], Canvas->ClipX * 0.5f - 230.0f, Canvas->ClipY * 0.60f, 460.0f, FLinearColor(0.62f, 0.58f, 0.52f, 0.42f), GEngine->GetSmallFont(), 0.52f, 12.0f, 2);
+			DrawWrappedHudText(LockerScratches[ScratchIndex], Canvas->ClipX * 0.5f - 230.0f * TextScale, Canvas->ClipY * 0.60f, 460.0f * TextScale, FLinearColor(0.62f, 0.58f, 0.52f, 0.42f), GEngine->GetSmallFont(), 0.52f * TextScale, 12.0f * TextScale, 2);
 		}
 
 		// Probe teacher proximity once -- it feeds both the vitals meter and the threat arrow,
@@ -1239,33 +1244,38 @@ void ABHHUD::DrawHUD()
 
 		if (bShowVitals)
 		{
-			const float MeterW = FMath::Clamp(Canvas->ClipX * 0.22f, 210.0f, 310.0f);
-			const float VitalsY = Canvas->ClipY - SafePad - 132.0f;
+			// Bar widths follow widget size; the stack height (anchor + row steps) follows max(widget,text)
+			// so the bottom-left panel stays fully on-screen and rows clear the taller of bar-or-label.
+			const float MeterStackScale = FMath::Max(WidgetScale, TextScale);
+			// Bar width follows max(widget,text) so the text-scaled label + readout that share the line above
+			// each bar always have room (prevents collision when text is large but widget is small).
+			const float MeterW = FMath::Clamp(Canvas->ClipX * 0.22f, 210.0f, 310.0f) * MeterStackScale;
+			const float VitalsY = Canvas->ClipY - SafePad - 132.0f * MeterStackScale;
 			const FString VitalsTitle = Character->IsDetentionMarked()
 				? FString::Printf(TEXT("MARKED %.0fs"), Character->GetDetentionMarkRemaining())
 				: (Character->IsHiddenInLocker() ? FString(TEXT("CONCEALED")) : FString(TEXT("STATUS")));
-			DrawHudText(VitalsTitle.ToUpper(), SafePad, VitalsY - 19.0f, Character->IsDetentionMarked() ? FLinearColor(1.0f, 0.20f, 0.12f, 0.96f) : FLinearColor(0.76f, 0.72f, 0.64f, 0.84f), GEngine->GetSmallFont(), 0.66f);
+			DrawHudText(VitalsTitle.ToUpper(), SafePad, VitalsY - 19.0f * MeterStackScale, Character->IsDetentionMarked() ? FLinearColor(1.0f, 0.20f, 0.12f, 0.96f) : FLinearColor(0.76f, 0.72f, 0.64f, 0.84f), GEngine->GetSmallFont(), 0.66f * TextScale);
 			// BATTERY + STAMINA are relevant to every role (the Teacher has a flashlight/blackout and sprints),
 			// but TEACHER proximity / FEAR / DREAD are survivor-only and sat dead at 0 for the Teacher / Hall
 			// Monitor (most visible in their tutorials). Gate those three by survivor role and re-flow the panel
 			// with a running Y so a non-survivor sees a compact BATTERY+STAMINA panel with no empty gaps. A
 			// survivor still gets the exact original layout.
 			DrawProgressBar(TEXT("BATTERY"), Character->GetFlashlightBattery(), SafePad, VitalsY, MeterW, FLinearColor(0.80f, 0.82f, 0.70f, 0.88f));
-			float MeterY = VitalsY + 32.0f;
+			float MeterY = VitalsY + 32.0f * MeterStackScale;
 			if (bShowSurvivorWarnings)
 			{
 				const FString TeacherText = TeacherProximity.bFound
 					? FString::Printf(TEXT("%s %.0fm"), TeacherProximity.bLineOfSight ? TEXT("VISIBLE") : TEXT("NEAR"), TeacherProximity.DistanceCm / 100.0f)
 					: FString(TEXT("CLEAR"));
 				DrawProgressBar(TEXT("TEACHER"), TeacherProximity.ProximityPercent, SafePad, MeterY, MeterW, FLinearColor(0.90f, 0.36f, 0.22f, 0.90f), TeacherText);
-				MeterY += 36.0f;
+				MeterY += 36.0f * MeterStackScale;
 			}
 			DrawRawMeter(TEXT("STAMINA"), Character->GetStaminaPercent(), SafePad, MeterY, MeterW, FLinearColor(0.75f, 0.83f, 0.54f, 0.88f), false);
-			MeterY += 18.0f;
+			MeterY += 18.0f * MeterStackScale;
 			if (bShowSurvivorWarnings)
 			{
 				DrawRawMeter(TEXT("FEAR"), Character->GetFear(), SafePad, MeterY, MeterW, FLinearColor(0.92f, 0.28f, 0.20f, 0.88f), true);
-				MeterY += 18.0f;
+				MeterY += 18.0f * MeterStackScale;
 				DrawRawMeter(TEXT("DREAD"), Character->GetDread(), SafePad, MeterY, MeterW, FLinearColor(0.84f, 0.18f, 0.14f, 0.90f), true);
 			}
 			FString StressHint;
@@ -1283,7 +1293,7 @@ void ABHHUD::DrawHUD()
 			}
 			if (!StressHint.IsEmpty())
 			{
-				DrawWrappedHudText(StressHint, SafePad, VitalsY + 122.0f, MeterW, FLinearColor(0.96f, 0.42f, 0.30f, 0.88f), GEngine->GetSmallFont(), 0.48f, 10.0f, 1);
+				DrawWrappedHudText(StressHint, SafePad, VitalsY + 122.0f * MeterStackScale, MeterW, FLinearColor(0.96f, 0.42f, 0.30f, 0.88f), GEngine->GetSmallFont(), 0.48f * TextScale, 10.0f * TextScale, 1);
 			}
 
 			// First-time "why" coaching (SHARED-D): the first time each meter is *noticed* (a low
@@ -1351,9 +1361,13 @@ void ABHHUD::DrawHUD()
 	// up as a safety reveal regardless of the preference.
 	if (Character && BHGS && BHGS->RoundPhase != EBHRoundPhase::Lobby && BHPC && ((BHPC->IsHudMapVisible() && bShowMinimap) || bPathDetected))
 	{
-		const float MapW = FMath::Clamp(Canvas->ClipX * 0.26f, 280.0f, 380.0f);
+		// Minimap box follows widget size. MapW and the bottom reserve mirror DrawHeatSensor's internal
+		// PanelW/PanelH (same widget-scaled clamps) so the right-edge anchor and the bottom margin track the
+		// real scaled panel and it stays fully on-screen.
+		const float MapW = FMath::Clamp(Canvas->ClipX * 0.26f, 280.0f, 380.0f) * WidgetScale;
+		const float MapPanelH = FMath::Clamp(Canvas->ClipY * 0.38f, 250.0f, 360.0f) * WidgetScale;
 		const float MapX = Canvas->ClipX - SafePad - MapW;
-		const float MaxMapY = FMath::Max(SafePad + 44.0f, Canvas->ClipY - SafePad - 270.0f);
+		const float MaxMapY = FMath::Max(SafePad + 44.0f, Canvas->ClipY - SafePad - MapPanelH);
 		const float MapY = FMath::Clamp(Canvas->ClipY * 0.17f, SafePad + 44.0f, MaxMapY);
 		DrawHeatSensor(Character, BHGS, MapX, MapY);
 	}
@@ -1377,7 +1391,7 @@ void ABHHUD::DrawHUD()
 	if (bPathDetected)
 	{
 		const FString PulseText = TEXT("PATH DETECTED");
-		const float PulseScale = FMath::Lerp(1.02f, 1.22f, PathThreatAlpha);
+		const float PulseScale = FMath::Lerp(1.02f, 1.22f, PathThreatAlpha) * TextScale;
 		const float PulseY = Canvas->ClipY * 0.53f;
 		const FLinearColor PulseColor(1.0f, 0.18f, 0.12f, FMath::Lerp(0.80f, 0.98f, PathThreatAlpha));
 		float PulseW = 0.0f;
@@ -1395,19 +1409,24 @@ void ABHHUD::DrawHUD()
 		{
 			const FString& Status = BHPC->GetStatusMessage();
 			const float StatusAlpha = BHPC->GetStatusMessageAlpha();
+			// Centred text panel: scale box + text together by max(widget,text). Measure at ToastScale (not the
+			// 0.92 draw scale) so at defaults (ToastScale==1) the box matches the original 1.0-measured width
+			// pixel-for-pixel, and it still grows proportionally to fit enlarged text.
+			const float ToastScale = FMath::Max(WidgetScale, TextScale);
+			const float ToastTextScale = 0.92f * ToastScale;
 			float TextW = 0.0f;
 			float TextH = 0.0f;
-			Canvas->TextSize(GEngine->GetSmallFont(), Status, TextW, TextH);
-			const float ToastW = FMath::Clamp(TextW + 48.0f, 260.0f, Canvas->ClipX * 0.62f);
+			Canvas->TextSize(GEngine->GetSmallFont(), Status, TextW, TextH, ToastScale, ToastScale);
+			const float ToastW = FMath::Clamp(TextW + 48.0f * ToastScale, 260.0f * ToastScale, Canvas->ClipX * 0.62f);
 			const float ToastX = (Canvas->ClipX - ToastW) * 0.5f;
-			const bool bLongStatus = TextW > ToastW - 48.0f;
-			const float ToastH = bLongStatus ? 66.0f : 48.0f;
+			const bool bLongStatus = TextW > ToastW - 48.0f * ToastScale;
+			const float ToastH = (bLongStatus ? 66.0f : 48.0f) * ToastScale;
 			const float ToastY = Canvas->ClipY * 0.72f + (1.0f - StatusAlpha) * 10.0f;
 			const FLinearColor ToastFill = bHighContrastHud ? FLinearColor(0.0f, 0.0f, 0.0f, 0.92f) : FLinearColor(0.020f, 0.020f, 0.018f, 0.84f);
 			const FLinearColor ToastAccent = bHighContrastHud ? FLinearColor(1.0f, 0.96f, 0.42f, 1.0f) : FLinearColor(0.96f, 0.74f, 0.36f, 0.94f);
 			const FLinearColor ToastText = bHighContrastHud ? FLinearColor(1.0f, 0.98f, 0.82f, 1.0f) : FLinearColor(0.96f, 0.87f, 0.62f, 1.0f);
 			DrawPanel(ToastX, ToastY, ToastW, ToastH, WithAlpha(ToastFill, StatusAlpha), WithAlpha(ToastAccent, StatusAlpha));
-			DrawWrappedHudText(Status, ToastX + 24.0f, ToastY + 15.0f, ToastW - 48.0f, WithAlpha(ToastText, StatusAlpha), GEngine->GetSmallFont(), 0.92f, 17.0f, 2);
+			DrawWrappedHudText(Status, ToastX + 24.0f * ToastScale, ToastY + 15.0f * ToastScale, ToastW - 48.0f * ToastScale, WithAlpha(ToastText, StatusAlpha), GEngine->GetSmallFont(), ToastTextScale, 17.0f * ToastScale, 2);
 		}
 	}
 
@@ -1433,7 +1452,8 @@ FLinearColor ABHHUD::MutedText() const
 void ABHHUD::RefreshHudPreferences(const ABHPlayerController* PlayerController, const ABHGameState* GameState)
 {
 	// Defaults keep the HUD unchanged when no controller/preferences are available.
-	HudScale = 1.0f;
+	HudWidgetScale = 1.0f;
+	HudTextScale = 1.0f;
 	HudPanelOpacity = 1.0f;
 	bColorblindPalette = false;
 	bShowMinimap = true;
@@ -1446,7 +1466,8 @@ void ABHHUD::RefreshHudPreferences(const ABHPlayerController* PlayerController, 
 	bool bHighContrast = false;
 	if (PlayerController)
 	{
-		HudScale = FMath::Clamp(PlayerController->GetHudScale(), 0.75f, 1.5f);
+		HudWidgetScale = FMath::Clamp(PlayerController->GetHudScale(), 0.75f, 1.5f);
+		HudTextScale = FMath::Clamp(PlayerController->GetHudTextScale(), 0.80f, 1.6f);
 		HudPanelOpacity = FMath::Clamp(PlayerController->GetHudPanelOpacity(), 0.35f, 1.0f);
 		bColorblindPalette = PlayerController->IsColorblindHudEnabled();
 		bHighContrast = PlayerController->IsHighContrastHudEnabled();
@@ -1568,10 +1589,13 @@ void ABHHUD::DrawKeyBox(const FString& Key, float X, float Y, float W, float H, 
 	DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, 0.36f), X, Y, 1.0f, H);
 	DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, 0.36f), X + W - 1.0f, Y, 1.0f, H);
 
+	// The key cap letter tracks the box, which callers size with the uniform popup scale max(widget,text);
+	// centering uses the measured size so it stays centred at any scale.
+	const float KeyScale = 0.76f * FMath::Max(HudWidgetScale, HudTextScale);
 	float TextW = 0.0f;
 	float TextH = 0.0f;
-	Canvas->TextSize(GEngine->GetSmallFont(), Key, TextW, TextH, 0.76f, 0.76f);
-	DrawHudText(Key, X + (W - TextW) * 0.5f, Y + (H - TextH) * 0.5f - 1.0f, bLit ? ActivePalette.KeyBoxLit : ActivePalette.KeyBoxDim, GEngine->GetSmallFont(), 0.76f);
+	Canvas->TextSize(GEngine->GetSmallFont(), Key, TextW, TextH, KeyScale, KeyScale);
+	DrawHudText(Key, X + (W - TextW) * 0.5f, Y + (H - TextH) * 0.5f - 1.0f, bLit ? ActivePalette.KeyBoxLit : ActivePalette.KeyBoxDim, GEngine->GetSmallFont(), KeyScale);
 }
 
 void ABHHUD::DrawStatusPill(const FString& Label, float X, float Y, float W, const FLinearColor& AccentColor, bool bLit)
@@ -1581,13 +1605,16 @@ void ABHHUD::DrawStatusPill(const FString& Label, float X, float Y, float W, con
 		return;
 	}
 
-	const float H = 21.0f;
-	DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, 0.34f), X + 2.0f, Y + 2.0f, W, H);
+	// Pill box scales with widget size; the label scales with text size (independent axes).
+	const float GS = HudWidgetScale;
+	const float T = HudTextScale;
+	const float H = 21.0f * GS;
+	DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, 0.34f), X + 2.0f * GS, Y + 2.0f * GS, W, H);
 	DrawRect(FLinearColor(0.028f, 0.034f, 0.035f, 0.88f), X, Y, W, H);
 	DrawRect(FLinearColor(AccentColor.R, AccentColor.G, AccentColor.B, bLit ? 0.28f : 0.10f), X, Y, W, 1.0f);
-	DrawRect(FLinearColor(AccentColor.R, AccentColor.G, AccentColor.B, bLit ? 0.90f : 0.34f), X + 8.0f, Y + 7.0f, 7.0f, 7.0f);
-	DrawRect(FLinearColor(AccentColor.R, AccentColor.G, AccentColor.B, bLit ? 0.18f : 0.05f), X + 6.0f, Y + 5.0f, 11.0f, 11.0f);
-	DrawWrappedHudText(Label, X + 24.0f, Y + 5.0f, W - 29.0f, bLit ? MainText() : ActivePalette.TextMuted, GEngine->GetSmallFont(), 0.60f, 10.0f, 1);
+	DrawRect(FLinearColor(AccentColor.R, AccentColor.G, AccentColor.B, bLit ? 0.90f : 0.34f), X + 8.0f * GS, Y + 7.0f * GS, 7.0f * GS, 7.0f * GS);
+	DrawRect(FLinearColor(AccentColor.R, AccentColor.G, AccentColor.B, bLit ? 0.18f : 0.05f), X + 6.0f * GS, Y + 5.0f * GS, 11.0f * GS, 11.0f * GS);
+	DrawWrappedHudText(Label, X + 24.0f * GS, Y + 5.0f * GS, W - 29.0f * GS, bLit ? MainText() : ActivePalette.TextMuted, GEngine->GetSmallFont(), 0.60f * T, 10.0f * T, 1);
 }
 
 void ABHHUD::DrawHudText(const FString& Text, float X, float Y, const FLinearColor& Color, const UFont* Font, float Scale) const
@@ -1718,9 +1745,12 @@ void ABHHUD::DrawProgressBar(const FString& Label, float Value, float X, float Y
 		return;
 	}
 
+	// Bar geometry scales with widget size; the label/readout scale with text size (independent axes).
+	const float GS = HudWidgetScale;
+	const float T = HudTextScale;
 	const float ClampedValue = FMath::Clamp(Value, 0.0f, 100.0f);
-	const float BarH = 9.0f;
-	const float BarY = Y + 13.0f;
+	const float BarH = 9.0f * GS;
+	const float BarY = Y + 13.0f * GS;
 	const float FillW = W * (ClampedValue / 100.0f);
 	const bool bTeacherSignal = Label.Contains(TEXT("TEACHER"));
 	const bool bTeacherVisible = bTeacherSignal && ValueText.Contains(TEXT("VISIBLE"));
@@ -1732,8 +1762,8 @@ void ABHHUD::DrawProgressBar(const FString& Label, float Value, float X, float Y
 	const FString RightText = ValueText.IsEmpty() ? FString::Printf(TEXT("%.0f%%"), ClampedValue) : ValueText;
 	const FLinearColor LabelColor = bHighContrast ? FLinearColor(0.90f, 0.98f, 0.94f, 1.0f) : MutedText();
 	const FLinearColor ReadoutColor = bWarning ? ActivePalette.WarnHot : LabelColor;
-	DrawHudText(Label, X, Y - 4.0f, LabelColor, GEngine->GetSmallFont(), 0.66f);
-	DrawRightAlignedText(RightText, X + W, Y - 4.0f, ReadoutColor, GEngine->GetSmallFont(), 0.66f);
+	DrawHudText(Label, X, Y - 4.0f, LabelColor, GEngine->GetSmallFont(), 0.66f * T);
+	DrawRightAlignedText(RightText, X + W, Y - 4.0f, ReadoutColor, GEngine->GetSmallFont(), 0.66f * T);
 	DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, bHighContrast ? 0.64f : 0.42f), X, BarY + 1.0f, W, BarH);
 	DrawRect(FLinearColor(0.020f, 0.026f, 0.028f, bHighContrast ? 1.0f : 0.94f), X, BarY, W, BarH);
 	DrawRect(FLinearColor(0.82f, 0.95f, 0.90f, bHighContrast ? 0.22f : 0.10f), X, BarY, W, 1.0f);
@@ -1834,7 +1864,7 @@ void ABHHUD::DrawVisibleHunterArrow(const ABHCharacter* Character, const FVector
 	const FString Label = FString::Printf(TEXT("TEACHER VISIBLE %.0fm"), DistanceCm / 100.0f);
 	float TextW = 0.0f;
 	float TextH = 0.0f;
-	const float TextScale = 0.58f;
+	const float TextScale = 0.58f * HudTextScale;
 	Canvas->TextSize(GEngine->GetSmallFont(), Label, TextW, TextH, TextScale, TextScale);
 	const float TextMaxX = FMath::Max(12.0f, Canvas->ClipX - TextW - 12.0f);
 	const float TextX = FMath::Clamp(ArrowX - TextW * 0.5f, 12.0f, TextMaxX);
@@ -1956,7 +1986,7 @@ void ABHHUD::DrawCCTVRevealMarker(const ABHCharacter* Character, const ABHPlayer
 	}
 	float TextW = 0.0f;
 	float TextH = 0.0f;
-	const float TextScale = 0.58f;
+	const float TextScale = 0.58f * HudTextScale;
 	Canvas->TextSize(GEngine->GetSmallFont(), Label, TextW, TextH, TextScale, TextScale);
 	const float TextX = FMath::Clamp(ScreenPosition.X - TextW * 0.5f, 10.0f, FMath::Max(10.0f, Canvas->ClipX - TextW - 10.0f));
 	const float TextY = FMath::Clamp(MarkerY + BracketH + 7.0f, 46.0f, Canvas->ClipY - TextH - 12.0f);
@@ -1989,7 +2019,7 @@ void ABHHUD::DrawNodeMarker(const ABHCharacter* Character, const ABHPlayerContro
 	DrawLine(X - 7.0f, Y, X + 7.0f, Y, Color, 1.0f);
 	DrawLine(X, Y - 7.0f, X, Y + 7.0f, Color, 1.0f);
 	const FString Text = FString::Printf(TEXT("NODE %.0fm"), DistanceCm / 100.0f);
-	const float Scale = 0.56f;
+	const float Scale = 0.56f * HudTextScale;
 	float TextW = 0.0f, TextH = 0.0f;
 	Canvas->TextSize(GEngine->GetSmallFont(), Text, TextW, TextH, Scale, Scale);
 	const float TextX = FMath::Clamp(X - TextW * 0.5f, 14.0f, Canvas->ClipX - TextW - 14.0f);
@@ -2004,11 +2034,15 @@ void ABHHUD::DrawRawMeter(const FString& Label, float Value, float X, float Y, f
 		return;
 	}
 
+	// Bar geometry scales with widget size; the inline label column widens by max(widget,text) so the
+	// text-size label always fits before the bar; the label itself scales with text size.
+	const float GS = HudWidgetScale;
+	const float T = HudTextScale;
 	const float ClampedValue = FMath::Clamp(Value, 0.0f, 100.0f);
-	const float LabelW = 58.0f;
-	const float BarX = X + LabelW + 8.0f;
-	const float BarW = FMath::Max(1.0f, W - LabelW - 8.0f);
-	const float BarH = 9.0f;
+	const float LabelW = 58.0f * FMath::Max(GS, T);
+	const float BarX = X + LabelW + 8.0f * GS;
+	const float BarW = FMath::Max(1.0f, W - LabelW - 8.0f * GS);
+	const float BarH = 9.0f * GS;
 	const float FillW = BarW * (ClampedValue / 100.0f);
 	const bool bWarning = bHighIsBad ? ClampedValue >= HudHighMeterWarningThreshold : ClampedValue <= HudLowMeterWarningThreshold;
 	const ABHPlayerController* BHPC = PlayerOwner ? Cast<ABHPlayerController>(PlayerOwner) : nullptr;
@@ -2016,7 +2050,7 @@ void ABHHUD::DrawRawMeter(const FString& Label, float Value, float X, float Y, f
 	const FLinearColor TextColor = bWarning ? FLinearColor(1.0f, 0.42f, 0.30f, 0.98f) : (bHighContrast ? FLinearColor(0.90f, 0.98f, 0.94f, 1.0f) : FLinearColor(0.62f, 0.70f, 0.68f, 0.88f));
 	const FLinearColor EffectiveFill = bWarning ? FLinearColor(1.0f, 0.28f, 0.18f, 0.96f) : FillColor;
 
-	DrawHudText(Label, X, Y - 2.0f, TextColor, GEngine->GetSmallFont(), 0.56f);
+	DrawHudText(Label, X, Y - 2.0f, TextColor, GEngine->GetSmallFont(), 0.56f * T);
 	DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, bHighContrast ? 0.64f : 0.44f), BarX, Y + 1.0f, BarW, BarH);
 	DrawRect(FLinearColor(0.016f, 0.020f, 0.022f, bHighContrast ? 1.0f : 0.90f), BarX, Y, BarW, BarH);
 	DrawRect(FLinearColor(0.82f, 0.95f, 0.90f, bHighContrast ? 0.22f : 0.10f), BarX, Y, BarW, 1.0f);
@@ -2250,12 +2284,16 @@ void ABHHUD::DrawHeatSensor(const ABHCharacter* Character, const ABHGameState* G
 		return;
 	}
 
-	const float PanelW = FMath::Clamp(Canvas->ClipX * 0.26f, 280.0f, 380.0f);
-	const float PanelH = FMath::Clamp(Canvas->ClipY * 0.38f, 250.0f, 360.0f);
-	const float MapX = X + 12.0f;
-	const float MapY = Y + 31.0f;
-	const float MapW = PanelW - 24.0f;
-	const float MapH = PanelH - 47.0f;
+	// Minimap box + blips scale with widget size; the MAP / range labels scale with text size. PanelW/PanelH
+	// mirror the widget-scaled size the caller used for the right-edge anchor so it stays on-screen.
+	const float GS = HudWidgetScale;
+	const float T = HudTextScale;
+	const float PanelW = FMath::Clamp(Canvas->ClipX * 0.26f, 280.0f, 380.0f) * GS;
+	const float PanelH = FMath::Clamp(Canvas->ClipY * 0.38f, 250.0f, 360.0f) * GS;
+	const float MapX = X + 12.0f * GS;
+	const float MapY = Y + 31.0f * GS;
+	const float MapW = PanelW - 24.0f * GS;
+	const float MapH = PanelH - 47.0f * GS;
 	const float CenterX = MapX + MapW * 0.5f;
 	const float CenterY = MapY + MapH * 0.5f;
 	const float MapRadius = FMath::Min(MapW, MapH) * 0.47f;
@@ -2266,8 +2304,8 @@ void ABHHUD::DrawHeatSensor(const ABHCharacter* Character, const ABHGameState* G
 	DrawLine(X, Y, X + PanelW * 0.72f, Y + 1.0f, FLinearColor(0.58f, 0.52f, 0.42f, 0.42f), 1.0f);
 	DrawLine(X + PanelW, Y + 7.0f, X + PanelW - 1.0f, Y + PanelH, FLinearColor(0.58f, 0.16f, 0.10f, 0.38f), 1.0f);
 	DrawLine(X + 9.0f, Y + PanelH, X + PanelW, Y + PanelH - 2.0f, FLinearColor(0.58f, 0.52f, 0.42f, 0.32f), 1.0f);
-	DrawHudText(TEXT("MAP"), X + 12.0f, Y + 10.0f, FLinearColor(0.75f, 0.69f, 0.57f, 0.80f), GEngine->GetSmallFont(), 0.64f);
-	DrawRightAlignedText(TEXT("65M"), X + PanelW - 13.0f, Y + 10.0f, FLinearColor(0.55f, 0.50f, 0.43f, 0.70f), GEngine->GetSmallFont(), 0.56f);
+	DrawHudText(TEXT("MAP"), X + 12.0f * GS, Y + 10.0f * GS, FLinearColor(0.75f, 0.69f, 0.57f, 0.80f), GEngine->GetSmallFont(), 0.64f * T);
+	DrawRightAlignedText(TEXT("65M"), X + PanelW - 13.0f * GS, Y + 10.0f * GS, FLinearColor(0.55f, 0.50f, 0.43f, 0.70f), GEngine->GetSmallFont(), 0.56f * T);
 	DrawRect(FLinearColor(0.020f, 0.022f, 0.019f, 0.86f), MapX, MapY, MapW, MapH);
 	DrawLine(CenterX, MapY + 6.0f, CenterX, MapY + MapH - 6.0f, FLinearColor(0.65f, 0.62f, 0.52f, 0.08f), 1.0f);
 	DrawLine(MapX + 6.0f, CenterY, MapX + MapW - 6.0f, CenterY, FLinearColor(0.65f, 0.62f, 0.52f, 0.08f), 1.0f);
@@ -2293,6 +2331,7 @@ void ABHHUD::DrawHeatSensor(const ABHCharacter* Character, const ABHGameState* G
 
 	auto DrawDot = [&](const FVector& WorldLocation, const FLinearColor& Color, float Size)
 	{
+		Size *= GS;
 		const FVector2D P = ProjectLocation(WorldLocation);
 		const float Pulse = 0.75f + FMath::Sin(Now * 4.0f + Size) * 0.25f;
 		DrawRect(FLinearColor(Color.R, Color.G, Color.B, Color.A * 0.16f * Pulse), P.X - Size, P.Y - Size, Size * 2.0f, Size * 2.0f);
@@ -2352,9 +2391,9 @@ void ABHHUD::DrawHeatSensor(const ABHCharacter* Character, const ABHGameState* G
 
 	DrawLine(CenterX - 5.0f, CenterY, CenterX + 5.0f, CenterY, FLinearColor(0.82f, 0.78f, 0.66f, 0.90f), 1.2f);
 	DrawLine(CenterX, CenterY - 7.0f, CenterX, CenterY + 5.0f, FLinearColor(0.82f, 0.78f, 0.66f, 0.90f), 1.2f);
-	DrawRect(FLinearColor(0.26f, 0.78f, 0.68f, 0.76f), X + 12.0f, Y + PanelH - 13.0f, 4.0f, 4.0f);
-	DrawRect(FLinearColor(0.86f, 0.50f, 0.18f, 0.80f), X + 42.0f, Y + PanelH - 13.0f, 4.0f, 4.0f);
-	DrawRect(FLinearColor(0.92f, 0.08f, 0.04f, 0.86f), X + 72.0f, Y + PanelH - 13.0f, 4.0f, 4.0f);
+	DrawRect(FLinearColor(0.26f, 0.78f, 0.68f, 0.76f), X + 12.0f * GS, Y + PanelH - 13.0f * GS, 4.0f * GS, 4.0f * GS);
+	DrawRect(FLinearColor(0.86f, 0.50f, 0.18f, 0.80f), X + 42.0f * GS, Y + PanelH - 13.0f * GS, 4.0f * GS, 4.0f * GS);
+	DrawRect(FLinearColor(0.92f, 0.08f, 0.04f, 0.86f), X + 72.0f * GS, Y + PanelH - 13.0f * GS, 4.0f * GS, 4.0f * GS);
 }
 
 void ABHHUD::DrawObjectiveBeats(const ABHCharacter* Character, const ABHGameState* GameState)
@@ -2405,7 +2444,7 @@ void ABHHUD::DrawObjectiveBeats(const ABHCharacter* Character, const ABHGameStat
 		const FString Text = FString::Printf(TEXT("%s %.0fm"), *Beat.Label.ToUpper(), DistanceCm / 100.0f);
 		float TextW = 0.0f;
 		float TextH = 0.0f;
-		const float Scale = Beat.bPrimary ? 0.56f : 0.48f;
+		const float Scale = (Beat.bPrimary ? 0.56f : 0.48f) * HudTextScale;
 		Canvas->TextSize(GEngine->GetSmallFont(), Text, TextW, TextH, Scale, Scale);
 		const float TextX = FMath::Clamp(X - TextW * 0.5f, 14.0f, Canvas->ClipX - TextW - 14.0f);
 		DrawLine(X - 7.0f, Y, X + 7.0f, Y, Color, 1.0f);
@@ -2588,7 +2627,7 @@ void ABHHUD::DrawInteractionPrompt(ABHCharacter* Character)
 	{
 		float TextW = 0.0f;
 		float TextH = 0.0f;
-		const float Scale = bCanInteract ? 0.68f : 0.62f;
+		const float Scale = (bCanInteract ? 0.68f : 0.62f) * HudTextScale;
 		Canvas->TextSize(GEngine->GetSmallFont(), PromptLine, TextW, TextH, Scale, Scale);
 
 		const float PromptX = (Canvas->ClipX - TextW) * 0.5f;
@@ -2615,7 +2654,7 @@ void ABHHUD::DrawInteractionPrompt(ABHCharacter* Character)
 			const FString DetailLine = DetailText.ToString().ToUpper();
 			float DetailW = 0.0f;
 			float DetailH = 0.0f;
-			const float DetailScale = 0.50f;
+			const float DetailScale = 0.50f * HudTextScale;
 			Canvas->TextSize(GEngine->GetSmallFont(), DetailLine, DetailW, DetailH, DetailScale, DetailScale);
 			const float DetailX = (Canvas->ClipX - DetailW) * 0.5f;
 			const float DetailY = PromptY + TextH + 8.0f;
@@ -2721,7 +2760,7 @@ void ABHHUD::DrawNearbyNameTags(const ABHCharacter* Character)
 
 		const float DistanceAlpha = 1.0f - FMath::Clamp(FMath::Sqrt(DistanceSq) / MaxNameTagDistance, 0.0f, 1.0f);
 		const float Alpha = FMath::Lerp(0.48f, 0.96f, DistanceAlpha);
-		const float Scale = bThreatRole ? 0.98f : 0.90f;
+		const float Scale = (bThreatRole ? 0.98f : 0.90f) * HudTextScale;
 		const FLinearColor TextColor = bTeacherRole
 			? FLinearColor(0.96f, 0.18f, 0.12f, Alpha)
 			: (bHallMonitorRole
@@ -2781,9 +2820,11 @@ void ABHHUD::DrawEquipmentStrip(const ABHGameState* GameState)
 		return;
 	}
 
+	// Strip chrome follows widget size (matching DrawStatusPill's internal box scale); pill text follows text size.
+	const float GS = HudWidgetScale;
 	const float SafePad = FMath::Max(22.0f, Canvas->ClipX * 0.018f);
-	const float PanelW = FMath::Clamp(Canvas->ClipX * 0.44f, 430.0f, 680.0f);
-	const float PanelH = 42.0f;
+	const float PanelW = FMath::Clamp(Canvas->ClipX * 0.44f, 430.0f, 680.0f) * GS;
+	const float PanelH = 42.0f * GS;
 	const float PanelX = (Canvas->ClipX - PanelW) * 0.5f;
 	const float PanelY = Canvas->ClipY - SafePad - PanelH;
 	DrawPanel(PanelX, PanelY, PanelW, PanelH, FLinearColor(0.008f, 0.011f, 0.012f, 0.58f), FLinearColor(0.45f, 0.70f, 0.68f, 0.64f));
@@ -2794,13 +2835,13 @@ void ABHHUD::DrawEquipmentStrip(const ABHGameState* GameState)
 	const FString ExitText = GameState && GameState->bExitUnlocked ? FString(TEXT("EXIT OPEN")) : FString(TEXT("EXIT LOCKED"));
 	const FLinearColor ModeColor = GameState && GameState->bTestMode ? FLinearColor(0.95f, 0.86f, 0.42f, 1.0f) : FLinearColor(0.48f, 0.86f, 0.78f, 1.0f);
 	const FLinearColor PresenceColor = GameState && GameState->PresenceLevel >= HudHighMeterWarningThreshold ? FLinearColor(1.0f, 0.28f, 0.18f, 1.0f) : FLinearColor(0.62f, 0.82f, 0.78f, 1.0f);
-	const float Gap = 8.0f;
-	const float PillY = PanelY + 11.0f;
-	const float PillW = (PanelW - 38.0f - Gap * 3.0f) / 4.0f;
-	DrawStatusPill(ModeText, PanelX + 15.0f, PillY, PillW, ModeColor, GameState != nullptr);
-	DrawStatusPill(PhaseText, PanelX + 15.0f + (PillW + Gap), PillY, PillW, FLinearColor(0.66f, 0.78f, 0.92f, 1.0f), GameState != nullptr);
-	DrawStatusPill(PresenceText, PanelX + 15.0f + (PillW + Gap) * 2.0f, PillY, PillW, PresenceColor, GameState != nullptr);
-	DrawStatusPill(ExitText, PanelX + 15.0f + (PillW + Gap) * 3.0f, PillY, PillW, GameState && GameState->bExitUnlocked ? FLinearColor(0.36f, 1.0f, 0.68f, 1.0f) : FLinearColor(0.96f, 0.42f, 0.34f, 1.0f), GameState != nullptr);
+	const float Gap = 8.0f * GS;
+	const float PillY = PanelY + 11.0f * GS;
+	const float PillW = (PanelW - 38.0f * GS - Gap * 3.0f) / 4.0f;
+	DrawStatusPill(ModeText, PanelX + 15.0f * GS, PillY, PillW, ModeColor, GameState != nullptr);
+	DrawStatusPill(PhaseText, PanelX + 15.0f * GS + (PillW + Gap), PillY, PillW, FLinearColor(0.66f, 0.78f, 0.92f, 1.0f), GameState != nullptr);
+	DrawStatusPill(PresenceText, PanelX + 15.0f * GS + (PillW + Gap) * 2.0f, PillY, PillW, PresenceColor, GameState != nullptr);
+	DrawStatusPill(ExitText, PanelX + 15.0f * GS + (PillW + Gap) * 3.0f, PillY, PillW, GameState && GameState->bExitUnlocked ? FLinearColor(0.36f, 1.0f, 0.68f, 1.0f) : FLinearColor(0.96f, 0.42f, 0.34f, 1.0f), GameState != nullptr);
 }
 
 void ABHHUD::DrawSpectatorSupportPanel(const ABHGameState* GameState, const ABHPlayerState* PlayerState)
@@ -2810,20 +2851,22 @@ void ABHHUD::DrawSpectatorSupportPanel(const ABHGameState* GameState, const ABHP
 		return;
 	}
 
+	// Self-contained text panel: scale box + text together by max(widget,text) so it never overflows.
+	const float S = FMath::Max(HudWidgetScale, HudTextScale);
 	const float SafePad = FMath::Max(18.0f, Canvas->ClipX * 0.014f);
-	const float PanelW = FMath::Clamp(Canvas->ClipX * 0.42f, 430.0f, 640.0f);
-	const float PanelH = 82.0f;
+	const float PanelW = FMath::Clamp(Canvas->ClipX * 0.42f, 430.0f, 640.0f) * S;
+	const float PanelH = 82.0f * S;
 	const float PanelX = (Canvas->ClipX - PanelW) * 0.5f;
 	const float PanelY = Canvas->ClipY - SafePad - PanelH;
 	const FLinearColor Accent(0.54f, 0.66f, 0.96f, 0.90f);
 	DrawPanel(PanelX, PanelY, PanelW, PanelH, FLinearColor(0.010f, 0.013f, 0.018f, 0.82f), Accent);
 
-	DrawHudText(TEXT("SPECTATOR SUPPORT"), PanelX + 20.0f, PanelY + 14.0f, FLinearColor(0.78f, 0.84f, 1.0f, 0.96f), GEngine->GetSmallFont(), 0.78f);
-	DrawRightAlignedText(FString::Printf(TEXT("SENT %d"), FMath::Max(0, PlayerState->SpectatorEncouragementCount)), PanelX + PanelW - 20.0f, PanelY + 14.0f, FLinearColor(0.58f, 0.66f, 0.76f, 0.86f), GEngine->GetSmallFont(), 0.58f);
+	DrawHudText(TEXT("SPECTATOR SUPPORT"), PanelX + 20.0f * S, PanelY + 14.0f * S, FLinearColor(0.78f, 0.84f, 1.0f, 0.96f), GEngine->GetSmallFont(), 0.78f * S);
+	DrawRightAlignedText(FString::Printf(TEXT("SENT %d"), FMath::Max(0, PlayerState->SpectatorEncouragementCount)), PanelX + PanelW - 20.0f * S, PanelY + 14.0f * S, FLinearColor(0.58f, 0.66f, 0.76f, 0.86f), GEngine->GetSmallFont(), 0.58f * S);
 
-	const float KeyY = PanelY + 39.0f;
-	const float KeyW = 30.0f;
-	const float SlotW = (PanelW - 44.0f) / 4.0f;
+	const float KeyY = PanelY + 39.0f * S;
+	const float KeyW = 30.0f * S;
+	const float SlotW = (PanelW - 44.0f * S) / 4.0f;
 	struct FSupportKey
 	{
 		const TCHAR* Key;
@@ -2837,13 +2880,13 @@ void ABHHUD::DrawSpectatorSupportPanel(const ABHGameState* GameState, const ABHP
 	};
 	for (int32 Index = 0; Index < UE_ARRAY_COUNT(SupportKeys); ++Index)
 	{
-		const float SlotX = PanelX + 22.0f + SlotW * Index;
-		DrawKeyBox(SupportKeys[Index].Key, SlotX, KeyY, KeyW, 22.0f, Accent, true);
-		DrawWrappedHudText(SupportKeys[Index].Label, SlotX + 36.0f, KeyY + 5.0f, SlotW - 40.0f, MainText(), GEngine->GetSmallFont(), 0.56f, 10.0f, 1);
+		const float SlotX = PanelX + 22.0f * S + SlotW * Index;
+		DrawKeyBox(SupportKeys[Index].Key, SlotX, KeyY, KeyW, 22.0f * S, Accent, true);
+		DrawWrappedHudText(SupportKeys[Index].Label, SlotX + 36.0f * S, KeyY + 5.0f * S, SlotW - 40.0f * S, MainText(), GEngine->GetSmallFont(), 0.56f * S, 10.0f * S, 1);
 	}
 
 	const FString PrefLine = FString::Printf(TEXT("PREF %s / HOST APPROVES NEXT LOBBY"), *SpectatorRolePreferenceLabel(PlayerState->SpectatorRolePreference));
-	DrawWrappedHudText(PrefLine, PanelX + 22.0f, PanelY + 65.0f, PanelW - 44.0f, FLinearColor(0.62f, 0.72f, 0.78f, 0.88f), GEngine->GetSmallFont(), 0.50f, 10.0f, 1);
+	DrawWrappedHudText(PrefLine, PanelX + 22.0f * S, PanelY + 65.0f * S, PanelW - 44.0f * S, FLinearColor(0.62f, 0.72f, 0.78f, 0.88f), GEngine->GetSmallFont(), 0.50f * S, 10.0f * S, 1);
 }
 
 void ABHHUD::DrawLobbyRoster(const ABHGameState* GameState, const ABHPlayerState* LocalPlayerState)
@@ -2882,23 +2925,26 @@ void ABHHUD::DrawLobbyRoster(const ABHGameState* GameState, const ABHPlayerState
 		}
 	}
 
+	// Self-contained roster panel: scale box + rows + text together by max(widget,text); the panel height
+	// is derived from the scaled row height so it always fits.
+	const float S = FMath::Max(HudWidgetScale, HudTextScale);
 	const float SafePad = FMath::Max(18.0f, Canvas->ClipX * 0.014f);
-	const float RowH = 18.0f;
-	const float HeaderH = 44.0f;
-	const float PanelW = FMath::Clamp(Canvas->ClipX * 0.20f, 224.0f, 308.0f);
-	const float PanelH = HeaderH + RowH * FMath::Max(1, Roster.Num()) + 12.0f;
+	const float RowH = 18.0f * S;
+	const float HeaderH = 44.0f * S;
+	const float PanelW = FMath::Clamp(Canvas->ClipX * 0.20f, 224.0f, 308.0f) * S;
+	const float PanelH = HeaderH + RowH * FMath::Max(1, Roster.Num()) + 12.0f * S;
 	const float PanelX = SafePad;
 	const float PanelY = FMath::Clamp(Canvas->ClipY * 0.16f, 84.0f, FMath::Max(84.0f, Canvas->ClipY - PanelH - SafePad));
 	const FLinearColor Accent(0.34f, 0.72f, 0.62f, 0.90f);
 	DrawPanel(PanelX, PanelY, PanelW, PanelH, FLinearColor(0.010f, 0.014f, 0.016f, 0.82f), Accent);
 
-	DrawHudText(TEXT("LOBBY"), PanelX + 16.0f, PanelY + 12.0f, FLinearColor(0.82f, 0.92f, 0.88f, 0.96f), Font, 0.84f);
-	DrawRightAlignedText(FString::Printf(TEXT("%d IN"), HumanCount + BotCount), PanelX + PanelW - 16.0f, PanelY + 12.0f, MutedText(), Font, 0.58f);
+	DrawHudText(TEXT("LOBBY"), PanelX + 16.0f * S, PanelY + 12.0f * S, FLinearColor(0.82f, 0.92f, 0.88f, 0.96f), Font, 0.84f * S);
+	DrawRightAlignedText(FString::Printf(TEXT("%d IN"), HumanCount + BotCount), PanelX + PanelW - 16.0f * S, PanelY + 12.0f * S, MutedText(), Font, 0.58f * S);
 	const FString Subtitle = FString::Printf(TEXT("%d player%s + %d bot%s  -  %d ready"),
 		HumanCount, HumanCount == 1 ? TEXT("") : TEXT("s"),
 		BotCount, BotCount == 1 ? TEXT("") : TEXT("s"),
 		ReadyHumans);
-	DrawHudText(Subtitle, PanelX + 16.0f, PanelY + 28.0f, FLinearColor(0.60f, 0.70f, 0.70f, 0.90f), Font, 0.56f);
+	DrawHudText(Subtitle, PanelX + 16.0f * S, PanelY + 28.0f * S, FLinearColor(0.60f, 0.70f, 0.70f, 0.90f), Font, 0.56f * S);
 
 	float RowY = PanelY + HeaderH;
 	for (const ABHPlayerState* PS : Roster)
@@ -2918,7 +2964,7 @@ void ABHHUD::DrawLobbyRoster(const ABHGameState* GameState, const ABHPlayerState
 		const FLinearColor NameColor = bIsLocal
 			? FLinearColor(0.96f, 0.94f, 0.74f, 0.96f)
 			: (bIsBot ? FLinearColor(0.62f, 0.70f, 0.78f, 0.92f) : MainText());
-		DrawHudText(Name, PanelX + 16.0f, RowY, NameColor, Font, 0.66f);
+		DrawHudText(Name, PanelX + 16.0f * S, RowY, NameColor, Font, 0.66f * S);
 
 		FString Tag;
 		FLinearColor TagColor;
@@ -2937,7 +2983,7 @@ void ABHHUD::DrawLobbyRoster(const ABHGameState* GameState, const ABHPlayerState
 			Tag = TEXT("WAIT");
 			TagColor = FLinearColor(0.92f, 0.62f, 0.30f, 0.92f);
 		}
-		DrawRightAlignedText(Tag, PanelX + PanelW - 16.0f, RowY, TagColor, Font, 0.58f);
+		DrawRightAlignedText(Tag, PanelX + PanelW - 16.0f * S, RowY, TagColor, Font, 0.58f * S);
 
 		RowY += RowH;
 	}
@@ -2974,7 +3020,7 @@ void ABHHUD::DrawQuestionPanel(const ABHObjectiveStation* Station)
 	// centered (PanelX derives from PanelW) and every offset/font below is multiplied by S,
 	// the layout stays self-consistent and on-screen at any scale; width is re-clamped so it
 	// never exceeds the viewport.
-	const float S = HudScale;
+	const float S = FMath::Max(HudWidgetScale, HudTextScale);
 	const int32 ChoiceCount = FMath::Min(4, Station->GetQuestionChoiceCount());
 	const float PanelW = FMath::Min(FMath::Clamp(Canvas->ClipX * 0.60f, 560.0f, 920.0f) * S, Canvas->ClipX * 0.94f);
 	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
@@ -3417,7 +3463,7 @@ void ABHHUD::DrawDiagramPreview()
 	FString Name;
 	FBHDiagramRenderer::SampleFor(Type, Variant, P, Name);
 
-	const float S = HudScale;
+	const float S = FMath::Max(HudWidgetScale, HudTextScale);
 	const float W = 420.0f * S;
 	const float H = FBHDiagramRenderer::BandHeightFor(Type) * S;
 	const float X = Canvas->ClipX - W - 24.0f * S;
@@ -3522,7 +3568,7 @@ void ABHHUD::DrawPhaseBanner(const ABHGameState* GameState, const ABHCharacter* 
 	}
 
 	// Centered banner: scale width/height/offsets/fonts by the HUD scale preference.
-	const float S = HudScale;
+	const float S = FMath::Max(HudWidgetScale, HudTextScale);
 	const float PanelW = FMath::Min(FMath::Clamp(Canvas->ClipX * 0.48f, 420.0f, 720.0f) * S, Canvas->ClipX * 0.94f);
 	const float PanelH = 86.0f * S;
 	const float PanelX = (Canvas->ClipX - PanelW) * 0.5f;
@@ -3570,7 +3616,7 @@ void ABHHUD::DrawRoleIntroCard(const ABHPlayerController* BHPC, const ABHGameSta
 	}
 
 	const UFont* Font = GEngine->GetSmallFont();
-	const float S = HudScale;
+	const float S = FMath::Max(HudWidgetScale, HudTextScale);
 	const int32 KeyCount = Copy.Keys.Num();
 	const float PanelW = FMath::Min(FMath::Clamp(Canvas->ClipX * 0.50f, 460.0f, 760.0f) * S, Canvas->ClipX * 0.94f);
 	const float PanelH = (150.0f + KeyCount * 18.0f) * S;
@@ -3617,7 +3663,7 @@ void ABHHUD::DrawTutorialCard(const ABHPlayerController* BHPC)
 	const FLinearColor Wash(0.012f, 0.014f, 0.018f, 0.92f * Smooth);
 	DrawPanel(0.0f, 0.0f, Canvas->ClipX, Canvas->ClipY, Wash, FLinearColor(0.0f, 0.0f, 0.0f, 0.0f));
 
-	const float S = HudScale;
+	const float S = FMath::Max(HudWidgetScale, HudTextScale);
 	const UFont* TitleFont = GEngine->GetLargeFont();
 	const UFont* BodyFont = GEngine->GetSmallFont();
 	const FLinearColor Accent = WithAlpha(ActivePalette.Good, Smooth);
@@ -3648,7 +3694,7 @@ void ABHHUD::DrawTutorialPrompt(const ABHPlayerController* BHPC)
 	}
 	const FString& Message = BHPC->GetTutorialPromptMessage();
 	const UFont* Font = GEngine->GetSmallFont();
-	const float S = HudScale;
+	const float S = FMath::Max(HudWidgetScale, HudTextScale);
 
 	float TextW = 0.0f;
 	float TextH = 0.0f;

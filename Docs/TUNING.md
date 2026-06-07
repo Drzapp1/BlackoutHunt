@@ -43,6 +43,8 @@ bDefaultReducedFlash=False
 bDefaultReducedCameraShake=False
 bDefaultCaptions=True
 bDefaultHighContrastHud=False
+bDefaultHideVeryClosePlayers=False
+bDefaultTrainSway=True
 ```
 
 ## What These Control
@@ -79,9 +81,11 @@ bDefaultHighContrastHud=False
 - `AntiCampAlertCooldownSeconds`: minimum seconds between repeated anti-camp breathing alerts.
 - `bDefaultReducedJumpscares`: default local preference for softer close-up scare presentation.
 - `bDefaultReducedFlash`: default local preference for softer flash overlays. When enabled it softens the screen-flash horror cues, the power-out flicker-light strobe bursts, and the jumpscare monster's pulsing eye/core lights (the rapid oscillation is muted toward a steady level, so each effect still reads but is not a strobe hazard).
-- `bDefaultReducedCameraShake`: default local preference for softer camera shake and jitter.
+- `bDefaultReducedCameraShake`: default local preference for softer camera shake and jitter (also quarters the train-ride sway).
 - `bDefaultCaptions`: default local preference for cue captions.
 - `bDefaultHighContrastHud`: default local preference for stronger HUD text and meter contrast.
+- `bDefaultHideVeryClosePlayers`: default local preference for fading out other players who crowd right against your camera (so a knot of people around a node/breaker doesn't block your view). Local cosmetic only; never hides the Hunter.
+- `bDefaultTrainSway`: default local preference for the looping "the train is moving" ride sway (intermission/lobby). On by default; Off removes it entirely (independent of reduced camera shake, which only softens it).
 
 After changing these defaults, rebuild/package to bake them into the distributable build. For editor testing, restarting PIE or the editor is usually enough.
 

@@ -36,6 +36,7 @@
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Misc/Paths.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Styling/CoreStyle.h"
 #include "Types/SlateEnums.h"
 #include "Widgets/Input/SButton.h"
@@ -389,7 +390,19 @@ namespace
 
 	FSlateFontInfo MenuFont(const int32 Size, const FName Typeface = FName(TEXT("Regular")))
 	{
-		return FCoreStyle::GetDefaultFontStyle(Typeface, Size);
+		// Honour the player's accessibility text-size preference in the menu too. This is the SAME
+		// "HudTextScale" comfort scalar the in-game HUD applies (persisted in GGameUserSettingsIni under the
+		// BlackoutHunt.Comfort section), clamped to the same range the controller enforces, so the text sizer
+		// grows/shrinks menu text consistently with HUD text. Re-read here so the menu reflects the current
+		// size each time it is (re)built.
+		float TextScale = 1.0f;
+		if (GConfig)
+		{
+			GConfig->GetFloat(TEXT("BlackoutHunt.Comfort"), TEXT("HudTextScale"), TextScale, GGameUserSettingsIni);
+		}
+		TextScale = FMath::Clamp(TextScale, 0.80f, 1.6f);
+		const int32 ScaledSize = FMath::Max(1, FMath::RoundToInt(static_cast<float>(Size) * TextScale));
+		return FCoreStyle::GetDefaultFontStyle(Typeface, ScaledSize);
 	}
 
 	class SBHMenuButton : public SButton
@@ -2493,25 +2506,39 @@ namespace
 			|| Name.Contains(TEXT("Moustache"));
 	}
 
-	void MenuApplyQuaterniusPalette(USkeletalMeshComponent* MeshComponent, const FLinearColor& Color)
+	void MenuApplyQuaterniusPalette(USkeletalMeshComponent* MeshComponent, const TArray<uint8>& SlotColors)
 	{
 		if (!MeshComponent)
 		{
 			return;
 		}
 
-		UMaterialInterface* PaletteMaterial = MenuQuaterniusPaletteMaterial(Color);
-		if (!PaletteMaterial)
-		{
-			return;
-		}
-
+		// Mirror BHApplyQuaterniusPalette: keep each clothing slot's AUTHORED colour unless the player chose an
+		// override for it (SlotColors[registryIndex] = palette index+1; 0 = authored). Call EmptyOverrideMaterials
+		// before this so GetMaterial() reads the authored material/name.
+		const TArray<FName> SlotNames = MeshComponent->GetMaterialSlotNames();
 		const int32 MaterialCount = MeshComponent->GetNumMaterials();
 		for (int32 MaterialIndex = 0; MaterialIndex < MaterialCount; ++MaterialIndex)
 		{
-			if (!MenuShouldPreserveQuaterniusMaterial(MeshComponent->GetMaterial(MaterialIndex)))
+			UMaterialInterface* OriginalMaterial = MeshComponent->GetMaterial(MaterialIndex);
+			if (MenuShouldPreserveQuaterniusMaterial(OriginalMaterial))
 			{
-				MeshComponent->SetMaterial(MaterialIndex, PaletteMaterial);
+				continue;
+			}
+			// Match by the mesh's authored SLOT NAME (what the recolour UI enumerates), falling back to the material name.
+			FName SlotName = SlotNames.IsValidIndex(MaterialIndex) ? SlotNames[MaterialIndex] : NAME_None;
+			int32 RegistryIndex = BHColorableMaterialIndex(SlotName);
+			if (RegistryIndex == INDEX_NONE && OriginalMaterial)
+			{
+				RegistryIndex = BHColorableMaterialIndex(FName(*OriginalMaterial->GetName()));
+			}
+			const uint8 ColorPlusOne = (RegistryIndex != INDEX_NONE && SlotColors.IsValidIndex(RegistryIndex)) ? SlotColors[RegistryIndex] : 0;
+			if (ColorPlusOne >= 1)
+			{
+				if (UMaterialInterface* PaletteMaterial = MenuQuaterniusPaletteMaterial(MenuAvatarPaletteColor(ColorPlusOne - 1)))
+				{
+					MeshComponent->SetMaterial(MaterialIndex, PaletteMaterial);
+				}
 			}
 		}
 	}
@@ -3286,6 +3313,27 @@ FReply SBHMainMenu::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKe
 			KonamiProgress = (Pressed == KonamiSequence[0]) ? 1 : 0;
 		}
 	}
+
+#if !UE_BUILD_SHIPPING
+	// Developer-only: F9 unlocks every cosmetic for playtesting. The main menu runs in UI-only input mode, so the
+	// engine console key never reaches the viewport here -- but the menu receives key events directly (this
+	// handler), so a hotkey is the reliable path. Compiled out of Shipping. Undo: AccountResetLocalClassroomData.
+	if (InKeyEvent.GetKey() == EKeys::F9)
+	{
+		if (ABHPlayerController* DevPC = PlayerController.Get())
+		{
+			if (UGameInstance* DevGI = DevPC->GetGameInstance())
+			{
+				if (UBHAccountSubsystem* DevAccount = DevGI->GetSubsystem<UBHAccountSubsystem>())
+				{
+					DevAccount->BHUnlockAllCosmetics();
+					StatusText = FText::FromString(TEXT("[DEV] F9: unlocked all cosmetics -- pick a hat / title / emblem in the Character tab."));
+				}
+			}
+		}
+		return FReply::Handled();
+	}
+#endif
 
 	if (bShowingStartScreen)
 	{
@@ -6873,8 +6921,11 @@ void SBHMainMenu::OnUiVolumeChanged(float Volume)
 namespace
 {
 	// HUD slider clamp ranges, kept in sync with ABHPlayerController::SetHudScalarOptionForMenu.
+	// HudScale = widget/chrome size; HudTextScale = independent text size.
 	constexpr float BHHudScaleMin = 0.75f;
 	constexpr float BHHudScaleMax = 1.5f;
+	constexpr float BHHudTextScaleMin = 0.80f;
+	constexpr float BHHudTextScaleMax = 1.6f;
 	constexpr float BHHudPanelOpacityMin = 0.35f;
 	constexpr float BHHudPanelOpacityMax = 1.0f;
 }
@@ -6890,7 +6941,7 @@ FText SBHMainMenu::GetHudScaleText() const
 {
 	const ABHPlayerController* PC = PlayerController.Get();
 	const float Scale = PC ? PC->GetHudScalarOptionForMenu(FName(TEXT("HudScale"))) : 1.0f;
-	return FText::FromString(FString::Printf(TEXT("HUD Size %d%%"), FMath::RoundToInt(Scale * 100.0f)));
+	return FText::FromString(FString::Printf(TEXT("Widget Size %d%%"), FMath::RoundToInt(Scale * 100.0f)));
 }
 
 void SBHMainMenu::OnHudScaleChanged(float SliderValue)
@@ -6901,6 +6952,51 @@ void SBHMainMenu::OnHudScaleChanged(float SliderValue)
 		FString Message;
 		PC->SetHudScalarOptionForMenu(FName(TEXT("HudScale")), Scale, Message);
 	}
+}
+
+float SBHMainMenu::GetHudTextScaleValue() const
+{
+	const ABHPlayerController* PC = PlayerController.Get();
+	const float Scale = PC ? PC->GetHudScalarOptionForMenu(FName(TEXT("HudTextScale"))) : 1.0f;
+	return FMath::Clamp((Scale - BHHudTextScaleMin) / (BHHudTextScaleMax - BHHudTextScaleMin), 0.0f, 1.0f);
+}
+
+FText SBHMainMenu::GetHudTextScaleText() const
+{
+	const ABHPlayerController* PC = PlayerController.Get();
+	const float Scale = PC ? PC->GetHudScalarOptionForMenu(FName(TEXT("HudTextScale"))) : 1.0f;
+	return FText::FromString(FString::Printf(TEXT("Text Size %d%%"), FMath::RoundToInt(Scale * 100.0f)));
+}
+
+void SBHMainMenu::OnHudTextScaleChanged(float SliderValue)
+{
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		const float Scale = FMath::Lerp(BHHudTextScaleMin, BHHudTextScaleMax, FMath::Clamp(SliderValue, 0.0f, 1.0f));
+		FString Message;
+		PC->SetHudScalarOptionForMenu(FName(TEXT("HudTextScale")), Scale, Message);
+	}
+}
+
+// Snap a UI-size axis (HudScale = widgets, HudTextScale = text) to a preset percentage. The button row
+// highlights whichever preset matches the current value (see GetHudSizePresetButtonColor).
+FReply SBHMainMenu::OnHudSizePresetClicked(FName OptionName, int32 Percent)
+{
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		FString Message;
+		PC->SetHudScalarOptionForMenu(OptionName, static_cast<float>(Percent) / 100.0f, Message);
+		PlayMenuSelectionSound();
+	}
+	return FReply::Handled();
+}
+
+FSlateColor SBHMainMenu::GetHudSizePresetButtonColor(FName OptionName, int32 Percent) const
+{
+	const ABHPlayerController* PC = PlayerController.Get();
+	const float Current = PC ? PC->GetHudScalarOptionForMenu(OptionName) : 1.0f;
+	const bool bSelected = FMath::RoundToInt(Current * 100.0f) == Percent;
+	return FSlateColor(bSelected ? FLinearColor(0.18f, 0.44f, 0.38f, 1.0f) : FLinearColor(0.12f, 0.15f, 0.17f, 1.0f));
 }
 
 float SBHMainMenu::GetHudPanelOpacityValue() const
@@ -8200,7 +8296,7 @@ void SBHMainMenu::EnsureAvatarPreviewScene()
 		AvatarPreviewRenderTarget.Reset(RenderTarget);
 		AvatarPreviewBrush = FSlateBrush();
 		AvatarPreviewBrush.DrawAs = ESlateBrushDrawType::Image;
-		AvatarPreviewBrush.ImageSize = FVector2D(154.0f, 208.0f);
+		AvatarPreviewBrush.ImageSize = FVector2D(200.0f, 300.0f);
 		AvatarPreviewBrush.SetResourceObject(RenderTarget);
 	}
 
@@ -8354,7 +8450,8 @@ void SBHMainMenu::UpdateAvatarPreviewMesh()
 		{
 			MeshComponent->EmptyOverrideMaterials();
 		}
-		MenuApplyQuaterniusPalette(MeshComponent, PreviewColor);
+		// Per-part recolour: authored colours by default, with the player's per-slot overrides applied on top.
+		MenuApplyQuaterniusPalette(MeshComponent, BHPS ? BHPS->AvatarSlotColors : TArray<uint8>());
 		LastAvatarPreviewColor = PreviewColor;
 	}
 
@@ -8811,11 +8908,249 @@ TSharedRef<SWidget> SBHMainMenu::BuildAvatarPreview()
 					.BorderBackgroundColor(FLinearColor(0.010f, 0.013f, 0.016f, 1.0f))
 					.Padding(0.0f)
 					[
-						SNew(SImage)
-						.Image(&AvatarPreviewBrush)
+						SNew(SScaleBox)
+						.Stretch(EStretch::ScaleToFit)
+						[
+							SNew(SImage)
+							.Image(&AvatarPreviewBrush)
+						]
 					]
 				]
 			]
+		];
+}
+
+FReply SBHMainMenu::OnRecolorSlotSelected(int32 RegistryIndex)
+{
+	RecolorSelectedSlot = RegistryIndex;
+	const TArray<FName>& Names = BHColorableMaterialNames();
+	if (Names.IsValidIndex(RegistryIndex))
+	{
+		StatusText = FText::FromString(FString::Printf(TEXT("Recolouring: %s -- pick a colour."), *Names[RegistryIndex].ToString()));
+	}
+	return FReply::Handled();
+}
+
+FReply SBHMainMenu::OnRecolorSwatchClicked(int32 ColorIndex)
+{
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		if (RecolorSelectedSlot != INDEX_NONE)
+		{
+			FString Message;
+			PC->SetAvatarSlotColorForMenu(RecolorSelectedSlot, ColorIndex, Message);
+			StatusText = FText::FromString(Message);
+			// A slot-only change does not move AvatarColor, so force the preview to re-apply the materials.
+			LastAvatarPreviewColor = FLinearColor::Transparent;
+			UpdateAvatarPreviewMesh();
+		}
+		else
+		{
+			StatusText = FText::FromString(TEXT("Pick a part to recolour first."));
+		}
+	}
+	return FReply::Handled();
+}
+
+static FString MenuColorablePartLabel(FName MaterialName)
+{
+	// Friendly labels for the recolour part buttons -- the raw Quaternius material names ("Worker_Yellow",
+	// "Red_Dark") are ambiguous. Named clothing pieces get a part name; the rest fall back to a tidied colour name.
+	static const TMap<FName, FString> Labels = {
+		{ FName(TEXT("Worker_Yellow")), TEXT("Hard Hat") },
+		{ FName(TEXT("Worker_Vest")), TEXT("Hi-Vis Vest") },
+		{ FName(TEXT("Suit")), TEXT("Suit") },
+		{ FName(TEXT("Tie")), TEXT("Tie") },
+		{ FName(TEXT("Visor")), TEXT("Visor") },
+		{ FName(TEXT("Earrings")), TEXT("Earrings") },
+		{ FName(TEXT("SciFi_Main")), TEXT("Spacesuit") },
+		{ FName(TEXT("SciFi_MainDark")), TEXT("Spacesuit (Dark)") },
+		{ FName(TEXT("SciFi_Light")), TEXT("Suit Trim") },
+		{ FName(TEXT("SciFi_Light_Accent")), TEXT("Suit Accent") },
+		{ FName(TEXT("Swat")), TEXT("Armour") },
+		{ FName(TEXT("Swat_Black")), TEXT("Armour (Dark)") },
+		{ FName(TEXT("Red_Dark")), TEXT("Dark Red") },
+		{ FName(TEXT("LightBlue")), TEXT("Light Blue") },
+		{ FName(TEXT("LightBrown")), TEXT("Light Brown") },
+		{ FName(TEXT("LightGreen")), TEXT("Light Green") },
+		{ FName(TEXT("Brown2")), TEXT("Brown") },
+		{ FName(TEXT("DarkBrown")), TEXT("Dark Brown") },
+		{ FName(TEXT("Metal_Dark")), TEXT("Dark Metal") },
+	};
+	if (const FString* Found = Labels.Find(MaterialName))
+	{
+		return *Found;
+	}
+	return MaterialName.ToString().Replace(TEXT("_"), TEXT(" "));
+}
+
+static FLinearColor MenuColorablePartColor(FName MaterialName)
+{
+	// Representative colour of each authored material, drawn as a swatch on the recolour part buttons so you can
+	// tell which part a button is by matching its swatch to the avatar.
+	static const TMap<FName, FLinearColor> Colors = {
+		{ FName(TEXT("Red_Dark")), FLinearColor(0.42f, 0.09f, 0.09f) },
+		{ FName(TEXT("Red")), FLinearColor(0.70f, 0.15f, 0.12f) },
+		{ FName(TEXT("White")), FLinearColor(0.88f, 0.88f, 0.88f) },
+		{ FName(TEXT("Black")), FLinearColor(0.09f, 0.09f, 0.10f) },
+		{ FName(TEXT("Grey")), FLinearColor(0.50f, 0.50f, 0.52f) },
+		{ FName(TEXT("LightBlue")), FLinearColor(0.32f, 0.60f, 0.80f) },
+		{ FName(TEXT("Blue")), FLinearColor(0.20f, 0.30f, 0.72f) },
+		{ FName(TEXT("Green")), FLinearColor(0.30f, 0.58f, 0.27f) },
+		{ FName(TEXT("LightGreen")), FLinearColor(0.52f, 0.76f, 0.36f) },
+		{ FName(TEXT("Purple")), FLinearColor(0.52f, 0.32f, 0.70f) },
+		{ FName(TEXT("Gold")), FLinearColor(0.80f, 0.65f, 0.22f) },
+		{ FName(TEXT("Beige")), FLinearColor(0.80f, 0.72f, 0.55f) },
+		{ FName(TEXT("Brown")), FLinearColor(0.40f, 0.26f, 0.13f) },
+		{ FName(TEXT("Brown2")), FLinearColor(0.34f, 0.22f, 0.11f) },
+		{ FName(TEXT("DarkBrown")), FLinearColor(0.24f, 0.15f, 0.08f) },
+		{ FName(TEXT("LightBrown")), FLinearColor(0.60f, 0.45f, 0.28f) },
+		{ FName(TEXT("Worker_Yellow")), FLinearColor(0.85f, 0.70f, 0.12f) },
+		{ FName(TEXT("Worker_Vest")), FLinearColor(0.90f, 0.48f, 0.06f) },
+		{ FName(TEXT("Suit")), FLinearColor(0.22f, 0.24f, 0.30f) },
+		{ FName(TEXT("Tie")), FLinearColor(0.50f, 0.10f, 0.12f) },
+		{ FName(TEXT("Earrings")), FLinearColor(0.82f, 0.68f, 0.30f) },
+		{ FName(TEXT("SciFi_Main")), FLinearColor(0.70f, 0.72f, 0.75f) },
+		{ FName(TEXT("SciFi_MainDark")), FLinearColor(0.30f, 0.32f, 0.38f) },
+		{ FName(TEXT("SciFi_Light")), FLinearColor(0.60f, 0.70f, 0.80f) },
+		{ FName(TEXT("SciFi_Light_Accent")), FLinearColor(0.50f, 0.80f, 0.92f) },
+		{ FName(TEXT("Swat")), FLinearColor(0.18f, 0.20f, 0.22f) },
+		{ FName(TEXT("Swat_Black")), FLinearColor(0.08f, 0.09f, 0.10f) },
+		{ FName(TEXT("Visor")), FLinearColor(0.22f, 0.28f, 0.40f) },
+		{ FName(TEXT("Metal")), FLinearColor(0.60f, 0.62f, 0.66f) },
+		{ FName(TEXT("Metal_Dark")), FLinearColor(0.36f, 0.38f, 0.42f) },
+	};
+	if (const FLinearColor* Found = Colors.Find(MaterialName))
+	{
+		return *Found;
+	}
+	return FLinearColor(0.5f, 0.5f, 0.5f);
+}
+
+TSharedRef<SWidget> SBHMainMenu::BuildRecolorSection()
+{
+	// Enumerate the recolourable clothing slots of the current skin (faces/skin/hair are excluded by the registry).
+	const ABHPlayerController* PC = PlayerController.Get();
+	const ABHPlayerState* BHPS = PC ? PC->GetPlayerState<ABHPlayerState>() : nullptr;
+	const FString SkinPath = MenuAvatarMeshPath(BHPS);
+
+	TArray<TPair<int32, FString>> Slots;
+	if (USkeletalMesh* SkinMesh = LoadObject<USkeletalMesh>(nullptr, *SkinPath))
+	{
+		for (const FSkeletalMaterial& Mat : SkinMesh->GetMaterials())
+		{
+			const int32 Reg = BHColorableMaterialIndex(Mat.MaterialSlotName);
+			if (Reg != INDEX_NONE && !Slots.ContainsByPredicate([Reg](const TPair<int32, FString>& P) { return P.Key == Reg; }))
+			{
+				Slots.Add(TPair<int32, FString>(Reg, MenuColorablePartLabel(Mat.MaterialSlotName)));
+			}
+		}
+	}
+
+	if (Slots.Num() == 0)
+	{
+		return SNullWidget::NullWidget;
+	}
+
+	if (RecolorSelectedSlot == INDEX_NONE || !Slots.ContainsByPredicate([this](const TPair<int32, FString>& P) { return P.Key == RecolorSelectedSlot; }))
+	{
+		RecolorSelectedSlot = Slots[0].Key;
+	}
+
+	TSharedRef<SGridPanel> PartButtons = SNew(SGridPanel);
+	for (int32 SlotIdx = 0; SlotIdx < Slots.Num(); ++SlotIdx)
+	{
+		PartButtons->AddSlot(SlotIdx % 3, SlotIdx / 3)
+			.Padding(0.0f, 0.0f, 5.0f, 5.0f)
+			[
+				SNew(SBHMenuButton)
+				.ContentPadding(FMargin(6.0f, 3.0f))
+				.OnClicked(this, &SBHMainMenu::OnRecolorSlotSelected, Slots[SlotIdx].Key)
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(0.0f, 0.0f, 5.0f, 0.0f)
+					[
+						SNew(SBox)
+						.WidthOverride(13.0f)
+						.HeightOverride(13.0f)
+						[
+							SNew(SBorder)
+							.BorderImage(WhiteBrush())
+							.BorderBackgroundColor(MenuColorablePartColor(BHColorableMaterialNames()[Slots[SlotIdx].Key]))
+						]
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					[
+						SNew(STextBlock)
+						.Font(MenuFont(8))
+						.Text(FText::FromString(Slots[SlotIdx].Value))
+					]
+				]
+			];
+	}
+
+	TSharedRef<SHorizontalBox> SwatchRow = SNew(SHorizontalBox);
+	SwatchRow->AddSlot()
+		.AutoWidth()
+		.Padding(0.0f, 0.0f, 6.0f, 0.0f)
+		[
+			SNew(SBHMenuButton)
+			.ContentPadding(FMargin(5.0f, 3.0f))
+			.OnClicked(this, &SBHMainMenu::OnRecolorSwatchClicked, -1)
+			[
+				SNew(STextBlock).Font(MenuFont(8)).Text(FText::FromString(TEXT("Default")))
+			]
+		];
+	for (int32 Index = 0; Index < 8; ++Index)
+	{
+		const FLinearColor Color = MenuAvatarPaletteColor(Index);
+		SwatchRow->AddSlot()
+			.AutoWidth()
+			.Padding(0.0f, 0.0f, 5.0f, 0.0f)
+			[
+				SNew(SBHMenuButton)
+				.ButtonColorAndOpacity(Color)
+				.ContentPadding(FMargin(4.0f, 3.0f))
+				.OnClicked(this, &SBHMainMenu::OnRecolorSwatchClicked, Index)
+				[
+					SNew(SBox)
+					.WidthOverride(18.0f)
+					.HeightOverride(14.0f)
+					[
+						SNew(SBorder)
+						.BorderImage(WhiteBrush())
+						.BorderBackgroundColor(Color)
+					]
+				]
+			];
+	}
+
+	return SNew(SVerticalBox)
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 12.0f, 0.0f, 0.0f)
+		[
+			SNew(STextBlock)
+			.Font(MenuFont(10, FName(TEXT("Bold"))))
+			.ColorAndOpacity(FLinearColor(0.78f, 0.84f, 0.88f, 1.0f))
+			.Text(FText::FromString(TEXT("Recolour Parts")))
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 5.0f, 0.0f, 0.0f)
+		[
+			PartButtons
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 5.0f, 0.0f, 0.0f)
+		[
+			SwatchRow
 		];
 }
 
@@ -8873,6 +9208,13 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 	TSharedRef<SGridPanel> HeadwearButtons = SNew(SGridPanel);
 	for (int32 Index = 0; Index <= BHCosmeticMaxIndex(EBHCosmeticCategory::Headwear); ++Index)
 	{
+		// The procedural cosmetic HATS (Cap, Beanie, Top Hat, Crown, Halo, Graduation Cap) stack on the Quaternius
+		// skins' baked-in headwear and read wrong, so hide them from the picker until the hat art is separated.
+		// Keep None + the face accessories (Glasses index 2, Visor index 4), which don't conflict.
+		if (Index == 1 || Index == 3 || Index == 5 || Index == 6 || Index == 7 || Index == 8)
+		{
+			continue;
+		}
 		HeadwearButtons->AddSlot(Index % 2, Index / 2)
 			.Padding(0.0f, 0.0f, 6.0f, 6.0f)
 			[
@@ -9020,13 +9362,18 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 						SNew(STextBlock)
 						.Font(MenuFont(10, FName(TEXT("Bold"))))
 						.ColorAndOpacity(FLinearColor(0.78f, 0.84f, 0.88f, 1.0f))
-						.Text(FText::FromString(TEXT("Shirt")))
+						.Text(FText::FromString(TEXT("Nameplate")))
 					]
 					+ SVerticalBox::Slot()
 					.AutoHeight()
 					.Padding(0.0f, 5.0f, 0.0f, 0.0f)
 					[
 						ColorButtons
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						BuildRecolorSection()
 					]
 					+ SVerticalBox::Slot()
 					.AutoHeight()
@@ -11363,6 +11710,18 @@ TSharedRef<SWidget> SBHMainMenu::BuildGraphicsPanel()
 	AddButton(ShakeComfortRow, TEXT("Reduced"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("ReducedCameraShake")), true), ComfortBoolColor(TEXT("ReducedCameraShake"), true));
 	AddButton(ShakeComfortRow, TEXT("Full"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("ReducedCameraShake")), false), ComfortBoolColor(TEXT("ReducedCameraShake"), false));
 
+	// Hide players who crowd right against your camera (e.g. everyone bunched around the same node/breaker) so
+	// they don't block your view. Local cosmetic only; the Hunter is never hidden.
+	TSharedRef<SHorizontalBox> CrowdingComfortRow = AddButtonRow(TEXT("Crowding"));
+	AddButton(CrowdingComfortRow, TEXT("Hide Close"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("HideVeryClosePlayers")), true), ComfortBoolColor(TEXT("HideVeryClosePlayers"), true));
+	AddButton(CrowdingComfortRow, TEXT("Show All"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("HideVeryClosePlayers")), false), ComfortBoolColor(TEXT("HideVeryClosePlayers"), false));
+
+	// The looping "the train is moving" ride sway (intermission/lobby). On by default; Off removes it entirely
+	// for motion-sensitive players (independent of Reduced camera shake, which only softens it).
+	TSharedRef<SHorizontalBox> TrainSwayComfortRow = AddButtonRow(TEXT("Train Sway"));
+	AddButton(TrainSwayComfortRow, TEXT("On"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("TrainSway")), true), ComfortBoolColor(TEXT("TrainSway"), true));
+	AddButton(TrainSwayComfortRow, TEXT("Off"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("TrainSway")), false), ComfortBoolColor(TEXT("TrainSway"), false));
+
 	TSharedRef<SHorizontalBox> CaptionRow = AddButtonRow(TEXT("Captions"));
 	AddButton(CaptionRow, TEXT("On"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("Captions")), true), ComfortBoolColor(TEXT("Captions"), true));
 	AddButton(CaptionRow, TEXT("Off"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("Captions")), false), ComfortBoolColor(TEXT("Captions"), false));
@@ -11371,11 +11730,35 @@ TSharedRef<SWidget> SBHMainMenu::BuildGraphicsPanel()
 	AddButton(ContrastRow, TEXT("High Contrast"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("HighContrastHud")), true), ComfortBoolColor(TEXT("HighContrastHud"), true));
 	AddButton(ContrastRow, TEXT("Standard"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("HighContrastHud")), false), ComfortBoolColor(TEXT("HighContrastHud"), false));
 
-	AddTitle(TEXT("HUD"));
+	// UI Size: independent Text Size and Widget Size, each with quick presets (Small/Default/Large/Huge)
+	// plus a fine slider. Changes apply live to the in-game HUD. Defaults (100%) reproduce the original HUD.
+	AddTitle(TEXT("UI Size"));
+	auto HudSizePresetColor = [this](const TCHAR* OptionName, int32 Percent)
+	{
+		return TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateSP(this, &SBHMainMenu::GetHudSizePresetButtonColor, FName(OptionName), Percent));
+	};
+
+	TSharedRef<SHorizontalBox> TextSizePresetRow = AddButtonRow(TEXT("Text Size"));
+	AddButton(TextSizePresetRow, TEXT("Small"), FOnClicked::CreateSP(this, &SBHMainMenu::OnHudSizePresetClicked, FName(TEXT("HudTextScale")), 80), HudSizePresetColor(TEXT("HudTextScale"), 80));
+	AddButton(TextSizePresetRow, TEXT("Default"), FOnClicked::CreateSP(this, &SBHMainMenu::OnHudSizePresetClicked, FName(TEXT("HudTextScale")), 100), HudSizePresetColor(TEXT("HudTextScale"), 100));
+	AddButton(TextSizePresetRow, TEXT("Large"), FOnClicked::CreateSP(this, &SBHMainMenu::OnHudSizePresetClicked, FName(TEXT("HudTextScale")), 130), HudSizePresetColor(TEXT("HudTextScale"), 130));
+	AddButton(TextSizePresetRow, TEXT("Huge"), FOnClicked::CreateSP(this, &SBHMainMenu::OnHudSizePresetClicked, FName(TEXT("HudTextScale")), 160), HudSizePresetColor(TEXT("HudTextScale"), 160));
+	AddSliderRow(
+		TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &SBHMainMenu::GetHudTextScaleText)),
+		TAttribute<float>::Create(TAttribute<float>::FGetter::CreateSP(this, &SBHMainMenu::GetHudTextScaleValue)),
+		FOnFloatValueChanged::CreateSP(this, &SBHMainMenu::OnHudTextScaleChanged));
+
+	TSharedRef<SHorizontalBox> WidgetSizePresetRow = AddButtonRow(TEXT("Widget Size"));
+	AddButton(WidgetSizePresetRow, TEXT("Small"), FOnClicked::CreateSP(this, &SBHMainMenu::OnHudSizePresetClicked, FName(TEXT("HudScale")), 75), HudSizePresetColor(TEXT("HudScale"), 75));
+	AddButton(WidgetSizePresetRow, TEXT("Default"), FOnClicked::CreateSP(this, &SBHMainMenu::OnHudSizePresetClicked, FName(TEXT("HudScale")), 100), HudSizePresetColor(TEXT("HudScale"), 100));
+	AddButton(WidgetSizePresetRow, TEXT("Large"), FOnClicked::CreateSP(this, &SBHMainMenu::OnHudSizePresetClicked, FName(TEXT("HudScale")), 125), HudSizePresetColor(TEXT("HudScale"), 125));
+	AddButton(WidgetSizePresetRow, TEXT("Huge"), FOnClicked::CreateSP(this, &SBHMainMenu::OnHudSizePresetClicked, FName(TEXT("HudScale")), 150), HudSizePresetColor(TEXT("HudScale"), 150));
 	AddSliderRow(
 		TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &SBHMainMenu::GetHudScaleText)),
 		TAttribute<float>::Create(TAttribute<float>::FGetter::CreateSP(this, &SBHMainMenu::GetHudScaleValue)),
 		FOnFloatValueChanged::CreateSP(this, &SBHMainMenu::OnHudScaleChanged));
+
+	AddTitle(TEXT("HUD"));
 	AddSliderRow(
 		TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &SBHMainMenu::GetHudPanelOpacityText)),
 		TAttribute<float>::Create(TAttribute<float>::FGetter::CreateSP(this, &SBHMainMenu::GetHudPanelOpacityValue)),

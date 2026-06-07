@@ -30,3 +30,13 @@ BLACKOUTHUNT_API int32 BHCosmeticClampUnlockedIndex(EBHCosmeticCategory Category
 BLACKOUTHUNT_API int32 BHCosmeticNextUnlockedIndex(EBHCosmeticCategory Category, int32 CurrentIndex, int32 XP, const TArray<FName>* UnlockedAchievements = nullptr);
 BLACKOUTHUNT_API const TCHAR* BHCosmeticCategoryName(EBHCosmeticCategory Category);
 BLACKOUTHUNT_API const TCHAR* BHCosmeticItemName(EBHCosmeticCategory Category, int32 Index);
+
+// Per-part avatar colours. The Quaternius character meshes expose their clothing as named material slots
+// (Worker_Yellow, Suit, Tie, SciFi_Main, ...); the face/skin/hair slots are excluded (see
+// BHShouldPreserveQuaterniusMaterial). A player can recolour each clothing slot independently. The index into
+// this FIXED list is the persisted + replicated key, so this list is APPEND-ONLY -- never reorder or remove an
+// entry, or saved/replicated colour choices would remap to the wrong material.
+BLACKOUTHUNT_API const TArray<FName>& BHColorableMaterialNames();
+BLACKOUTHUNT_API int32 BHColorableMaterialCount();
+// Registry index for a material slot name, or INDEX_NONE if it is not a recolourable clothing slot.
+BLACKOUTHUNT_API int32 BHColorableMaterialIndex(FName MaterialSlotName);

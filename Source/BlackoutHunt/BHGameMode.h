@@ -100,6 +100,10 @@ public:
 	void TestJumpscareVariant(ABHPlayerController* RequestingController, const FString& VariantToken);
 	FString GetJumpscareVariantTestReport() const;
 	void ForceStartRound(ABHPlayerController* RequestingController);
+	// Recovery: teleport a player back to a safe interior train spawn if they get stuck outside the carriage
+	// (e.g. up on the roof in the lobby, where nothing auto-boards them). Only valid on the train lobby /
+	// intermission; returns false elsewhere so it can't be used to escape a live hunt.
+	bool ResetPlayerToTrainInterior(AController* Controller);
 	void SetDesiredRole(ABHPlayerController* RequestingController, APlayerState* TargetPlayerState, EBHPlayerRole DesiredRole);
 	void QueueSpectatorRolePreference(ABHPlayerController* RequestingController, EBHPlayerRole DesiredRole);
 	void RequestSpectatorEncouragement(ABHPlayerController* RequestingController);
@@ -250,6 +254,16 @@ protected:
 	// authored (and generation should be skipped); false leaves the procedural generator to run as before.
 	bool DiscoverAuthoredLevel();
 	void BuildTrainIntermissionLevel();
+	// The pre-game LOBBY built as a parked subway train: a longer carriage with a large social/seating lounge so
+	// joining players can see each other and mingle while they wait. Self-contained (no intermission manager, no
+	// auto-advance); the round starts via TravelFromLobbyToFirstHunt() on ready / host force-start.
+	void BuildTrainLobbyLevel();
+	// Server-travels out of the train lobby to the chosen first hunt level (stage 0), auto-starting its warmup.
+	void TravelFromLobbyToFirstHunt();
+	// Shared rooftop "fun" extras (stargazing starfield + festoon lights, calm decorations, and a short parkour
+	// course whose finish gate grants the roof_parkour achievement). Called from both train roof easter-egg
+	// blocks so the intermission and lobby roofs match; the tube extent + hatch arrival fit the layout to each.
+	void BuildTrainRoofExtras(float TubeMinX, float TubeMaxX, const FVector& HatchLocation);
 	// Procedural geometry/actor builders, one per logical level. Each is self-contained (sets spawns and
 	// spawns all gameplay actors); BuildRuntimeFacility() parses travel options then dispatches to one.
 	void BuildFacilityLevel();
@@ -598,6 +612,10 @@ protected:
 	float LastBotNoiseTime;
 	bool bRuntimeNavigationReady;
 	bool bTrainIntermissionLevel;
+	// True when this map is the pre-game train LOBBY (built by BuildTrainLobbyLevel). LobbyFirstLevelName is the
+	// hunt level the lobby travels to when the round starts.
+	bool bLobbyLevel;
+	FString LobbyFirstLevelName;
 	int32 RuntimeStageIndex;
 	// Hall-monitor contribution gate target, FROZEN once per round (see RefreshRevisionContributionGateTarget).
 	// The enforced gate (CanUseHallMonitorTools) and the displayed/replicated requirement both read this single

@@ -465,7 +465,8 @@ void UBHAtmosphereDirector::SendClientCue(ABHCharacter* Target, const FBHScareEv
 		Cue.CameraJitterDuration = FMath::Max(0.25f, Variant.CameraJitterDuration * FMath::Clamp(Spec.Intensity, bSubtleCue ? 0.12f : 0.35f, 1.0f)) * VisualSensoryScale;
 		Cue.CameraJitterFrequency = Spec.EventType == EBHScareEventType::AudioStinger ? 42.0f : (Spec.EventType == EBHScareEventType::FootstepEcho ? 18.0f : 34.0f);
 		Cue.bCloseRangeFocus = bHardVisualCue || (Spec.EventType == EBHScareEventType::AudioStinger && Spec.Intensity >= 0.72f);
-		Cue.bUpperBodyCloseVisual = Cue.bCloseRangeFocus;
+		// Show the full creature (legs included) on every up-close scare so it never reads as a floating, legless torso.
+		Cue.bUpperBodyCloseVisual = false;
 		PC->ClientPlayHorrorCue(Cue);
 	}
 }

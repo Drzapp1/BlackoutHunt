@@ -516,6 +516,19 @@ void ABHTrainIntermissionManager::AutoBoardPlayers()
 			continue;
 		}
 
+		// Continuity: only pull in players who are actually OUTSIDE the carriage (up on the roof, fallen into the
+		// trench, etc.). A player already standing inside keeps their exact spot, so the doors-close transition no
+		// longer yanks ("respawns") everyone right as the train starts moving and the ride sway blends in.
+		const FVector Location = Character->GetActorLocation();
+		const bool bAlreadyAboard =
+			FMath::Abs(Location.Y) <= 290.0f &&
+			Location.X >= -3720.0f && Location.X <= 3720.0f &&
+			Location.Z >= 40.0f && Location.Z <= 330.0f;
+		if (bAlreadyAboard)
+		{
+			continue;
+		}
+
 		const FVector SafeLocation(CompletedStageIndex * 25.0f - 450.0f + Index * 95.0f, -160.0f + (Index % 4) * 105.0f, 124.0f);
 		Character->SetActorLocation(SafeLocation, false, nullptr, ETeleportType::TeleportPhysics);
 		++Index;

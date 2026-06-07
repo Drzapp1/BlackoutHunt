@@ -282,9 +282,24 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Comfort")
 	bool bDefaultHighContrastHud;
 
+	// When on, other players' bodies fade out locally when they crowd right against your camera, so a knot of
+	// people around a node/breaker doesn't block your view. Local cosmetic only; never hides the Hunter.
+	UPROPERTY(Config, EditAnywhere, Category = "Comfort")
+	bool bDefaultHideVeryClosePlayers;
+
+	// Default for the looping "the train is moving" camera sway while riding (intermission/lobby). On by default;
+	// turning it off removes the ride sway entirely for motion-sensitive players (separate from reduced shake).
+	UPROPERTY(Config, EditAnywhere, Category = "Comfort")
+	bool bDefaultTrainSway;
+
 	// HUD customization defaults (overridable per-player in the menu, persisted locally).
+	// DefaultHudScale is the WIDGET size default (meter bars, minimap, equipment, panel chrome);
+	// DefaultHudTextScale is the independent TEXT size default. Both default to 1.0 (no change).
 	UPROPERTY(Config, EditAnywhere, Category = "Comfort", meta = (ClampMin = "0.75", ClampMax = "1.5"))
 	float DefaultHudScale = 1.0f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Comfort", meta = (ClampMin = "0.80", ClampMax = "1.6"))
+	float DefaultHudTextScale = 1.0f;
 
 	UPROPERTY(Config, EditAnywhere, Category = "Comfort", meta = (ClampMin = "0.35", ClampMax = "1.0"))
 	float DefaultHudPanelOpacity = 1.0f;

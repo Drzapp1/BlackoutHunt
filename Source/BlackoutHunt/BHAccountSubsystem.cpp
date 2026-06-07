@@ -90,6 +90,7 @@ namespace
 		{ TEXT("veteran"),          TEXT("Veteran"),           TEXT("Played 25 rounds. A familiar face."),     60, 2, TEXT("Veteran tint"),                false },
 		{ TEXT("top_of_the_class"), TEXT("Top of the Class"),  TEXT("Won a Hunt as the Teacher."),             50, 3, TEXT("Faculty tint"),                false },
 		{ TEXT("roof_rider"),       TEXT("Roof Rider"),        TEXT("Found a way onto the train roof."),       70, 3, TEXT("Top Hat"),                     true  },
+		{ TEXT("roof_parkour"),     TEXT("Roof Runner"),       TEXT("Cleared the rooftop parkour course."),   55, 3, TEXT(""),                            true  },
 		// Skill / Teacher / Exploration / Dedication achievements. Rewards: tints + Crown / Halo / Graduation Cap.
 		{ TEXT("flow_master"),      TEXT("Flow Master"),       TEXT("Chained a full three-link flow chain."),  90, 5, TEXT("Slipstream tint"),             false },
 		{ TEXT("first_blood"),      TEXT("First Blood"),       TEXT("Captured your first survivor as Teacher."), 40, 2, TEXT("Detention tint"),            false },
@@ -692,6 +693,42 @@ void UBHAccountSubsystem::AccountResetLocalClassroomData()
 {
 	FString Message;
 	ResetLocalClassroomData(Message);
+}
+
+void UBHAccountSubsystem::BHUnlockAllCosmetics()
+{
+#if UE_BUILD_SHIPPING
+	// Developer-only: inert in Shipping (and the console is disabled there), so the packaged classroom build can
+	// never grant cosmetics this way. Declared unconditionally so the generated Exec binding always links.
+	UE_LOG(LogTemp, Warning, TEXT("BHUnlockAllCosmetics is disabled in Shipping builds."));
+#else
+	// Unlock every achievement-gated cosmetic by earning each registry achievement through the normal idempotent
+	// path (XP reward, persistence, completionist cascade), then raise XP above every XP gate so the XP-gated
+	// cosmetics open too. Persisted like any progress; undo with AccountResetLocalClassroomData.
+	int32 NewlyUnlocked = 0;
+	for (const FBHAchievementDisplay& Ach : GetAchievementsForDisplay())
+	{
+		if (!Progress.UnlockedAchievements.Contains(Ach.Id))
+		{
+			UnlockAchievement(Ach.Id);
+			++NewlyUnlocked;
+		}
+	}
+
+	const int32 PrevXP = Progress.XP;
+	if (Progress.XP < 1000000)
+	{
+		Progress.XP = 1000000;
+		Progress.LastUpdatedUtc = UtcNowString();
+		SaveProgress();
+	}
+
+	const FString Msg = FString::Printf(
+		TEXT("[DEV] Unlocked all cosmetics: +%d achievements, XP %d -> %d. Re-open the Character / Awards tab to equip."),
+		NewlyUnlocked, PrevXP, Progress.XP);
+	SetLastAccountMessage(Msg);
+	UE_LOG(LogTemp, Display, TEXT("%s"), *Msg);
+#endif
 }
 
 bool UBHAccountSubsystem::ContinueAsGuest(FString& OutMessage)
@@ -1418,6 +1455,45 @@ int32 UBHAccountSubsystem::GetSelectedCosmeticIndex(EBHCosmeticCategory Category
 	}
 }
 
+bool UBHAccountSubsystem::SetAvatarSlotColor(int32 SlotIndex, int32 ColorIndex, FString& OutMessage)
+{
+	const int32 SlotCount = BHColorableMaterialCount();
+	if (SlotIndex < 0 || SlotIndex >= SlotCount)
+	{
+		OutMessage = TEXT("Unknown colour slot.");
+		SetLastAccountMessage(OutMessage);
+		return false;
+	}
+
+	// ColorIndex < 0 clears the slot back to the skin's authored colour. Otherwise it must be an UNLOCKED palette
+	// colour (same gates as the shirt colour, so the prestige tints stay achievement-locked here too).
+	uint8 StoredValue = 0;
+	if (ColorIndex >= 0)
+	{
+		const int32 ClampedColor = BHCosmeticClampIndex(EBHCosmeticCategory::ShirtColor, ColorIndex);
+		if (!BHCosmeticIsUnlocked(EBHCosmeticCategory::ShirtColor, ClampedColor, Progress.XP, &Progress.UnlockedAchievements))
+		{
+			OutMessage = FString::Printf(TEXT("That colour (%s) is still locked."), BHCosmeticItemName(EBHCosmeticCategory::ShirtColor, ClampedColor));
+			SetLastAccountMessage(OutMessage);
+			return false;
+		}
+		StoredValue = static_cast<uint8>(ClampedColor + 1);
+	}
+
+	if (Progress.AvatarSlotColors.Num() < SlotCount)
+	{
+		Progress.AvatarSlotColors.SetNumZeroed(SlotCount);
+	}
+	Progress.AvatarSlotColors[SlotIndex] = StoredValue;
+	Progress.LastUpdatedUtc = UtcNowString();
+	SaveProgress();
+	OutMessage = (ColorIndex >= 0)
+		? FString::Printf(TEXT("Recoloured to %s."), BHCosmeticItemName(EBHCosmeticCategory::ShirtColor, StoredValue - 1))
+		: FString(TEXT("Slot colour cleared to default."));
+	SetLastAccountMessage(OutMessage);
+	return true;
+}
+
 bool UBHAccountSubsystem::SetSelectedCosmetic(EBHCosmeticCategory Category, int32 Index, FString& OutMessage)
 {
 	const int32 ClampedIndex = BHCosmeticClampIndex(Category, Index);
@@ -1701,6 +1777,14 @@ TSharedRef<FJsonObject> UBHAccountSubsystem::ProgressToJson() const
 	JsonObject->SetNumberField(TEXT("selected_avatar_gear_index"), Progress.SelectedAvatarGearIndex);
 	JsonObject->SetNumberField(TEXT("selected_title_index"), Progress.SelectedTitleIndex);
 	JsonObject->SetNumberField(TEXT("selected_emblem_index"), Progress.SelectedEmblemIndex);
+	{
+		TArray<TSharedPtr<FJsonValue>> SlotColorsJson;
+		for (uint8 SlotColor : Progress.AvatarSlotColors)
+		{
+			SlotColorsJson.Add(MakeShared<FJsonValueNumber>(SlotColor));
+		}
+		JsonObject->SetArrayField(TEXT("avatar_slot_colors"), SlotColorsJson);
+	}
 	JsonObject->SetStringField(TEXT("last_updated_utc"), Progress.LastUpdatedUtc);
 	TArray<TSharedPtr<FJsonValue>> AchievementsJson;
 	for (const FName& Achievement : Progress.UnlockedAchievements)
@@ -1789,6 +1873,16 @@ void UBHAccountSubsystem::ApplyProgressJson(const TSharedPtr<FJsonObject>& JsonO
 	Progress.SelectedTitleIndex = JsonInt(JsonObject, TEXT("selected_title_index"));
 	Progress.SelectedEmblemIndex = JsonInt(JsonObject, TEXT("selected_emblem_index"));
 	Progress.LastUpdatedUtc = JsonString(JsonObject, TEXT("last_updated_utc"));
+	Progress.AvatarSlotColors.Reset();
+	const TArray<TSharedPtr<FJsonValue>>* SlotColorsJson = nullptr;
+	if (JsonObject.IsValid() && JsonObject->TryGetArrayField(TEXT("avatar_slot_colors"), SlotColorsJson) && SlotColorsJson)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *SlotColorsJson)
+		{
+			const int32 Raw = Value.IsValid() ? static_cast<int32>(Value->AsNumber()) : 0;
+			Progress.AvatarSlotColors.Add(static_cast<uint8>(FMath::Clamp(Raw, 0, 18)));
+		}
+	}
 	Progress.UnlockedAchievements.Reset();
 	const TArray<TSharedPtr<FJsonValue>>* AchievementsJson = nullptr;
 	if (JsonObject.IsValid() && JsonObject->TryGetArrayField(TEXT("unlocked_achievements"), AchievementsJson) && AchievementsJson)

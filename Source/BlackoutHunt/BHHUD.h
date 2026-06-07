@@ -94,10 +94,16 @@ protected:
 
 	// Per-frame cached UI preferences (refreshed in RefreshHudPreferences).
 	BHHudTheme::FBHHudPalette ActivePalette = BHHudTheme::MakeStandardPalette();
-	// Readability scale applied to the centered, self-contained panels (question/checkpoint
-	// and phase/announcement banners). Scoped to centered panels because they recompute their
-	// X from width and stay on-screen at any scale; edge-anchored telemetry is left at 1.0.
-	float HudScale = 1.0f;
+	// Independent player-set UI sizes (see the "UI Size" editor in the settings menu).
+	//   HudWidgetScale  scales widget/chrome GEOMETRY: meter bars, the minimap box, equipment pills,
+	//                   roster/panel boxes and the readout spacing. Edge-anchored elements are re-pinned
+	//                   from their scaled size so they stay on-screen.
+	//   HudTextScale    scales TEXT/labels everywhere (it is injected at the text draw helpers).
+	// Self-contained centered popups (question/checkpoint, banners, role/tutorial cards, prompt, toast)
+	// scale geometry+text together by max(widget,text) so the box always grows to fit enlarged text.
+	// Both default to 1.0, which reproduces the original HUD pixel-for-pixel.
+	float HudWidgetScale = 1.0f;
+	float HudTextScale = 1.0f;
 	float HudPanelOpacity = 1.0f;
 	bool bColorblindPalette = false;
 	bool bShowMinimap = true;

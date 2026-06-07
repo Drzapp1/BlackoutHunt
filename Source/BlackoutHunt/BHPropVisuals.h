@@ -42,4 +42,10 @@ namespace BHPropVisuals
 		const FRotator& RelativeRotation,
 		float WorldSize,
 		const FColor& Color);
+
+	// Word-wrap Text so no line exceeds MaxCharsPerLine characters. Existing '\n' breaks are preserved and
+	// each segment is wrapped independently on word boundaries (a single word longer than the limit is kept
+	// intact on its own line). UTextRenderComponent does not auto-wrap, so callers wrap before SetText to
+	// keep panel text from overrunning a narrow module face.
+	FString WrapTextToWidth(const FString& Text, int32 MaxCharsPerLine);
 }

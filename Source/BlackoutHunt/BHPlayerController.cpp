@@ -17,6 +17,8 @@
 #include "BHLessonPreset.h"
 #include "BHNetworkSupport.h"
 #include "BHPlayerState.h"
+#include "BHTrainSwayCameraShake.h"
+#include "Camera/CameraShakeBase.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Components/AudioComponent.h"
 #include "Components/DirectionalLightComponent.h"
@@ -49,6 +51,7 @@
 #include "Misc/MessageDialog.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
+#include "SBHBootConsole.h"
 #include "SBHClassroomBoard.h"
 #include "SBHMainMenu.h"
 #include "Sound/SoundBase.h"
@@ -1435,29 +1438,48 @@ void ABHPlayerController::BeginPlay()
 		UWorld* World = GetWorld();
 		const bool bRemovedByHost = BHIsUrlOptionEnabled(World, TEXT("BHRemovedByHost="));
 		const bool bLiveClassroomHost = BHIsUrlOptionEnabled(World, TEXT("BHLiveClassroom=")) && GetNetMode() == NM_ListenServer;
+		UBHGameInstance* MenuBHGI = GetGameInstance<UBHGameInstance>();
 		if (GetNetMode() == NM_Standalone || bRemovedByHost || bLiveClassroomHost)
 		{
-			ShowMainMenu();
-			if (bLiveClassroomHost)
+			// On a clean single-player/host cold boot, play the cosmetic boot console once before the
+			// menu. Skipped when returning to the menu (flag already set), on the classroom-host /
+			// removed-by-host paths (they need the menu + their status messages immediately), and under
+			// automation (the scripted intro would stall the headless test harness).
+			const bool bColdBootIntro = GetNetMode() == NM_Standalone
+				&& !bRemovedByHost
+				&& !bLiveClassroomHost
+				&& MenuBHGI
+				&& !MenuBHGI->HasPlayedBootSequence()
+				&& !MenuBHGI->IsAutomationEnabled();
+			if (bColdBootIntro)
 			{
-				FString BoardMessage;
-				OpenClassroomBoardForMenu(BoardMessage);
-				ShowLocalStatusMessage(TEXT("Live Classroom hosted. Share the JOIN address, assign roles, and kick blockers from the roster."), 8.0f);
-				GetWorldTimerManager().SetTimer(ClassroomPreflightTimerHandle, this, &ABHPlayerController::RunClassroomNetworkPreflight, 4.0f, false);
-				GetWorldTimerManager().SetTimer(ClassroomFallbackTimerHandle, this, &ABHPlayerController::RunClassroomFallbackCheck, 40.0f, false);
+				MenuBHGI->MarkBootSequencePlayed();
+				ShowBootConsole();
 			}
-			else if (bRemovedByHost)
+			else
 			{
-				ShowLocalStatusMessage(TEXT("You were removed from the classroom lobby by the host. You can rejoin if invited."), 8.0f);
-			}
-			else if (UBHGameInstance* MenuBHGI = GetGameInstance<UBHGameInstance>())
-			{
-				// A student whose join failed is bounced here as Standalone; surface why (timeout,
-				// refused, version mismatch, full) instead of dropping them at a silent menu.
-				const FString FailureMessage = MenuBHGI->ConsumePendingNetworkFailureMessage();
-				if (!FailureMessage.IsEmpty())
+				ShowMainMenu();
+				if (bLiveClassroomHost)
 				{
-					ShowLocalStatusMessage(FailureMessage, 9.0f);
+					FString BoardMessage;
+					OpenClassroomBoardForMenu(BoardMessage);
+					ShowLocalStatusMessage(TEXT("Live Classroom hosted. Share the JOIN address, assign roles, and kick blockers from the roster."), 8.0f);
+					GetWorldTimerManager().SetTimer(ClassroomPreflightTimerHandle, this, &ABHPlayerController::RunClassroomNetworkPreflight, 4.0f, false);
+					GetWorldTimerManager().SetTimer(ClassroomFallbackTimerHandle, this, &ABHPlayerController::RunClassroomFallbackCheck, 40.0f, false);
+				}
+				else if (bRemovedByHost)
+				{
+					ShowLocalStatusMessage(TEXT("You were removed from the classroom lobby by the host. You can rejoin if invited."), 8.0f);
+				}
+				else if (MenuBHGI)
+				{
+					// A student whose join failed is bounced here as Standalone; surface why (timeout,
+					// refused, version mismatch, full) instead of dropping them at a silent menu.
+					const FString FailureMessage = MenuBHGI->ConsumePendingNetworkFailureMessage();
+					if (!FailureMessage.IsEmpty())
+					{
+						ShowLocalStatusMessage(FailureMessage, 9.0f);
+					}
 				}
 			}
 		}
@@ -1486,6 +1508,7 @@ void ABHPlayerController::Tick(float DeltaSeconds)
 	HandleRoundPhaseUiState();
 	TickAdaptiveGraphics(DeltaSeconds);
 	TickHorrorCueEffects(DeltaSeconds);
+	TickTrainMotion(DeltaSeconds);
 	TickAutomation();
 }
 
@@ -1505,6 +1528,7 @@ void ABHPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	HideClassroomBoard();
 	RemoveMainMenuWidget();
 	RemoveAtmosphereConsoleWidget();
+	RemoveBootConsoleWidget();
 	HideTravelLoadingScreen();
 	AtmosphereConsoleDefaultValues.Reset();
 	bAtmosphereConsoleDefaultsCaptured = false;
@@ -1578,22 +1602,24 @@ void ABHPlayerController::SetupInputComponent()
 void ABHPlayerController::HostGame()
 {
 	HideMainMenu();
-	ShowTravelLoadingScreen(TEXT("LOADING FACILITY"), TEXT("Opening local lobby."));
-	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(TEXT("Facility"))), true, BHMakeListenOptions(TEXT("Facility")));
+	ShowTravelLoadingScreen(TEXT("BOARDING LOBBY"), TEXT("Boarding the lobby train."));
+	// Boot into the parked TRAIN LOBBY (procedural geometry on the Entry base map); it departs to the chosen
+	// first hunt level when the class readies up / the host force-starts.
+	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(TEXT("TrainIntermission"))), true, BHMakeListenOptions(TEXT("Facility"), TEXT("?BHLobby=1?BHFirstLevel=Facility")));
 }
 
 void ABHPlayerController::HostSubstationGame()
 {
 	HideMainMenu();
-	ShowTravelLoadingScreen(TEXT("LOADING SUBSTATION"), TEXT("Opening local lobby."));
-	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(TEXT("Substation"))), true, BHMakeListenOptions(TEXT("Substation")));
+	ShowTravelLoadingScreen(TEXT("BOARDING LOBBY"), TEXT("Boarding the lobby train."));
+	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(TEXT("TrainIntermission"))), true, BHMakeListenOptions(TEXT("Substation"), TEXT("?BHLobby=1?BHFirstLevel=Substation")));
 }
 
 void ABHPlayerController::HostFoggroundsGame()
 {
 	HideMainMenu();
-	ShowTravelLoadingScreen(TEXT("LOADING FOGGROUNDS"), TEXT("Opening local lobby."));
-	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(TEXT("Foggrounds"))), true, BHMakeListenOptions(TEXT("Foggrounds")));
+	ShowTravelLoadingScreen(TEXT("BOARDING LOBBY"), TEXT("Boarding the lobby train."));
+	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(TEXT("TrainIntermission"))), true, BHMakeListenOptions(TEXT("Foggrounds"), TEXT("?BHLobby=1?BHFirstLevel=Foggrounds")));
 }
 
 void ABHPlayerController::HostPracticeGame()
@@ -2223,6 +2249,66 @@ void ABHPlayerController::RemoveMainMenuWidget()
 	}
 
 	MainMenuWidget.Reset();
+	if (FSlateApplication::IsInitialized())
+	{
+		FSlateApplication::Get().ClearKeyboardFocus(EFocusCause::Cleared);
+	}
+}
+
+void ABHPlayerController::ShowBootConsole()
+{
+	if (!IsLocalController() || BootConsoleWidget.IsValid() || !GEngine || !GEngine->GameViewport)
+	{
+		return;
+	}
+
+	HideTravelLoadingScreen();
+	RemoveMainMenuWidget();
+	RemoveAtmosphereConsoleWidget();
+
+	SAssignNew(BootConsoleWidget, SBHBootConsole)
+		.ReducedFlash(IsReducedFlashEnabled())
+		.OnFinished(FSimpleDelegate::CreateUObject(this, &ABHPlayerController::OnBootConsoleFinished));
+
+	// Above the travel loading screen (1000) so nothing draws over the intro.
+	GEngine->GameViewport->AddViewportWidgetContent(BootConsoleWidget.ToSharedRef(), 1500);
+
+	FInputModeUIOnly InputMode;
+	InputMode.SetWidgetToFocus(BootConsoleWidget);
+	InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+	SetInputMode(InputMode);
+	bShowMouseCursor = false;
+	UpdateAmbientMusic();
+}
+
+void ABHPlayerController::OnBootConsoleFinished()
+{
+	// The delegate fires from inside the widget's own Tick; defer the actual teardown one tick so we are
+	// not mutating the viewport's widget list mid-iteration.
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().SetTimerForNextTick(this, &ABHPlayerController::FinishBootConsole);
+	}
+	else
+	{
+		FinishBootConsole();
+	}
+}
+
+void ABHPlayerController::FinishBootConsole()
+{
+	RemoveBootConsoleWidget();
+	ShowMainMenu();
+}
+
+void ABHPlayerController::RemoveBootConsoleWidget()
+{
+	if (BootConsoleWidget.IsValid() && GEngine && GEngine->GameViewport)
+	{
+		GEngine->GameViewport->RemoveViewportWidgetContent(BootConsoleWidget.ToSharedRef());
+	}
+
+	BootConsoleWidget.Reset();
 	if (FSlateApplication::IsInitialized())
 	{
 		FSlateApplication::Get().ClearKeyboardFocus(EFocusCause::Cleared);
@@ -4174,6 +4260,25 @@ bool ABHPlayerController::SetAvatarColorForMenu(int32 ColorIndex, FString& OutMe
 	return true;
 }
 
+bool ABHPlayerController::SetAvatarSlotColorForMenu(int32 SlotIndex, int32 ColorIndex, FString& OutMessage)
+{
+	UBHAccountSubsystem* AccountSubsystem = GetGameInstance() ? GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr;
+	if (!AccountSubsystem)
+	{
+		OutMessage = TEXT("No account subsystem was available.");
+		ShowLocalStatusMessage(OutMessage, 4.0f);
+		return false;
+	}
+	if (!AccountSubsystem->SetAvatarSlotColor(SlotIndex, ColorIndex, OutMessage))
+	{
+		ShowLocalStatusMessage(OutMessage, 4.0f);
+		return false;
+	}
+	PushLocalCosmeticsToServer(false);
+	ShowLocalStatusMessage(OutMessage, 2.5f);
+	return true;
+}
+
 bool ABHPlayerController::SetAvatarHeadwearForMenu(int32 HeadwearIndex, FString& OutMessage)
 {
 	const int32 NormalizedIndex = BHCosmeticClampIndex(EBHCosmeticCategory::Headwear, HeadwearIndex);
@@ -4924,13 +5029,19 @@ void ABHPlayerController::ApplyAdaptiveGraphicsState(bool bAnnounce)
 	ConsoleCommand(FString::Printf(TEXT("r.SSR.Quality %d"), EffectiveEffectsQuality <= 0 ? 0 : FMath::Clamp(EffectiveEffectsQuality, 1, 4)));
 	ConsoleCommand(FString::Printf(TEXT("r.VolumetricFog %d"), EffectiveEffectsQuality >= 2 ? 1 : 0));
 	{
-		// Foggrounds is a fog-centric map: force volumetric fog on across every graphics tier so the
-		// uniform fog body and the flashlight god-rays render identically from Low through Ultra.
-		// The froxel grid is coarsened on low tiers to keep the cost viable on 4GB classroom GPUs.
-		// Outside Foggrounds this block is skipped, leaving the gated value above in place.
+		// Fog-bearing maps (Foggrounds, Substation, Facility) force volumetric fog on across every graphics
+		// tier so their fog renders identically from Low through Ultra. Left to the gated value above, the
+		// adaptive system flips volumetric fog OFF on Low/Medium -- and toggles it mid-match as the effects
+		// tier drops and recovers -- which makes the ground mist "appear then disappear" (Substation) or
+		// never show at all (Facility). The froxel grid is coarsened on low tiers to keep the cost viable on
+		// 4GB classroom GPUs. Outside these maps this block is skipped, leaving the gated value in place.
 		const UWorld* GraphicsWorld = GetWorld();
 		const ABHGameState* GraphicsGameState = GraphicsWorld ? GraphicsWorld->GetGameState<ABHGameState>() : nullptr;
-		if (GraphicsGameState && GraphicsGameState->ActiveLevelName.Equals(TEXT("Foggrounds"), ESearchCase::IgnoreCase))
+		const bool bForceVolumetricFog = GraphicsGameState
+			&& (GraphicsGameState->ActiveLevelName.Equals(TEXT("Foggrounds"), ESearchCase::IgnoreCase)
+				|| GraphicsGameState->ActiveLevelName.Equals(TEXT("Substation"), ESearchCase::IgnoreCase)
+				|| GraphicsGameState->ActiveLevelName.Equals(TEXT("Facility"), ESearchCase::IgnoreCase));
+		if (bForceVolumetricFog)
 		{
 			ConsoleCommand(TEXT("r.VolumetricFog 1"));
 			ConsoleCommand(FString::Printf(TEXT("r.VolumetricFog.GridPixelSize %d"), EffectiveEffectsQuality >= 2 ? 8 : 16));
@@ -4965,6 +5076,84 @@ void ABHPlayerController::ApplyAdaptiveGraphicsState(bool bAnnounce)
 			? FString::Printf(TEXT("Adaptive graphics target %d FPS, render scale %d%%."), GraphicsAdaptiveFpsGoal, EffectiveRenderScale)
 			: FString::Printf(TEXT("Adaptive graphics disabled, render scale %d%%."), EffectiveRenderScale);
 		ShowLocalStatusMessage(State, 3.0f);
+	}
+}
+
+void ABHPlayerController::EnsureAuthoredLevelFloorFog()
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+	UWorld* World = GetWorld();
+	const ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
+	if (!World || !BHGS)
+	{
+		return;
+	}
+
+	// Detect the loaded map from the world package name. This is robust against ActiveLevelName not having
+	// replicated yet and against the PIE "UEDPIE_0_" prefix. Facility's 0.7.0 bake ships NO fog actor at
+	// all; Substation's baked fog is far too thin (density ~0.01) to read. Both get a light, floor-hugging
+	// mist materialised locally on every client -- the GameMode that builds fog is server-only and
+	// ExponentialHeightFog does not replicate, so each machine fixes the map it loaded.
+	const FString MapName = World->GetMapName();
+	const bool bFacility = MapName.Contains(TEXT("Facility"));
+	const bool bSubstation = MapName.Contains(TEXT("Substation"));
+	if (!bFacility && !bSubstation)
+	{
+		return;
+	}
+
+	// Configure exactly once per level: reuse the baked fog if there is one (Substation), otherwise spawn one
+	// (Facility). A tag marks it as tuned so the per-frame poll does not re-stomp it -- which also lets the
+	// AtmosphereTest console tweak the fog afterwards without it being reset every tick.
+	static const FName FloorFogTag(TEXT("BHFloorFogTuned"));
+	AExponentialHeightFog* Fog = nullptr;
+	for (TActorIterator<AExponentialHeightFog> It(World); It; ++It)
+	{
+		Fog = *It;
+		break;
+	}
+	if (Fog && Fog->Tags.Contains(FloorFogTag))
+	{
+		return;
+	}
+	if (!Fog)
+	{
+		Fog = World->SpawnActor<AExponentialHeightFog>(FVector::ZeroVector, FRotator::ZeroRotator);
+	}
+	UExponentialHeightFogComponent* FogComponent = Fog ? Fog->GetComponent() : nullptr;
+	if (!FogComponent)
+	{
+		return;
+	}
+
+	// Light, floor-leaning mist that reads on EVERY quality tier. The first (non-volumetric) layer carries
+	// the visible haze so it shows even when r.VolumetricFog is off (Low/Medium), while the denser ground-
+	// pool second layer adds the drifting-mist look when volumetric fog is on (force-enabled for these maps
+	// in ApplyAdaptiveGraphicsState). Densities are intentionally well above the near-invisible baked values.
+	const FLinearColor FogColor = bFacility
+		? FLinearColor(0.105f, 0.040f, 0.034f, 1.0f)   // dim warm red, matching Facility's mood
+		: FLinearColor(0.052f, 0.066f, 0.082f, 1.0f);  // cool grey-blue for Substation
+	FogComponent->SetFogDensity(0.060f);
+	FogComponent->SetFogHeightFalloff(0.22f);
+	FogComponent->SetFogInscatteringColor(FogColor);
+	FogComponent->SetFogMaxOpacity(0.80f);
+	FogComponent->SetStartDistance(0.0f);
+	FogComponent->SetVolumetricFog(true);
+	FogComponent->SetVolumetricFogScatteringDistribution(0.45f);
+	FogComponent->SetVolumetricFogExtinctionScale(0.60f);
+	FogComponent->SetVolumetricFogNearFadeInDistance(40.0f);
+	// Denser ground-pool layer for the floor-mist read when volumetric fog is on.
+	FogComponent->SetSecondFogData(FExponentialHeightFogData());
+	FogComponent->SetSecondFogDensity(0.12f);
+	FogComponent->SetSecondFogHeightFalloff(0.80f);
+	FogComponent->SetSecondFogHeightOffset(0.0f);
+
+	if (Fog)
+	{
+		Fog->Tags.AddUnique(FloorFogTag);
 	}
 }
 
@@ -5748,6 +5937,9 @@ void ABHPlayerController::PushLocalCosmeticsToServer(bool bAnnounce)
 		? BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Emblem, Progress->SelectedEmblemIndex, XP, &Progress->UnlockedAchievements)
 		: BHCosmeticClampIndex(EBHCosmeticCategory::Emblem, CurrentBHPS ? CurrentBHPS->SelectedEmblemIndex : 0);
 	const FLinearColor AvatarColor = BHAvatarPaletteColor(ColorIndex);
+	const TArray<uint8> SlotColors = Progress
+		? Progress->AvatarSlotColors
+		: (CurrentBHPS ? CurrentBHPS->AvatarSlotColors : TArray<uint8>());
 
 	bool bChanged = false;
 	if (ABHPlayerState* MutableBHPS = GetPlayerState<ABHPlayerState>())
@@ -5764,6 +5956,7 @@ void ABHPlayerController::PushLocalCosmeticsToServer(bool bAnnounce)
 		MutableBHPS->SetAvatarGearIndex(GearIndex);
 		MutableBHPS->SetSelectedTitleIndex(TitleIndex);
 		MutableBHPS->SetSelectedEmblemIndex(EmblemIndex);
+		MutableBHPS->SetAvatarSlotColors(SlotColors);
 	}
 
 	if (bChanged)
@@ -5776,6 +5969,7 @@ void ABHPlayerController::PushLocalCosmeticsToServer(bool bAnnounce)
 	// the server-side PlayerState (and thus other clients' nameplates) match the account selection.
 	ServerSetTitle(TitleIndex);
 	ServerSetEmblem(EmblemIndex);
+	ServerSetAvatarSlotColors(SlotColors);
 }
 
 void ABHPlayerController::PushLocalProfileToServer()
@@ -6239,8 +6433,8 @@ void ABHPlayerController::SetQuestionCursorMode(bool bEnable)
 	{
 		return;
 	}
-	// A real UI (menu / atmosphere console / travel loading) owns the cursor; never override it.
-	if (bEnable && (MainMenuWidget.IsValid() || AtmosphereConsoleWidget.IsValid() || TravelLoadingScreenWidget.IsValid()))
+	// A real UI (menu / atmosphere console / travel loading / boot console) owns the cursor; never override it.
+	if (bEnable && (MainMenuWidget.IsValid() || AtmosphereConsoleWidget.IsValid() || TravelLoadingScreenWidget.IsValid() || BootConsoleWidget.IsValid()))
 	{
 		return;
 	}
@@ -6255,7 +6449,7 @@ void ABHPlayerController::SetQuestionCursorMode(bool bEnable)
 		SetInputMode(InputMode);
 		bShowMouseCursor = true;
 	}
-	else if (!MainMenuWidget.IsValid() && !AtmosphereConsoleWidget.IsValid() && !TravelLoadingScreenWidget.IsValid())
+	else if (!MainMenuWidget.IsValid() && !AtmosphereConsoleWidget.IsValid() && !TravelLoadingScreenWidget.IsValid() && !BootConsoleWidget.IsValid())
 	{
 		ApplyGameplayInputMode();
 	}
@@ -6275,16 +6469,22 @@ void ABHPlayerController::HandleRoundPhaseUiState()
 		return;
 	}
 
-	// Foggrounds forces volumetric fog on for every graphics tier (see ApplyAdaptiveGraphicsState).
-	// Re-apply whenever the map becomes Foggrounds or leaves it: the initial graphics pass can run
-	// before ActiveLevelName has replicated (and on late-join/direct-load), and leaving must restore
-	// the normal quality-gated value.
-	const bool bFoggroundsActiveNow = BHGS->ActiveLevelName.Equals(TEXT("Foggrounds"), ESearchCase::IgnoreCase);
-	if (bFoggroundsActiveNow != bFoggroundsVolumetricActive)
+	// The fog-bearing maps (Foggrounds/Substation/Facility) force volumetric fog on for every graphics
+	// tier (see ApplyAdaptiveGraphicsState). Re-apply whenever such a map becomes active or is left: the
+	// initial graphics pass can run before ActiveLevelName has replicated (and on late-join/direct-load),
+	// and leaving must restore the normal quality-gated value.
+	const FString& ActiveLevelName = BHGS->ActiveLevelName;
+	const bool bForcedVolumetricNow = ActiveLevelName.Equals(TEXT("Foggrounds"), ESearchCase::IgnoreCase)
+		|| ActiveLevelName.Equals(TEXT("Substation"), ESearchCase::IgnoreCase)
+		|| ActiveLevelName.Equals(TEXT("Facility"), ESearchCase::IgnoreCase);
+	if (bForcedVolumetricNow != bForcedVolumetricFogActive)
 	{
-		bFoggroundsVolumetricActive = bFoggroundsActiveNow;
+		bForcedVolumetricFogActive = bForcedVolumetricNow;
 		ApplyAdaptiveGraphicsState(false);
 	}
+
+	// Materialise the local floor mist for any authored map whose bake shipped without it (Facility).
+	EnsureAuthoredLevelFloorFog();
 
 	const EBHRoundPhase CurrentPhase = BHGS->RoundPhase;
 	if (!bRoundPhaseObserved)
@@ -6374,7 +6574,14 @@ void ABHPlayerController::EnsureComfortPreferencesLoaded()
 	bReducedCameraShake = BHLoadComfortPreference(TEXT("ReducedCameraShake"), Settings ? Settings->bDefaultReducedCameraShake : false);
 	bCaptionsEnabled = BHLoadComfortPreference(TEXT("Captions"), Settings ? Settings->bDefaultCaptions : true);
 	bHighContrastHud = BHLoadComfortPreference(TEXT("HighContrastHud"), Settings ? Settings->bDefaultHighContrastHud : false);
+	bHideVeryClosePlayers = BHLoadComfortPreference(TEXT("HideVeryClosePlayers"), Settings ? Settings->bDefaultHideVeryClosePlayers : false);
+	bTrainSwayEnabled = BHLoadComfortPreference(TEXT("TrainSway"), Settings ? Settings->bDefaultTrainSway : true);
 	HudScale = FMath::Clamp(BHLoadComfortScalarPreference(TEXT("HudScale"), Settings ? Settings->DefaultHudScale : 1.0f), 0.75f, 1.5f);
+	// Text size is independent of widget size. Seed it from the legacy single HudScale preference so a
+	// player who had previously enlarged the HUD keeps their readable text size on first run after the split.
+	const float TextScaleDefault = Settings ? Settings->DefaultHudTextScale : 1.0f;
+	const float TextScaleSeed = BHLoadComfortScalarPreference(TEXT("HudTextScale"), FMath::Max(TextScaleDefault, HudScale));
+	HudTextScale = FMath::Clamp(TextScaleSeed, 0.80f, 1.6f);
 	HudPanelOpacity = FMath::Clamp(BHLoadComfortScalarPreference(TEXT("HudPanelOpacity"), Settings ? Settings->DefaultHudPanelOpacity : 1.0f), 0.35f, 1.0f);
 	bColorblindHud = BHLoadComfortPreference(TEXT("ColorblindHud"), Settings ? Settings->bDefaultColorblindHud : false);
 	bShowHudMinimap = BHLoadComfortPreference(TEXT("ShowMinimap"), Settings ? Settings->bDefaultShowMinimap : true);
@@ -6648,6 +6855,18 @@ bool ABHPlayerController::SetComfortOptionForMenu(FName OptionName, bool bEnable
 		SaveComfortPreference(TEXT("HighContrastHud"), bHighContrastHud);
 		OutMessage = bHighContrastHud ? TEXT("High contrast HUD enabled.") : TEXT("High contrast HUD disabled.");
 	}
+	else if (Option.Equals(TEXT("HideVeryClosePlayers"), ESearchCase::IgnoreCase))
+	{
+		bHideVeryClosePlayers = bEnabled;
+		SaveComfortPreference(TEXT("HideVeryClosePlayers"), bHideVeryClosePlayers);
+		OutMessage = bHideVeryClosePlayers ? TEXT("Very-close players are now hidden.") : TEXT("Very-close players are now shown.");
+	}
+	else if (Option.Equals(TEXT("TrainSway"), ESearchCase::IgnoreCase))
+	{
+		bTrainSwayEnabled = bEnabled;
+		SaveComfortPreference(TEXT("TrainSway"), bTrainSwayEnabled);
+		OutMessage = bTrainSwayEnabled ? TEXT("Train ride sway enabled.") : TEXT("Train ride sway disabled.");
+	}
 	else if (Option.Equals(TEXT("ColorblindHud"), ESearchCase::IgnoreCase))
 	{
 		bColorblindHud = bEnabled;
@@ -6710,7 +6929,13 @@ bool ABHPlayerController::SetHudScalarOptionForMenu(FName OptionName, float Valu
 	{
 		HudScale = FMath::Clamp(Value, 0.75f, 1.5f);
 		SaveComfortScalarPreference(TEXT("HudScale"), HudScale);
-		OutMessage = FString::Printf(TEXT("HUD size %d%%."), FMath::RoundToInt(HudScale * 100.0f));
+		OutMessage = FString::Printf(TEXT("Widget size %d%%."), FMath::RoundToInt(HudScale * 100.0f));
+	}
+	else if (Option.Equals(TEXT("HudTextScale"), ESearchCase::IgnoreCase))
+	{
+		HudTextScale = FMath::Clamp(Value, 0.80f, 1.6f);
+		SaveComfortScalarPreference(TEXT("HudTextScale"), HudTextScale);
+		OutMessage = FString::Printf(TEXT("Text size %d%%."), FMath::RoundToInt(HudTextScale * 100.0f));
 	}
 	else if (Option.Equals(TEXT("HudPanelOpacity"), ESearchCase::IgnoreCase))
 	{
@@ -6733,6 +6958,10 @@ float ABHPlayerController::GetHudScalarOptionForMenu(FName OptionName) const
 	if (Option.Equals(TEXT("HudScale"), ESearchCase::IgnoreCase))
 	{
 		return HudScale;
+	}
+	if (Option.Equals(TEXT("HudTextScale"), ESearchCase::IgnoreCase))
+	{
+		return HudTextScale;
 	}
 	if (Option.Equals(TEXT("HudPanelOpacity"), ESearchCase::IgnoreCase))
 	{
@@ -6759,6 +6988,14 @@ bool ABHPlayerController::IsComfortOptionEnabledForMenu(FName OptionName) const
 	if (Option.Equals(TEXT("Captions"), ESearchCase::IgnoreCase))
 	{
 		return bCaptionsEnabled;
+	}
+	if (Option.Equals(TEXT("HideVeryClosePlayers"), ESearchCase::IgnoreCase))
+	{
+		return bHideVeryClosePlayers;
+	}
+	if (Option.Equals(TEXT("TrainSway"), ESearchCase::IgnoreCase))
+	{
+		return bTrainSwayEnabled;
 	}
 	if (Option.Equals(TEXT("HighContrastHud"), ESearchCase::IgnoreCase))
 	{
@@ -6815,9 +7052,24 @@ bool ABHPlayerController::IsReducedJumpscaresEnabled() const
 	return bReducedJumpscares;
 }
 
+bool ABHPlayerController::IsHideVeryClosePlayersEnabled() const
+{
+	return bHideVeryClosePlayers;
+}
+
+bool ABHPlayerController::IsTrainSwayEnabled() const
+{
+	return bTrainSwayEnabled;
+}
+
 float ABHPlayerController::GetHudScale() const
 {
 	return HudScale;
+}
+
+float ABHPlayerController::GetHudTextScale() const
+{
+	return HudTextScale;
 }
 
 float ABHPlayerController::GetHudPanelOpacity() const
@@ -7115,6 +7367,98 @@ void ABHPlayerController::TickHorrorCueEffects(float DeltaSeconds)
 		FMath::FRandRange(-0.55f, 0.55f) * Shake,
 		FMath::FRandRange(-0.92f, 0.92f) * Shake,
 		0.0f));
+}
+
+namespace
+{
+	// The carriage roof sits well above the interior deck: passengers ride at ~z124, while the maintenance-hatch
+	// easter egg lifts them to ~z438. Anything this high during the intermission counts as "on the roof", where
+	// the ride should feel much stronger. Purely a local cosmetic threshold -- it never gates gameplay.
+	constexpr float BHTrainRoofMotionHeight = 360.0f;
+
+	// ShakeScale fed to the looping train-sway shake. Authored amplitudes peak on the exposed roof at scale 1;
+	// the interior ride is the same motion dialled down. Reduced-camera-shake players get a quarter of it,
+	// matching the horror-cue comfort convention.
+	constexpr float BHTrainSwayInteriorScale = 0.42f;
+	constexpr float BHTrainSwayRoofScale = 1.15f;
+	constexpr float BHTrainSwayReducedScale = 0.25f;
+
+	// Is the train physically in transit during this intermission phase? Mirrors
+	// ABHTrainIntermissionManager::SetTunnelMoving(...): rolling through the recap/bonus/shop legs and the
+	// departure run, parked at the arrival and station stops (and at the final terminal, which holds in StationStop).
+	bool BHTrainPhaseIsMoving(EBHTrainPhase Phase)
+	{
+		switch (Phase)
+		{
+		case EBHTrainPhase::Recap:
+		case EBHTrainPhase::BonusQuestion:
+		case EBHTrainPhase::Shop:
+		case EBHTrainPhase::Departing:
+			return true;
+		default:
+			return false;
+		}
+	}
+}
+
+void ABHPlayerController::TickTrainMotion(float DeltaSeconds)
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	APlayerCameraManager* CamMgr = PlayerCameraManager;
+	const UWorld* World = GetWorld();
+	const ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
+
+	// A motion-sensitive player can switch the ride sway fully off (separate from "reduced camera shake", which
+	// only quarters it); when off we let the active shake blend out via the not-moving path below.
+	EnsureComfortPreferencesLoaded();
+	const bool bTrainMoving = CamMgr && BHGS
+		&& bTrainSwayEnabled
+		&& BHGS->RoundPhase == EBHRoundPhase::Intermission
+		&& BHTrainPhaseIsMoving(BHGS->TrainPhase);
+
+	if (!bTrainMoving)
+	{
+		// Blend the ride out the moment the train parks (or the intermission ends / the camera goes away).
+		if (UCameraShakeBase* ActiveShake = ActiveTrainSwayShake.Get())
+		{
+			if (CamMgr)
+			{
+				CamMgr->StopCameraShake(ActiveShake, false);
+			}
+		}
+		ActiveTrainSwayShake.Reset();
+		TrainSwayCurrentScale = 0.0f;
+		return;
+	}
+
+	// Stronger, wind-buffeted ride on the exposed roof; a gentle hum down in the carriage. Comfort dials it down.
+	EnsureComfortPreferencesLoaded();
+	const APawn* ControlledPawn = GetPawn();
+	const bool bOnRoof = ControlledPawn && ControlledPawn->GetActorLocation().Z >= BHTrainRoofMotionHeight;
+	float TargetScale = bOnRoof ? BHTrainSwayRoofScale : BHTrainSwayInteriorScale;
+	if (bReducedCameraShake)
+	{
+		TargetScale *= BHTrainSwayReducedScale;
+	}
+
+	UCameraShakeBase* ActiveShake = ActiveTrainSwayShake.Get();
+	if (!ActiveShake)
+	{
+		ActiveShake = CamMgr->StartCameraShake(UBHTrainSwayCameraShake::StaticClass(), TargetScale);
+		ActiveTrainSwayShake = ActiveShake;
+		TrainSwayCurrentScale = TargetScale;
+	}
+
+	if (ActiveShake)
+	{
+		// Ease between interior/roof intensities so climbing out of the hatch ramps the motion up smoothly.
+		TrainSwayCurrentScale = FMath::FInterpTo(TrainSwayCurrentScale, TargetScale, DeltaSeconds, 2.5f);
+		ActiveShake->ShakeScale = TrainSwayCurrentScale;
+	}
 }
 
 void ABHPlayerController::ClientDimEnvironment_Implementation(float DimScale, float DurationSeconds)
@@ -7563,6 +7907,26 @@ void ABHPlayerController::ServerSetAvatarColor_Implementation(const FLinearColor
 	}
 
 	ClientShowStatusMessage(FString::Printf(TEXT("Avatar color set to %d."), FMath::Clamp(ColorIndex, 0, 7) + 1), 2.5f);
+}
+
+void ABHPlayerController::ServerSetAvatarSlotColors_Implementation(const TArray<uint8>& SlotColors)
+{
+	if (!AllowLobbyActionRpc())
+	{
+		return;
+	}
+
+	ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	if (!BHPS)
+	{
+		return;
+	}
+
+	BHPS->SetAvatarSlotColors(SlotColors);
+	if (ABHCharacter* ControlledCharacter = Cast<ABHCharacter>(GetPawn()))
+	{
+		ControlledCharacter->ApplyAvatarStyle();
+	}
 }
 
 void ABHPlayerController::ServerSetAvatarHeadwear_Implementation(int32 HeadwearIndex)
@@ -8533,7 +8897,9 @@ void ABHPlayerController::ClientPlayHorrorCue_Implementation(const FBHClientHorr
 					if (Cue.bCloseRangeFocus)
 					{
 						VisualActor->SetActorScale3D(VisualActor->GetActorScale3D() * Cue.CloseVisualScale);
-						BHFitCloseVisualActorToCamera(VisualActor);
+						// Fit the full creature head-to-toe by default; only crop to the short torso target when
+						// this cue explicitly wants the upper-body-only framing.
+						BHFitCloseVisualActorToCamera(VisualActor, Cue.bUpperBodyCloseVisual ? 165.0f : 250.0f);
 					}
 					if (Cue.bUpperBodyCloseVisual)
 					{
@@ -8719,7 +9085,8 @@ void ABHPlayerController::BeginBehindYouScare(const FBHClientHorrorCue& Cue)
 	BehindYouPayoffCue.bDirectivePrompt = false;
 	BehindYouPayoffCue.bMoveOnlyLock = false;
 	BehindYouPayoffCue.bCloseRangeFocus = true;
-	BehindYouPayoffCue.bUpperBodyCloseVisual = true;
+	// Full towering creature, legs included -- the behind-you payoff shows the whole body, not a floating torso.
+	BehindYouPayoffCue.bUpperBodyCloseVisual = false;
 	// They turned to face it themselves, so don't yank the view; spawn the slam centred on where they
 	// now look, framed near eye level so the face fills the screen rather than spawning at their feet.
 	BehindYouPayoffCue.bSnapToFocus = false;

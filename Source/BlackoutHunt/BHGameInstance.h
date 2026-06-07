@@ -227,6 +227,12 @@ public:
 	FString BuildTrainRecapMissedQuestions() const;
 	FString BuildTrainRecapTips(const FString& NextDestination) const;
 
+	// Cosmetic cold-boot terminal (SBHBootConsole) is shown at most once per process. The GameInstance
+	// survives non-seamless level travel, so this flag keeps the intro from replaying every time a player
+	// returns to the menu after a match.
+	bool HasPlayedBootSequence() const { return bHasPlayedBootSequence; }
+	void MarkBootSequencePlayed() { bHasPlayedBootSequence = true; }
+
 private:
 	IOnlineSessionPtr GetOnlineSessionInterface(FString& OutMessage) const;
 	bool IsOnlineIdentityReadyForSessions(FString& OutMessage);
@@ -288,4 +294,6 @@ private:
 	FString PlaytestTelemetrySessionId;
 	int32 NextPlaytestTelemetryPlayerOrdinal = 1;
 	int32 PersistentStageIndex = 0;
+	// See HasPlayedBootSequence / MarkBootSequencePlayed.
+	bool bHasPlayedBootSequence = false;
 };

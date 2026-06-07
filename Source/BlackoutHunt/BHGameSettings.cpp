@@ -276,7 +276,7 @@ UBHGameSettings::UBHGameSettings()
 			FVector(-20.0f, 0.0f, -88.0f),
 			FRotator(0.0f, -90.0f, 0.0f),
 			FVector(1.0f),
-			FVector(90.0f, 0.0f, -138.0f),
+			FVector(90.0f, 0.0f, -52.0f),
 			FRotator::ZeroRotator,
 			FVector(1.34f),
 			FLinearColor(1.0f, 0.02f, 0.0f, 1.0f),
@@ -298,7 +298,7 @@ UBHGameSettings::UBHGameSettings()
 			FVector(-20.0f, 0.0f, -88.0f),
 			FRotator(0.0f, -90.0f, 0.0f),
 			FVector(1.0f),
-			FVector(86.0f, 0.0f, -132.0f),
+			FVector(86.0f, 0.0f, -52.0f),
 			FRotator::ZeroRotator,
 			FVector(1.40f),
 			FLinearColor(0.0f, 0.78f, 1.0f, 1.0f),
@@ -320,7 +320,7 @@ UBHGameSettings::UBHGameSettings()
 			FVector(-20.0f, 0.0f, -88.0f),
 			FRotator(0.0f, -90.0f, 0.0f),
 			FVector(1.0f),
-			FVector(82.0f, 0.0f, -136.0f),
+			FVector(82.0f, 0.0f, -52.0f),
 			FRotator::ZeroRotator,
 			FVector(1.46f),
 			FLinearColor(0.78f, 0.03f, 1.0f, 1.0f),
@@ -342,7 +342,7 @@ UBHGameSettings::UBHGameSettings()
 			FVector(0.0f, 0.0f, -84.0f),
 			FRotator(0.0f, -90.0f, 0.0f),
 			FVector(1.0f),
-			FVector(86.0f, 0.0f, -124.0f),
+			FVector(86.0f, 0.0f, -52.0f),
 			FRotator::ZeroRotator,
 			FVector(1.42f),
 			FLinearColor(1.0f, 0.0f, 0.02f, 1.0f),
@@ -364,7 +364,7 @@ UBHGameSettings::UBHGameSettings()
 			FVector(0.0f, 0.0f, -92.0f),
 			FRotator(0.0f, -90.0f, 0.0f),
 			FVector(1.08f),
-			FVector(82.0f, 0.0f, -130.0f),
+			FVector(82.0f, 0.0f, -52.0f),
 			FRotator::ZeroRotator,
 			FVector(1.46f),
 			FLinearColor(0.78f, 0.03f, 1.0f, 1.0f),
@@ -386,7 +386,7 @@ UBHGameSettings::UBHGameSettings()
 			FVector(0.0f, 0.0f, -96.0f),
 			FRotator(0.0f, -90.0f, 0.0f),
 			FVector(1.14f),
-			FVector(78.0f, 0.0f, -134.0f),
+			FVector(78.0f, 0.0f, -52.0f),
 			FRotator::ZeroRotator,
 			FVector(1.50f),
 			FLinearColor(0.0f, 0.78f, 1.0f, 1.0f),
@@ -453,6 +453,8 @@ UBHGameSettings::UBHGameSettings()
 	bDefaultReducedCameraShake = false;
 	bDefaultCaptions = true;
 	bDefaultHighContrastHud = false;
+	bDefaultHideVeryClosePlayers = false;
+	bDefaultTrainSway = true;
 
 	DefaultBotCount = 5;
 	DefaultBotDifficulty = EBHBotDifficulty::Normal;

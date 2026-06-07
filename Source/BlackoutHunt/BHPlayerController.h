@@ -315,6 +315,9 @@ public:
 	void ShowMainMenu();
 	void HideMainMenu();
 	void ToggleMainMenu();
+	// Cosmetic one-time cold-boot terminal shown before the menu on a clean Standalone launch (see
+	// SBHBootConsole). Streams a scripted facility-mainframe boot log, then hands off to ShowMainMenu.
+	void ShowBootConsole();
 	// Show/hide the mouse cursor for answering a question panel with the mouse. Uses GameAndUI input
 	// so clicks reach the HUD-canvas hit regions and the camera stops turning; restores gameplay input
 	// on disable unless a real UI (menu/console/loading) still needs the cursor.
@@ -396,6 +399,9 @@ public:
 	bool CycleAvatarForMenu(FString& OutMessage);
 	bool SetAvatarForMenu(int32 AvatarIndex, FString& OutMessage);
 	bool SetAvatarColorForMenu(int32 ColorIndex, FString& OutMessage);
+	// Per-part recolour: SlotIndex is a BHColorableMaterialNames registry index; ColorIndex into the palette, or
+	// -1 to clear that slot back to the skin's authored colour.
+	bool SetAvatarSlotColorForMenu(int32 SlotIndex, int32 ColorIndex, FString& OutMessage);
 	bool SetAvatarHeadwearForMenu(int32 HeadwearIndex, FString& OutMessage);
 	bool SetTitleForMenu(int32 TitleIndex, FString& OutMessage);
 	bool SetEmblemForMenu(int32 EmblemIndex, FString& OutMessage);
@@ -493,8 +499,15 @@ public:
 	// True when this local player has Reduced Jumpscares ("safe mode") on — jumpscare monsters then render as
 	// the gentle abstract proxy instead of the realistic creatures.
 	bool IsReducedJumpscaresEnabled() const;
+	// True when this local player has opted to hide other players who crowd right against the camera (so a knot
+	// of people around a node/breaker doesn't block the view). Read by ABHCharacter's local proximity hide.
+	bool IsHideVeryClosePlayersEnabled() const;
+	// True when the looping "the train is moving" camera sway is enabled for this local player (on by default).
+	bool IsTrainSwayEnabled() const;
 	// HUD customization preferences (local-only, persisted to the Comfort config section).
+	// HudScale is the WIDGET size (chrome geometry); HudTextScale is the independent TEXT size.
 	float GetHudScale() const;
+	float GetHudTextScale() const;
 	float GetHudPanelOpacity() const;
 	bool IsColorblindHudEnabled() const;
 	bool IsHudMinimapVisible() const;
@@ -540,6 +553,10 @@ public:
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetAvatarColor(const FLinearColor& AvatarColor, int32 ColorIndex);
+
+	// Per-part clothing colours (registry-indexed; 0 = authored, else palette index+1). Replicated so others see it.
+	UFUNCTION(Server, Reliable)
+	void ServerSetAvatarSlotColors(const TArray<uint8>& SlotColors);
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetAvatarHeadwear(int32 HeadwearIndex);
@@ -724,6 +741,11 @@ public:
 private:
 	void RemoveMainMenuWidget();
 	void RemoveAtmosphereConsoleWidget();
+	void RemoveBootConsoleWidget();
+	// Bound to SBHBootConsole::OnFinished. Defers teardown to the next tick (the callback fires from the
+	// widget's own Tick), then FinishBootConsole removes the widget and opens the main menu.
+	void OnBootConsoleFinished();
+	void FinishBootConsole();
 	void ApplyGameplayInputMode();
 	// Locks move/look input for a jumpscare and arms a self-restoring safety timer so the
 	// owning client always frees itself even if the explicit unlock RPC is dropped/reordered.
@@ -750,6 +772,10 @@ private:
 	void ApplySavedManualGraphicsTuning();
 	void ApplySavedGraphicsResolution();
 	void ApplyAdaptiveGraphicsState(bool bAnnounce);
+	// Some authored bakes ship without the procedural mood-pass fog (the 0.7.0 Facility bake stripped it).
+	// The GameMode that builds fog is server-only and ExponentialHeightFog does not replicate, so each
+	// client materialises its own local floor mist for such maps. No-op once a height fog already exists.
+	void EnsureAuthoredLevelFloorFog();
 	void TickAdaptiveGraphics(float DeltaSeconds);
 	void SaveGraphicsPreferences() const;
 	void EnsureAmbientMusic();
@@ -776,6 +802,9 @@ private:
 	void RunAutomationAtmosphereTests();
 	void TickAutomation();
 	void TickHorrorCueEffects(float DeltaSeconds);
+	// Drives the looping "the train is moving" camera sway during the intermission (stronger on the roof,
+	// comfort-scaled). Local-controller only; never touches gameplay or the pawn body.
+	void TickTrainMotion(float DeltaSeconds);
 	// Plays the layered jumpscare impact audio (pitch-randomized scream + optional sub-roar + stinger),
 	// and pushes the optional duck SoundMix from settings while the scare plays.
 	void PlayJumpscareImpactAudio(const FBHClientHorrorCue& Cue, float VolumeScale);
@@ -787,6 +816,7 @@ private:
 	TSharedPtr<SWidget> MainMenuWidget;
 	TSharedPtr<SWidget> AtmosphereConsoleWidget;
 	TSharedPtr<SWidget> TravelLoadingScreenWidget;
+	TSharedPtr<SWidget> BootConsoleWidget;
 	TSharedPtr<SWindow> ClassroomBoardWindow;
 	UPROPERTY(Transient)
 	TObjectPtr<UAudioComponent> AmbientMusicComponent;
@@ -868,8 +898,11 @@ private:
 	bool bReducedCameraShake = false;
 	bool bCaptionsEnabled = true;
 	bool bHighContrastHud = false;
-	// HUD customization preferences (local-only).
+	bool bHideVeryClosePlayers = false;
+	bool bTrainSwayEnabled = true;
+	// HUD customization preferences (local-only). HudScale = widget/chrome size; HudTextScale = text size.
 	float HudScale = 1.0f;
+	float HudTextScale = 1.0f;
 	float HudPanelOpacity = 1.0f;
 	bool bColorblindHud = false;
 	bool bShowHudMinimap = true;
@@ -898,7 +931,9 @@ private:
 	bool bClassroomPreflightReported = false;
 	bool bClassroomFallbackStarted = false;
 	bool bRoundPhaseObserved = false;
-	bool bFoggroundsVolumetricActive = false;
+	// Tracks whether a fog-bearing map (Foggrounds/Substation/Facility) that force-enables volumetric fog
+	// across all graphics tiers is currently active, so graphics state is re-applied on enter/leave.
+	bool bForcedVolumetricFogActive = false;
 	bool bGameWindowCloseOverrideBound = false;
 	bool bCleanQuitRequested = false;
 	mutable FBHClassroomPreflightSummary CachedClassroomPreflightSummary;
@@ -909,6 +944,10 @@ private:
 	float HorrorCueNextJitterTime = -1.0f;
 	float HorrorCueJitterIntensity = 0.0f;
 	float HorrorCueJitterFrequency = 34.0f;
+	// Active looping train-ride camera sway (intermission only) and its eased intensity, so stepping out onto
+	// the roof ramps the motion up smoothly. Weak so it self-clears across level travel / camera-manager swaps.
+	TWeakObjectPtr<class UCameraShakeBase> ActiveTrainSwayShake;
+	float TrainSwayCurrentScale = 0.0f;
 	float HorrorCueFlashStartTime = -1.0f;
 	float HorrorCueFlashEndTime = -1.0f;
 	float HorrorCueFlashIntensity = 0.0f;

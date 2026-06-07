@@ -1210,7 +1210,11 @@ void ABHJumpscareMonster::ApplyConfiguredVariant()
 
 					const FBox Bounds = ChildActor->GetComponentsBoundingBox(true);
 					const float Height = Bounds.IsValid ? Bounds.GetSize().Z : 0.0f;
-					const float TargetHeight = bCloseupPresentation ? BHJumpscareCloseTargetVisualHeight : BHJumpscareWorldTargetVisualHeight;
+					// Mirror the skeletal/static fit: a full-body close-up fits to the taller full-body target so the
+					// whole creature (legs included) fills the frame; only the opt-in upper-body framing crops to the
+					// short torso target.
+					const float CloseTargetHeight = bCloseupUpperBodyOnly ? BHJumpscareCloseTargetVisualHeight : BHJumpscareCloseFullBodyTargetVisualHeight;
+					const float TargetHeight = bCloseupPresentation ? CloseTargetHeight : BHJumpscareWorldTargetVisualHeight;
 					if (Height > TargetHeight && TargetHeight > 0.0f)
 					{
 						VariantVisualActor->SetRelativeScale3D(VariantVisualActor->GetRelativeScale3D() * (TargetHeight / Height));

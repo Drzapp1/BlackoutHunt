@@ -64,6 +64,25 @@ First time up earns the **Roof Rider** achievement (→ the **Top Hat** headwear
 advances on its **own timer**, so a roof visit never blocks boarding, changes scoring, or affects the round.
 *(`BHTrainRoofHatch.cpp`, spawned in `BuildTrainIntermissionLevel`; gated by `bh.EasterEggs`.)*
 
+**The roof-light breaker (per-player).** It's dark up on the roof. Tucked into the far back corner of the roof
+walkway is a small, grimy **electrical breaker** that's easy to miss — but pressing the **N** "node marker" key
+points you straight to it (it registers as a trackable node, the same indicator the question stations use).
+Throw it and a row of cool "service lights" fades on over the roof. The lighting is **per player and purely
+local**: each passenger lights the roof for *themselves* (client-local lights, no shared world state), so one
+person flipping the breaker never changes anyone else's view, and throwing it again turns their lights back off.
+Cosmetic only. *(`BHTrainRoofBreaker.cpp` → `ABHCharacter::ClientToggleRoofServiceLights` spawns client-local
+`ABHTrainServiceLight` actors; spawned in `BuildTrainIntermissionLevel`, gated by `bh.EasterEggs`.)*
+
+**Stargazing, decorations & rooftop parkour.** The roof is now a proper hang-out. Overhead is a **starfield**
+(plus a warm **festoon-light** string along the edge) for stargazing — built deterministically so every player
+sees the same sky (`ABHRoofStarfield`). Around it sit calm **decorations** — a little telescope, deck seating,
+antenna masts, a utility box, and roof vents (throw the breaker to light them up). And a short **parkour course**
+of five ascending platforms ends in a glowing finish gate (`ABHTrainRoofParkourGate`): clear the climb and
+interact with it to earn the **Roof Runner** achievement (and its XP). Reaching the top platform requires the
+climb, so the finish can't be cheesed. If you ever get stuck outside, a roof **down-hatch** (press E) drops you
+back inside, and **O** ("reset to train") always returns you to the carriage. All cosmetic; gated by
+`bh.EasterEggs`. *(`BuildTrainRoofExtras` in `BHGameMode.cpp`, shared by the intermission and lobby roofs.)*
+
 ## Achievements — the Awards tab, tints, hats & nameplate flair
 
 Many rewards are gated behind **achievements** rather than raw XP. Earning one unlocks a cosmetic you can then
@@ -88,6 +107,7 @@ description, the cosmetic it unlocks, and an EARNED / locked state. Hidden ("sec
 | **Last One Standing** | ★★★ | Win a Hunt as a survivor. | **Suit** outfit |
 | **Top of the Class** | ★★★ | Win a Hunt as the Teacher. | **Faculty** tint |
 | **Roof Rider** | ★★★ (secret) | Find the hatch onto the train roof (egg #5). | **Top Hat** |
+| **Roof Runner** | ★★★ (secret) | Clear the rooftop parkour course (egg #5). | (XP only) |
 | **On a Roll** | ★★★ | Win three rounds in a row. | **Crown** |
 | **Graduate** | ★★★ | Play 50 rounds. | **Graduation Cap** |
 | **Flawless Hunt** | ★★★★ | Catch every survivor in one round (nobody escapes). | **Apex** tint |

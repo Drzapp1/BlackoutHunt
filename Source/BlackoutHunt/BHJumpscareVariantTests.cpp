@@ -74,8 +74,8 @@ bool FBHJumpscareVariantDefaultsTest::RunTest(const FString& Parameters)
 			TestTrue(TEXT("Fab skeletal mesh is restored under the BlackoutHunt jumpscare path."), Variant.SkeletalMesh.ToSoftObjectPath().ToString().StartsWith(TEXT("/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/")));
 			TestTrue(TEXT("Fab material stays under the migrated runtime path."), Variant.Material.ToSoftObjectPath().ToString().StartsWith(TEXT("/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/")));
 			TestTrue(TEXT("Fab audio stays under the migrated runtime path."), Variant.LaunchSound.ToSoftObjectPath().ToString().StartsWith(TEXT("/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/")));
-			TestTrue(TEXT("Fab close-up visual is framed below eye height to keep legs out of view."), Variant.CloseVisualOffset.Z < -90.0f);
-			TestTrue(TEXT("Fab close-up visual is scaled for face/upper-torso impact."), Variant.CloseVisualScale.GetMin() > 1.0f);
+			TestTrue(TEXT("Fab close-up visual is framed to show the full creature (legs included), not cropped to a floating torso."), Variant.CloseVisualOffset.Z > -90.0f && Variant.CloseVisualOffset.Z <= 0.0f);
+			TestTrue(TEXT("Fab close-up visual is scaled up for in-your-face impact."), Variant.CloseVisualScale.GetMin() > 1.0f);
 		}
 	}
 

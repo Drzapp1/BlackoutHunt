@@ -36,7 +36,7 @@ public:
 	void ConfigureScriptedPath(const TArray<FVector>& NewPathPoints, float NewSpeed = 3200.0f, float NewLifetime = 2.0f, AActor* NewLookAtTarget = nullptr, bool bNewFaceLookAtTarget = false, bool bNewPlayChargeEffects = true);
 	void ConfigurePresentation(USkeletalMesh* NewSkeletalMesh, UAnimSequence* NewRunAnimation, UStaticMesh* NewStaticMesh, UMaterialInterface* NewMaterial, USoundBase* NewLaunchSound, const FLinearColor& NewLightColor, float NewFocusHeight);
 	void ConfigureVariant(const FBHJumpscareVariant& NewVariant);
-	void ConfigureCloseupPresentation(const FBHJumpscareVariant& NewVariant, float NewLifetime = 1.35f, bool bUpperBodyOnly = true);
+	void ConfigureCloseupPresentation(const FBHJumpscareVariant& NewVariant, float NewLifetime = 1.35f, bool bUpperBodyOnly = false);
 	// Passive "corner peek": the entity stands at a wall edge facing the target, plays no charge, and
 	// retreats (destroys) when the player looks straight at it or after LingerSeconds. Builds tension
 	// without a contact jumpscare.
@@ -142,11 +142,10 @@ protected:
 	int32 ScriptedPathIndex;
 	bool bUsingImportedVisual;
 	bool bCloseupPresentation;
-	// When a close-up only frames the upper body (e.g. the behind-you payoff), the whole mesh is fit to a
-	// short target so the visible torso fills the screen. When it shows the full creature (the in-your-face
-	// slam, the super-chain finale), it is fit to a taller target so the complete monster looms instead of
-	// reading as a stumpy legless torso.
-	bool bCloseupUpperBodyOnly = true;
+	// Close-ups show the full creature head-to-toe by default: the whole mesh is fit to the taller full-body
+	// target so the complete monster looms instead of reading as a stumpy legless torso. The upper-body-only
+	// framing (fit to a short torso target, legs masked) remains available but is opt-in per close-up.
+	bool bCloseupUpperBodyOnly = false;
 	float CloseupStartTime;
 	float CameraFocusHeight;
 	TWeakObjectPtr<AActor> ScriptedLookAtTarget;

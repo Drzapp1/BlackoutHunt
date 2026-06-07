@@ -111,6 +111,11 @@ struct FBHAccountProgress
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	int32 SelectedAvatarGearIndex = 0;
 
+	// Per-part clothing colours, registry-indexed by BHColorableMaterialNames (0 = the skin's authored colour,
+	// else palette colour index+1). Lets the player recolour each garment slot of their skin independently.
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	TArray<uint8> AvatarSlotColors;
+
 	// Nameplate flair selections (achievement-gated; 0 = none). See EBHCosmeticCategory::Title / Emblem.
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	int32 SelectedTitleIndex = 0;
@@ -188,6 +193,12 @@ public:
 	UFUNCTION(Exec)
 	void AccountResetLocalClassroomData();
 
+	// Developer-only cosmetic unlock for playtesting (console: BHUnlockAllCosmetics). The body is an inert stub
+	// in Shipping -- and the console is disabled in Shipping anyway -- so it can never grant cosmetics in the
+	// packaged classroom build. Undo with AccountResetLocalClassroomData.
+	UFUNCTION(Exec)
+	void BHUnlockAllCosmetics();
+
 	bool ContinueAsGuest(FString& OutMessage);
 	bool BeginProviderLogin(const FString& Provider, FString& OutMessage);
 	bool PollProviderLogin(FString& OutMessage);
@@ -230,6 +241,9 @@ public:
 	bool IsCosmeticUnlocked(EBHCosmeticCategory Category, int32 Index) const;
 	int32 GetSelectedCosmeticIndex(EBHCosmeticCategory Category) const;
 	bool SetSelectedCosmetic(EBHCosmeticCategory Category, int32 Index, FString& OutMessage);
+	// Recolour one clothing slot of the current skin. SlotIndex is a BHColorableMaterialNames registry index;
+	// ColorIndex is into the 18-entry avatar palette, or -1 to clear back to the skin's authored colour. Persists.
+	bool SetAvatarSlotColor(int32 SlotIndex, int32 ColorIndex, FString& OutMessage);
 	FString GetCosmeticSummary() const;
 	FString GetAccountSummary() const;
 

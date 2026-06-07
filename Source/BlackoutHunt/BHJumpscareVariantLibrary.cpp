@@ -341,7 +341,7 @@ FBHJumpscareVariant MakeLegacyScp096ProxyJumpscareVariant()
 	Variant.VisualOffset = FVector(-20.0f, 0.0f, -88.0f);
 	Variant.VisualRotation = FRotator(0.0f, -90.0f, 0.0f);
 	Variant.VisualScale = FVector(1.0f);
-	Variant.CloseVisualOffset = FVector(90.0f, 0.0f, -138.0f);
+	Variant.CloseVisualOffset = FVector(90.0f, 0.0f, -52.0f);
 	Variant.CloseVisualRotation = FRotator::ZeroRotator;
 	Variant.CloseVisualScale = FVector(1.55f);
 	Variant.LightColor = FLinearColor(1.0f, 0.02f, 0.0f, 1.0f);
@@ -445,7 +445,7 @@ TArray<FBHJumpscareVariant> GetResolvedWhisperJumpscareVariants()
 		Variant.VisualOffset = FVector(0.0f, 0.0f, -92.0f);
 		Variant.VisualRotation = FRotator(0.0f, -90.0f, 0.0f);
 		Variant.VisualScale = FVector(1.08f);
-		Variant.CloseVisualOffset = FVector(82.0f, 0.0f, -128.0f);
+		Variant.CloseVisualOffset = FVector(82.0f, 0.0f, -52.0f);
 		Variant.CloseVisualRotation = FRotator::ZeroRotator;
 		Variant.CloseVisualScale = FVector(1.46f);
 		Variant.LightColor = FLinearColor(0.64f, 0.78f, 1.0f, 1.0f);

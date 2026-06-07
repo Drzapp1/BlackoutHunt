@@ -722,7 +722,7 @@ struct FBHJumpscareVariant
 	FVector VisualScale = FVector::OneVector;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
-	FVector CloseVisualOffset = FVector(92.0f, 0.0f, -118.0f);
+	FVector CloseVisualOffset = FVector(92.0f, 0.0f, -52.0f);
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
 	FRotator CloseVisualRotation = FRotator::ZeroRotator;
@@ -852,7 +852,7 @@ struct FBHClientHorrorCue
 	TSoftClassPtr<AActor> VisualActorClass;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
-	FVector CloseVisualOffset = FVector(92.0f, 0.0f, -118.0f);
+	FVector CloseVisualOffset = FVector(92.0f, 0.0f, -52.0f);
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|Horror")
 	FRotator CloseVisualRotation = FRotator::ZeroRotator;

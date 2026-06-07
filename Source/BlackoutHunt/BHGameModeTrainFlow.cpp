@@ -46,6 +46,27 @@ void ABHGameMode::TravelToTrainIntermission(EBHRoundPhase ResultPhase)
 	GetWorld()->ServerTravel(TravelURL, true);
 }
 
+void ABHGameMode::TravelFromLobbyToFirstHunt()
+{
+	if (!HasAuthority() || !GetWorld())
+	{
+		return;
+	}
+	// A departure is already committed (double force-start / ready race): don't stack a second travel.
+	if (bServerTravelInProgress)
+	{
+		return;
+	}
+
+	PersistPlayersForTravel();
+	const FString Destination = LobbyFirstLevelName.IsEmpty() ? GetDefaultMapForStage(0) : LobbyFirstLevelName;
+	// Stage 0, carrying the host's configured fog/revision/bot/MaxPlayers options (reconstructed from member
+	// state). BHAutoPrep starts the role-warmup on arrival rather than re-entering a Lobby phase on the hunt map.
+	FString TravelURL = BuildTravelOptionsForLevel(Destination, false, 0, EBHRoundPhase::Lobby);
+	TravelURL += TEXT("?BHAutoPrep=1");
+	RequestServerTravel(TravelURL, true);
+}
+
 bool ABHGameMode::CompleteTrainIntermission(const FString& NextMapName, bool bFinalRecap)
 {
 	if (!HasAuthority() || !GetWorld())

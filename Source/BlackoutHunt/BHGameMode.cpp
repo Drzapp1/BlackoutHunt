@@ -53,8 +53,12 @@
 #include "BHTrainBonusQuestionTerminal.h"
 #include "BHTrainDisplayActor.h"
 #include "BHTrainDoor.h"
+#include "BHRoofStarfield.h"
 #include "BHTrainIntermissionManager.h"
+#include "BHTrainRoofBreaker.h"
 #include "BHTrainRoofHatch.h"
+#include "BHTrainRoofParkourGate.h"
+#include "BHTrainServiceLight.h"
 #include "BHTrainTunnelMotionActor.h"
 #include "Components/BoxComponent.h"
 #include "Components/BrushComponent.h"
@@ -959,6 +963,8 @@ ABHGameMode::ABHGameMode()
 	LastBotNoiseTime = -9999.0f;
 	bRuntimeNavigationReady = false;
 	bTrainIntermissionLevel = false;
+	bLobbyLevel = false;
+	LobbyFirstLevelName.Reset();
 	RuntimeStageIndex = 0;
 	RevisionContributionGateTarget = 1;
 	PendingIntermissionResult = EBHRoundPhase::Lobby;
@@ -1044,6 +1050,26 @@ void ABHGameMode::BeginPlay()
 		});
 		FTimerHandle ForceHuntHandle;
 		GetWorldTimerManager().SetTimer(ForceHuntHandle, ForceHuntDelegate, 1.0f, false);
+	}
+
+	// Arriving from the train lobby: kick off the normal role-warmup (Prep) on load instead of re-entering a
+	// Lobby phase on the hunt map (the social waiting already happened on the train).
+	const FString AutoPrepOption = GetWorld() ? GetWorld()->URL.GetOption(TEXT("BHAutoPrep="), TEXT("")) : FString();
+	if (!bPracticeMode && !bTestMode && IsTrueOption(AutoPrepOption))
+	{
+		FTimerDelegate AutoPrepDelegate;
+		AutoPrepDelegate.BindWeakLambda(this, [this]()
+		{
+			if (const ABHGameState* BHGS = GetGameState<ABHGameState>())
+			{
+				if (BHGS->RoundPhase == EBHRoundPhase::Lobby)
+				{
+					StartPrepPhase();
+				}
+			}
+		});
+		FTimerHandle AutoPrepHandle;
+		GetWorldTimerManager().SetTimer(AutoPrepHandle, AutoPrepDelegate, 1.0f, false);
 	}
 
 	const FString NavCheckOption = GetWorld() ? GetWorld()->URL.GetOption(TEXT("BHRunBotNavCheck="), TEXT("")) : FString();
@@ -1425,7 +1451,16 @@ void ABHGameMode::SetPlayerReady(ABHPlayerController* Controller, bool bReady)
 
 	if (AreAllReady())
 	{
-		StartPrepPhase();
+		// From the train lobby, the round starts by departing to the first hunt level (the warmup happens there);
+		// on a normal hunt map it warms up in place.
+		if (bLobbyLevel)
+		{
+			TravelFromLobbyToFirstHunt();
+		}
+		else
+		{
+			StartPrepPhase();
+		}
 	}
 	else if (Controller)
 	{
@@ -2634,7 +2669,8 @@ void ABHGameMode::SendJumpscareChargeCue(ABHCharacter* Target, const FBHJumpscar
 		Cue.bSnapToFocus = true;
 		Cue.bLockInput = true;
 		Cue.bCloseRangeFocus = bCloseRangeFocus;
-		Cue.bUpperBodyCloseVisual = bCloseRangeFocus;
+		// Full body on every close-range scare (legs included) instead of cropping to the upper torso.
+		Cue.bUpperBodyCloseVisual = false;
 		Cue.FOVPunch = FMath::Clamp(Variant.ImpactFOVPunch * SensoryScale, 0.0f, 30.0f);
 		Cue.HitStopSeconds = bCloseRangeFocus ? FMath::Clamp(Variant.ImpactHitStopSeconds * SensoryScale, 0.0f, 0.25f) : 0.0f;
 		Cue.RumbleIntensity = FMath::Clamp(Variant.ImpactRumbleIntensity * SensoryScale, 0.0f, 1.0f);
@@ -5910,6 +5946,10 @@ void ABHGameMode::BuildRuntimeFacility()
 	ResetStaticBlockField();
 	const FString IntermissionOption = GetWorld()->URL.GetOption(TEXT("BHTrainIntermission="), TEXT(""));
 	bTrainIntermissionLevel = IsTrueOption(IntermissionOption);
+	const FString LobbyOption = GetWorld()->URL.GetOption(TEXT("BHLobby="), TEXT(""));
+	bLobbyLevel = IsTrueOption(LobbyOption);
+	// The hunt level the train lobby departs to when the round starts; defaults to Facility if unspecified.
+	LobbyFirstLevelName = NormalizeBHLevelName(GetWorld()->URL.GetOption(TEXT("BHFirstLevel="), TEXT("Facility")));
 	const FString StageIndexOption = GetWorld()->URL.GetOption(TEXT("BHStageIndex="), TEXT(""));
 	RuntimeStageIndex = StageIndexOption.IsEmpty() ? GetConfiguredStageIndex() : FMath::Clamp(FCString::Atoi(*StageIndexOption), 0, 2);
 	PendingIntermissionResult = RoundPhaseFromUrlValue(GetWorld()->URL.GetOption(TEXT("BHIntermissionResult="), TEXT("")));
@@ -6023,6 +6063,16 @@ void ABHGameMode::BuildRuntimeFacility()
 	if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
 	{
 		BHGI->SetPersistentStageIndex(RuntimeStageIndex);
+	}
+
+	// The pre-game train LOBBY is never authored and never auto-advances; it just parks players in a carriage
+	// until the round starts, then travels to LobbyFirstLevelName. Dispatch it first.
+	if (bLobbyLevel)
+	{
+		RuntimeLevelName = TEXT("TrainLobby");
+		NextRuntimeLevelName = LobbyFirstLevelName;
+		BuildTrainLobbyLevel();
+		return;
 	}
 
 	// Authored maps (Facility/Substation/Foggrounds shipped as real .umap assets) carry a single
@@ -8158,12 +8208,24 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 	// =====================================================================================================
 	if (BHAreEasterEggsEnabled())
 	{
+		// Roof actors carry blocking collision, so force AlwaysSpawn -- otherwise a spawn-overlap test on the
+		// roof slab/rails can null them (which previously left the breaker non-existent, so N found nothing).
+		FActorSpawnParameters RoofSpawnParams;
+		RoofSpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
 		const FVector HatchLocation(-3600.0f, -282.0f, 110.0f);
-		if (ABHTrainRoofHatch* RoofHatch = GetWorld()->SpawnActor<ABHTrainRoofHatch>(HatchLocation, FRotator::ZeroRotator))
+		if (ABHTrainRoofHatch* RoofHatch = GetWorld()->SpawnActor<ABHTrainRoofHatch>(HatchLocation, FRotator::ZeroRotator, RoofSpawnParams))
 		{
 			// Lift straight up above the hatch onto the roof slab top (z316), reusing the surface->capsule
 			// offset spawns use (floor top z2 -> survivor spawn z124, i.e. +122).
 			RoofHatch->ConfigureHatch(FVector(HatchLocation.X, 0.0f, 438.0f));
+		}
+
+		// A matching hatch ON the roof drops a passenger back down into the carriage, so the roof is two-way
+		// (the N marker and the O reset-to-train key are extra fallbacks). Placed near the arrival point.
+		if (ABHTrainRoofHatch* DownHatch = GetWorld()->SpawnActor<ABHTrainRoofHatch>(FVector(HatchLocation.X + 150.0f, 0.0f, 351.0f), FRotator::ZeroRotator, RoofSpawnParams))
+		{
+			DownHatch->ConfigureHatch(FVector(HatchLocation.X + 150.0f, -180.0f, 124.0f));
 		}
 
 		// Low safety rails around the roof walkway (the slab top spans y[-310,310], x[-3750,3750]) so a curious
@@ -8174,6 +8236,14 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 		SpawnBlock(FVector(0.0f, -300.0f, 346.0f), FVector(TubeLen, 0.08f, 0.60f), RoofRailTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
 		SpawnBlock(FVector(TubeMaxX - 30.0f, 0.0f, 346.0f), FVector(0.08f, 6.0f, 0.60f), RoofRailTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
 		SpawnBlock(FVector(TubeMinX + 30.0f, 0.0f, 346.0f), FVector(0.08f, 6.0f, 0.60f), RoofRailTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+
+		// Roof-light breaker: tucked off to the +Y side a fair walk from the hatch (secretish, but reachable and
+		// pingable with N). Sits ON the roof slab (top ~z316). Throwing it toggles that player's OWN client-local
+		// roof service lights (per-player, not shared).
+		GetWorld()->SpawnActor<ABHTrainRoofBreaker>(FVector(HatchLocation.X + 2000.0f, 250.0f, 333.0f), FRotator(0.0f, 180.0f, 0.0f), RoofSpawnParams);
+
+		// Stargazing sky, decorations, and the rooftop parkour course (shared between the intermission + lobby roofs).
+		BuildTrainRoofExtras(TubeMinX, TubeMaxX, HatchLocation);
 	}
 
 	SpawnBlock(FVector(3300.0f, -760.0f, CenterZForBlockTop(0.0f, 0.22f)), FVector(20.0f, 6.0f, 0.22f), PlatformTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
@@ -8188,14 +8258,25 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 	SpawnBlock(FVector(3100.0f, -760.0f, 95.0f), FVector(0.38f, 0.38f, 1.9f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
 	SpawnBlock(FVector(3900.0f, -760.0f, 95.0f), FVector(0.38f, 0.38f, 1.9f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
 
+	// Teal ceiling-cove accents, kept but DIMMED to a subtle wash: the comfortable baseline now comes from the
+	// warm service-light modules below, so these just add a bit of transit-car colour without flickering harshly.
 	for (int32 LightIndex = 0; LightIndex < 8; ++LightIndex)
 	{
-		const FVector LightLocation(-3200.0f + LightIndex * 900.0f, 0.0f, 270.0f);
+		const FVector LightLocation(-3200.0f + LightIndex * 900.0f, 0.0f, 286.0f);
 		if (ABHFlickerLight* Light = GetWorld()->SpawnActor<ABHFlickerLight>(LightLocation, FRotator::ZeroRotator))
 		{
-			Light->Configure(0, FLinearColor(0.42f, 0.84f, 0.78f, 1.0f), 680.0f, 820.0f);
+			Light->Configure(0, FLinearColor(0.42f, 0.84f, 0.78f, 1.0f), 210.0f, 560.0f);
 			FlickerLights.Add(Light);
 		}
+	}
+
+	// Small, frequent "service light" modules down the carriage centreline give a comfortable, flashlight-free
+	// baseline ("half on, but not perfect"). Each module powers up on RED backup power, then boots to a warm
+	// mains white a few seconds in (the boot + look are driven client-side inside ABHTrainServiceLight). They are
+	// shadowless and short-range so a whole train of them stays cheap on classroom hardware.
+	for (float ServiceLightX = TubeMinX + 230.0f; ServiceLightX <= TubeMaxX - 230.0f; ServiceLightX += 430.0f)
+	{
+		GetWorld()->SpawnActor<ABHTrainServiceLight>(FVector(ServiceLightX, 0.0f, 290.0f), FRotator::ZeroRotator);
 	}
 
 	if (ABHGameState* BHGS = GetGameState<ABHGameState>())
@@ -8210,6 +8291,249 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 		AddHorrorVariationPass(VariationStream);
 	}
 	BuildRuntimeNavigation();
+}
+
+void ABHGameMode::BuildTrainLobbyLevel()
+{
+	// The pre-game LOBBY: a longer, parked subway train so joining players can see each other and mingle while
+	// they wait. Self-contained geometry (no intermission manager / no auto-advance); the round departs to the
+	// first hunt level via TravelFromLobbyToFirstHunt() when the class readies up or the host force-starts.
+	const FLinearColor FloorTint(0.055f, 0.065f, 0.068f, 1.0f);
+	const FLinearColor WallTint(0.10f, 0.12f, 0.13f, 1.0f);
+	const FLinearColor SeatTint(0.10f, 0.36f, 0.42f, 1.0f);
+	const FLinearColor PoleTint(0.70f, 0.66f, 0.54f, 1.0f);
+	const FLinearColor TableTint(0.18f, 0.20f, 0.22f, 1.0f);
+	const FLinearColor GlassTint(0.020f, 0.032f, 0.040f, 0.55f);
+	const FLinearColor TrimTint(0.34f, 0.36f, 0.33f, 1.0f);
+	const FLinearColor RoofTintColor(0.085f, 0.10f, 0.105f, 1.0f);
+	const FLinearColor TunnelWallTint(0.014f, 0.018f, 0.022f, 1.0f);
+	const FLinearColor CoveTint(0.40f, 0.66f, 0.70f, 1.0f);
+	const FLinearColor SkirtTint(0.05f, 0.055f, 0.05f, 1.0f);
+
+	// Seven cars, kept symmetric about x=0 so the full-length shell pieces below stay aligned. Car i centre = -4500 + i*1500.
+	const int32 NumCars = 7;
+	const float TubeMinX = -5250.0f;
+	const float TubeMaxX = 5250.0f;
+	const float TubeLen = (TubeMaxX - TubeMinX) / 100.0f;
+	const float WallY = 300.0f;
+	const float CeilZ = 300.0f;
+	const float WinBotZ = 118.0f;
+	const float WinTopZ = 212.0f;
+	const float WallTh = 0.18f;
+	const float BackdropY = 580.0f;
+
+	// Floor (substrate + flush finished floor) and ceiling + glowing centre cove.
+	SpawnBlock(FVector(0.0f, 0.0f, CenterZForBlockTop(0.0f, 0.30f)), FVector(TubeLen + 6.0f, 26.0f, 0.30f), FloorTint, FRotator::ZeroRotator, true, EBHBlockMaterial::DiamondPlate);
+	SpawnBlock(FVector(0.0f, 0.0f, CenterZForBlockTop(2.0f, 0.05f)), FVector(TubeLen, 6.1f, 0.05f), FLinearColor(0.085f, 0.098f, 0.104f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::DiamondPlate);
+	SpawnBlock(FVector(0.0f, 0.0f, CenterZForBlockBottom(CeilZ, 0.16f)), FVector(TubeLen, 6.2f, 0.16f), RoofTintColor, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(0.0f, 0.0f, CeilZ - 9.0f), FVector(TubeLen, 1.4f, 0.05f), CoveTint, FRotator::ZeroRotator, false, EBHBlockMaterial::Tinted);
+
+	// Sealed, glazed side walls (solid wainscot + collidable tinted glass band + solid header) with trim.
+	auto AddWallRun = [&](float YPlane)
+	{
+		SpawnBlock(FVector(0.0f, YPlane, CenterZForBlockBottom(0.0f, WinBotZ / 100.0f)), FVector(TubeLen, WallTh, WinBotZ / 100.0f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(0.0f, YPlane, CenterZForBlockBottom(WinTopZ, (CeilZ - WinTopZ) / 100.0f)), FVector(TubeLen, WallTh, (CeilZ - WinTopZ) / 100.0f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(0.0f, YPlane, CenterZForBlockBottom(WinBotZ, (WinTopZ - WinBotZ) / 100.0f)), FVector(TubeLen, 0.05f, (WinTopZ - WinBotZ) / 100.0f), GlassTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tinted);
+	};
+	auto AddWallTrim = [&](float YPlane)
+	{
+		const float InY = YPlane > 0.0f ? YPlane - 5.0f : YPlane + 5.0f;
+		SpawnBlock(FVector(0.0f, InY, WinBotZ), FVector(TubeLen, 0.05f, 0.06f), TrimTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(0.0f, InY, WinTopZ), FVector(TubeLen, 0.05f, 0.06f), TrimTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(0.0f, InY, 16.0f), FVector(TubeLen, 0.06f, 0.16f), SkirtTint, FRotator::ZeroRotator, false, EBHBlockMaterial::RustedMetal);
+		SpawnBlock(FVector(0.0f, InY, CeilZ - 7.0f), FVector(TubeLen, 0.05f, 0.07f), TrimTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+	};
+	AddWallRun(WallY);
+	AddWallRun(-WallY);
+	AddWallTrim(WallY);
+	AddWallTrim(-WallY);
+
+	// Sealed end caps + an opaque tunnel backdrop behind BOTH window walls (full length, so nobody sees void).
+	for (float EndX : {TubeMinX, TubeMaxX})
+	{
+		SpawnBlock(FVector(EndX, 0.0f, CenterZForBlockBottom(0.0f, CeilZ / 100.0f)), FVector(WallTh, 6.0f, CeilZ / 100.0f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	}
+	SpawnBlock(FVector(0.0f, BackdropY, CenterZForBlockBottom(0.0f, 3.2f)), FVector(TubeLen, 0.2f, 3.2f), TunnelWallTint, FRotator::ZeroRotator, false, EBHBlockMaterial::Concrete);
+	SpawnBlock(FVector(0.0f, -BackdropY, CenterZForBlockBottom(0.0f, 3.2f)), FVector(TubeLen, 0.2f, 3.2f), TunnelWallTint, FRotator::ZeroRotator, false, EBHBlockMaterial::Concrete);
+
+	// Gangway bulkheads between cars: full-height transverse walls with a centred open archway so players can
+	// always move car to car.
+	const float ArchHalf = 95.0f;
+	const float ArchTopZ = 215.0f;
+	for (int32 GangwayIdx = 1; GangwayIdx < NumCars; ++GangwayIdx)
+	{
+		const float GangwayX = TubeMinX + GangwayIdx * 1500.0f;
+		const float PanelSpan = WallY - ArchHalf;
+		const float PanelCtr = ArchHalf + PanelSpan * 0.5f;
+		SpawnBlock(FVector(GangwayX, -PanelCtr, CenterZForBlockBottom(0.0f, CeilZ / 100.0f)), FVector(WallTh, PanelSpan / 100.0f, CeilZ / 100.0f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(GangwayX, PanelCtr, CenterZForBlockBottom(0.0f, CeilZ / 100.0f)), FVector(WallTh, PanelSpan / 100.0f, CeilZ / 100.0f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(GangwayX, 0.0f, CenterZForBlockBottom(ArchTopZ, (CeilZ - ArchTopZ) / 100.0f)), FVector(WallTh, (2.0f * ArchHalf) / 100.0f, (CeilZ - ArchTopZ) / 100.0f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	}
+
+	// Per-car dressing, seating, moving-tunnel strips, and spawn points.
+	SurvivorSpawns.Reset();
+	HunterSpawn = FVector(TubeMinX + 200.0f, 0.0f, 124.0f);
+	for (int32 CarIndex = 0; CarIndex < NumCars; ++CarIndex)
+	{
+		const float CenterX = TubeMinX + 750.0f + CarIndex * 1500.0f;
+
+		// Hand poles + longitudinal overhead grab rails.
+		for (int32 PoleIndex = 0; PoleIndex < 2; ++PoleIndex)
+		{
+			const float PoleX = CenterX - 420.0f + PoleIndex * 840.0f;
+			SpawnBlock(FVector(PoleX, -72.0f, 150.0f), FVector(0.07f, 0.07f, 2.7f), PoleTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+			SpawnBlock(FVector(PoleX, 72.0f, 150.0f), FVector(0.07f, 0.07f, 2.7f), PoleTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		}
+		SpawnBlock(FVector(CenterX, -72.0f, 248.0f), FVector(8.2f, 0.05f, 0.05f), PoleTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(CenterX, 72.0f, 248.0f), FVector(8.2f, 0.05f, 0.05f), PoleTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+
+		// Wall benches both sides of every car (seating throughout).
+		for (float BenchXOffset : {-360.0f, 360.0f})
+		{
+			SpawnBlock(FVector(CenterX + BenchXOffset, -262.0f, 70.0f), FVector(1.5f, 0.42f, 0.38f), SeatTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+			SpawnBlock(FVector(CenterX + BenchXOffset, 262.0f, 70.0f), FVector(1.5f, 0.42f, 0.38f), SeatTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+		}
+
+		// Moving-tunnel strips on both sides, kept running so the lobby reads as a train heading to the first
+		// stop. Not registered with any manager (the lobby has none).
+		for (float SideY : {430.0f, -430.0f})
+		{
+			if (ABHTrainTunnelMotionActor* Tunnel = GetWorld()->SpawnActor<ABHTrainTunnelMotionActor>(FVector(CenterX, SideY, 165.0f), FRotator::ZeroRotator))
+			{
+				Tunnel->ConfigureMotion(1250.0f, 520.0f);
+			}
+		}
+
+		// Spawn points along the aisle (clear of the central booths in the lounge cars).
+		SurvivorSpawns.Add(FVector(CenterX, 0.0f, 124.0f));
+		SurvivorSpawns.Add(FVector(CenterX, -200.0f, 124.0f));
+		SurvivorSpawns.Add(FVector(CenterX, 200.0f, 124.0f));
+
+		// A welcome / waiting board per car (mounted just inside the window glass on alternating walls).
+		const FString BoardBody = TEXT("Welcome aboard. Mingle while we wait for everyone.\nReady up (Enter); the host departs when the class is ready.\nThe next stop loads when the train pulls out.\nStuck outside? Press O to return to the carriage.");
+		const float BoardY = (CarIndex % 2 == 0) ? -290.0f : 290.0f;
+		const FRotator BoardRot = (CarIndex % 2 == 0) ? FRotator::ZeroRotator : FRotator(0.0f, 180.0f, 0.0f);
+		if (ABHTrainDisplayActor* Display = GetWorld()->SpawnActor<ABHTrainDisplayActor>(FVector(CenterX, BoardY, 178.0f), BoardRot))
+		{
+			Display->SetDisplayProfile(EBHTrainDisplayProfile::TrainWallRecap);
+			Display->ConfigureDisplay(TEXT("BLACKOUT TRANSIT - LOBBY"), BoardBody, FLinearColor(0.38f, 0.90f, 0.78f, 1.0f));
+		}
+	}
+
+	// Larger social lounge in the three central cars: facing booth benches around a low table, so groups can sit
+	// together. Tables sit at +/-300 off the car centre, leaving the centre and outer aisle clear to walk.
+	for (int32 LoungeCar = 2; LoungeCar <= 4; ++LoungeCar)
+	{
+		const float CenterX = TubeMinX + 750.0f + LoungeCar * 1500.0f;
+		for (float BoothX : {CenterX - 300.0f, CenterX + 300.0f})
+		{
+			SpawnBlock(FVector(BoothX, 0.0f, 58.0f), FVector(0.9f, 1.2f, 0.10f), TableTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+			SpawnBlock(FVector(BoothX, 0.0f, 30.0f), FVector(0.18f, 0.18f, 0.56f), TableTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+			SpawnBlock(FVector(BoothX, -120.0f, 44.0f), FVector(0.95f, 0.4f, 0.30f), SeatTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+			SpawnBlock(FVector(BoothX, 120.0f, 44.0f), FVector(0.95f, 0.4f, 0.30f), SeatTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+		}
+	}
+
+	// Small, frequent warm "service light" modules down the centreline (comfortable, flashlight-free baseline
+	// with the same red->mains boot as the intermission), plus dimmed teal cove accents.
+	for (float ServiceLightX = TubeMinX + 230.0f; ServiceLightX <= TubeMaxX - 230.0f; ServiceLightX += 430.0f)
+	{
+		GetWorld()->SpawnActor<ABHTrainServiceLight>(FVector(ServiceLightX, 0.0f, 290.0f), FRotator::ZeroRotator);
+	}
+	for (float FlickerX = TubeMinX + 360.0f; FlickerX <= TubeMaxX - 360.0f; FlickerX += 900.0f)
+	{
+		if (ABHFlickerLight* Light = GetWorld()->SpawnActor<ABHFlickerLight>(FVector(FlickerX, 0.0f, 286.0f), FRotator::ZeroRotator))
+		{
+			Light->Configure(0, FLinearColor(0.42f, 0.84f, 0.78f, 1.0f), 210.0f, 560.0f);
+			FlickerLights.Add(Light);
+		}
+	}
+
+	// Easter egg on the lobby roof too: the maintenance hatch + the hidden per-player roof-light breaker, with
+	// the low safety rails so nobody wanders off (matches BuildTrainIntermissionLevel; gated by bh.EasterEggs).
+	if (BHAreEasterEggsEnabled())
+	{
+		// Force AlwaysSpawn so the collidable roof actors are never nulled by a spawn-overlap test.
+		FActorSpawnParameters RoofSpawnParams;
+		RoofSpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+		const FVector HatchLocation(TubeMinX + 150.0f, -282.0f, 110.0f);
+		if (ABHTrainRoofHatch* RoofHatch = GetWorld()->SpawnActor<ABHTrainRoofHatch>(HatchLocation, FRotator::ZeroRotator, RoofSpawnParams))
+		{
+			RoofHatch->ConfigureHatch(FVector(HatchLocation.X, 0.0f, 438.0f));
+		}
+		// A matching hatch on the roof to climb back down into the carriage (two-way roof access).
+		if (ABHTrainRoofHatch* DownHatch = GetWorld()->SpawnActor<ABHTrainRoofHatch>(FVector(HatchLocation.X + 150.0f, 0.0f, 351.0f), FRotator::ZeroRotator, RoofSpawnParams))
+		{
+			DownHatch->ConfigureHatch(FVector(HatchLocation.X + 150.0f, -180.0f, 124.0f));
+		}
+		const FLinearColor RoofRailTint(0.10f, 0.11f, 0.12f, 1.0f);
+		SpawnBlock(FVector(0.0f, 300.0f, 346.0f), FVector(TubeLen, 0.08f, 0.60f), RoofRailTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(0.0f, -300.0f, 346.0f), FVector(TubeLen, 0.08f, 0.60f), RoofRailTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(TubeMaxX - 30.0f, 0.0f, 346.0f), FVector(0.08f, 6.0f, 0.60f), RoofRailTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(TubeMinX + 30.0f, 0.0f, 346.0f), FVector(0.08f, 6.0f, 0.60f), RoofRailTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		GetWorld()->SpawnActor<ABHTrainRoofBreaker>(FVector(HatchLocation.X + 2000.0f, 250.0f, 333.0f), FRotator(0.0f, 180.0f, 0.0f), RoofSpawnParams);
+
+		// Stargazing sky, decorations, and the rooftop parkour course (shared between the intermission + lobby roofs).
+		BuildTrainRoofExtras(TubeMinX, TubeMaxX, HatchLocation);
+	}
+
+	ConvertMonitorsBackToSurvivors(TEXT("train lobby"));
+	BuildRuntimeNavigation();
+}
+
+void ABHGameMode::BuildTrainRoofExtras(float TubeMinX, float TubeMaxX, const FVector& HatchLocation)
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+
+	const FLinearColor MetalTint(0.30f, 0.32f, 0.34f, 1.0f);
+	const FLinearColor DarkMetal(0.12f, 0.13f, 0.14f, 1.0f);
+	const FLinearColor SeatTint(0.10f, 0.36f, 0.42f, 1.0f);
+	const float RoofTopZ = 316.0f;   // walkable roof slab top
+
+	// Interactables (the parkour finish) carry blocking collision, so force AlwaysSpawn like the other roof actors.
+	FActorSpawnParameters RoofSpawnParams;
+	RoofSpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	// --- Stargazing sky: one starfield actor (dome of emissive stars + a warm festoon string). Centred at origin
+	// so its fixed-size dome covers either carriage; built deterministically client-side (see ABHRoofStarfield).
+	GetWorld()->SpawnActor<ABHRoofStarfield>(FVector(0.0f, 0.0f, RoofTopZ), FRotator::ZeroRotator);
+
+	// --- Calm stargazing decorations (solid props; lit once a passenger throws the roof-light breaker). Kept on
+	// the -Y half, clear of the centreline hatch, the +Y breaker, and the parkour run.
+	const float DecorX = HatchLocation.X + 2700.0f;
+	// A little telescope: a stubby tripod stand + a tilted barrel pointed at the sky.
+	SpawnBlock(FVector(DecorX, -150.0f, CenterZForBlockBottom(RoofTopZ, 0.60f)), FVector(0.34f, 0.34f, 0.60f), DarkMetal, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(DecorX, -150.0f, RoofTopZ + 95.0f), FVector(0.22f, 0.22f, 1.05f), MetalTint, FRotator(38.0f, 0.0f, 0.0f), false, EBHBlockMaterial::PaintedMetal);
+	// Deck seating to stargaze from, facing the telescope/sky.
+	SpawnBlock(FVector(DecorX - 220.0f, -210.0f, CenterZForBlockBottom(RoofTopZ, 0.40f)), FVector(1.4f, 0.5f, 0.40f), SeatTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+	SpawnBlock(FVector(DecorX + 220.0f, -210.0f, CenterZForBlockBottom(RoofTopZ, 0.40f)), FVector(1.4f, 0.5f, 0.40f), SeatTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+	// Antenna mast cluster in the back corner.
+	const float AntennaX = HatchLocation.X + 3100.0f;
+	SpawnBlock(FVector(AntennaX, 215.0f, CenterZForBlockBottom(RoofTopZ, 2.6f)), FVector(0.06f, 0.06f, 2.6f), DarkMetal, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(AntennaX + 130.0f, 215.0f, CenterZForBlockBottom(RoofTopZ, 2.0f)), FVector(0.05f, 0.05f, 2.0f), MetalTint, FRotator::ZeroRotator, false, EBHBlockMaterial::RustedMetal);
+	SpawnBlock(FVector(AntennaX - 130.0f, 215.0f, CenterZForBlockBottom(RoofTopZ, 2.2f)), FVector(0.05f, 0.05f, 2.2f), MetalTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+	// A utility/AC box and a couple of low roof vents for industrial flavour.
+	SpawnBlock(FVector(HatchLocation.X + 1300.0f, 215.0f, CenterZForBlockBottom(RoofTopZ, 0.9f)), FVector(1.6f, 1.2f, 0.9f), MetalTint, FRotator::ZeroRotator, true, EBHBlockMaterial::RustedMetal);
+	SpawnBlock(FVector(HatchLocation.X + 600.0f, -120.0f, CenterZForBlockBottom(RoofTopZ, 0.35f)), FVector(0.8f, 0.8f, 0.35f), MetalTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(HatchLocation.X + 2000.0f, -150.0f, CenterZForBlockBottom(RoofTopZ, 0.35f)), FVector(0.8f, 0.8f, 0.35f), MetalTint, FRotator::ZeroRotator, false, EBHBlockMaterial::RustedMetal);
+
+	// --- Short parkour course: five ascending platforms ending in a glowing finish gate. Heights/gaps are kept
+	// forgiving (rises ~45cm) so it is completable; the top platform is too high to reach without the climb, so
+	// reaching the finish proves the run. Runs along y near the centreline, clear of the breaker (+Y) and edge.
+	const float CourseX = HatchLocation.X + 700.0f;
+	const float PlatformTops[] = { RoofTopZ + 45.0f, RoofTopZ + 90.0f, RoofTopZ + 135.0f, RoofTopZ + 180.0f, RoofTopZ + 225.0f };
+	const float PlatformYs[] = { 0.0f, 120.0f, 0.0f, -120.0f, 0.0f };
+	for (int32 Step = 0; Step < 5; ++Step)
+	{
+		SpawnBlock(FVector(CourseX + Step * 300.0f, PlatformYs[Step], CenterZForBlockTop(PlatformTops[Step], 0.20f)), FVector(1.4f, 1.4f, 0.20f), MetalTint, FRotator::ZeroRotator, true, EBHBlockMaterial::DiamondPlate);
+	}
+	// Finish gate on the highest platform (its base sits on that platform's top).
+	const float FinishTop = PlatformTops[4];
+	GetWorld()->SpawnActor<ABHTrainRoofParkourGate>(FVector(CourseX + 4 * 300.0f, 0.0f, FinishTop + 70.0f), FRotator::ZeroRotator, RoofSpawnParams);
 }
 
 void ABHGameMode::AddFoggroundsMoodPass()
@@ -11542,7 +11866,8 @@ bool ABHGameMode::TriggerStudentScareSwitch(ABHCharacter* Activator, const FVect
 			Cue.bSnapToFocus = ClampedSeverity >= 2;
 			Cue.bLockInput = LockSeconds > 0.0f;
 			Cue.bCloseRangeFocus = ClampedSeverity >= 2;
-			Cue.bUpperBodyCloseVisual = Cue.bCloseRangeFocus;
+			// Full body on every close-range scare (legs included) instead of cropping to the upper torso.
+			Cue.bUpperBodyCloseVisual = false;
 			TargetPC->ClientPlayHorrorCue(Cue);
 			TargetPC->ClientShowStatusMessage(TeacherMessage, 2.6f);
 		}
@@ -13920,4 +14245,31 @@ FTransform ABHGameMode::GetSpawnTransformFor(AController* Controller) const
 		: FVector(1000.0f, 0.0f, 120.0f);
 
 	return FTransform(FRotator(0.0f, 180.0f, 0.0f), BHResolveSpawnLocation(GetWorld(), SpawnLocation, PlayerIndex));
+}
+
+bool ABHGameMode::ResetPlayerToTrainInterior(AController* Controller)
+{
+	if (!HasAuthority())
+	{
+		return false;
+	}
+	// Only on the train (lobby / intermission). Never on a live hunt level -- teleporting to spawn there would
+	// be an escape exploit.
+	if (!bLobbyLevel && !bTrainIntermissionLevel)
+	{
+		return false;
+	}
+	ABHCharacter* Character = Controller ? Cast<ABHCharacter>(Controller->GetPawn()) : nullptr;
+	if (!IsValid(Character))
+	{
+		return false;
+	}
+
+	const FTransform InteriorTransform = GetSpawnTransformFor(Controller);
+	Character->SetActorLocation(InteriorTransform.GetLocation(), false, nullptr, ETeleportType::TeleportPhysics);
+	if (ABHPlayerController* PC = Cast<ABHPlayerController>(Controller))
+	{
+		PC->ClientShowStatusMessage(TEXT("Returned to the carriage interior."), 2.5f);
+	}
+	return true;
 }

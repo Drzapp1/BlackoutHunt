@@ -61,6 +61,7 @@ void ABHPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLi
 	DOREPLIFETIME(ABHPlayerState, AvatarColor);
 	DOREPLIFETIME(ABHPlayerState, AvatarHeadwearIndex);
 	DOREPLIFETIME(ABHPlayerState, AvatarGearIndex);
+	DOREPLIFETIME(ABHPlayerState, AvatarSlotColors);
 	DOREPLIFETIME(ABHPlayerState, SelectedTitleIndex);
 	DOREPLIFETIME(ABHPlayerState, SelectedEmblemIndex);
 	DOREPLIFETIME(ABHPlayerState, MapVote);
@@ -139,6 +140,19 @@ void ABHPlayerState::SetAvatarGearIndex(int32 NewGearIndex)
 {
 	(void)NewGearIndex;
 	AvatarGearIndex = 0;
+}
+
+void ABHPlayerState::SetAvatarSlotColors(const TArray<uint8>& NewSlotColors)
+{
+	// Normalise to the fixed registry size and to valid values (0 = authored default; 1..18 = palette colour
+	// index+1, matching the 18 entries of BHAvatarPaletteColor). Anything else collapses to authored.
+	const int32 Count = BHColorableMaterialCount();
+	AvatarSlotColors.SetNumZeroed(Count);
+	for (int32 Index = 0; Index < Count; ++Index)
+	{
+		const uint8 Value = NewSlotColors.IsValidIndex(Index) ? NewSlotColors[Index] : 0;
+		AvatarSlotColors[Index] = (Value >= 1 && Value <= 18) ? Value : 0;
+	}
 }
 
 void ABHPlayerState::SetSelectedTitleIndex(int32 NewTitleIndex)

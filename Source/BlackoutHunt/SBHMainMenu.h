@@ -169,6 +169,10 @@ private:
 	FReply OnAvatarPresetClicked(int32 AvatarIndex);
 	FReply OnAvatarColorClicked(int32 ColorIndex);
 	FReply OnAvatarHeadwearClicked(int32 HeadwearIndex);
+	// Per-part recolour: pick a part of the current skin, then a colour to apply to just that part.
+	FReply OnRecolorSlotSelected(int32 RegistryIndex);
+	FReply OnRecolorSwatchClicked(int32 ColorIndex);
+	TSharedRef<SWidget> BuildRecolorSection();
 	FReply OnAvatarTitleClicked(int32 TitleIndex);
 	FReply OnAvatarEmblemClicked(int32 EmblemIndex);
 	FReply OnMenuTabClicked(EBHMainMenuTab NewTab);
@@ -206,9 +210,16 @@ private:
 	void OnMusicVolumeChanged(float Volume);
 	void OnUiVolumeChanged(float Volume);
 	// HUD customization sliders (0..1 slider value mapped to the option's clamp range).
+	// HudScale = widget/chrome size; HudTextScale = independent text size.
 	float GetHudScaleValue() const;
 	FText GetHudScaleText() const;
 	void OnHudScaleChanged(float SliderValue);
+	float GetHudTextScaleValue() const;
+	FText GetHudTextScaleText() const;
+	void OnHudTextScaleChanged(float SliderValue);
+	// UI-size quick presets (Small/Default/Large/Huge) for the widget and text axes.
+	FReply OnHudSizePresetClicked(FName OptionName, int32 Percent);
+	FSlateColor GetHudSizePresetButtonColor(FName OptionName, int32 Percent) const;
 	float GetHudPanelOpacityValue() const;
 	FText GetHudPanelOpacityText() const;
 	void OnHudPanelOpacityChanged(float SliderValue);
@@ -380,6 +391,8 @@ private:
 	bool bShowStartCredentials = false;
 	// Progress through the Konami code (easter egg, cosmetic). See Docs/EASTER_EGGS.md.
 	int32 KonamiProgress = 0;
+	// Per-part recolour: which skin material slot (a BHColorableMaterialNames registry index) the swatches recolour.
+	int32 RecolorSelectedSlot = INDEX_NONE;
 	// When the local player is the listen-server host, leaving ends the whole class session,
 	// so the first LEAVE press only arms a confirm prompt; the second press actually leaves.
 	bool bLeaveConfirmPending = false;

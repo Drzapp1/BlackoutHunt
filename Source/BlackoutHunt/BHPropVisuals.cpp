@@ -204,4 +204,50 @@ void ConfigureReadableText(
 		Component->SetTextMaterial(TextMaterial);
 	}
 }
+
+FString WrapTextToWidth(const FString& Text, int32 MaxCharsPerLine)
+{
+	if (MaxCharsPerLine <= 0)
+	{
+		return Text;
+	}
+
+	TArray<FString> SourceLines;
+	Text.ParseIntoArray(SourceLines, TEXT("\n"), false);
+
+	TArray<FString> WrappedLines;
+	for (const FString& SourceLine : SourceLines)
+	{
+		TArray<FString> Words;
+		SourceLine.ParseIntoArray(Words, TEXT(" "), true);
+		if (Words.Num() == 0)
+		{
+			// Preserve blank lines so deliberate spacing survives the wrap.
+			WrappedLines.Add(FString());
+			continue;
+		}
+
+		FString CurrentLine;
+		for (const FString& Word : Words)
+		{
+			if (CurrentLine.IsEmpty())
+			{
+				CurrentLine = Word;
+			}
+			else if (CurrentLine.Len() + 1 + Word.Len() <= MaxCharsPerLine)
+			{
+				CurrentLine += TEXT(" ");
+				CurrentLine += Word;
+			}
+			else
+			{
+				WrappedLines.Add(CurrentLine);
+				CurrentLine = Word;
+			}
+		}
+		WrappedLines.Add(CurrentLine);
+	}
+
+	return FString::Join(WrappedLines, TEXT("\n"));
+}
 }

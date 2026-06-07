@@ -609,12 +609,15 @@ void ABHTrainDisplayActor::ApplyText()
 		BodyText->SetText(FText::FromString(Body));
 		BodyText->SetTextRenderColor(BodyColor);
 	}
-	// TrainWallRecap boards are mounted flat against a carriage wall, so only the interior-facing
-	// (front) text pair is ever legitimately read. The outward-facing back pair carries the same
-	// string but, viewed from its -X side across the open aisle, the engine renders it MIRRORED — the
-	// "text is sometimes mirrored" report. Hide the back pair for this profile (deterministic from the
-	// replicated DisplayProfile, so server and clients agree). Double-sided profiles keep both pairs.
-	const bool bHideBackText = (DisplayProfile == EBHTrainDisplayProfile::TrainWallRecap);
+	// TrainWallRecap boards (carriage walls) and StationCountdownCompact boards (the subway exit-station
+	// signs) are both read from a single side, so only the interior-facing (front) text pair is ever
+	// legitimately read. The outward-facing back pair carries the same string but, viewed from the wrong
+	// side, the engine renders it MIRRORED -- the "text is mirrored / board by the station is wrong"
+	// report -- and it bleeds across the panel because front/back sit at opposite X offsets. Hide the back
+	// pair for these single-sided profiles (deterministic from the replicated DisplayProfile, so server
+	// and clients agree). Genuinely double-sided profiles (Standard) keep both pairs.
+	const bool bHideBackText = (DisplayProfile == EBHTrainDisplayProfile::TrainWallRecap
+		|| DisplayProfile == EBHTrainDisplayProfile::StationCountdownCompact);
 	if (HeaderTextBack)
 	{
 		HeaderTextBack->SetText(FText::FromString(Header));

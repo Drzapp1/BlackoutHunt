@@ -13,9 +13,11 @@ class ABHLocker;
 class ABHGameState;
 class ABHObjectiveStation;
 class ABHPlayerState;
+class ABHTrainServiceLight;
 class UCameraComponent;
 class UMaterialInstanceDynamic;
 class UBHPowerupComponent;
+class UMeshComponent;
 class UPointLightComponent;
 class USceneComponent;
 class USkeletalMeshComponent;
@@ -31,6 +33,7 @@ public:
 	ABHCharacter();
 
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void Landed(const FHitResult& Hit) override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
@@ -228,6 +231,11 @@ protected:
 	// typed numeric entry keep working whether or not this is on, so keyboard/bots are unaffected.
 	void ToggleQuestionCursor();
 	void UseNodeMarker();
+	// Recovery: ask the server to teleport this player back inside the train if they get stuck outside (e.g. up
+	// on the lobby roof). Local handler -> ServerResetToTrainInterior; the GameMode gates it to train levels.
+	void RequestResetToTrainInterior();
+	UFUNCTION(Server, Reliable)
+	void ServerResetToTrainInterior();
 	// LeftMouseButton press/release while the question cursor is active: select a choice, pick up or
 	// drop an arrangement piece, or tap a keypad key, by hit-testing the HUD's question regions.
 	void OnQuestionPointerDown();
@@ -252,6 +260,12 @@ public:
 	// Easter-egg hook: the server tells the owning client it completed a train activity (type 0..3) -> Tourist progress.
 	UFUNCTION(Client, Reliable)
 	void ClientRecordTrainActivity(uint8 ActivityIndex);
+
+	// Easter-egg hook (PUBLIC so the train-roof breaker can call it): the server tells the owning client to
+	// toggle ITS per-player roof service lights. Per-player lighting is client-local, so the server can't flip
+	// it directly -- it asks the owning client to, here.
+	UFUNCTION(Client, Reliable)
+	void ClientToggleRoofServiceLights();
 
 	// Educational hook: the server tells the owning client a graded answer's result (physics topic 0..3,
 	// correct?) -> per-topic mastery + the Honor Roll / Polymath achievements. Cosmetic/local.
@@ -702,6 +716,21 @@ protected:
 	// the HUD each frame, plus the digits they have typed but not yet submitted.
 	TWeakObjectPtr<class ABHObjectiveStation> ClientFocusedQuestionStation;
 	FString NumericAnswerEntry;
+
+	// Per-player roof service lights (client-local; never replicated). Spawned/destroyed when the owning client
+	// throws the train-roof breaker so each passenger lights the roof for themselves.
+	void SetRoofServiceLightsLocal(bool bOn);
+	bool bRoofServiceLightsOn = false;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<ABHTrainServiceLight>> LocalRoofLights;
+
+	// Comfort: hide OTHER players' bodies (locally, for this viewer only) when they crowd right up against the
+	// camera, so a knot of people around a node/breaker doesn't block the view. Driven each frame from the local
+	// viewpoint; never hides the active threat (Hunter), and never touches gameplay or collision.
+	void UpdateProximityPlayerHideFromLocalView();
+	void SetProximityHiddenLocal(bool bShouldHide);
+	bool bProximityHiddenLocal = false;
+	TArray<TWeakObjectPtr<UMeshComponent>> ProximityHiddenMeshes;
 
 	// Mouse-driven question interaction (client/owning-only; never replicated). The cursor frees the
 	// mouse over the focused station's question panel; the drag fields build a matching/ordering answer.

@@ -25,6 +25,8 @@
 #include "BHPowerupComponent.h"
 #include "BHPropVisuals.h"
 #include "BHTrainBonusQuestionTerminal.h"
+#include "BHTrainRoofBreaker.h"
+#include "BHTrainServiceLight.h"
 #include "Animation/AnimSequence.h"
 #include "Camera/CameraComponent.h"
 #include "CollisionShape.h"
@@ -329,25 +331,42 @@ bool BHShouldPreserveQuaterniusMaterial(UMaterialInterface* Material)
 		|| Name.Contains(TEXT("Moustache"));
 }
 
-void BHApplyQuaterniusPalette(UMeshComponent* Component, const FLinearColor& Color)
+void BHApplyQuaterniusPalette(UMeshComponent* Component, const TArray<uint8>& SlotColors)
 {
 	if (!Component)
 	{
 		return;
 	}
 
-	UMaterialInterface* PaletteMaterial = BHQuaterniusPaletteMaterial(Color);
-	if (!PaletteMaterial)
-	{
-		return;
-	}
-
+	// Per-part recolour. Each clothing material slot keeps its AUTHORED colour unless the player chose an override
+	// for it (SlotColors[registryIndex] = palette colour index+1; 0 = authored). Face/skin/hair slots are always
+	// left alone. Leaving authored colours by default is what gives each skin its designed multi-colour look
+	// instead of a single flat tint. Call EmptyOverrideMaterials() before this so GetMaterial() reads authored.
+	const TArray<FName> SlotNames = Component->GetMaterialSlotNames();
 	const int32 MaterialCount = Component->GetNumMaterials();
 	for (int32 MaterialIndex = 0; MaterialIndex < MaterialCount; ++MaterialIndex)
 	{
-		if (!BHShouldPreserveQuaterniusMaterial(Component->GetMaterial(MaterialIndex)))
+		UMaterialInterface* OriginalMaterial = Component->GetMaterial(MaterialIndex);
+		if (BHShouldPreserveQuaterniusMaterial(OriginalMaterial))
 		{
-			Component->SetMaterial(MaterialIndex, PaletteMaterial);
+			continue;
+		}
+		// Match by the mesh's authored SLOT NAME (what the recolour UI enumerates), falling back to the material name.
+		FName SlotName = SlotNames.IsValidIndex(MaterialIndex) ? SlotNames[MaterialIndex] : NAME_None;
+		int32 RegistryIndex = BHColorableMaterialIndex(SlotName);
+		if (RegistryIndex == INDEX_NONE && OriginalMaterial)
+		{
+			RegistryIndex = BHColorableMaterialIndex(FName(*OriginalMaterial->GetName()));
+		}
+		const uint8 ColorPlusOne = (RegistryIndex != INDEX_NONE && SlotColors.IsValidIndex(RegistryIndex))
+			? SlotColors[RegistryIndex]
+			: 0;
+		if (ColorPlusOne >= 1)
+		{
+			if (UMaterialInterface* PaletteMaterial = BHQuaterniusPaletteMaterial(BHAvatarPaletteColor(ColorPlusOne - 1)))
+			{
+				Component->SetMaterial(MaterialIndex, PaletteMaterial);
+			}
 		}
 	}
 }
@@ -1648,6 +1667,13 @@ void ABHCharacter::BeginPlay()
 	ApplyAvatarStyle();
 }
 
+void ABHCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	// Tear down any per-player roof service lights this client spawned (e.g. on death/respawn or level travel).
+	SetRoofServiceLightsLocal(false);
+	Super::EndPlay(EndPlayReason);
+}
+
 void ABHCharacter::PossessedBy(AController* NewController)
 {
 	Super::PossessedBy(NewController);
@@ -1686,6 +1712,14 @@ void ABHCharacter::Tick(float DeltaSeconds)
 		FindInteractableFromView(FocusActor, 225.0f);
 		SetClientFocusedQuestionStation(Cast<ABHObjectiveStation>(FocusActor));
 		UpdateQuestionInteractionState();
+	}
+
+	// Comfort (local viewer only): a remote body that crowds right up against this client's camera fades out so
+	// it doesn't block the view. Each character evaluates itself against the local viewpoint, so it self-corrects
+	// when the setting changes or the local pawn swaps. Dedicated servers have no local view, so skip them.
+	if (!IsLocallyControlled() && GetNetMode() != NM_DedicatedServer)
+	{
+		UpdateProximityPlayerHideFromLocalView();
 	}
 
 	if (HasAuthority() && IsSpecialMoveActive())
@@ -2265,6 +2299,7 @@ void ABHCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCompone
 	// mouse button (otherwise the Capture key, gated in TryCapture while the cursor is up) clicks
 	// choices / drags arrangement pieces. Number keys 1-4 still work, so keyboard/bots are unaffected.
 	PlayerInputComponent->BindAction(TEXT("NodeMarker"), IE_Pressed, this, &ABHCharacter::UseNodeMarker);
+	PlayerInputComponent->BindAction(TEXT("ResetToTrain"), IE_Pressed, this, &ABHCharacter::RequestResetToTrainInterior);
 	PlayerInputComponent->BindKey(EKeys::Tab, IE_Pressed, this, &ABHCharacter::ToggleQuestionCursor);
 	PlayerInputComponent->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &ABHCharacter::OnQuestionPointerDown);
 	PlayerInputComponent->BindKey(EKeys::LeftMouseButton, IE_Released, this, &ABHCharacter::OnQuestionPointerUp);
@@ -3229,6 +3264,131 @@ void ABHCharacter::ClientGrantAchievement_Implementation(FName AchievementId, co
 	}
 }
 
+void ABHCharacter::ClientToggleRoofServiceLights_Implementation()
+{
+	SetRoofServiceLightsLocal(!bRoofServiceLightsOn);
+	if (ABHPlayerController* BHPC = Cast<ABHPlayerController>(GetController()))
+	{
+		BHPC->ShowLocalStatusMessage(
+			bRoofServiceLightsOn ? TEXT("Roof service lights: ON") : TEXT("Roof service lights: OFF"), 2.5f);
+	}
+}
+
+void ABHCharacter::SetRoofServiceLightsLocal(bool bOn)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	bRoofServiceLightsOn = bOn;
+
+	// Always clear any existing local lights first so a toggle never leaks duplicates.
+	for (ABHTrainServiceLight* RoofLight : LocalRoofLights)
+	{
+		if (IsValid(RoofLight))
+		{
+			RoofLight->Destroy();
+		}
+	}
+	LocalRoofLights.Reset();
+
+	if (!bOn)
+	{
+		return;
+	}
+
+	// Client-local roof service lights along the subway-intermission roof centreline (matches the ABHGameMode
+	// subway build: roof slab top ~z316, walkway x[-3750,3750]). Never replicated -- this is per-player lighting,
+	// so one passenger throwing the breaker lights the roof only in their own view.
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.Owner = this;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	// Span wide enough to cover both the 5-car intermission roof and the longer 7-car lobby roof. Modules past a
+	// shorter roof's end simply illuminate nothing (no visible surface), so over-covering is harmless.
+	for (int32 Index = 0; Index < 12; ++Index)
+	{
+		const FVector RoofLightLocation(-4950.0f + Index * 900.0f, 0.0f, 486.0f);
+		if (ABHTrainServiceLight* RoofLight = World->SpawnActor<ABHTrainServiceLight>(RoofLightLocation, FRotator::ZeroRotator, SpawnParams))
+		{
+			RoofLight->SetRoofModeImmediate();
+			LocalRoofLights.Add(RoofLight);
+		}
+	}
+}
+
+void ABHCharacter::UpdateProximityPlayerHideFromLocalView()
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	// The local viewer on this machine drives the comfort option and supplies the camera position.
+	const ABHPlayerController* LocalPC = Cast<ABHPlayerController>(World->GetFirstPlayerController());
+	const ABHCharacter* LocalPawn = LocalPC ? Cast<ABHCharacter>(LocalPC->GetPawn()) : nullptr;
+	const bool bEnabled = LocalPC && LocalPawn && LocalPawn != this && LocalPC->IsHideVeryClosePlayersEnabled();
+
+	bool bWantHidden = false;
+	if (bEnabled)
+	{
+		// Never hide the active threat -- a survivor must always be able to see the Hunter, even point-blank.
+		const ABHPlayerState* MyPS = GetPlayerState<ABHPlayerState>();
+		const bool bThreat = MyPS && (MyPS->PlayerRole == EBHPlayerRole::Hunter || MyPS->PlayerRole == EBHPlayerRole::FakeHunter);
+		if (!bThreat)
+		{
+			const FVector ViewLocation = LocalPawn->Camera ? LocalPawn->Camera->GetComponentLocation() : LocalPawn->GetActorLocation();
+			const float DistSq = FVector::DistSquared(GetActorLocation(), ViewLocation);
+			// Hysteresis: hide once within ~1.5m, only reappear past ~1.9m, so a body hovering at the edge of the
+			// radius doesn't strobe in and out.
+			const float ThresholdSq = bProximityHiddenLocal ? FMath::Square(190.0f) : FMath::Square(150.0f);
+			bWantHidden = DistSq <= ThresholdSq;
+		}
+	}
+
+	SetProximityHiddenLocal(bWantHidden);
+}
+
+void ABHCharacter::SetProximityHiddenLocal(bool bShouldHide)
+{
+	if (bShouldHide == bProximityHiddenLocal)
+	{
+		return;
+	}
+	bProximityHiddenLocal = bShouldHide;
+
+	if (bShouldHide)
+	{
+		// Hide only the mesh components (body parts, role mesh, cosmetics) -- never the lights/audio -- and
+		// remember exactly which ones we hid so we can restore that set without forcing already-hidden parts
+		// (e.g. an unused role mesh slot) back on. Local visibility only; nothing here replicates.
+		ProximityHiddenMeshes.Reset();
+		TArray<UMeshComponent*> MeshComponents;
+		GetComponents<UMeshComponent>(MeshComponents);
+		for (UMeshComponent* MeshComponent : MeshComponents)
+		{
+			if (MeshComponent && MeshComponent->IsVisible())
+			{
+				MeshComponent->SetVisibility(false);
+				ProximityHiddenMeshes.Add(MeshComponent);
+			}
+		}
+	}
+	else
+	{
+		for (const TWeakObjectPtr<UMeshComponent>& WeakMesh : ProximityHiddenMeshes)
+		{
+			if (UMeshComponent* MeshComponent = WeakMesh.Get())
+			{
+				MeshComponent->SetVisibility(true);
+			}
+		}
+		ProximityHiddenMeshes.Reset();
+	}
+}
+
 void ABHCharacter::StartCosmeticSpecialMove(EBHMovementSpecialState State)
 {
 	if (HasAuthority() || !BHIsTransientSpecialMove(State))
@@ -3832,7 +3992,8 @@ void ABHCharacter::UseNodeMarker()
 	}
 	const FVector Origin = GetActorLocation();
 	float BestDistSq = TNumericLimits<float>::Max();
-	const ABHObjectiveStation* BestStation = nullptr;
+	FVector BestLocation = FVector::ZeroVector;
+	bool bFoundNode = false;
 	for (TActorIterator<ABHObjectiveStation> It(GetWorld()); It; ++It)
 	{
 		const ABHObjectiveStation* Station = *It;
@@ -3844,16 +4005,52 @@ void ABHCharacter::UseNodeMarker()
 		if (DistSq < BestDistSq)
 		{
 			BestDistSq = DistSq;
-			BestStation = Station;
+			BestLocation = Station->GetActorLocation();
+			bFoundNode = true;
 		}
 	}
-	if (!BestStation)
+	// The hidden train-roof breaker is also a trackable "node" (the intermission/lobby car has no question
+	// stations), so N points a curious passenger to it.
+	for (TActorIterator<ABHTrainRoofBreaker> It(GetWorld()); It; ++It)
 	{
-		SendStatusMessage(TEXT("No active question nodes found."));
+		const ABHTrainRoofBreaker* Breaker = *It;
+		if (!Breaker)
+		{
+			continue;
+		}
+		const float DistSq = FVector::DistSquared2D(Breaker->GetActorLocation(), Origin);
+		if (DistSq < BestDistSq)
+		{
+			BestDistSq = DistSq;
+			BestLocation = Breaker->GetActorLocation();
+			bFoundNode = true;
+		}
+	}
+	if (!bFoundNode)
+	{
+		SendStatusMessage(TEXT("No trackable nodes found."));
 		return;
 	}
-	PC->NodeMarkerLocation = BestStation->GetActorLocation();
+	PC->NodeMarkerLocation = BestLocation;
 	PC->NodeMarkerUntilTime = GetWorld()->GetTimeSeconds() + 8.0f;
+}
+
+void ABHCharacter::RequestResetToTrainInterior()
+{
+	if (!IsLocallyControlled() || !IsPlayerControlled())
+	{
+		return;
+	}
+	// Authoritative teleport: ask the server to drop us back on a safe interior spawn (it gates to train levels).
+	ServerResetToTrainInterior();
+}
+
+void ABHCharacter::ServerResetToTrainInterior_Implementation()
+{
+	if (ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
+	{
+		BHGM->ResetPlayerToTrainInterior(GetController());
+	}
 }
 
 void ABHCharacter::UpdateQuestionInteractionState()
@@ -4359,6 +4556,15 @@ bool ABHCharacter::HasInteractionLineOfSight(AActor* Target) const
 		return true;
 	}
 
+	// Aim the gate at the target's bounds CENTRE, not its pivot. A wall-mounted module (button panel,
+	// switch, terminal) commonly has its actor origin ON or just behind the wall it is fixed to, with the
+	// interactable face protruding into the room; a trace to the pivot then hits that mounting wall even
+	// when the player is looking straight at the object. The bounds centre sits inside the visible body,
+	// in front of the wall, so a clear look passes.
+	FVector TargetPoint = Target->GetActorLocation();
+	FVector BoundsExtent = FVector::ZeroVector;
+	Target->GetActorBounds(false, TargetPoint, BoundsExtent);
+
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(BHInteractLoS), false, this);
 	Params.AddIgnoredActor(Target);
 
@@ -4370,10 +4576,18 @@ bool ABHCharacter::HasInteractionLineOfSight(AActor* Target) const
 	ObjParams.AddObjectTypesToQuery(ECC_WorldDynamic);
 
 	FHitResult VisibilityHit;
-	if (GetWorld()->LineTraceSingleByObjectType(VisibilityHit, Start, Target->GetActorLocation(), ObjParams, Params))
+	if (GetWorld()->LineTraceSingleByObjectType(VisibilityHit, Start, TargetPoint, ObjParams, Params))
 	{
-		// A world wall/prop that is neither us nor the target stands in the way.
-		return false;
+		// Something world-geometry is in the line. Reject ONLY when it is a *separate* wall sitting
+		// between the player and the object (the through-wall exploit). When the hit lands right at the
+		// target -- e.g. the wall or frame the module is mounted on, inside its bounds plus a small
+		// tolerance -- the player is legitimately looking at the object, so let it through.
+		const float MountTolerance = 50.0f;
+		const FBox TargetBox = FBox::BuildAABB(TargetPoint, BoundsExtent + FVector(MountTolerance));
+		if (!TargetBox.IsInsideOrOn(VisibilityHit.Location))
+		{
+			return false;
+		}
 	}
 
 	return true;
@@ -5052,7 +5266,7 @@ void ABHCharacter::ApplyRoleModelVisuals(const ABHPlayerState* BHPS, const FLine
 			{
 				RoleSkeletalMesh->SetAnimationMode(EAnimationMode::AnimationSingleNode);
 			}
-			BHApplyQuaterniusPalette(RoleSkeletalMesh, ShirtColor);
+			BHApplyQuaterniusPalette(RoleSkeletalMesh, BHPS ? BHPS->AvatarSlotColors : TArray<uint8>());
 			LastRoleAnimationName = NAME_None;
 			bAppliedRoleModel = true;
 			bAppliedSkeletalModel = true;
