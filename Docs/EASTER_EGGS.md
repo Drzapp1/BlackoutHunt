@@ -92,6 +92,8 @@ description, the cosmetic it unlocks, and an EARNED / locked state. Hidden ("sec
 | **Flow Master** | ★★★★★ | Land a full three-link flow chain. | **Slipstream** tint |
 | **Perfect Chain** | ★★★★★ | Nail the momentum tech below (frame-perfect). | **Afterimage** tint + **Spacesuit** outfit |
 | **Completionist** | ★★★★★ (secret) | Earn every hidden easter-egg award. | **Halo** |
+| **Honor Roll** | ★★★ | Answer five questions correctly in a row. | **Honor Roll** title |
+| **Polymath** | ★★★ | Answer correctly in all four physics topics. | **Polymath** title |
 
 The ten hidden **tints** (Chalk / Arcade / Exit Sign / Afterimage / Veteran / Faculty / Slipstream / Detention /
 Apex / Commuter) appear as locked swatches in the **Shirt** colour picker until earned, then become selectable
@@ -130,6 +132,9 @@ normal cooldown message (no penalty). You can chain up to **3** links before a r
 - First clean chain unlocks the **Perfect Chain** achievement (→ the **Afterimage** tint) + a brief "Perfect
   chain!" cue.
 - **Toggle:** `bh.MomentumTech 1` (default on) / `0` (off). *(`BHCharacter.cpp`, `TryStartSpecialMoveAuthority`.)*
+- **Tuning (cvars):** `bh.MomentumChainWindow` (0.12 s input window — lower = harder), `bh.MomentumChainMaxLinks`
+  (3 — chain cap), `bh.MomentumChainSpeedScale` (1.15 — chained-move speed). Defaults match the original tuning;
+  adjust them live to balance the feature without a recompile.
 - ⚠️ **This is the one fun feature that touches movement**, so it genuinely wants **balance playtesting** before
   you rely on it in a competitive class. The tight window + cap + modest bonus keep its impact small, and the
   cvar turns it off instantly if it ever feels off.

@@ -10,6 +10,13 @@ reversible bias; anything touching scoring or server-authoritative play is calle
 
 Status: `[ ]` todo · `[~]` in progress · `[x]` done
 
+> **Progress (autonomous run, 2026-06-07):** Phase 1 **done** (educational achievements + per-topic mastery; the
+> teacher report was already comprehensive, so no work was needed there). Phase 2 progress bars **done**
+> (newly-unlocked indicator deferred — doing it right needs the Awards panel to rebuild on tab-open). Phase 3
+> **done** (rank-from-XP + stats profile card). Phase 4: momentum flow-chain **cvars done**; head-bone hats +
+> nameplate-flair placement polish deferred — they need in-engine visual verification, so they're owner-playtest
+> items rather than blind guesses.
+
 ---
 
 ## Phase 1 — Classroom / teaching value (first)

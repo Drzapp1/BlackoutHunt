@@ -3365,9 +3365,23 @@ static TAutoConsoleVariable<int32> CVarBHMomentumTech(
 	1,
 	TEXT("1 (default) = survivor frame-perfect momentum-chain tech on; 0 = off (plain special moves)."),
 	ECVF_Default);
-constexpr float BHMomentumChainWindowSeconds = 0.12f;
-constexpr int32 BHMomentumChainMaxLinks = 3;
-constexpr float BHMomentumChainSpeedScale = 1.15f;
+// Flow-chain tuning knobs -- exposed as cvars so the one balance-sensitive feature can be playtest-tuned live
+// (the defaults match the original constants). See Docs/EASTER_EGGS.md.
+static TAutoConsoleVariable<float> CVarBHMomentumChainWindow(
+	TEXT("bh.MomentumChainWindow"),
+	0.12f,
+	TEXT("Survivor flow-chain input window in seconds: chain the next special move within this of the previous one ending. Lower = harder. (Default 0.12)"),
+	ECVF_Default);
+static TAutoConsoleVariable<int32> CVarBHMomentumChainMaxLinks(
+	TEXT("bh.MomentumChainMaxLinks"),
+	3,
+	TEXT("Maximum survivor flow-chain links before a real cooldown resets it. (Default 3)"),
+	ECVF_Default);
+static TAutoConsoleVariable<float> CVarBHMomentumChainSpeedScale(
+	TEXT("bh.MomentumChainSpeedScale"),
+	1.15f,
+	TEXT("Speed multiplier applied to a chained special move. (Default 1.15)"),
+	ECVF_Default);
 
 bool ABHCharacter::TryStartSpecialMoveAuthority(EBHMovementSpecialState RequestedState, bool bEndProne, bool bEndProneRequiresInput)
 {
@@ -3427,13 +3441,13 @@ bool ABHCharacter::TryStartSpecialMoveAuthority(EBHMovementSpecialState Requeste
 	bool bPerfectChain = false;
 	if (CVarBHMomentumTech.GetValueOnGameThread() != 0 && BHPS && BHPS->IsAliveSurvivor()
 		&& Now < SpecialMoveCooldownEndTime && LastSpecialMoveEndedTime > -900.0f
-		&& PerfectChainCount < BHMomentumChainMaxLinks)
+		&& PerfectChainCount < CVarBHMomentumChainMaxLinks.GetValueOnGameThread())
 	{
 		const float SinceEnded = Now - LastSpecialMoveEndedTime;
-		if (SinceEnded >= 0.0f && SinceEnded <= BHMomentumChainWindowSeconds)
+		if (SinceEnded >= 0.0f && SinceEnded <= CVarBHMomentumChainWindow.GetValueOnGameThread())
 		{
 			bPerfectChain = true;
-			SpecialMoveMomentumScale = BHMomentumChainSpeedScale;
+			SpecialMoveMomentumScale = CVarBHMomentumChainSpeedScale.GetValueOnGameThread();
 		}
 	}
 
