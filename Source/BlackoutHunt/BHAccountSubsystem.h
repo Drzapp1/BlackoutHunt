@@ -74,6 +74,14 @@ struct FBHAccountProgress
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	int32 TrainActivityMask = 0;
 
+	// Consecutive-correct answer streak (Honor Roll) + bitmask of physics topics ever answered correctly
+	// (Polymath). Cosmetic/local; never touches the revision mastery model or classroom reports.
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	int32 CurrentAnswerStreak = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	int32 TopicsEverCorrectMask = 0;
+
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	int32 XP = 0;
 
@@ -173,6 +181,9 @@ public:
 	void RecordRoundResult(EBHPlayerRole Role, EBHPlayerLifeState LifeState, EBHRoundPhase ResultPhase);
 	// Records that the local player completed a train-intermission activity (type 0..3); earns Tourist once all four are done.
 	void RecordTrainActivityUse(int32 ActivityIndex);
+	// Records a graded answer (physics topic 0..3, correct?). Updates the answer streak / topic mask and earns
+	// the Honor Roll / Polymath achievements. Cosmetic/local only; never affects scoring, mastery, or reports.
+	void RecordQuestionResult(int32 TopicIndex, bool bCorrect);
 
 	// Cosmetic achievements (local, persisted). UnlockAchievement is idempotent: the first time only, it awards
 	// the achievement's XP, unlocks any tint gated on it, saves, and shows a one-line toast. Never affects play.

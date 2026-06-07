@@ -1145,6 +1145,14 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 // analytics), advances the revision node, applies feedback, and handles the wrong path.
 bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPlayerController* PC, bool bCorrect, const FString& EvaluatedSelectedAnswer, TArray<ABHCharacter*>& RevisionParticipants, bool bActiveRevisionMode, bool bVisualAnswer)
 {
+	// Per-player learning record (cosmetic/local): the answer streak / topic mask behind the Honor Roll and
+	// Polymath achievements. This is the live grade path -- the warmup path returns earlier and is excluded.
+	// Never affects scoring, the revision mastery model, or classroom reports.
+	if (Character)
+	{
+		Character->ClientRecordQuestionResult(static_cast<uint8>(FBHRevisionQuestionBank::TopicForStationType(StationType)), bCorrect);
+	}
+
 	if (bCorrect)
 	{
 		bool bRevisionNodeUnlocked = true;

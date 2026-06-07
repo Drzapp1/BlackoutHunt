@@ -77,7 +77,9 @@ const FBHCosmeticUnlockDefinition* BHCosmeticDefinitions(EBHCosmeticCategory Cat
 		{ TEXT("Speedrunner"), 0, TEXT("flow_master") },
 		{ TEXT("Graduate"), 0, TEXT("graduate") },
 		{ TEXT("Roof Rider"), 0, TEXT("roof_rider") },
-		{ TEXT("Completionist"), 0, TEXT("completionist") }
+		{ TEXT("Completionist"), 0, TEXT("completionist") },
+		{ TEXT("Honor Roll"), 0, TEXT("honor_roll") },
+		{ TEXT("Polymath"), 0, TEXT("polymath") }
 	};
 	static const FBHCosmeticUnlockDefinition EmblemDefinitions[] = {
 		{ TEXT("No Emblem"), 0 },

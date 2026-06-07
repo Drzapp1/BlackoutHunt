@@ -252,6 +252,11 @@ public:
 	// Easter-egg hook: the server tells the owning client it completed a train activity (type 0..3) -> Tourist progress.
 	UFUNCTION(Client, Reliable)
 	void ClientRecordTrainActivity(uint8 ActivityIndex);
+
+	// Educational hook: the server tells the owning client a graded answer's result (physics topic 0..3,
+	// correct?) -> per-topic mastery + the Honor Roll / Polymath achievements. Cosmetic/local.
+	UFUNCTION(Client, Reliable)
+	void ClientRecordQuestionResult(uint8 TopicIndex, bool bCorrect);
 protected:
 	void UsePowerupSlotOne();
 	void UsePowerupSlotTwo();

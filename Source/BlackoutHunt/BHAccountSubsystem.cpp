@@ -97,7 +97,10 @@ namespace
 		{ TEXT("tourist"),          TEXT("Tourist"),           TEXT("Tried all four train activities."),       45, 2, TEXT("Commuter tint"),               false },
 		{ TEXT("completionist"),    TEXT("Completionist"),     TEXT("Found every hidden easter egg."),         120, 5, TEXT("Halo"),                       true  },
 		{ TEXT("graduate"),         TEXT("Graduate"),          TEXT("Played 50 rounds. A classroom regular."),  80, 3, TEXT("Graduation Cap"),             false },
-		{ TEXT("on_a_roll"),        TEXT("On a Roll"),         TEXT("Won three rounds in a row."),             70, 3, TEXT("Crown"),                       false }
+		{ TEXT("on_a_roll"),        TEXT("On a Roll"),         TEXT("Won three rounds in a row."),             70, 3, TEXT("Crown"),                       false },
+		// Educational achievements (reward: nameplate titles). Earned from in-round physics answers.
+		{ TEXT("honor_roll"),       TEXT("Honor Roll"),        TEXT("Answered five questions correctly in a row."), 60, 3, TEXT("Honor Roll title"),      false },
+		{ TEXT("polymath"),         TEXT("Polymath"),          TEXT("Answered correctly in all four physics topics."), 70, 3, TEXT("Polymath title"),    false }
 	};
 	const FBHAchievementDef* BHFindAchievement(FName Id)
 	{
@@ -1240,6 +1243,38 @@ void UBHAccountSubsystem::RecordTrainActivityUse(int32 ActivityIndex)
 	}
 }
 
+void UBHAccountSubsystem::RecordQuestionResult(int32 TopicIndex, bool bCorrect)
+{
+	if (TopicIndex < 0 || TopicIndex > 3)
+	{
+		return;
+	}
+	if (bCorrect)
+	{
+		if (Progress.CurrentAnswerStreak < MAX_int32)
+		{
+			++Progress.CurrentAnswerStreak;
+		}
+		Progress.TopicsEverCorrectMask |= (1 << TopicIndex);
+	}
+	else
+	{
+		Progress.CurrentAnswerStreak = 0;
+	}
+	Progress.LastUpdatedUtc = UtcNowString();
+	SaveProgress();
+
+	// Educational achievements (idempotent).
+	if (Progress.CurrentAnswerStreak >= 5)
+	{
+		UnlockAchievement(FName(TEXT("honor_roll")));
+	}
+	if ((Progress.TopicsEverCorrectMask & 0x0F) == 0x0F)
+	{
+		UnlockAchievement(FName(TEXT("polymath")));
+	}
+}
+
 bool UBHAccountSubsystem::HasAchievement(FName AchievementId) const
 {
 	return Progress.UnlockedAchievements.Contains(AchievementId);
@@ -1594,6 +1629,8 @@ TSharedRef<FJsonObject> UBHAccountSubsystem::ProgressToJson() const
 	JsonObject->SetNumberField(TEXT("escapes"), Progress.Escapes);
 	JsonObject->SetNumberField(TEXT("current_win_streak"), Progress.CurrentWinStreak);
 	JsonObject->SetNumberField(TEXT("train_activity_mask"), Progress.TrainActivityMask);
+	JsonObject->SetNumberField(TEXT("current_answer_streak"), Progress.CurrentAnswerStreak);
+	JsonObject->SetNumberField(TEXT("topics_ever_correct_mask"), Progress.TopicsEverCorrectMask);
 	JsonObject->SetNumberField(TEXT("xp"), Progress.XP);
 	JsonObject->SetStringField(TEXT("selected_avatar_url"), Progress.SelectedAvatarUrl);
 	JsonObject->SetNumberField(TEXT("selected_avatar_index"), Progress.SelectedAvatarIndex);
@@ -1652,6 +1689,8 @@ void UBHAccountSubsystem::ApplyProgressJson(const TSharedPtr<FJsonObject>& JsonO
 	Progress.Escapes = JsonInt(JsonObject, TEXT("escapes"));
 	Progress.CurrentWinStreak = JsonInt(JsonObject, TEXT("current_win_streak"));
 	Progress.TrainActivityMask = JsonInt(JsonObject, TEXT("train_activity_mask"));
+	Progress.CurrentAnswerStreak = JsonInt(JsonObject, TEXT("current_answer_streak"));
+	Progress.TopicsEverCorrectMask = JsonInt(JsonObject, TEXT("topics_ever_correct_mask"));
 	Progress.XP = JsonInt(JsonObject, TEXT("xp"));
 	Progress.SelectedAvatarUrl = JsonString(JsonObject, TEXT("selected_avatar_url"));
 	Progress.SelectedAvatarIndex = JsonInt(JsonObject, TEXT("selected_avatar_index"));

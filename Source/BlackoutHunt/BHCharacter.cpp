@@ -3165,6 +3165,18 @@ void ABHCharacter::ClientRecordTrainActivity_Implementation(uint8 ActivityIndex)
 	}
 }
 
+void ABHCharacter::ClientRecordQuestionResult_Implementation(uint8 TopicIndex, bool bCorrect)
+{
+	// Cosmetic only: record a graded answer on the owning client (-> per-topic mastery + Honor Roll / Polymath).
+	if (UWorld* World = GetWorld())
+	{
+		if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+		{
+			Account->RecordQuestionResult(static_cast<int32>(TopicIndex), bCorrect);
+		}
+	}
+}
+
 void ABHCharacter::ClientGrantAchievement_Implementation(FName AchievementId, const FString& ToastMessage)
 {
 	// Cosmetic only: unlock the given achievement on the owning client (account progress is client-local, so the
