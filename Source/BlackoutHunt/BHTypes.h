@@ -50,7 +50,10 @@ enum class EBHTutorialPhase : uint8
 {
 	Survivor UMETA(DisplayName = "Survivor"),
 	Teacher UMETA(DisplayName = "Teacher"),
-	Monitor UMETA(DisplayName = "Monitor")
+	Monitor UMETA(DisplayName = "Monitor"),
+	// Standalone "advanced movement" lesson: walk, sprint, crouch, prone, jump, bunny-hop, then the special-move
+	// links (roll / slide / dive). Not part of the chained Survivor->Teacher->Monitor course; returns to the menu.
+	Movement UMETA(DisplayName = "Movement")
 };
 
 UENUM(BlueprintType)

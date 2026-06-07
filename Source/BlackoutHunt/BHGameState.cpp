@@ -162,6 +162,7 @@ ABHGameState::ABHGameState()
 	RevisionReviewTimeRemaining = 0;
 	RevisionReviewText = TEXT("");
 	TrainPhase = EBHTrainPhase::Inactive;
+	bLobbyTrainActive = false;
 	TrainStageIndex = 0;
 	TrainPhaseEndServerTime = 0.0f;
 	TrainDestinationName = TEXT("");
@@ -229,6 +230,7 @@ void ABHGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 	DOREPLIFETIME(ABHGameState, RevisionReviewTimeRemaining);
 	DOREPLIFETIME(ABHGameState, RevisionReviewText);
 	DOREPLIFETIME(ABHGameState, TrainPhase);
+	DOREPLIFETIME(ABHGameState, bLobbyTrainActive);
 	DOREPLIFETIME(ABHGameState, TrainStageIndex);
 	DOREPLIFETIME(ABHGameState, TrainPhaseEndServerTime);
 	DOREPLIFETIME(ABHGameState, TrainDestinationName);
@@ -631,6 +633,11 @@ void ABHGameState::SetTrainState(EBHTrainPhase NewTrainPhase, int32 NewStageInde
 	TrainPhaseEndServerTime = FMath::Max(0.0f, NewPhaseEndServerTime);
 	TrainDestinationName = NewDestinationName;
 	TrainAnnouncement = NewAnnouncement;
+}
+
+void ABHGameState::SetLobbyTrainActive(bool bActive)
+{
+	bLobbyTrainActive = bActive;
 }
 
 void ABHGameState::SetTrainRecap(const FString& NewOverview, const FString& NewTopics, const FString& NewMissedQuestions, const FString& NewTips)

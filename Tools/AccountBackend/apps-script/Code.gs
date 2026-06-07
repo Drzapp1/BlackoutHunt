@@ -26,11 +26,12 @@
  */
 
 // Which feedback kinds to email you (all kinds are logged to the Sheet regardless).
-// Default skips bulk end-of-round surveys.
-var EMAIL_KINDS = ['bug', 'idea', 'praise', 'other'];
+// Includes 'survey' so end-of-round poll responses are emailed too. Remove 'survey' to go back to
+// Sheet-only for surveys (watch Gmail's ~100 emails/day cap on busy classroom days).
+var EMAIL_KINDS = ['bug', 'idea', 'praise', 'other', 'survey'];
 var SPREADSHEET_NAME = 'BlackoutHunt Feedback';
 // Bump this on each change. GET the /exec URL to read it back and confirm which code is live.
-var SCRIPT_VERSION = '2026-06-05-csv-injection-guard';
+var SCRIPT_VERSION = '2026-06-07-email-surveys';
 
 function doPost(e) {
   try {

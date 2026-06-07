@@ -173,6 +173,12 @@ private:
 	FReply OnRecolorSlotSelected(int32 RegistryIndex);
 	FReply OnRecolorSwatchClicked(int32 ColorIndex);
 	TSharedRef<SWidget> BuildRecolorSection();
+	// UI theme (menu colour scheme): a cosmetic, local UI preference. The picker sets the active theme; colours
+	// routed through the getters below re-read it, so switching is instant.
+	FReply OnThemeClicked(int32 ThemeIndex);
+	TSharedRef<SWidget> BuildThemeSection();
+	FSlateColor GetThemeBackgroundColor() const;
+	FSlateColor GetThemePanelColor() const;
 	FReply OnAvatarTitleClicked(int32 TitleIndex);
 	FReply OnAvatarEmblemClicked(int32 EmblemIndex);
 	FReply OnMenuTabClicked(EBHMainMenuTab NewTab);

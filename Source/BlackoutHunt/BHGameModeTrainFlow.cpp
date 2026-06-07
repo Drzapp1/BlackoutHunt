@@ -64,6 +64,13 @@ void ABHGameMode::TravelFromLobbyToFirstHunt()
 	// state). BHAutoPrep starts the role-warmup on arrival rather than re-entering a Lobby phase on the hunt map.
 	FString TravelURL = BuildTravelOptionsForLevel(Destination, false, 0, EBHRoundPhase::Lobby);
 	TravelURL += TEXT("?BHAutoPrep=1");
+	// Carry the Live Classroom flag onto the hunt level so the teacher keeps the classroom host UI/controls after
+	// departing the lobby (it is read straight from the world URL, not a GameMode member, on both maps).
+	const FString LiveClassroomOpt = GetWorld()->URL.GetOption(TEXT("BHLiveClassroom="), TEXT(""));
+	if (!LiveClassroomOpt.IsEmpty())
+	{
+		TravelURL += TEXT("?BHLiveClassroom=1");
+	}
 	RequestServerTravel(TravelURL, true);
 }
 

@@ -937,7 +937,7 @@ struct FBHAtmosphereSliderSpec
 
 static const FBHAtmosphereSliderSpec BHFogConsoleSliders[] = {
 	{TEXT("Fog.Density"), TEXT("Density"), 0.0f, 2.0f, 3},
-	{TEXT("Fog.HeightFalloff"), TEXT("Height Falloff"), 0.001f, 0.250f, 3},
+	{TEXT("Fog.HeightFalloff"), TEXT("Height Falloff"), 0.001f, 2.000f, 3},
 	{TEXT("Fog.MaxOpacity"), TEXT("Max Opacity"), 0.0f, 1.0f, 3},
 	{TEXT("Fog.StartDistance"), TEXT("Start Distance"), 0.0f, 5000.0f, 0},
 	{TEXT("Fog.EndDistance"), TEXT("End Distance"), 0.0f, 12000.0f, 0},
@@ -1647,6 +1647,7 @@ void ABHPlayerController::HostTutorialPhase(EBHTutorialPhase StartPhase, bool bC
 	{
 	case EBHTutorialPhase::Teacher: PhaseName = TEXT("Teacher"); break;
 	case EBHTutorialPhase::Monitor: PhaseName = TEXT("Monitor"); break;
+	case EBHTutorialPhase::Movement: PhaseName = TEXT("Movement"); break;
 	case EBHTutorialPhase::Survivor:
 	default:                        PhaseName = TEXT("Survivor"); break;
 	}
@@ -2268,6 +2269,7 @@ void ABHPlayerController::ShowBootConsole()
 
 	SAssignNew(BootConsoleWidget, SBHBootConsole)
 		.ReducedFlash(IsReducedFlashEnabled())
+		.OnReadyForMenu(FSimpleDelegate::CreateUObject(this, &ABHPlayerController::OnBootConsoleRevealMenu))
 		.OnFinished(FSimpleDelegate::CreateUObject(this, &ABHPlayerController::OnBootConsoleFinished));
 
 	// Above the travel loading screen (1000) so nothing draws over the intro.
@@ -2279,6 +2281,30 @@ void ABHPlayerController::ShowBootConsole()
 	SetInputMode(InputMode);
 	bShowMouseCursor = false;
 	UpdateAmbientMusic();
+}
+
+void ABHPlayerController::OnBootConsoleRevealMenu()
+{
+	// Fires from inside the widget's own Tick; defer a tick so we are not adding a viewport widget
+	// mid-iteration of the viewport's widget list.
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().SetTimerForNextTick(this, &ABHPlayerController::RevealMenuUnderBootConsole);
+	}
+	else
+	{
+		RevealMenuUnderBootConsole();
+	}
+}
+
+void ABHPlayerController::RevealMenuUnderBootConsole()
+{
+	// The boot console is fully black and on top (ZOrder 1500); show the menu beneath it (ZOrder 100) so
+	// the console's fade-out dissolves into the start screen. No-op if the menu already exists.
+	if (!MainMenuWidget.IsValid())
+	{
+		ShowMainMenu();
+	}
 }
 
 void ABHPlayerController::OnBootConsoleFinished()
@@ -2297,8 +2323,23 @@ void ABHPlayerController::OnBootConsoleFinished()
 
 void ABHPlayerController::FinishBootConsole()
 {
+	// If the reveal already ran, the menu is up and focused-behind the fading console; just remove the
+	// console and hand keyboard focus back to the menu (RemoveBootConsoleWidget clears focus). Otherwise
+	// (e.g. the player skipped before the reveal) show the menu now.
+	const bool bMenuAlreadyShown = MainMenuWidget.IsValid();
 	RemoveBootConsoleWidget();
-	ShowMainMenu();
+	if (!bMenuAlreadyShown)
+	{
+		ShowMainMenu();
+		return;
+	}
+
+	FInputModeGameAndUI InputMode;
+	InputMode.SetWidgetToFocus(MainMenuWidget);
+	InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+	InputMode.SetHideCursorDuringCapture(false);
+	SetInputMode(InputMode);
+	bShowMouseCursor = true;
 }
 
 void ABHPlayerController::RemoveBootConsoleWidget()
@@ -2535,6 +2576,7 @@ bool ABHPlayerController::HostTutorialPhaseForMenu(EBHTutorialPhase StartPhase, 
 	{
 	case EBHTutorialPhase::Teacher: Label = TEXT("Teacher"); break;
 	case EBHTutorialPhase::Monitor: Label = TEXT("Hall Monitor"); break;
+	case EBHTutorialPhase::Movement: Label = TEXT("Movement"); break;
 	case EBHTutorialPhase::Survivor:
 	default:                        Label = TEXT("Survivor"); break;
 	}
@@ -2606,15 +2648,22 @@ bool ABHPlayerController::HostLiveClassroomForMenu(const FString& LevelName, FSt
 		JoinAddress = BHGI->GetPreferredClassroomJoinAddress(7777);
 	}
 	Preset.MapName = NormalizedLevel;
-	const FString Options = BHMakeListenOptions(NormalizedLevel, FBHLessonPresetStore::BuildRevisionLaunchOptions(Preset, true));
+	// Live Classroom now boards the TRAIN LOBBY first (like the normal host flow) so students can join, see each
+	// other, and load in while the teacher waits -- then the teacher departs to the first hunt level. Previously
+	// this opened the hunt map directly, so "hosting a live lobby" dropped the teacher straight into Facility. The
+	// lesson/revision options ride along and are reconstructed onto the hunt level by BuildTravelOptionsForLevel
+	// when the lobby departs (TravelFromLobbyToFirstHunt re-appends BHLiveClassroom too).
+	const FString LobbyExtras = FString::Printf(TEXT("?BHLobby=1?BHFirstLevel=%s"), *NormalizedLevel)
+		+ FBHLessonPresetStore::BuildRevisionLaunchOptions(Preset, true);
+	const FString Options = BHMakeListenOptions(NormalizedLevel, LobbyExtras);
 	OutMessage = JoinAddress.IsEmpty()
-		? FString::Printf(TEXT("Starting Live Classroom on %s with %s."), *NormalizedLevel, *Preset.DisplayName)
-		: FString::Printf(TEXT("Starting Live Classroom on %s with %s. Students join %s."), *NormalizedLevel, *Preset.DisplayName, *JoinAddress);
+		? FString::Printf(TEXT("Starting Live Classroom on %s with %s. Boarding the lobby train."), *NormalizedLevel, *Preset.DisplayName)
+		: FString::Printf(TEXT("Starting Live Classroom on %s with %s. Students join %s, then board the lobby train."), *NormalizedLevel, *Preset.DisplayName, *JoinAddress);
 	ShowLocalStatusMessage(OutMessage, 4.0f);
 	BHApplyClassroomLoopbackBinding(Settings);
 	HideMainMenu();
-	ShowTravelLoadingScreen(FString::Printf(TEXT("LIVE %s"), *NormalizedLevel.ToUpper()), TEXT("Opening classroom host."));
-	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(NormalizedLevel)), true, Options);
+	ShowTravelLoadingScreen(TEXT("BOARDING LOBBY"), TEXT("Boarding the classroom lobby train."));
+	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(TEXT("TrainIntermission"))), true, Options);
 	return true;
 }
 
@@ -5093,14 +5142,15 @@ void ABHPlayerController::EnsureAuthoredLevelFloorFog()
 	}
 
 	// Detect the loaded map from the world package name. This is robust against ActiveLevelName not having
-	// replicated yet and against the PIE "UEDPIE_0_" prefix. Facility's 0.7.0 bake ships NO fog actor at
-	// all; Substation's baked fog is far too thin (density ~0.01) to read. Both get a light, floor-hugging
-	// mist materialised locally on every client -- the GameMode that builds fog is server-only and
+	// replicated yet and against the PIE "UEDPIE_0_" prefix. Facility's 0.7.0 bake ships NO fog actor at all;
+	// Substation's baked fog is far too thin to read; Foggrounds wants a genuinely heavy fog bank. Each gets
+	// its fog materialised/retuned locally on every client -- the GameMode that builds fog is server-only and
 	// ExponentialHeightFog does not replicate, so each machine fixes the map it loaded.
 	const FString MapName = World->GetMapName();
 	const bool bFacility = MapName.Contains(TEXT("Facility"));
 	const bool bSubstation = MapName.Contains(TEXT("Substation"));
-	if (!bFacility && !bSubstation)
+	const bool bFoggrounds = MapName.Contains(TEXT("Foggrounds"));
+	if (!bFacility && !bSubstation && !bFoggrounds)
 	{
 		return;
 	}
@@ -5129,34 +5179,64 @@ void ABHPlayerController::EnsureAuthoredLevelFloorFog()
 		return;
 	}
 
-	// Light, floor-leaning mist that reads on EVERY quality tier. The first (non-volumetric) layer carries
-	// the visible haze so it shows even when r.VolumetricFog is off (Low/Medium), while the denser ground-
-	// pool second layer adds the drifting-mist look when volumetric fog is on (force-enabled for these maps
-	// in ApplyAdaptiveGraphicsState). Densities are intentionally well above the near-invisible baked values.
-	const FLinearColor FogColor = bFacility
-		? FLinearColor(0.105f, 0.040f, 0.034f, 1.0f)   // dim warm red, matching Facility's mood
-		: FLinearColor(0.052f, 0.066f, 0.082f, 1.0f);  // cool grey-blue for Substation
-	// Self-emission: these are blackout maps, so without an emissive term the volumetric fog is only lit by
-	// the player's flashlight and stays invisible in the dark. A soft emissive makes the mist glow faintly on
-	// its own -- the "thin layer on the floor for a bit of light" -- so it reads even with every light off.
-	const FLinearColor FogEmissive = bFacility
-		? FLinearColor(0.225f, 0.070f, 0.055f, 1.0f)
-		: FLinearColor(0.070f, 0.105f, 0.150f, 1.0f);
-	FogComponent->SetFogDensity(0.060f);
-	FogComponent->SetFogHeightFalloff(0.22f);
-	FogComponent->SetFogInscatteringColor(FogColor);
-	FogComponent->SetFogMaxOpacity(0.80f);
-	FogComponent->SetStartDistance(0.0f);
-	FogComponent->SetVolumetricFog(true);
-	FogComponent->SetVolumetricFogScatteringDistribution(0.45f);
-	FogComponent->SetVolumetricFogExtinctionScale(0.80f);
-	FogComponent->SetVolumetricFogEmissive(FogEmissive);
-	FogComponent->SetVolumetricFogNearFadeInDistance(40.0f);
-	// Denser ground-pool layer for the floor-mist read when volumetric fog is on.
-	FogComponent->SetSecondFogData(FExponentialHeightFogData());
-	FogComponent->SetSecondFogDensity(0.12f);
-	FogComponent->SetSecondFogHeightFalloff(0.80f);
-	FogComponent->SetSecondFogHeightOffset(0.0f);
+	if (bFoggrounds)
+	{
+		// Foggrounds is the dedicated fog map -- lean into the name. This is the THICK, glowing, air-filling
+		// fog that was too heavy for the tight indoor maps: a LOW height-falloff so it fills the whole volume
+		// (not just the floor), high density + extinction so it genuinely obscures distance, and a soft glow
+		// so the body of fog reads in the dark. Fine-tune live in the atmosphere console (Fog.Density,
+		// Fog.HeightFalloff, Volumetric.Extinction, Volumetric.Emissive.*) -- the once-per-map tag guard keeps
+		// console tweaks from being re-stomped.
+		const FLinearColor FogColor(0.175f, 0.235f, 0.255f, 1.0f);   // cool fog-bank grey-blue
+		const FLinearColor FogEmissive(0.085f, 0.120f, 0.135f, 1.0f);
+		FogComponent->SetFogDensity(0.32f);
+		FogComponent->SetFogHeightFalloff(0.12f);
+		FogComponent->SetFogInscatteringColor(FogColor);
+		FogComponent->SetFogMaxOpacity(0.95f);
+		FogComponent->SetStartDistance(0.0f);
+		FogComponent->SetVolumetricFog(true);
+		FogComponent->SetVolumetricFogScatteringDistribution(0.20f);   // forward-scatter for flashlight god-rays
+		FogComponent->SetVolumetricFogExtinctionScale(3.20f);
+		FogComponent->SetVolumetricFogEmissive(FogEmissive);
+		FogComponent->SetVolumetricFogNearFadeInDistance(70.0f);
+		// Second layer adds a denser bank low down without killing the fill above it.
+		FogComponent->SetSecondFogData(FExponentialHeightFogData());
+		FogComponent->SetSecondFogDensity(0.18f);
+		FogComponent->SetSecondFogHeightFalloff(0.30f);
+		FogComponent->SetSecondFogHeightOffset(0.0f);
+	}
+	else
+	{
+		// Facility/Substation: a thin mist that POOLS ON THE FLOOR rather than filling the room. A high
+		// height-falloff concentrates the density into a low band near the ground (the actor sits at Z0, the
+		// floor), so it reads as a layer underfoot with clear air at standing height -- not a room-wide haze.
+		const FLinearColor FogColor = bFacility
+			? FLinearColor(0.105f, 0.040f, 0.034f, 1.0f)   // dim warm red, matching Facility's mood
+			: FLinearColor(0.052f, 0.066f, 0.082f, 1.0f);  // cool grey-blue for Substation
+		// Self-emission so the mist is faintly visible in the dark (blackout maps; otherwise only the
+		// flashlight lights it). Kept LOW -- just a touch of glow, not room-flooding light. Fine-tune live in
+		// the atmosphere console (Volumetric.Emissive.R/G/B); the once-per-map tag guard means console tweaks
+		// are not re-stomped.
+		const FLinearColor FogEmissive = bFacility
+			? FLinearColor(0.050f, 0.016f, 0.013f, 1.0f)
+			: FLinearColor(0.020f, 0.030f, 0.042f, 1.0f);
+		FogComponent->SetFogDensity(0.060f);
+		FogComponent->SetFogHeightFalloff(0.90f);
+		FogComponent->SetFogInscatteringColor(FogColor);
+		FogComponent->SetFogMaxOpacity(0.70f);
+		FogComponent->SetStartDistance(0.0f);
+		FogComponent->SetVolumetricFog(true);
+		FogComponent->SetVolumetricFogScatteringDistribution(0.45f);
+		FogComponent->SetVolumetricFogExtinctionScale(0.55f);
+		FogComponent->SetVolumetricFogEmissive(FogEmissive);
+		FogComponent->SetVolumetricFogNearFadeInDistance(40.0f);
+		// Denser, tightly floor-concentrated second layer (high falloff, zero height offset) that forms the
+		// actual ground pool sitting on the floor when volumetric fog is on.
+		FogComponent->SetSecondFogData(FExponentialHeightFogData());
+		FogComponent->SetSecondFogDensity(0.10f);
+		FogComponent->SetSecondFogHeightFalloff(1.40f);
+		FogComponent->SetSecondFogHeightOffset(0.0f);
+	}
 
 	if (Fog)
 	{
@@ -7422,10 +7502,14 @@ void ABHPlayerController::TickTrainMotion(float DeltaSeconds)
 	// A motion-sensitive player can switch the ride sway fully off (separate from "reduced camera shake", which
 	// only quarters it); when off we let the active shake blend out via the not-moving path below.
 	EnsureComfortPreferencesLoaded();
-	const bool bTrainMoving = CamMgr && BHGS
-		&& bTrainSwayEnabled
+	// The ride sways during the intermission's moving legs AND the whole time you're in the pre-game lobby
+	// carriage (the lobby train idles "on the rails" waiting to depart, so it should feel alive too).
+	const bool bInMovingIntermission = BHGS
 		&& BHGS->RoundPhase == EBHRoundPhase::Intermission
 		&& BHTrainPhaseIsMoving(BHGS->TrainPhase);
+	const bool bTrainMoving = CamMgr && BHGS
+		&& bTrainSwayEnabled
+		&& (bInMovingIntermission || BHGS->bLobbyTrainActive);
 
 	if (!bTrainMoving)
 	{

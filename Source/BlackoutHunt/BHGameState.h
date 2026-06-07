@@ -58,6 +58,7 @@ public:
 	void SetRevisionContributionTarget(int32 NewContributionTarget);
 	void SetRevisionSummary(float NewClassMasteryAverage, EBHPhysicsTopic NewWeakTopic, int32 NewReviewTimeRemaining, const FString& NewReviewText);
 	void SetTrainState(EBHTrainPhase NewTrainPhase, int32 NewStageIndex, float NewPhaseEndServerTime, const FString& NewDestinationName, const FString& NewAnnouncement);
+	void SetLobbyTrainActive(bool bActive);
 	void SetTrainRecap(const FString& NewOverview, const FString& NewTopics, const FString& NewMissedQuestions, const FString& NewTips);
 	void SetFinalEscapeState(EBHFinalEscapeState NewFinalEscapeState, float NewCutsceneEndServerTime, float NewEscapeEndServerTime, float NewHunterReleaseServerTime);
 	void SetIntermissionLocks(bool bNewCaptureDisabled, bool bNewPlayerInputFrozen, bool bNewHunterInputFrozen);
@@ -212,6 +213,11 @@ public:
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Train")
 	EBHTrainPhase TrainPhase;
+
+	// True while players are in the pre-game TRAIN LOBBY (RoundPhase stays Lobby, so this distinguishes the
+	// lobby carriage from the bare main-menu map). Drives the client-side ride sway in the lobby.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Train")
+	bool bLobbyTrainActive;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Train")
 	int32 TrainStageIndex;

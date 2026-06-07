@@ -44,8 +44,10 @@ ABHTrainTunnelMotionActor::ABHTrainTunnelMotionActor()
 	}
 
 	// Near layer: tall, thin vertical pillars (tunnel supports) that scroll faster than the light bars -- the
-	// parallax between the two layers is what makes the windows read as a real moving tunnel.
-	for (int32 Index = 0; Index < 10; ++Index)
+	// parallax between the two layers is what makes the windows read as a real moving tunnel. Enough of them
+	// that, spread over the FULL loop (see Tick), every window pane has a pillar sweeping past rather than
+	// only the middle ones.
+	for (int32 Index = 0; Index < 14; ++Index)
 	{
 		UStaticMeshComponent* Pillar = CreateDefaultSubobject<UStaticMeshComponent>(*FString::Printf(TEXT("Pillar_%02d"), Index));
 		Pillar->SetupAttachment(SceneRoot);
@@ -91,9 +93,10 @@ void ABHTrainTunnelMotionActor::Tick(float DeltaSeconds)
 	if (bMoving)
 	{
 		MotionOffset = FMath::Fmod(MotionOffset + MotionSpeed * DeltaSeconds, FMath::Max(1.0f, LoopLength));
-		// Near layer sweeps ~1.7x faster for parallax. Its loop is a fraction of the far loop so pillars recur
-		// more often than the wall lights.
-		const float PillarLoop = FMath::Max(1.0f, LoopLength * 0.6f);
+		// Near layer sweeps ~1.7x faster for parallax. It shares the FULL loop length so the pillars tile the
+		// whole window band (a shorter loop bunched them into the middle panes and left the ends bare); the
+		// parallax comes purely from the faster scroll speed, not from a shorter loop.
+		const float PillarLoop = FMath::Max(1.0f, LoopLength);
 		PillarOffset = FMath::Fmod(PillarOffset + MotionSpeed * 1.7f * DeltaSeconds, PillarLoop);
 	}
 
@@ -122,9 +125,15 @@ void ABHTrainTunnelMotionActor::Tick(float DeltaSeconds)
 	}
 
 	// Near layer: vertical pillars rushing past faster (the parallax that makes it feel like motion). Dim, cool,
-	// and only "lit" while moving so a parked train looks parked.
-	const float PillarLoop = FMath::Max(1.0f, LoopLength * 0.6f);
+	// and only "lit" while moving so a parked train looks parked. Full-loop spread so every pane gets a pillar.
+	const float PillarLoop = FMath::Max(1.0f, LoopLength);
 	const float PillarStep = PillarLoop / FMath::Max(1, Pillars.Num());
+	// The near layer must sit ~110cm TOWARD the carriage interior from the strips so it reads as closer to the
+	// glass than the far layer. The actor is parked just outside one window wall (y=+/-430), so "toward the
+	// interior" is -Y for the +Y wall and +Y for the -Y wall. A fixed -110 offset only worked on the +Y wall and
+	// shoved the -Y wall's pillars back against the backdrop (y-540), which is why the bars showed on one side
+	// only. Derive the sign from the actor's own Y so both walls get prominent, glass-hugging pillars.
+	const float NearOffset = (GetActorLocation().Y >= 0.0f) ? -110.0f : 110.0f;
 	for (int32 Index = 0; Index < Pillars.Num(); ++Index)
 	{
 		if (!Pillars[Index])
@@ -133,7 +142,7 @@ void ABHTrainTunnelMotionActor::Tick(float DeltaSeconds)
 		}
 
 		const float LocalX = FMath::Fmod(Index * PillarStep - PillarOffset + PillarLoop, PillarLoop) - PillarLoop * 0.5f;
-		Pillars[Index]->SetRelativeLocation(FVector(LocalX, -110.0f, 0.0f));
+		Pillars[Index]->SetRelativeLocation(FVector(LocalX, NearOffset, 0.0f));
 		if (PillarMaterials.IsValidIndex(Index))
 		{
 			if (UMaterialInstanceDynamic* PillarMaterial = PillarMaterials[Index])

@@ -11,6 +11,7 @@
 #include "BHGameState.h"
 #include "BHJumpscareVariantLibrary.h"
 #include "BHLessonPreset.h"
+#include "BHMenuTheme.h"
 #include "BHNetworkSupport.h"
 #include "BHPlayerController.h"
 #include "BHPlayerState.h"
@@ -590,7 +591,7 @@ namespace
 	{
 		return SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.026f, 0.034f, 0.038f, 0.92f))
+			.BorderBackgroundColor(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateLambda([]() { return FSlateColor(BHActiveMenuTheme().Panel); })))
 			.Padding(FMargin(9.0f, 7.0f))
 			[
 				SNew(SHorizontalBox)
@@ -966,7 +967,7 @@ namespace
 	{
 		return SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.010f, 0.014f, 0.018f, 0.96f))
+			.BorderBackgroundColor(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateLambda([]() { return FSlateColor(BHActiveMenuTheme().Background); })))
 			.Padding(FMargin(9.0f, 7.0f))
 			[
 				SNew(SVerticalBox)
@@ -5225,6 +5226,11 @@ void SBHMainMenu::BuildPlayActionList(TSharedRef<SVerticalBox> ActionList, bool 
 		// Jump straight to one role's tutorial (plays just that lesson, then returns to the menu).
 		TSharedRef<SVerticalBox> TutorialActions = SNew(SVerticalBox);
 		AddAction(TutorialActions, MenuPlayActionButton(
+			FText::FromString(TEXT("MOVEMENT TUTORIAL")),
+			FText::FromString(TEXT("Hands-on movement range: sprint, crouch, prone, bunny-hop, roll, slide, dive. No host needed.")),
+			FLinearColor(0.18f, 0.38f, 0.40f, 1.0f),
+			FOnClicked::CreateSP(this, &SBHMainMenu::OnHostTutorialPhaseClicked, EBHTutorialPhase::Movement, false)));
+		AddAction(TutorialActions, MenuPlayActionButton(
 			FText::FromString(TEXT("SURVIVOR TUTORIAL")),
 			FText::FromString(TEXT("Move, flashlight, hide, crawl, fix a breaker, answer questions, escape a Teacher.")),
 			FLinearColor(0.20f, 0.40f, 0.30f, 1.0f),
@@ -9036,6 +9042,64 @@ static FLinearColor MenuColorablePartColor(FName MaterialName)
 	return FLinearColor(0.5f, 0.5f, 0.5f);
 }
 
+FReply SBHMainMenu::OnThemeClicked(int32 ThemeIndex)
+{
+	BHSetActiveMenuThemeIndex(ThemeIndex);
+	StatusText = FText::FromString(FString::Printf(TEXT("UI theme: %s"), BHMenuThemeName(ThemeIndex)));
+	return FReply::Handled();
+}
+
+FSlateColor SBHMainMenu::GetThemeBackgroundColor() const
+{
+	return FSlateColor(BHActiveMenuTheme().Background);
+}
+
+FSlateColor SBHMainMenu::GetThemePanelColor() const
+{
+	return FSlateColor(BHActiveMenuTheme().Panel);
+}
+
+TSharedRef<SWidget> SBHMainMenu::BuildThemeSection()
+{
+	TSharedRef<SHorizontalBox> ThemeButtons = SNew(SHorizontalBox);
+	for (int32 Index = 0; Index < BHMenuThemeCount(); ++Index)
+	{
+		const FBHMenuTheme& Theme = BHMenuThemeAt(Index);
+		ThemeButtons->AddSlot()
+			.AutoWidth()
+			.Padding(0.0f, 0.0f, 6.0f, 0.0f)
+			[
+				SNew(SBHMenuButton)
+				.ButtonColorAndOpacity(Theme.Accent)
+				.ContentPadding(FMargin(9.0f, 4.0f))
+				.OnClicked(this, &SBHMainMenu::OnThemeClicked, Index)
+				[
+					SNew(STextBlock)
+					.Font(MenuFont(8, FName(TEXT("Bold"))))
+					.ColorAndOpacity(Theme.Background)
+					.Text(FText::FromString(BHMenuThemeName(Index)))
+				]
+			];
+	}
+
+	return SNew(SVerticalBox)
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 12.0f, 0.0f, 0.0f)
+		[
+			SNew(STextBlock)
+			.Font(MenuFont(10, FName(TEXT("Bold"))))
+			.ColorAndOpacity(FLinearColor(0.78f, 0.84f, 0.88f, 1.0f))
+			.Text(FText::FromString(TEXT("UI Theme")))
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 5.0f, 0.0f, 0.0f)
+		[
+			ThemeButtons
+		];
+}
+
 TSharedRef<SWidget> SBHMainMenu::BuildRecolorSection()
 {
 	// Enumerate the recolourable clothing slots of the current skin (faces/skin/hair are excluded by the registry).
@@ -9386,6 +9450,11 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 						[
 							BuildRecolorSection()
 						]
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						BuildThemeSection()
 					]
 					+ SVerticalBox::Slot()
 					.AutoHeight()
@@ -11284,9 +11353,12 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 		FText::FromString(TEXT("Bunny hop to travel: tap Shift to reach sprint speed, then chain jumps. Airborne the per-second sprint drain stops, so a clean chain holds top speed for less stamina than holding Shift, letting you outlast the chase.")),
 		FText::FromString(TEXT("Buffer each hop by tapping Space just before you land; miss the rhythm and the jumps only bleed stamina with no speed gain.")),
 		FText::FromString(TEXT("Air steering is limited: line up before takeoff, then strafe/look only for small corrections.")),
-		FText::FromString(TEXT("Sprint+Ctrl rolls through capture timing windows and fits corner/doorway dodges.")),
-		FText::FromString(TEXT("Sprint+Alt slides farther and lower; holding Alt can leave you prone, but it is not silent.")),
-		FText::FromString(TEXT("Alt prone is slow, quiet, and low-visibility; Space+Alt while moving commits to a dive escape."))
+		FText::FromString(TEXT("Sprint+Ctrl rolls through capture timing windows and fits corner/doorway dodges. A CLEAN roll (no wall bump) is quieter than one that bonks - good spacing keeps you stealthy.")),
+		FText::FromString(TEXT("Sprint+Alt slides farther and lower; HOLD Alt to finish prone, or RELEASE Alt early to brake into a quiet crouch. A full slide is loud, so the Teacher hears it.")),
+		FText::FromString(TEXT("Prone is slow, quiet, and low-visibility (tap Left Alt); hold Alt then tap Space while moving to commit to a dive escape - it ends flat in prone, so tap Space or Ctrl to get up.")),
+		FText::FromString(TEXT("Drop-roll: hold Shift and tap Ctrl just before you land to roll out instead of thudding down - it kills the loud landing noise.")),
+		FText::FromString(TEXT("Leaving a locker with Shift held rolls you out - capture-immune and mobile - instead of the exposed standing pop.")),
+		FText::FromString(TEXT("Chaining roll/slide/dive frame-perfectly keeps your speed and stays quiet, but pushing the chain to its limit makes a loud overextension tell. New? Run the MOVEMENT TUTORIAL from Play."))
 	};
 	const TArray<FText> ExpertSoundItems = {
 		FText::FromString(TEXT("Running, repairs, hard landings, panic breathing, detention events, and glass are Teacher-readable clues.")),

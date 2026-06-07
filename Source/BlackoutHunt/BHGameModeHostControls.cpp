@@ -163,7 +163,12 @@ void ABHGameMode::ForceStartRound(ABHPlayerController* RequestingController)
 			return;
 		}
 
-		if (!bAllowHostForceStart)
+		// A Live Classroom host (the teacher, already gated to host-admin above) decides when to pull out of the
+		// lobby -- the welcome board says "the host departs when the class is ready" -- so they bypass the peer
+		// quorum gate (which would otherwise trap a teacher testing solo, or one waiting on stragglers).
+		const FString LiveClassroomOpt = GetWorld() ? GetWorld()->URL.GetOption(TEXT("BHLiveClassroom="), TEXT("")) : FString();
+		const bool bLiveClassroomHost = !LiveClassroomOpt.IsEmpty();
+		if (!bAllowHostForceStart && !bLiveClassroomHost)
 		{
 			int32 ReadyCount = 0;
 			if (GameState)

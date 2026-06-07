@@ -61,6 +61,10 @@ protected:
 	};
 	enum class ETeacherStep : uint8 { Intro, Move, Sprint, Axe, Scan, Noise, Counterplay, Capture, Blackout, Exit, Done };
 	enum class EMonitorStep : uint8 { Intro, Move, Unlock, Hint, Marker, Trap, Exit, Done };
+	// Advanced-movement lesson (EBHTutorialPhase::Movement): each step teaches one link and auto-advances once the
+	// player performs it (detected from the character's live state + the tutorial action latches), with a generous
+	// timeout fallback so a stuck input can never hard-lock the lesson. Roll/Slide/Dive end the course.
+	enum class EMovementStep : uint8 { Intro, Walk, Sprint, Crouch, Prone, Jump, BunnyHop, Roll, Slide, Dive, Complete };
 
 	// Defer activation a beat so the host pawn/player state exist, then run the step machine on a timer.
 	void Activate();
@@ -74,6 +78,9 @@ protected:
 	void EvaluateTeacherStep();
 	void EnterMonitorStep(EMonitorStep NewStep);
 	void EvaluateMonitorStep();
+	// Advanced-movement lesson step machine (EBHTutorialPhase::Movement).
+	void EnterMovementStep(EMovementStep NewStep);
+	void EvaluateMovementStep();
 
 	// Broadcast a guidance line to every player controller (solo in practice, but harmless for more).
 	void Broadcast(const FString& Message, float DurationSeconds) const;
@@ -165,6 +172,10 @@ protected:
 	EStep CurrentStep = EStep::Intro;
 	ETeacherStep TeacherStep = ETeacherStep::Intro;
 	EMonitorStep MonitorStep = EMonitorStep::Intro;
+	EMovementStep MovementStep = EMovementStep::Intro;
+	// The current Movement-lesson prompt, re-broadcast on a cadence so the instruction stays on screen while the
+	// player practises (the action steps don't navigate, so there is no marker to keep them oriented).
+	FString CurrentMovementPrompt;
 	float StepStartServerTime = 0.0f;
 	// Next server time the WASD prompt is re-issued during the Move step (keeps it pinned until all four keys).
 	float NextMoveHintServerTime = 0.0f;

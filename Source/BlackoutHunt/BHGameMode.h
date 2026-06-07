@@ -296,7 +296,8 @@ protected:
 		bool bCollides,
 		const FVector& FallbackScale,
 		const FLinearColor& FallbackTint,
-		EBHBlockMaterial FallbackMaterial = EBHBlockMaterial::PaintedMetal);
+		EBHBlockMaterial FallbackMaterial = EBHBlockMaterial::PaintedMetal,
+		bool bGroundToMeshBounds = false);
 	void AddFacilityVerticalSlicePass();
 	void AddFacilityDetailPass();
 	void AddClassroomHorrorPass();

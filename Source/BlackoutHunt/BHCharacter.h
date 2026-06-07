@@ -42,7 +42,9 @@ public:
 	virtual void OnRep_PlayerState() override;
 
 	void EnterLocker(ABHLocker* Locker);
-	void ExitLocker();
+	// bAllowMovementExit: true only for a voluntary player exit (not capture/escape), enabling the roll-out-of-locker
+	// link (bh.LockerRollExit) when Sprint is held. Capture/escape pass false so a downed player never rolls.
+	void ExitLocker(bool bAllowMovementExit = false);
 	void MarkCaptured();
 	void MarkEscaped();
 	void RefillFlashlight(float Amount);
@@ -99,6 +101,17 @@ public:
 	static constexpr uint8 TutorialMoveAllMask = 0x0F;
 	uint8 GetTutorialMovementMask() const { return TutorialMovementMask; }
 	void ResetTutorialMovementMask() { TutorialMovementMask = 0; }
+
+	// Movement-tutorial telemetry (server-side, listen-server host): latches the advanced links the player has
+	// performed -- the transient ones (roll/slide/dive) a coarse 0.5s tutorial poll would otherwise miss, plus the
+	// bunny-hop chain. Mirrors TutorialMovementMask. Set authoritatively; read by ABHTutorialDirector.
+	static constexpr int32 TutorialActRollBit = 1 << 0;
+	static constexpr int32 TutorialActSlideBit = 1 << 1;
+	static constexpr int32 TutorialActDiveBit = 1 << 2;
+	static constexpr int32 TutorialActBhopBit = 1 << 3;
+	int32 GetTutorialActionMask() const { return TutorialActionMask; }
+	void ResetTutorialActionMask() { TutorialActionMask = 0; TutorialBhopChain = 0; LastTutorialJumpServerTime = -999.0f; }
+	void MarkTutorialAction(int32 Bit) { TutorialActionMask |= Bit; }
 
 	// Last server time (World->GetTimeSeconds) the Hunter/Monitor used each ability. The tutorial director
 	// compares these against the step start time to detect that the student just pressed Q / R / G.
@@ -332,6 +345,9 @@ protected:
 	void TryBHopJump();
 	bool TryStartSpecialMoveAuthority(EBHMovementSpecialState RequestedState, bool bEndProne, bool bEndProneRequiresInput);
 	bool ValidateSpecialMoveSpaceAuthority(EBHMovementSpecialState RequestedState, const FBHMovementSpecialTuning& Tuning, FString& OutFailureReason) const;
+	// Vault/mantle helper (ships dark behind bh.VaultTech): if a special move's forward hit is a low, vaultable ledge
+	// with clear headroom + floor on the far side, hop over it (consuming Curve.VerticalImpulse) and return true.
+	bool TryVaultOverObstacleAuthority(const FBHMovementSpecialTuning& Tuning, const FVector& StepDir, const FHitResult& WallHit);
 	void UpdateSpecialMoveAuthority(float DeltaSeconds);
 	void EmitSpecialMoveNoiseAuthority(EBHMovementSpecialState State, FName NoiseEvent, float EventMultiplier);
 	void UpdateTeacherCaptureAttackAuthority(float DeltaSeconds);
@@ -661,6 +677,10 @@ protected:
 
 	// Server-only scratch (listen-server host) for the tutorial WASD lesson; see GetTutorialMovementMask.
 	uint8 TutorialMovementMask = 0;
+	// Server-only scratch for the Movement tutorial's advanced-link detection; see GetTutorialActionMask.
+	int32 TutorialActionMask = 0;
+	int32 TutorialBhopChain = 0;
+	float LastTutorialJumpServerTime = -999.0f;
 
 	UPROPERTY(ReplicatedUsing = OnRep_TeacherCaptureAttackActive, BlueprintReadOnly, Category = "Counterplay")
 	bool bTeacherCaptureAttackActive;
@@ -806,6 +826,21 @@ protected:
 	float LastSpecialMoveEndedTime = -999.0f;
 	int32 PerfectChainCount = 0;
 	float SpecialMoveMomentumScale = 1.0f;
+	// Quiet-roll discipline (bh.QuietRoll): set true if the active roll/slide/dive bonked a wall (MoveHit blocked),
+	// so the roll-impact stimulus fires LOUD (sloppy) while a clean, full-distance roll fires quiet (a stealth reward).
+	bool bSpecialMoveHitWall = false;
+	// Flow-chain noise amnesty (bh.MomentumChainNoiseScale): captured once at move start from the chain depth, then
+	// applied to every noise event of THIS move (the later Tick events fire after PerfectChainCount could change).
+	float SpecialMoveNoiseScale = 1.0f;
+	// Silent slide-stop (bh.SlideStopTech): set when the player releases Prone early in a Slide to brake into a quiet
+	// crouch instead of standing/proning. FinishSpecialMoveAuthority reads it to choose the Crouch end-state.
+	bool bSpecialMoveEarlyBrake = false;
+	// Crawl-gap dash (bh.CrawlDashNoiseScale): set when the active Dive was started FROM prone, so its launch AND
+	// landing noise are softened to a localizable scrape (quieter than a loud standing dive).
+	bool bSpecialMoveFromProne = false;
+	// Drop-roll (bh.DropRollTech): server time a roll was requested while airborne (buffered, not rejected). Landed()
+	// consumes a fresh stamp to suppress the hard-landing noise and roll out on touchdown.
+	float LastDropRollInputTime = -999.0f;
 	float SpecialMoveDistanceTravelled;
 	FVector SpecialMoveDirection;
 	float LastCaptureEvasionTime;

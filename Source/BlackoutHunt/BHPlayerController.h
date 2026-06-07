@@ -742,8 +742,13 @@ private:
 	void RemoveMainMenuWidget();
 	void RemoveAtmosphereConsoleWidget();
 	void RemoveBootConsoleWidget();
-	// Bound to SBHBootConsole::OnFinished. Defers teardown to the next tick (the callback fires from the
-	// widget's own Tick), then FinishBootConsole removes the widget and opens the main menu.
+	// Bound to SBHBootConsole::OnReadyForMenu: the boot console has gone fully black and is about to fade
+	// out, so place the main menu UNDERNEATH it (the console then dissolves to reveal it). Deferred a tick
+	// because the callback fires from the widget's own Tick.
+	void OnBootConsoleRevealMenu();
+	void RevealMenuUnderBootConsole();
+	// Bound to SBHBootConsole::OnFinished. Defers teardown to the next tick, then FinishBootConsole removes
+	// the widget and ensures the main menu is shown and focused.
 	void OnBootConsoleFinished();
 	void FinishBootConsole();
 	void ApplyGameplayInputMode();

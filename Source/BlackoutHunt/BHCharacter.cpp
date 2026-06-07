@@ -2060,7 +2060,14 @@ void ABHCharacter::Tick(float DeltaSeconds)
 			Movement->MaxWalkSpeed = CurrentSprintSpeed;
 		}
 
+		// The per-second sprint drain only bites while RUNNING ON THE GROUND. Once airborne it stops (and so does
+		// regen, see below), so a clean bunny-hop chain -- tap sprint to reach sprint speed, then chain jumps --
+		// holds top speed paying only the flat per-jump cost instead of the continuous ground drain. That makes a
+		// well-timed chain a little cheaper than holding sprint, which is exactly what the Advanced Movement guide
+		// promises. Without the IsMovingOnGround() gate the drain kept billing mid-air, making hops strictly MORE
+		// expensive than the help claimed (see the bunny-hop discrepancy fix).
 		const bool bTryingToSprint = Movement
+			&& Movement->IsMovingOnGround()
 			&& !IsProne()
 			&& !IsSpecialMoveActive()
 			&& Movement->MaxWalkSpeed >= CurrentSprintSpeed - 1.0f
@@ -2206,6 +2213,65 @@ void ABHCharacter::UpdateAutoSqueeze(float DeltaSeconds)
 	}
 }
 
+// --- Advanced movement link tuning (see Docs/MOVEMENT.md). Declared here (above Landed/ExitLocker, the earliest
+// users) so every consuming function below can read them. The frame-perfect flow-chain cvars live further down with
+// TryStartSpecialMoveAuthority; these are the newer noise/traversal knobs. ---------------------------------------
+// Quiet-roll discipline: a clean, full-distance roll emits its impact stimulus at this fraction of the normal
+// loudness (a stealth reward for good spacing); a roll that bonks a wall stays at the full 1.0. 1.0 disables it.
+static TAutoConsoleVariable<float> CVarBHQuietRollCleanScale(
+	TEXT("bh.QuietRollCleanScale"),
+	0.65f,
+	TEXT("Roll-impact noise multiplier for a clean (no wall contact) roll; bonked rolls stay 1.0. 1.0 = off. (Default 0.65)"),
+	ECVF_Default);
+// Flow-chain noise amnesty: each chained link reduces that move's noise by this much per link (a clean operator
+// moves quietly), but reaching the chain cap fires one loud "overextension" burst. 0.0 disables the amnesty.
+static TAutoConsoleVariable<float> CVarBHMomentumChainNoiseScale(
+	TEXT("bh.MomentumChainNoiseScale"),
+	0.18f,
+	TEXT("Per-link noise reduction for a chained special move (noise *= 1 - k*chainDepth, floored). 0 = off. (Default 0.18)"),
+	ECVF_Default);
+// Silent slide-stop: releasing Prone within this early fraction of a Slide brakes into a quiet crouch instead of
+// standing/proning (trades distance for silence). 0 disables the early-brake outcome.
+static TAutoConsoleVariable<float> CVarBHSlideStopWindow(
+	TEXT("bh.SlideStopWindow"),
+	0.45f,
+	TEXT("Release Prone before this normalized slide time to brake into a quiet crouch. 0 = off. (Default 0.45)"),
+	ECVF_Default);
+// Drop-roll: a roll requested this many seconds before landing is buffered and fired on touchdown, suppressing the
+// hard-landing noise (a skill-timed silent landing). 0 disables drop-roll buffering.
+static TAutoConsoleVariable<float> CVarBHDropRollWindow(
+	TEXT("bh.DropRollWindow"),
+	0.18f,
+	TEXT("Buffer a roll requested within this many seconds of landing and fire it on touchdown (silent landing). 0 = off. (Default 0.18)"),
+	ECVF_Default);
+// Roll-out-of-locker: holding Sprint while leaving a locker fires a capture-immune forward roll instead of the
+// exposed standing pop. 1 = on.
+static TAutoConsoleVariable<int32> CVarBHLockerRollExit(
+	TEXT("bh.LockerRollExit"),
+	1,
+	TEXT("1 (default) = holding Sprint on locker exit fires a forward roll; 0 = always a plain stand-up exit."),
+	ECVF_Default);
+// Crawl-gap dash: a dive started FROM prone uses this noise multiplier (a quieter, localizable scrape) so threading
+// a crawl gap costs information but not a full loud standing dive. 1.0 = identical to a standing dive.
+static TAutoConsoleVariable<float> CVarBHCrawlDashNoiseScale(
+	TEXT("bh.CrawlDashNoiseScale"),
+	0.55f,
+	TEXT("Noise multiplier for a dive started from prone (crawl-gap dash). 1.0 = same as a standing dive. (Default 0.55)"),
+	ECVF_Default);
+// Vault / mantle: lets a roll or slide whose forward path is blocked by a LOW, vaultable ledge convert into a short
+// up-and-over hop that finally consumes FBHMovementCurveTuning.VerticalImpulse. Ships DARK (0) -- it adds vertical
+// motion to the otherwise horizontal special-move mover and wants playtest + collision review before going live.
+static TAutoConsoleVariable<int32> CVarBHVaultTech(
+	TEXT("bh.VaultTech"),
+	0,
+	TEXT("1 = roll/slide into a low ledge vaults over it (consumes Curve.VerticalImpulse); 0 (default) = dead-stop at the obstacle as before."),
+	ECVF_Default);
+static TAutoConsoleVariable<float> CVarBHVaultMaxLedgeHeight(
+	TEXT("bh.VaultMaxLedgeHeight"),
+	95.0f,
+	TEXT("Maximum obstacle top height (cm above the floor) that bh.VaultTech will vault rather than dead-stop. (Default 95)"),
+	ECVF_Default);
+
 void ABHCharacter::Landed(const FHitResult& Hit)
 {
 	Super::Landed(Hit);
@@ -2219,6 +2285,23 @@ void ABHCharacter::Landed(const FHitResult& Hit)
 
 	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
 	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+
+	// Drop-roll: if the player buffered a roll just before touchdown (held Sprint + tapped Crouch while falling),
+	// convert the landing into a silent forward roll instead of the loud "hard landing" thud. The roll starts only
+	// AFTER touchdown, so it gets its normal i-frame window -- not a perpetual airborne capture shield.
+	const float DropRollWindow = CVarBHDropRollWindow.GetValueOnGameThread();
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	if (DropRollWindow > 0.0f && BHPS && BHPS->IsAliveSurvivor()
+		&& (Now - LastDropRollInputTime) >= 0.0f && (Now - LastDropRollInputTime) <= DropRollWindow
+		&& !IsSpecialMoveActive() && !IsProne())
+	{
+		LastDropRollInputTime = -999.0f;
+		if (TryStartSpecialMoveAuthority(EBHMovementSpecialState::Rolling, false, false))
+		{
+			return; // silent landing: the roll-start stimulus replaces the hard-landing thud
+		}
+	}
+
 	if (BHPS && BHPS->IsAliveSurvivor() && BHGS && BHGS->RoundPhase == EBHRoundPhase::Hunt)
 	{
 		EmitFootstepStimulus(0.95f * BHHorrorNoiseMultiplier(this, BHPS), TEXT("hard landing"), ResolveFootstepSurface(&Hit));
@@ -2397,7 +2480,7 @@ static FVector ResolveLockerExitLocation(UWorld* World, const FVector& Origin, c
 	return Origin + Forward * 120.0f;
 }
 
-void ABHCharacter::ExitLocker()
+void ABHCharacter::ExitLocker(bool bAllowMovementExit)
 {
 	if (!HasAuthority())
 	{
@@ -2436,6 +2519,16 @@ void ABHCharacter::ExitLocker()
 	}
 
 	ApplyHiddenState();
+
+	// Roll-out-of-locker (bh.LockerRollExit): on a VOLUNTARY exit with Sprint held, convert the exposed standing pop
+	// into a capture-immune forward roll in the direction the player is facing. The roll's own space check rejects a
+	// roll into a wall (falling back to the plain exit just performed), and its i-frames cover the catchable instant.
+	if (bAllowMovementExit && CVarBHLockerRollExit.GetValueOnGameThread() != 0 && bSprintInputHeld
+		&& !IsProne() && !IsSpecialMoveActive() && CanAct()
+		&& GetCharacterMovement() && GetCharacterMovement()->IsMovingOnGround())
+	{
+		TryStartSpecialMoveAuthority(EBHMovementSpecialState::Rolling, false, false);
+	}
 }
 
 void ABHCharacter::MarkCaptured()
@@ -3064,6 +3157,16 @@ void ABHCharacter::OnJumped_Implementation()
 		const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
 		const float Cost = BHJumpStaminaCost / FMath::Max(0.01f, BHLevelStaminaScale(BHPS));
 		Stamina = FMath::Max(0.0f, Stamina - Cost);
+
+		// Movement-tutorial telemetry: count rapid consecutive jumps as a bunny-hop chain. Hops landing within ~1.1s
+		// of each other extend the chain; a gap resets it. Three linked hops latches the Bhop bit for the tutorial.
+		const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+		TutorialBhopChain = (Now - LastTutorialJumpServerTime <= 1.1f) ? TutorialBhopChain + 1 : 1;
+		LastTutorialJumpServerTime = Now;
+		if (TutorialBhopChain >= 3)
+		{
+			MarkTutorialAction(TutorialActBhopBit);
+		}
 	}
 }
 
@@ -3522,11 +3625,15 @@ void ABHCharacter::UpdateSpecialMoveAuthority(float DeltaSeconds)
 	const float DeltaDistance = FMath::Max(0.0f, TargetDistance - SpecialMoveDistanceTravelled);
 	if (DeltaDistance > KINDA_SMALL_NUMBER && !SpecialMoveDirection.IsNearlyZero())
 	{
+		const FVector StepDir = SpecialMoveDirection.GetSafeNormal2D();
 		FHitResult MoveHit;
-		AddActorWorldOffset(SpecialMoveDirection.GetSafeNormal2D() * DeltaDistance, true, &MoveHit, ETeleportType::None);
+		AddActorWorldOffset(StepDir * DeltaDistance, true, &MoveHit, ETeleportType::None);
 		SpecialMoveDistanceTravelled += MoveHit.bBlockingHit ? DeltaDistance * MoveHit.Time : DeltaDistance;
-		if (MoveHit.bBlockingHit)
+		if (MoveHit.bBlockingHit && !TryVaultOverObstacleAuthority(Tuning, StepDir, MoveHit))
 		{
+			// Quiet-roll discipline: a bonked roll is "dirty" -> its impact stimulus fires LOUD (full 1.0); a clean,
+			// uninterrupted roll fires quiet. Tracked here because the impact event below fires before full distance.
+			bSpecialMoveHitWall = true;
 			SpecialMoveEndTime = GetWorld()->GetTimeSeconds();
 		}
 	}
@@ -3534,18 +3641,63 @@ void ABHCharacter::UpdateSpecialMoveAuthority(float DeltaSeconds)
 	if (MovementSpecialState == EBHMovementSpecialState::Rolling && NormalizedTime >= 0.34f && !(SpecialMoveNoiseEventMask & 0x01))
 	{
 		SpecialMoveNoiseEventMask |= 0x01;
-		EmitSpecialMoveNoiseAuthority(MovementSpecialState, FName(TEXT("roll impact")), 1.0f);
+		const float CleanScale = FMath::Clamp(CVarBHQuietRollCleanScale.GetValueOnGameThread(), 0.0f, 1.0f);
+		const float RollImpactMult = (bSpecialMoveHitWall ? 1.0f : CleanScale) * SpecialMoveNoiseScale;
+		EmitSpecialMoveNoiseAuthority(MovementSpecialState, FName(TEXT("roll impact")), RollImpactMult);
 	}
 	else if (MovementSpecialState == EBHMovementSpecialState::Sliding && NormalizedTime >= 0.42f && !(SpecialMoveNoiseEventMask & 0x02))
 	{
 		SpecialMoveNoiseEventMask |= 0x02;
-		EmitSpecialMoveNoiseAuthority(MovementSpecialState, FName(TEXT("slide scrape")), 0.65f);
+		EmitSpecialMoveNoiseAuthority(MovementSpecialState, FName(TEXT("slide scrape")), 0.65f * SpecialMoveNoiseScale);
 	}
 	else if (MovementSpecialState == EBHMovementSpecialState::Diving && NormalizedTime >= 0.82f && !(SpecialMoveNoiseEventMask & 0x04))
 	{
 		SpecialMoveNoiseEventMask |= 0x04;
-		EmitSpecialMoveNoiseAuthority(MovementSpecialState, FName(TEXT("dive landing")), 1.0f);
+		const float DiveLandMult = bSpecialMoveFromProne ? FMath::Clamp(CVarBHCrawlDashNoiseScale.GetValueOnGameThread(), 0.0f, 1.0f) : 1.0f;
+		EmitSpecialMoveNoiseAuthority(MovementSpecialState, FName(TEXT("dive landing")), DiveLandMult * SpecialMoveNoiseScale);
 	}
+}
+
+// Vault / mantle (ships dark behind bh.VaultTech): when a roll/slide's forward sweep is blocked by a LOW, vaultable
+// ledge with clear headroom and floor on the far side, hop up-and-over it instead of dead-stopping -- the one place
+// the otherwise-unused FBHMovementCurveTuning.VerticalImpulse is consumed. Returns true if a vault was performed.
+bool ABHCharacter::TryVaultOverObstacleAuthority(const FBHMovementSpecialTuning& Tuning, const FVector& StepDir, const FHitResult& WallHit)
+{
+	if (CVarBHVaultTech.GetValueOnGameThread() == 0 || Tuning.Curve.VerticalImpulse <= 0.0f || (SpecialMoveNoiseEventMask & 0x08))
+	{
+		return false;
+	}
+	const UCapsuleComponent* Capsule = GetCapsuleComponent();
+	if (!Capsule || !GetWorld() || !GetWorld()->GetPhysicsScene() || StepDir.IsNearlyZero())
+	{
+		return false;
+	}
+
+	const float HalfHeight = Capsule->GetScaledCapsuleHalfHeight();
+	const float FloorZ = GetActorLocation().Z - HalfHeight;
+	const float LedgeHeight = WallHit.ImpactPoint.Z - FloorZ;
+	const float MaxLedge = FMath::Max(0.0f, CVarBHVaultMaxLedgeHeight.GetValueOnGameThread());
+	if (LedgeHeight <= 8.0f || LedgeHeight > MaxLedge)
+	{
+		return false; // not a low ledge (a real wall, or just the floor) -> dead-stop as before
+	}
+
+	// Target a standing spot just past the obstacle, raised by the vault impulse (clamped so we never launch into
+	// the ceiling). Require clear headroom there before committing.
+	const float Lift = FMath::Min(Tuning.Curve.VerticalImpulse, LedgeHeight + 28.0f);
+	const FVector OverPos = GetActorLocation() + StepDir * (DefaultCapsuleRadius * 2.4f) + FVector(0.0f, 0.0f, Lift);
+	const FCollisionShape Shape = FCollisionShape::MakeCapsule(DefaultCapsuleRadius * 0.9f, HalfHeight);
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BHVaultProbe), false, this);
+	if (GetWorld()->OverlapBlockingTestByChannel(OverPos, FQuat::Identity, Capsule->GetCollisionObjectType(), Shape, Params))
+	{
+		return false; // far side is blocked (it's a tall wall, not vaultable cover)
+	}
+
+	FHitResult VaultHit;
+	AddActorWorldOffset(OverPos - GetActorLocation(), true, &VaultHit, ETeleportType::None);
+	SpecialMoveNoiseEventMask |= 0x08; // vault once per move
+	EmitSpecialMoveNoiseAuthority(MovementSpecialState, FName(TEXT("vault")), 0.9f * SpecialMoveNoiseScale);
+	return true;
 }
 
 // Momentum "flow chain" tech. A frame-perfect transient special-move input within this window right as the
@@ -3600,6 +3752,14 @@ bool ABHCharacter::TryStartSpecialMoveAuthority(EBHMovementSpecialState Requeste
 	UCharacterMovementComponent* Movement = GetCharacterMovement();
 	if (!Movement || !Movement->IsMovingOnGround())
 	{
+		// Drop-roll: a roll requested in the air (Sprint held + Crouch) just before landing is BUFFERED rather than
+		// simply rejected, so Landed() can fire it on touchdown and suppress the hard-landing noise. Only the roll,
+		// only when the not-grounded gate is the blocker -- a stamina/space failure below still rejects normally.
+		if (Movement && RequestedState == EBHMovementSpecialState::Rolling && bSprintInputHeld
+			&& CVarBHDropRollWindow.GetValueOnGameThread() > 0.0f)
+		{
+			LastDropRollInputTime = GetWorld()->GetTimeSeconds();
+		}
 		ClientSpecialMoveRejected(RequestedState, TEXT("Get your footing first."));
 		return false;
 	}
@@ -3675,6 +3835,17 @@ bool ABHCharacter::TryStartSpecialMoveAuthority(EBHMovementSpecialState Requeste
 	SpecialMoveDirection = GetActorForwardVector().GetSafeNormal2D();
 	LastCaptureEvasionTime = Now;
 	SpecialMoveNoiseEventMask = 0;
+	bSpecialMoveHitWall = false;
+	bSpecialMoveEarlyBrake = false;
+	bSpecialMoveFromProne = bDiveFromProne; // crawl-gap dash: a from-prone dive is the quiet variant
+	// Flow-chain noise amnesty: a chained link is quieter (a clean operator moves quietly), captured once here so the
+	// later Tick noise events use this move's depth even after PerfectChainCount changes. The chain CAP fires a loud
+	// "overextension" tell below, so pushing the chain to its limit broadcasts your position -- greed has a cost.
+	{
+		const int32 ThisMoveChainDepth = bPerfectChain ? PerfectChainCount + 1 : 0;
+		const float ChainNoiseK = FMath::Max(0.0f, CVarBHMomentumChainNoiseScale.GetValueOnGameThread());
+		SpecialMoveNoiseScale = FMath::Clamp(1.0f - ChainNoiseK * static_cast<float>(ThisMoveChainDepth), 0.35f, 1.0f);
+	}
 	bSpecialMoveEndsProne = bEndProne;
 	bSpecialMoveEndProneRequiresInput = bEndProneRequiresInput;
 	bBHopJumpQueued = false;
@@ -3690,25 +3861,42 @@ bool ABHCharacter::TryStartSpecialMoveAuthority(EBHMovementSpecialState Requeste
 
 	if (RequestedState == EBHMovementSpecialState::Rolling)
 	{
-		EmitSpecialMoveNoiseAuthority(RequestedState, FName(TEXT("roll start")), 0.45f);
+		EmitSpecialMoveNoiseAuthority(RequestedState, FName(TEXT("roll start")), 0.45f * SpecialMoveNoiseScale);
 	}
 	else if (RequestedState == EBHMovementSpecialState::Sliding)
 	{
-		EmitSpecialMoveNoiseAuthority(RequestedState, FName(TEXT("slide start")), 0.82f);
+		EmitSpecialMoveNoiseAuthority(RequestedState, FName(TEXT("slide start")), 0.82f * SpecialMoveNoiseScale);
 	}
 	else if (RequestedState == EBHMovementSpecialState::Diving)
 	{
-		EmitSpecialMoveNoiseAuthority(RequestedState, FName(TEXT("dive launch")), 0.78f);
+		// A dive started from prone is the quieter "crawl-gap dash": a localizable scrape, not the full loud launch.
+		const float DiveStartMult = bDiveFromProne ? 0.78f * FMath::Clamp(CVarBHCrawlDashNoiseScale.GetValueOnGameThread(), 0.0f, 1.0f) : 0.78f;
+		EmitSpecialMoveNoiseAuthority(RequestedState, FName(TEXT("dive launch")), DiveStartMult * SpecialMoveNoiseScale);
 	}
 
 	if (bPerfectChain)
 	{
 		++PerfectChainCount;
 		ClientNotifyPerfectChain(PerfectChainCount);
+		// Greed tell: the link that reaches the chain cap broadcasts a single loud "overextension" burst, so a master
+		// who pushes the chain to its limit pays the noise economy back even though the earlier links were quiet.
+		if (PerfectChainCount >= CVarBHMomentumChainMaxLinks.GetValueOnGameThread())
+		{
+			EmitSpecialMoveNoiseAuthority(RequestedState, FName(TEXT("overextension")), 1.5f);
+		}
 	}
 	else
 	{
 		PerfectChainCount = 0;
+	}
+
+	// Movement-tutorial telemetry: latch which transient link just fired (a 0.5s tutorial poll would miss it).
+	switch (RequestedState)
+	{
+	case EBHMovementSpecialState::Rolling: MarkTutorialAction(TutorialActRollBit); break;
+	case EBHMovementSpecialState::Sliding: MarkTutorialAction(TutorialActSlideBit); break;
+	case EBHMovementSpecialState::Diving:  MarkTutorialAction(TutorialActDiveBit); break;
+	default: break;
 	}
 
 	ForceNetUpdate();
@@ -3729,6 +3917,7 @@ void ABHCharacter::FinishSpecialMoveAuthority()
 	}
 
 	const bool bShouldEndProne = bSpecialMoveEndsProne && (!bSpecialMoveEndProneRequiresInput || bProneInputHeld);
+	const bool bShouldEndCrouched = bSpecialMoveEarlyBrake && !bShouldEndProne; // silent slide-stop
 	MovementSpecialState = bShouldEndProne ? EBHMovementSpecialState::Prone : EBHMovementSpecialState::None;
 	SpecialMoveStartTime = -999.0f;
 	SpecialMoveEndTime = -999.0f;
@@ -3736,8 +3925,18 @@ void ABHCharacter::FinishSpecialMoveAuthority()
 	SpecialMoveNoiseEventMask = 0;
 	bSpecialMoveEndsProne = false;
 	bSpecialMoveEndProneRequiresInput = false;
+	bSpecialMoveEarlyBrake = false;
+	bSpecialMoveHitWall = false;
+	bSpecialMoveFromProne = false;
+	SpecialMoveNoiseScale = 1.0f;
 	ClearCosmeticSpecialMove();
 	ApplyMovementSpecialState();
+	// Silent slide-stop settles into a low, quiet crouch (not a full stand) when there is headroom to do so.
+	if (bShouldEndCrouched && MovementSpecialState == EBHMovementSpecialState::None
+		&& GetCharacterMovement() && GetCharacterMovement()->IsMovingOnGround() && GetCharacterMovement()->CanEverCrouch())
+	{
+		Crouch();
+	}
 	ForceNetUpdate();
 }
 
@@ -6938,7 +7137,7 @@ void ABHCharacter::ServerExitCurrentLocker_Implementation()
 
 void ABHCharacter::ExitCurrentLockerAuthority()
 {
-	ExitLocker();
+	ExitLocker(true); // voluntary exit -> roll-out-of-locker is allowed when Sprint is held
 }
 
 void ABHCharacter::ServerSetSprinting_Implementation(bool bNewSprinting)
@@ -7007,6 +7206,23 @@ void ABHCharacter::ServerSetProneInputHeld_Implementation(bool bHeld)
 	if (!bHeld && MovementSpecialState == EBHMovementSpecialState::Sliding && bSpecialMoveEndProneRequiresInput)
 	{
 		bSpecialMoveEndsProne = false;
+		// Silent slide-stop: releasing Prone EARLY in the slide brakes the dash into a quiet crouch (third outcome,
+		// alongside hold-to-prone and late-release-to-stand). It costs the full slide stamina but yields less
+		// distance and skips the loud scrape -- a deliberate quiet-vs-distance choice. FinishSpecialMoveAuthority
+		// reads bSpecialMoveEarlyBrake to settle into the crouch.
+		const float Window = CVarBHSlideStopWindow.GetValueOnGameThread();
+		if (Window > 0.0f && GetWorld())
+		{
+			const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+			const FBHMovementSpecialTuning Tuning = BHGetSpecialMoveTuning(BHPS, EBHMovementSpecialState::Sliding);
+			const float Duration = FMath::Max(0.01f, Tuning.DurationSeconds);
+			const float NormalizedTime = FMath::Clamp((GetWorld()->GetTimeSeconds() - SpecialMoveStartTime) / Duration, 0.0f, 1.0f);
+			if (NormalizedTime <= Window)
+			{
+				bSpecialMoveEarlyBrake = true;
+				SpecialMoveEndTime = GetWorld()->GetTimeSeconds(); // cut the dash now; the Tick finisher settles to crouch
+			}
+		}
 	}
 }
 

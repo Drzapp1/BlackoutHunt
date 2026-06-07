@@ -2042,11 +2042,31 @@ ABHRuntimeMeshPropActor* ABHGameMode::SpawnRuntimeMeshProp(
 	bool bCollides,
 	const FVector& FallbackScale,
 	const FLinearColor& FallbackTint,
-	EBHBlockMaterial FallbackMaterial)
+	EBHBlockMaterial FallbackMaterial,
+	bool bGroundToMeshBounds)
 {
 	if (!GetWorld())
 	{
 		return nullptr;
+	}
+
+	UStaticMesh* MeshAsset = MeshAssetPath.IsEmpty() ? nullptr : LoadObject<UStaticMesh>(nullptr, *MeshAssetPath);
+
+	// Imported meshes (e.g. the CC0 Kenney roof props) carry an arbitrary FBX pivot, so planting that pivot
+	// at the requested point leaves the model floating off-centre and above the surface. When grounding is
+	// requested, shift the spawn so the mesh's *bounds* land where the caller meant: bounds centre over the
+	// XY, bounds bottom resting on the Z. Yaw-only is assumed (all roof decor), so Z extents are unaffected
+	// by rotation and only the XY centre needs rotating. Skipped for the fallback block (its scale is exact).
+	FVector PlacedLocation = Location;
+	if (bGroundToMeshBounds && MeshAsset)
+	{
+		const FBox LocalBox = MeshAsset->GetBoundingBox();
+		const FVector ScaledOrigin = LocalBox.GetCenter() * MeshScale;
+		const FVector ScaledExtent = LocalBox.GetExtent() * MeshScale;
+		const FVector RotatedOrigin = Rotation.RotateVector(ScaledOrigin);
+		PlacedLocation.X = Location.X - RotatedOrigin.X;
+		PlacedLocation.Y = Location.Y - RotatedOrigin.Y;
+		PlacedLocation.Z = Location.Z - (ScaledOrigin.Z - ScaledExtent.Z);
 	}
 
 #if WITH_EDITOR
@@ -2054,7 +2074,7 @@ ABHRuntimeMeshPropActor* ABHGameMode::SpawnRuntimeMeshProp(
 	// cooks with the map, and is editable), falling back to an authored block actor if the mesh is missing.
 	if (bAuthoringExport)
 	{
-		if (!SpawnAuthoredMeshActor(Location, Rotation, MeshAssetPath, MaterialAssetPath, MeshScale, bCollides))
+		if (!SpawnAuthoredMeshActor(PlacedLocation, Rotation, MeshAssetPath, MaterialAssetPath, MeshScale, bCollides))
 		{
 			SpawnAuthoredBlockActor(Location, FallbackScale, FallbackTint, Rotation, bCollides, FallbackMaterial, false);
 		}
@@ -2062,7 +2082,6 @@ ABHRuntimeMeshPropActor* ABHGameMode::SpawnRuntimeMeshProp(
 	}
 #endif
 
-	UStaticMesh* MeshAsset = MeshAssetPath.IsEmpty() ? nullptr : LoadObject<UStaticMesh>(nullptr, *MeshAssetPath);
 	if (!MeshAsset)
 	{
 		SpawnBlock(Location, FallbackScale, FallbackTint, Rotation, bCollides, FallbackMaterial);
@@ -2071,7 +2090,7 @@ ABHRuntimeMeshPropActor* ABHGameMode::SpawnRuntimeMeshProp(
 
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	ABHRuntimeMeshPropActor* Prop = GetWorld()->SpawnActor<ABHRuntimeMeshPropActor>(Location, Rotation, SpawnParams);
+	ABHRuntimeMeshPropActor* Prop = GetWorld()->SpawnActor<ABHRuntimeMeshPropActor>(PlacedLocation, Rotation, SpawnParams);
 	if (!Prop)
 	{
 		SpawnBlock(Location, FallbackScale, FallbackTint, Rotation, bCollides, FallbackMaterial);
@@ -3361,15 +3380,14 @@ TArray<EBHPhysicsTopic> ABHGameMode::GetRevisionWeakTopics() const
 
 int32 ABHGameMode::ResolveRevisionQuestionTargetFor(int32 StudentCount, int32 StageIndex)
 {
-	if (StudentCount >= 10)
-	{
-		return StageIndex <= 0 ? 2 : 3;
-	}
+	// Raised by one across the board (was 2-3). With mastery now cumulative across the session's stages,
+	// more questions per node simply means more genuine retrievals toward each student's durable mastery
+	// rather than a steeper one-off bar.
 	if (StudentCount >= 6)
 	{
-		return 3;
+		return StageIndex <= 0 ? 3 : 4;
 	}
-	return 2;
+	return 3;
 }
 
 int32 ABHGameMode::ResolveRevisionNodeTargetFor(int32 StudentCount, int32 StageIndex, int32 StationCount)
@@ -3412,16 +3430,18 @@ int32 ABHGameMode::GetRevisionAnswerTeamTargetSize() const
 	{
 		return StudentCount;
 	}
-	if (StudentCount >= 10)
-	{
-		return 5;
-	}
-	return 4;
+	// Smaller answer teams (was 4 for 4-9 students, 5 for 10+). A team of 3 means each student must
+	// personally cast more votes, and a single vote swings the majority more, so individual answering
+	// carries more weight -- reinforcing the no-free-rider per-voter grading.
+	return 3;
 }
 
 int32 ABHGameMode::ComputeLiveRevisionContributionTarget() const
 {
-	return FMath::Clamp(5 + FMath::Clamp(RuntimeStageIndex, 0, 1), 5, 6);
+	// Raised from 5-6. The per-round contribution gate now measures genuine individual work: with per-voter
+	// grading a vote only counts when the student is personally right, and mastery is durable across stages,
+	// so each round can fairly ask for a larger, hand-earned set of correct answers. Ramps 8 -> 10 -> 12.
+	return FMath::Clamp(8 + 2 * FMath::Clamp(RuntimeStageIndex, 0, 2), 8, 12);
 }
 
 int32 ABHGameMode::GetRevisionMinimumContributionTarget() const
@@ -5978,6 +5998,10 @@ void ABHGameMode::BuildRuntimeFacility()
 		{
 			RuntimeTutorialPhase = EBHTutorialPhase::Monitor;
 		}
+		else if (TutorialPhaseOption.Equals(TEXT("Movement"), ESearchCase::IgnoreCase))
+		{
+			RuntimeTutorialPhase = EBHTutorialPhase::Movement;
+		}
 		else
 		{
 			RuntimeTutorialPhase = EBHTutorialPhase::Survivor;
@@ -8089,7 +8113,10 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 			// strips plus the dark backdrop carry the moving-tunnel read on their own.
 			if (ABHTrainTunnelMotionActor* Tunnel = GetWorld()->SpawnActor<ABHTrainTunnelMotionActor>(FVector(CenterX, SideY, 165.0f), FRotator::ZeroRotator))
 			{
-				Tunnel->ConfigureMotion(1250.0f, 740.0f);
+				// Loop length == the full car pitch (1500) so the strips/pillars tile the ENTIRE window band of
+				// the car edge to edge. A shorter loop only painted the middle panes and left the windows near
+				// the gangways static ("the bars don't go all the way").
+				Tunnel->ConfigureMotion(1500.0f, 740.0f);
 				if (TrainIntermissionManager)
 				{
 					TrainIntermissionManager->RegisterTunnelMotion(Tunnel);
@@ -8237,6 +8264,20 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 		SpawnBlock(FVector(TubeMaxX - 30.0f, 0.0f, 346.0f), FVector(0.08f, 6.0f, 0.60f), RoofRailTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
 		SpawnBlock(FVector(TubeMinX + 30.0f, 0.0f, 346.0f), FVector(0.08f, 6.0f, 0.60f), RoofRailTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
 
+		// Solid roof EAVE / overhang: opaque slab from just inside the rail (y=+/-303) out to the tunnel backdrop
+		// (y=+/-580), flush with the walkable roof top (z316). Without it a passenger on the roof looks over the
+		// low rail straight down at the moving-tunnel strips (y=+/-430) and the trench -- the "outside mechanics
+		// visible from the roof". The underside (z304) is above the window header (z212), so the strips still show
+		// through the windows from INSIDE but are capped from ABOVE. Real metro cars overhang their windows the
+		// same way. The +Y eave runs the full length (the +Y backdrop does too); the -Y eave stops at x2000 to
+		// match the -Y backdrop and stay clear of the station (whose scenery occupies the -Y side beyond x2000).
+		const float EaveCenterY = 0.5f * (303.0f + BackdropY);
+		const float EaveScaleY = (BackdropY - 303.0f + 6.0f) / 100.0f;
+		SpawnBlock(FVector(0.0f, EaveCenterY, CenterZForBlockTop(316.0f, 0.12f)), FVector(TubeLen, EaveScaleY, 0.12f), RoofTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		const float NegEaveCenterX = (TubeMinX + 2000.0f) * 0.5f;
+		const float NegEaveLen = (2000.0f - TubeMinX) / 100.0f;
+		SpawnBlock(FVector(NegEaveCenterX, -EaveCenterY, CenterZForBlockTop(316.0f, 0.12f)), FVector(NegEaveLen, EaveScaleY, 0.12f), RoofTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+
 		// Roof-light breaker: tucked off to the +Y side a fair walk from the hatch (secretish, but reachable and
 		// pingable with N). Sits ON the roof slab (top ~z316). Throwing it toggles that player's OWN client-local
 		// roof service lights (per-player, not shared).
@@ -8370,12 +8411,34 @@ void ABHGameMode::BuildTrainLobbyLevel()
 		SpawnBlock(FVector(GangwayX, 0.0f, CenterZForBlockBottom(ArchTopZ, (CeilZ - ArchTopZ) / 100.0f)), FVector(WallTh, (2.0f * ArchHalf) / 100.0f, (CeilZ - ArchTopZ) / 100.0f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
 	}
 
+	// Each car gets its own accent colour + cove glow from these palettes so the long train doesn't read as one
+	// repeated carriage. Indexed by car so neighbours always differ.
+	const FLinearColor CarAccents[] = {
+		FLinearColor(0.10f, 0.36f, 0.42f, 1.0f),  // teal
+		FLinearColor(0.42f, 0.20f, 0.34f, 1.0f),  // plum
+		FLinearColor(0.18f, 0.34f, 0.20f, 1.0f),  // moss
+		FLinearColor(0.44f, 0.30f, 0.12f, 1.0f),  // amber
+		FLinearColor(0.16f, 0.24f, 0.44f, 1.0f),  // indigo
+		FLinearColor(0.42f, 0.16f, 0.16f, 1.0f)   // brick
+	};
+	const FLinearColor CarGlow[] = {
+		FLinearColor(0.40f, 0.66f, 0.70f, 1.0f),
+		FLinearColor(0.86f, 0.42f, 0.70f, 1.0f),
+		FLinearColor(0.46f, 0.90f, 0.52f, 1.0f),
+		FLinearColor(0.95f, 0.70f, 0.30f, 1.0f),
+		FLinearColor(0.42f, 0.56f, 1.00f, 1.0f),
+		FLinearColor(1.00f, 0.46f, 0.40f, 1.0f)
+	};
+	const int32 NumAccents = UE_ARRAY_COUNT(CarAccents);
+
 	// Per-car dressing, seating, moving-tunnel strips, and spawn points.
 	SurvivorSpawns.Reset();
 	HunterSpawn = FVector(TubeMinX + 200.0f, 0.0f, 124.0f);
 	for (int32 CarIndex = 0; CarIndex < NumCars; ++CarIndex)
 	{
 		const float CenterX = TubeMinX + 750.0f + CarIndex * 1500.0f;
+		const FLinearColor CarAccent = CarAccents[CarIndex % NumAccents];
+		const FLinearColor CarGlowTint = CarGlow[CarIndex % NumAccents];
 
 		// Hand poles + longitudinal overhead grab rails.
 		for (int32 PoleIndex = 0; PoleIndex < 2; ++PoleIndex)
@@ -8387,25 +8450,39 @@ void ABHGameMode::BuildTrainLobbyLevel()
 		SpawnBlock(FVector(CenterX, -72.0f, 248.0f), FVector(8.2f, 0.05f, 0.05f), PoleTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
 		SpawnBlock(FVector(CenterX, 72.0f, 248.0f), FVector(8.2f, 0.05f, 0.05f), PoleTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
 
-		// Wall benches both sides of every car (seating throughout).
+		// Wall benches both sides of every car (seating throughout), tinted in this car's accent colour.
 		for (float BenchXOffset : {-360.0f, 360.0f})
 		{
-			SpawnBlock(FVector(CenterX + BenchXOffset, -262.0f, 70.0f), FVector(1.5f, 0.42f, 0.38f), SeatTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
-			SpawnBlock(FVector(CenterX + BenchXOffset, 262.0f, 70.0f), FVector(1.5f, 0.42f, 0.38f), SeatTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+			SpawnBlock(FVector(CenterX + BenchXOffset, -262.0f, 70.0f), FVector(1.5f, 0.42f, 0.38f), CarAccent, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+			SpawnBlock(FVector(CenterX + BenchXOffset, 262.0f, 70.0f), FVector(1.5f, 0.42f, 0.38f), CarAccent, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+		}
+		// Per-car colour: a glowing accent band just above the windows on both walls, so each carriage reads as
+		// its own from inside and down the aisle.
+		for (float BandY : {-296.0f, 296.0f})
+		{
+			SpawnBlock(FVector(CenterX, BandY, 216.0f), FVector(13.0f, 0.04f, 0.07f), CarGlowTint, FRotator::ZeroRotator, false, EBHBlockMaterial::Tinted);
 		}
 
 		// Moving-tunnel strips on both sides, kept running so the lobby reads as a train heading to the first
-		// stop. Not registered with any manager (the lobby has none).
+		// stop. Not registered with any manager (the lobby has none). The loop length is set to the full car
+		// pitch (1500) so each car's strips tile its entire window band edge-to-edge: a shorter loop only
+		// painted the middle windows and left the panes near the gangways static (the "covers part of the
+		// window sections" gap). Adjacent cars each cover their own 1500 span, so the run is gapless.
 		for (float SideY : {430.0f, -430.0f})
 		{
 			if (ABHTrainTunnelMotionActor* Tunnel = GetWorld()->SpawnActor<ABHTrainTunnelMotionActor>(FVector(CenterX, SideY, 165.0f), FRotator::ZeroRotator))
 			{
-				Tunnel->ConfigureMotion(1250.0f, 520.0f);
+				Tunnel->ConfigureMotion(1500.0f, 520.0f);
 			}
 		}
 
-		// Spawn points along the aisle (clear of the central booths in the lounge cars).
-		SurvivorSpawns.Add(FVector(CenterX, 0.0f, 124.0f));
+		// Spawn points along the aisle. The two GAME cars (CarIndex 2 & 4) carry a centred feature table, so skip
+		// their centre spawn to avoid materialising a player on top of the table; the side spawns stay clear.
+		const bool bGameCar = (CarIndex == 2 || CarIndex == 4);
+		if (!bGameCar)
+		{
+			SurvivorSpawns.Add(FVector(CenterX, 0.0f, 124.0f));
+		}
 		SurvivorSpawns.Add(FVector(CenterX, -200.0f, 124.0f));
 		SurvivorSpawns.Add(FVector(CenterX, 200.0f, 124.0f));
 
@@ -8426,15 +8503,80 @@ void ABHGameMode::BuildTrainLobbyLevel()
 	// clear; planters tuck near the gangway ends, clear of the wall benches at y=+/-262.
 	const FLinearColor PlanterTint(0.16f, 0.18f, 0.17f, 1.0f);
 	const FLinearColor FoliageTint(0.14f, 0.42f, 0.20f, 1.0f);
+
+	// A big chess table: pedestal, an 8x8 checkered top, a back rank of pieces per side, and two stools.
+	auto AddChessTable = [&](float TX)
+	{
+		const FLinearColor Light(0.82f, 0.78f, 0.66f, 1.0f);
+		const FLinearColor Dark(0.18f, 0.14f, 0.11f, 1.0f);
+		const FLinearColor Frame(0.30f, 0.22f, 0.14f, 1.0f);
+		SpawnBlock(FVector(TX, 0.0f, 30.0f), FVector(0.32f, 0.32f, 0.58f), Frame, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(TX, 0.0f, 60.0f), FVector(1.55f, 1.55f, 0.10f), Frame, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		const float Cell = 13.0f;                       // 13cm squares -> ~104cm board
+		const float Origin = -3.5f * Cell;              // centre the 8x8 grid on TX / y=0
+		for (int32 Row = 0; Row < 8; ++Row)
+		{
+			for (int32 Col = 0; Col < 8; ++Col)
+			{
+				const bool bLightCell = ((Row + Col) % 2) == 0;
+				SpawnBlock(FVector(TX + Origin + Col * Cell, Origin + Row * Cell, 66.0f),
+					FVector(Cell / 100.0f * 0.96f, Cell / 100.0f * 0.96f, 0.03f), bLightCell ? Light : Dark, FRotator::ZeroRotator, false, EBHBlockMaterial::Tiles);
+			}
+		}
+		for (int32 Col = 0; Col < 8; ++Col)
+		{
+			SpawnBlock(FVector(TX + Origin + Col * Cell, Origin, 73.0f), FVector(0.05f, 0.05f, 0.11f), Light, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+			SpawnBlock(FVector(TX + Origin + Col * Cell, -Origin, 73.0f), FVector(0.05f, 0.05f, 0.11f), Dark, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+		}
+		SpawnBlock(FVector(TX - 115.0f, 0.0f, 40.0f), FVector(0.42f, 0.42f, 0.40f), CarAccents[1], FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+		SpawnBlock(FVector(TX + 115.0f, 0.0f, 40.0f), FVector(0.42f, 0.42f, 0.40f), CarAccents[1], FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+	};
+
+	// A blackjack / card table: green felt top on a wood base, chip stacks, a couple of dealt cards, and stools.
+	auto AddCardTable = [&](float TX)
+	{
+		const FLinearColor Felt(0.05f, 0.30f, 0.15f, 1.0f);
+		const FLinearColor Wood(0.26f, 0.16f, 0.10f, 1.0f);
+		const FLinearColor ChipR(0.85f, 0.18f, 0.18f, 1.0f);
+		const FLinearColor ChipW(0.90f, 0.88f, 0.82f, 1.0f);
+		const FLinearColor ChipB(0.16f, 0.20f, 0.55f, 1.0f);
+		SpawnBlock(FVector(TX, 0.0f, 30.0f), FVector(0.32f, 0.32f, 0.56f), Wood, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(TX, 0.0f, 58.0f), FVector(1.8f, 1.15f, 0.10f), Wood, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(TX, 0.0f, 64.0f), FVector(1.62f, 0.98f, 0.02f), Felt, FRotator::ZeroRotator, false, EBHBlockMaterial::Tiles);
+		SpawnBlock(FVector(TX - 45.0f, -28.0f, 68.0f), FVector(0.07f, 0.07f, 0.06f), ChipR, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(TX, -32.0f, 69.0f), FVector(0.07f, 0.07f, 0.08f), ChipB, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(TX + 45.0f, -28.0f, 67.0f), FVector(0.07f, 0.07f, 0.05f), ChipW, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(TX + 55.0f, 22.0f, 66.0f), FVector(0.10f, 0.15f, 0.01f), ChipW, FRotator(0.0f, 16.0f, 0.0f), false, EBHBlockMaterial::Tiles);
+		SpawnBlock(FVector(TX + 74.0f, 26.0f, 66.0f), FVector(0.10f, 0.15f, 0.01f), ChipW, FRotator(0.0f, 30.0f, 0.0f), false, EBHBlockMaterial::Tiles);
+		for (float SX : {-130.0f, 0.0f, 130.0f})
+		{
+			SpawnBlock(FVector(TX + SX, -150.0f, 40.0f), FVector(0.42f, 0.42f, 0.40f), CarAccents[3], FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+		}
+	};
+
 	for (int32 LoungeCar = 1; LoungeCar <= NumCars - 2; ++LoungeCar)
 	{
 		const float CenterX = TubeMinX + 750.0f + LoungeCar * 1500.0f;
+
+		// A couple of cars are GAME cars (chess, blackjack/cards) so there's something to gather around; they get
+		// one feature table down the centre instead of the twin booths so the table has room.
+		if (LoungeCar == 2)
+		{
+			AddChessTable(CenterX);
+			continue;
+		}
+		if (LoungeCar == 4)
+		{
+			AddCardTable(CenterX);
+			continue;
+		}
+
 		for (float BoothX : {CenterX - 300.0f, CenterX + 300.0f})
 		{
 			SpawnBlock(FVector(BoothX, 0.0f, 58.0f), FVector(0.9f, 1.2f, 0.10f), TableTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
 			SpawnBlock(FVector(BoothX, 0.0f, 30.0f), FVector(0.18f, 0.18f, 0.56f), TableTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
-			SpawnBlock(FVector(BoothX, -120.0f, 44.0f), FVector(0.95f, 0.4f, 0.30f), SeatTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
-			SpawnBlock(FVector(BoothX, 120.0f, 44.0f), FVector(0.95f, 0.4f, 0.30f), SeatTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+			SpawnBlock(FVector(BoothX, -120.0f, 44.0f), FVector(0.95f, 0.4f, 0.30f), CarAccents[LoungeCar % NumAccents], FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+			SpawnBlock(FVector(BoothX, 120.0f, 44.0f), FVector(0.95f, 0.4f, 0.30f), CarAccents[LoungeCar % NumAccents], FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
 		}
 		for (float PlanterX : {CenterX - 620.0f, CenterX + 620.0f})
 		{
@@ -8481,6 +8623,19 @@ void ABHGameMode::BuildTrainLobbyLevel()
 		SpawnBlock(FVector(0.0f, -300.0f, 346.0f), FVector(TubeLen, 0.08f, 0.60f), RoofRailTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
 		SpawnBlock(FVector(TubeMaxX - 30.0f, 0.0f, 346.0f), FVector(0.08f, 6.0f, 0.60f), RoofRailTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
 		SpawnBlock(FVector(TubeMinX + 30.0f, 0.0f, 346.0f), FVector(0.08f, 6.0f, 0.60f), RoofRailTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+
+		// Solid roof EAVE / overhang on both long sides: an opaque slab from just inside the safety rail
+		// (y=+/-303) out to the opaque tunnel backdrop (y=+/-580). Without it, a passenger on the roof can look
+		// over the low rail straight down at the moving-tunnel strips (y=+/-430) and the void behind the
+		// carriage -- the "outside mechanics visible from the roof" that breaks the illusion. The eave caps
+		// that gap: its top is flush with the walkable roof slab (z316) and its underside (z304) sits above the
+		// window header (z212), so the strips are still fully visible through the windows from INSIDE but
+		// hidden from ABOVE. Real metro cars overhang their windows the same way. Spans the full train length.
+		const float EaveCenterY = 0.5f * (303.0f + BackdropY);          // midpoint between rail and backdrop
+		const float EaveScaleY = (BackdropY - 303.0f + 6.0f) / 100.0f;  // +6cm overlap onto rail & backdrop
+		SpawnBlock(FVector(0.0f, EaveCenterY, CenterZForBlockTop(316.0f, 0.12f)), FVector(TubeLen, EaveScaleY, 0.12f), RoofTintColor, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(0.0f, -EaveCenterY, CenterZForBlockTop(316.0f, 0.12f)), FVector(TubeLen, EaveScaleY, 0.12f), RoofTintColor, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+
 		GetWorld()->SpawnActor<ABHTrainRoofBreaker>(FVector(HatchLocation.X + 2000.0f, 250.0f, 333.0f), FRotator(0.0f, 180.0f, 0.0f), RoofSpawnParams);
 
 		// Stargazing sky, decorations, and the rooftop parkour course (shared between the intermission + lobby roofs).
@@ -8488,6 +8643,11 @@ void ABHGameMode::BuildTrainLobbyLevel()
 	}
 
 	ConvertMonitorsBackToSurvivors(TEXT("train lobby"));
+	// Tell clients this is the live lobby carriage (not the bare menu map) so the ride sway plays here too.
+	if (ABHGameState* LobbyGS = GetGameState<ABHGameState>())
+	{
+		LobbyGS->SetLobbyTrainActive(true);
+	}
 	BuildRuntimeNavigation();
 }
 
@@ -8502,6 +8662,12 @@ void ABHGameMode::BuildTrainRoofExtras(float TubeMinX, float TubeMaxX, const FVe
 	const FLinearColor DarkMetal(0.12f, 0.13f, 0.14f, 1.0f);
 	const FLinearColor SeatTint(0.10f, 0.36f, 0.42f, 1.0f);
 	const float RoofTopZ = 316.0f;   // walkable roof slab top
+	// Decoration is spread across the WHOLE roof span (front hatch -> back) so the rear of the train is not a
+	// bare deck. The positions below are fractions of the full length, so this scales to both the 75u
+	// intermission roof and the 135u lobby roof from the same code.
+	const float RoofSpan = TubeMaxX - TubeMinX;
+	const float SpanLo = TubeMinX + 0.06f * RoofSpan;
+	const float SpanHi = TubeMaxX - 0.06f * RoofSpan;
 
 	// Interactables (the parkour finish) carry blocking collision, so force AlwaysSpawn like the other roof actors.
 	FActorSpawnParameters RoofSpawnParams;
@@ -8512,8 +8678,9 @@ void ABHGameMode::BuildTrainRoofExtras(float TubeMinX, float TubeMaxX, const FVe
 	GetWorld()->SpawnActor<ABHRoofStarfield>(FVector(0.0f, 0.0f, RoofTopZ), FRotator::ZeroRotator);
 
 	// --- Calm stargazing decorations (solid props; lit once a passenger throws the roof-light breaker). Kept on
-	// the -Y half, clear of the centreline hatch, the +Y breaker, and the parkour run.
-	const float DecorX = HatchLocation.X + 2700.0f;
+	// the -Y half, clear of the centreline hatch, the +Y breaker, and the parkour run. This is the FRONT
+	// stargazing deck; a second deck + industrial props fill the rear (below).
+	const float DecorX = TubeMinX + 0.24f * RoofSpan;
 	// Telescope: prefer the imported CC0 telescope mesh; fall back to a built-up procedural one (tripod + hub +
 	// tilted tube + dew-shield + eyepiece) -- much more than the old two rectangles -- if the asset isn't present.
 	const FString TelescopeMeshPath = TEXT("/Game/BlackoutHunt/Art/Roof/SM_BH_Telescope.SM_BH_Telescope");
@@ -8522,7 +8689,7 @@ void ABHGameMode::BuildTrainRoofExtras(float TubeMinX, float TubeMaxX, const FVe
 		// Imported CC0 Kenney satellite-dish (reads as a roof observatory). Kenney FBX import large, so scale it
 		// down to ~2.5 m. (Scale/pivot may want a small eyeball tweak -- it's this one number.)
 		SpawnRuntimeMeshProp(FVector(DecorX, -150.0f, RoofTopZ), FRotator(0.0f, 180.0f, 0.0f), TelescopeMeshPath, FString(),
-			FVector(0.04f, 0.04f, 0.04f), true, FVector(0.3f, 0.3f, 1.4f), MetalTint, EBHBlockMaterial::PaintedMetal);
+			FVector(0.04f, 0.04f, 0.04f), true, FVector(0.3f, 0.3f, 1.4f), MetalTint, EBHBlockMaterial::PaintedMetal, true);
 	}
 	else
 	{
@@ -8546,25 +8713,44 @@ void ABHGameMode::BuildTrainRoofExtras(float TubeMinX, float TubeMaxX, const FVe
 	// Stargazing seating: imported CC0 Kenney stools (fall back to a bench block if the mesh is absent). Kenney
 	// FBX import large, so scaled down; base-pivot assumed so they sit on the roof (small z tweak if needed).
 	const FString StoolPath = TEXT("/Game/BlackoutHunt/Art/Roof/SM_BH_RoofStool.SM_BH_RoofStool");
-	SpawnRuntimeMeshProp(FVector(DecorX - 240.0f, -215.0f, RoofTopZ), FRotator(0.0f, -90.0f, 0.0f), StoolPath, FString(), FVector(0.05f, 0.05f, 0.05f), true, FVector(0.55f, 0.55f, 0.45f), SeatTint, EBHBlockMaterial::Tiles);
-	SpawnRuntimeMeshProp(FVector(DecorX + 30.0f, -240.0f, RoofTopZ), FRotator(0.0f, -90.0f, 0.0f), StoolPath, FString(), FVector(0.05f, 0.05f, 0.05f), true, FVector(0.55f, 0.55f, 0.45f), SeatTint, EBHBlockMaterial::Tiles);
-	SpawnRuntimeMeshProp(FVector(DecorX + 290.0f, -215.0f, RoofTopZ), FRotator(0.0f, -90.0f, 0.0f), StoolPath, FString(), FVector(0.05f, 0.05f, 0.05f), true, FVector(0.55f, 0.55f, 0.45f), SeatTint, EBHBlockMaterial::Tiles);
+	SpawnRuntimeMeshProp(FVector(DecorX - 240.0f, -215.0f, RoofTopZ), FRotator(0.0f, -90.0f, 0.0f), StoolPath, FString(), FVector(0.05f, 0.05f, 0.05f), true, FVector(0.55f, 0.55f, 0.45f), SeatTint, EBHBlockMaterial::Tiles, true);
+	SpawnRuntimeMeshProp(FVector(DecorX + 30.0f, -240.0f, RoofTopZ), FRotator(0.0f, -90.0f, 0.0f), StoolPath, FString(), FVector(0.05f, 0.05f, 0.05f), true, FVector(0.55f, 0.55f, 0.45f), SeatTint, EBHBlockMaterial::Tiles, true);
+	SpawnRuntimeMeshProp(FVector(DecorX + 290.0f, -215.0f, RoofTopZ), FRotator(0.0f, -90.0f, 0.0f), StoolPath, FString(), FVector(0.05f, 0.05f, 0.05f), true, FVector(0.55f, 0.55f, 0.45f), SeatTint, EBHBlockMaterial::Tiles, true);
 	// Imported CC0 antenna/wireless dish in the back corner (fall back to a mast block).
-	const float AntennaX = HatchLocation.X + 3100.0f;
-	SpawnRuntimeMeshProp(FVector(AntennaX, 215.0f, RoofTopZ), FRotator::ZeroRotator, TEXT("/Game/BlackoutHunt/Art/Roof/SM_BH_RoofAntenna.SM_BH_RoofAntenna"), FString(), FVector(0.05f, 0.05f, 0.05f), true, FVector(0.06f, 0.06f, 2.6f), DarkMetal, EBHBlockMaterial::PaintedMetal);
+	const float AntennaX = TubeMinX + 0.84f * RoofSpan;
+	SpawnRuntimeMeshProp(FVector(AntennaX, 215.0f, RoofTopZ), FRotator::ZeroRotator, TEXT("/Game/BlackoutHunt/Art/Roof/SM_BH_RoofAntenna.SM_BH_RoofAntenna"), FString(), FVector(0.05f, 0.05f, 0.05f), true, FVector(0.06f, 0.06f, 2.6f), DarkMetal, EBHBlockMaterial::PaintedMetal, true);
 	// Imported CC0 space rocks + a meteor as stargazing scenery (fall back to plain rock blocks).
-	SpawnRuntimeMeshProp(FVector(DecorX - 540.0f, -240.0f, RoofTopZ), FRotator(0.0f, 35.0f, 0.0f), TEXT("/Game/BlackoutHunt/Art/Roof/SM_BH_RoofRocks.SM_BH_RoofRocks"), FString(), FVector(0.03f, 0.03f, 0.03f), true, FVector(0.7f, 0.7f, 0.5f), DarkMetal, EBHBlockMaterial::Concrete);
-	SpawnRuntimeMeshProp(FVector(DecorX + 560.0f, -250.0f, RoofTopZ), FRotator(0.0f, 120.0f, 0.0f), TEXT("/Game/BlackoutHunt/Art/Roof/SM_BH_RoofMeteor.SM_BH_RoofMeteor"), FString(), FVector(0.027f, 0.027f, 0.027f), true, FVector(0.7f, 0.7f, 0.6f), DarkMetal, EBHBlockMaterial::Concrete);
-	// A utility/AC box and a couple of low roof vents for industrial flavour.
-	SpawnBlock(FVector(HatchLocation.X + 1300.0f, 215.0f, CenterZForBlockBottom(RoofTopZ, 0.9f)), FVector(1.6f, 1.2f, 0.9f), MetalTint, FRotator::ZeroRotator, true, EBHBlockMaterial::RustedMetal);
-	SpawnBlock(FVector(HatchLocation.X + 600.0f, -120.0f, CenterZForBlockBottom(RoofTopZ, 0.35f)), FVector(0.8f, 0.8f, 0.35f), MetalTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
-	SpawnBlock(FVector(HatchLocation.X + 2000.0f, -150.0f, CenterZForBlockBottom(RoofTopZ, 0.35f)), FVector(0.8f, 0.8f, 0.35f), MetalTint, FRotator::ZeroRotator, false, EBHBlockMaterial::RustedMetal);
+	SpawnRuntimeMeshProp(FVector(DecorX - 540.0f, -240.0f, RoofTopZ), FRotator(0.0f, 35.0f, 0.0f), TEXT("/Game/BlackoutHunt/Art/Roof/SM_BH_RoofRocks.SM_BH_RoofRocks"), FString(), FVector(0.03f, 0.03f, 0.03f), true, FVector(0.7f, 0.7f, 0.5f), DarkMetal, EBHBlockMaterial::Concrete, true);
+	SpawnRuntimeMeshProp(FVector(DecorX + 560.0f, -250.0f, RoofTopZ), FRotator(0.0f, 120.0f, 0.0f), TEXT("/Game/BlackoutHunt/Art/Roof/SM_BH_RoofMeteor.SM_BH_RoofMeteor"), FString(), FVector(0.027f, 0.027f, 0.027f), true, FVector(0.7f, 0.7f, 0.6f), DarkMetal, EBHBlockMaterial::Concrete, true);
+	// Industrial flavour distributed along the FULL roof so the rear isn't bare: AC units and low vents marching
+	// front-to-back on alternating sides (clear of the centre walk/obby), every ~16% of the length.
+	int32 VentIndex = 0;
+	for (float VentX = SpanLo; VentX <= SpanHi + 1.0f; VentX += 0.16f * RoofSpan)
+	{
+		const float SideY = (VentIndex % 2 == 0) ? 235.0f : -235.0f;
+		if (VentIndex % 2 == 0)
+		{
+			SpawnBlock(FVector(VentX, SideY, CenterZForBlockBottom(RoofTopZ, 0.9f)), FVector(1.4f, 1.1f, 0.9f), MetalTint, FRotator::ZeroRotator, true, EBHBlockMaterial::RustedMetal);
+		}
+		else
+		{
+			SpawnBlock(FVector(VentX, SideY, CenterZForBlockBottom(RoofTopZ, 0.35f)), FVector(0.8f, 0.8f, 0.35f), MetalTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+		}
+		++VentIndex;
+	}
+	// Rear "stargazing deck #2": a second seating cluster + scenery so the back third of the roof is a place to
+	// be, not an empty slab. Reuses the same imported props (grounded), with procedural fallbacks.
+	const float BackDeckX = TubeMinX + 0.72f * RoofSpan;
+	SpawnRuntimeMeshProp(FVector(BackDeckX - 120.0f, -210.0f, RoofTopZ), FRotator(0.0f, -90.0f, 0.0f), StoolPath, FString(), FVector(0.05f, 0.05f, 0.05f), true, FVector(0.55f, 0.55f, 0.45f), SeatTint, EBHBlockMaterial::Tiles, true);
+	SpawnRuntimeMeshProp(FVector(BackDeckX + 170.0f, -235.0f, RoofTopZ), FRotator(0.0f, -90.0f, 0.0f), StoolPath, FString(), FVector(0.05f, 0.05f, 0.05f), true, FVector(0.55f, 0.55f, 0.45f), SeatTint, EBHBlockMaterial::Tiles, true);
+	SpawnRuntimeMeshProp(FVector(BackDeckX - 380.0f, -250.0f, RoofTopZ), FRotator(0.0f, 200.0f, 0.0f), TEXT("/Game/BlackoutHunt/Art/Roof/SM_BH_RoofRocks.SM_BH_RoofRocks"), FString(), FVector(0.03f, 0.03f, 0.03f), true, FVector(0.7f, 0.7f, 0.5f), DarkMetal, EBHBlockMaterial::Concrete, true);
+	SpawnRuntimeMeshProp(FVector(BackDeckX + 430.0f, -245.0f, RoofTopZ), FRotator(0.0f, 60.0f, 0.0f), TEXT("/Game/BlackoutHunt/Art/Roof/SM_BH_RoofMeteor.SM_BH_RoofMeteor"), FString(), FVector(0.027f, 0.027f, 0.027f), true, FVector(0.7f, 0.7f, 0.6f), DarkMetal, EBHBlockMaterial::Concrete, true);
 
 	// --- "Tower of Doom" obby: a neon spiral of small platforms climbing high above the roof, finishing in a
 	// glowing gate at the very top. Gaps/rises are kept forgiving (small hops, ~55cm rise, ~130cm reach) so it's
 	// completable, but the top is unreachable without the climb so the finish can't be cheesed. (Jump feel may
 	// want a playtest pass.)
-	const FVector TowerCenter(HatchLocation.X + 1200.0f, 0.0f, RoofTopZ);
+	const FVector TowerCenter(TubeMinX + 0.5f * RoofSpan, 0.0f, RoofTopZ);   // climb from the middle of the roof
 	const FLinearColor ObbyColors[] = {
 		FLinearColor(1.00f, 0.25f, 0.30f, 1.0f), FLinearColor(1.00f, 0.65f, 0.15f, 1.0f),
 		FLinearColor(0.30f, 0.85f, 1.00f, 1.0f), FLinearColor(0.45f, 1.00f, 0.40f, 1.0f),
@@ -8733,14 +8919,14 @@ void ABHGameMode::BuildSubstationLevel()
 	const TArray<TPair<FVector, FVector>> Walls = {
 		// Vertical dividers (run along Y) -- doorway/arch gaps leave each flanking room open on >=2 sides.
 		{FVector(-4500.0f, -4150.0f, 175.0f), FVector(0.30f, 9.0f, 3.25f)}, {FVector(-4500.0f, -2400.0f, 175.0f), FVector(0.30f, 20.0f, 3.25f)}, {FVector(-4500.0f, 0.0f, 175.0f), FVector(0.30f, 22.0f, 3.25f)}, {FVector(-4500.0f, 2250.0f, 175.0f), FVector(0.30f, 17.0f, 3.25f)}, {FVector(-4500.0f, 4300.0f, 175.0f), FVector(0.30f, 6.0f, 3.25f)},
-		{FVector(-2500.0f, -4300.0f, 175.0f), FVector(0.30f, 6.0f, 3.25f)}, {FVector(-2500.0f, -2250.0f, 175.0f), FVector(0.30f, 17.0f, 3.25f)}, {FVector(-2500.0f, 0.0f, 175.0f), FVector(0.30f, 22.0f, 3.25f)}, {FVector(-2500.0f, 2250.0f, 175.0f), FVector(0.30f, 17.0f, 3.25f)}, {FVector(-2500.0f, 4300.0f, 175.0f), FVector(0.30f, 6.0f, 3.25f)},
+		{FVector(-2500.0f, -4300.0f, 175.0f), FVector(0.30f, 6.0f, 3.25f)}, {FVector(-2500.0f, -2705.0f, 175.0f), FVector(0.30f, 7.9f, 3.25f)}, {FVector(-2500.0f, -1745.0f, 175.0f), FVector(0.30f, 6.9f, 3.25f)}, {FVector(-2500.0f, 0.0f, 175.0f), FVector(0.30f, 22.0f, 3.25f)}, {FVector(-2500.0f, 2250.0f, 175.0f), FVector(0.30f, 17.0f, 3.25f)}, {FVector(-2500.0f, 4300.0f, 175.0f), FVector(0.30f, 6.0f, 3.25f)},
 		{FVector(-500.0f, -4150.0f, 175.0f), FVector(0.30f, 9.0f, 3.25f)}, {FVector(-500.0f, -2950.0f, 175.0f), FVector(0.30f, 9.0f, 3.25f)}, {FVector(-500.0f, 2950.0f, 175.0f), FVector(0.30f, 9.0f, 3.25f)}, {FVector(-500.0f, 4150.0f, 175.0f), FVector(0.30f, 9.0f, 3.25f)},
-		{FVector(1800.0f, -4300.0f, 175.0f), FVector(0.30f, 6.0f, 3.25f)}, {FVector(1800.0f, -2250.0f, 175.0f), FVector(0.30f, 17.0f, 3.25f)}, {FVector(1800.0f, 0.0f, 175.0f), FVector(0.30f, 22.0f, 3.25f)}, {FVector(1800.0f, 2250.0f, 175.0f), FVector(0.30f, 17.0f, 3.25f)}, {FVector(1800.0f, 4300.0f, 175.0f), FVector(0.30f, 6.0f, 3.25f)},
+		{FVector(1800.0f, -4300.0f, 175.0f), FVector(0.30f, 6.0f, 3.25f)}, {FVector(1800.0f, -2250.0f, 175.0f), FVector(0.30f, 17.0f, 3.25f)}, {FVector(1800.0f, 0.0f, 175.0f), FVector(0.30f, 22.0f, 3.25f)}, {FVector(1800.0f, 1745.0f, 175.0f), FVector(0.30f, 6.9f, 3.25f)}, {FVector(1800.0f, 2705.0f, 175.0f), FVector(0.30f, 7.9f, 3.25f)}, {FVector(1800.0f, 4300.0f, 175.0f), FVector(0.30f, 6.0f, 3.25f)},
 		{FVector(3900.0f, -4300.0f, 175.0f), FVector(0.30f, 6.0f, 3.25f)}, {FVector(3900.0f, -2250.0f, 175.0f), FVector(0.30f, 17.0f, 3.25f)}, {FVector(3900.0f, -450.0f, 175.0f), FVector(0.30f, 13.0f, 3.25f)}, {FVector(3900.0f, 1225.0f, 175.0f), FVector(0.30f, 14.5f, 3.25f)}, {FVector(3900.0f, 2675.0f, 175.0f), FVector(0.30f, 8.5f, 3.25f)}, {FVector(3900.0f, 4300.0f, 175.0f), FVector(0.30f, 6.0f, 3.25f)},
 		// Horizontal dividers (run along X) -- span X[-4500,6100] only, leaving the west gallery open top-to-bottom.
-		{FVector(-4075.0f, -2500.0f, 175.0f), FVector(8.5f, 0.30f, 3.25f)}, {FVector(-2500.0f, -2500.0f, 175.0f), FVector(17.0f, 0.30f, 3.25f)}, {FVector(-375.0f, -2500.0f, 175.0f), FVector(19.5f, 0.30f, 3.25f)}, {FVector(1675.0f, -2500.0f, 175.0f), FVector(15.5f, 0.30f, 3.25f)}, {FVector(3775.0f, -2500.0f, 175.0f), FVector(10.5f, 0.30f, 3.25f)}, {FVector(5900.0f, -2500.0f, 175.0f), FVector(4.0f, 0.30f, 3.25f)},
+		{FVector(-4075.0f, -2500.0f, 175.0f), FVector(8.5f, 0.30f, 3.25f)}, {FVector(-2500.0f, -2500.0f, 175.0f), FVector(17.0f, 0.30f, 3.25f)}, {FVector(-375.0f, -2500.0f, 175.0f), FVector(19.5f, 0.30f, 3.25f)}, {FVector(1232.5f, -2500.0f, 175.0f), FVector(6.65f, 0.30f, 3.25f)}, {FVector(2117.5f, -2500.0f, 175.0f), FVector(6.65f, 0.30f, 3.25f)}, {FVector(3775.0f, -2500.0f, 175.0f), FVector(10.5f, 0.30f, 3.25f)}, {FVector(5900.0f, -2500.0f, 175.0f), FVector(4.0f, 0.30f, 3.25f)},
 		{FVector(-4075.0f, 0.0f, 175.0f), FVector(8.5f, 0.30f, 3.25f)}, {FVector(-2750.0f, 0.0f, 175.0f), FVector(12.0f, 0.30f, 3.25f)}, {FVector(2425.0f, 0.0f, 175.0f), FVector(5.5f, 0.30f, 3.25f)}, {FVector(3250.0f, 0.0f, 175.0f), FVector(5.0f, 0.30f, 3.25f)}, {FVector(5900.0f, 0.0f, 175.0f), FVector(4.0f, 0.30f, 3.25f)},
-		{FVector(-4075.0f, 2500.0f, 175.0f), FVector(8.5f, 0.30f, 3.25f)}, {FVector(-2500.0f, 2500.0f, 175.0f), FVector(17.0f, 0.30f, 3.25f)}, {FVector(-375.0f, 2500.0f, 175.0f), FVector(19.5f, 0.30f, 3.25f)}, {FVector(1675.0f, 2500.0f, 175.0f), FVector(15.5f, 0.30f, 3.25f)}, {FVector(3775.0f, 2500.0f, 175.0f), FVector(10.5f, 0.30f, 3.25f)}, {FVector(5900.0f, 2500.0f, 175.0f), FVector(4.0f, 0.30f, 3.25f)}
+		{FVector(-4075.0f, 2500.0f, 175.0f), FVector(8.5f, 0.30f, 3.25f)}, {FVector(-2930.0f, 2500.0f, 175.0f), FVector(8.4f, 0.30f, 3.25f)}, {FVector(-1970.0f, 2500.0f, 175.0f), FVector(6.4f, 0.30f, 3.25f)}, {FVector(-375.0f, 2500.0f, 175.0f), FVector(19.5f, 0.30f, 3.25f)}, {FVector(1675.0f, 2500.0f, 175.0f), FVector(15.5f, 0.30f, 3.25f)}, {FVector(3775.0f, 2500.0f, 175.0f), FVector(10.5f, 0.30f, 3.25f)}, {FVector(5900.0f, 2500.0f, 175.0f), FVector(4.0f, 0.30f, 3.25f)}
 	};
 	// Dress every interior wall so it doesn't read as one flat grey slab: a tiled wainscot (lower band, breaks the
 	// concrete with a different texture), a painted accent stripe that alternates amber/teal for colour variety,
@@ -8848,10 +9034,10 @@ void ABHGameMode::BuildSubstationLevel()
 	const FLinearColor RevisionAmber(0.95f, 0.68f, 0.12f, 1.0f);
 	const FLinearColor RevisionViolet(0.58f, 0.32f, 0.86f, 1.0f);
 	const FVector RevisionLaneCenters[] = {
-		FVector(-3600.0f, 0.0f, CenterZForBlockBottom(0.65f, 0.035f)),
-		FVector(-1200.0f, 0.0f, CenterZForBlockBottom(0.70f, 0.035f)),
-		FVector(1450.0f, 0.0f, CenterZForBlockBottom(0.75f, 0.035f)),
-		FVector(3700.0f, 0.0f, CenterZForBlockBottom(0.80f, 0.035f))
+		FVector(-1200.0f, 0.0f, CenterZForBlockBottom(0.65f, 0.035f)),
+		FVector(1100.0f, 0.0f, CenterZForBlockBottom(0.70f, 0.035f)),
+		FVector(-350.0f, -1900.0f, CenterZForBlockBottom(0.75f, 0.035f)),
+		FVector(-350.0f, 1900.0f, CenterZForBlockBottom(0.80f, 0.035f))
 	};
 	for (int32 LaneIndex = 0; LaneIndex < UE_ARRAY_COUNT(RevisionLaneCenters); ++LaneIndex)
 	{
@@ -8866,15 +9052,18 @@ void ABHGameMode::BuildSubstationLevel()
 		HiddenSwitch->ConfigureTeacherMirrorTrapNode();
 	}
 
-	for (int32 Row = -3; Row <= 3; ++Row)
+	// Central transformer hall: 8 banks in two rows flanking a clear central cross (a long E-W sightline stays
+	// open at |Y|<900, with N-S gaps between banks) -- replaces the old 17-box checkerboard that maze-walled the
+	// middle and made the map feel small. The banks are the hall's primary cover.
+	const float TransformerRowY[] = { -1450.0f, 1450.0f };
+	const float TransformerColX[] = { -2000.0f, -900.0f, 300.0f, 1400.0f };
+	for (float TY : TransformerRowY)
 	{
-		for (int32 Col = -2; Col <= 2; ++Col)
+		for (int32 Ci = 0; Ci < UE_ARRAY_COUNT(TransformerColX); ++Ci)
 		{
-			if ((Row + Col) % 2 == 0)
-			{
-				SpawnBlock(FVector(Row * 950.0f, Col * 780.0f, 80.0f), FVector(1.1f, 3.5f, 1.7f), Steel, FRotator(0.0f, 12.0f * Row, 0.0f), true, EBHBlockMaterial::DiamondPlate);
-				SpawnBlock(FVector(Row * 950.0f + 165.0f, Col * 780.0f, 245.0f), FVector(0.28f, 3.7f, 0.16f), Rust, FRotator(0.0f, 12.0f * Row, 0.0f), false, EBHBlockMaterial::RustedMetal);
-			}
+			const float TX = TransformerColX[Ci];
+			SpawnBlock(FVector(TX, TY, CenterZForBlockBottom(0.0f, 1.9f)), FVector(1.4f, 3.0f, 1.9f), Steel, FRotator(0.0f, 6.0f * Ci, 0.0f), true, EBHBlockMaterial::DiamondPlate);
+			SpawnBlock(FVector(TX + 200.0f, TY, 205.0f), FVector(0.30f, 3.2f, 0.18f), Rust, FRotator(0.0f, 6.0f * Ci, 0.0f), false, EBHBlockMaterial::RustedMetal);
 		}
 	}
 
@@ -8887,34 +9076,31 @@ void ABHGameMode::BuildSubstationLevel()
 		SpawnBlock(FVector(X + 260.0f, 4300.0f, CenterZForBlockBottom(0.5f, 0.09f)), FVector(1.8f, 0.09f, 0.09f), Cable, FRotator(0.0f, -35.0f, 0.0f), false);
 	}
 
+	// 10 set-dressing props (down from 16), spread through the outer bands + hall, clear of objectives/breakers
+	// /transformers/doorways so they read as flavour, not obstacles.
 	const TArray<FVector> ClutterCenters = {
-		FVector(-5200.0f, -3300.0f, 40.0f), FVector(-3600.0f, -3300.0f, 40.0f), FVector(-1200.0f, -3500.0f, 40.0f), FVector(1200.0f, -3500.0f, 40.0f),
-		FVector(3450.0f, -3300.0f, 40.0f), FVector(5200.0f, -2700.0f, 40.0f), FVector(-5200.0f, 3200.0f, 40.0f), FVector(-3300.0f, 3400.0f, 40.0f),
-		FVector(-900.0f, 3500.0f, 40.0f), FVector(1550.0f, 3500.0f, 40.0f), FVector(3900.0f, 3300.0f, 40.0f), FVector(5300.0f, 2300.0f, 40.0f)
+		FVector(-4400.0f, -3550.0f, 40.0f), FVector(-2400.0f, -3550.0f, 40.0f), FVector(300.0f, -3550.0f, 40.0f), FVector(2100.0f, -3550.0f, 40.0f),
+		FVector(-4400.0f, 3550.0f, 40.0f), FVector(-2400.0f, 3550.0f, 40.0f), FVector(300.0f, 3550.0f, 40.0f), FVector(2100.0f, 3550.0f, 40.0f),
+		FVector(-1500.0f, 1900.0f, 40.0f), FVector(1100.0f, -1900.0f, 40.0f)
 	};
 	AddIndustrialClutter(ClutterCenters, Rust);
-	AddIndustrialClutter({
-		FVector(-5700.0f, -4100.0f, 45.0f), FVector(-5700.0f, 4100.0f, 45.0f),
-		FVector(5700.0f, -4100.0f, 45.0f), FVector(5700.0f, 4100.0f, 45.0f)
-	}, Steel);
 
 	const TArray<FVector> Lockers = {
-		FVector(-5750.0f, -4050.0f, 100.0f), FVector(-5000.0f, -4050.0f, 100.0f), FVector(-3100.0f, -4050.0f, 100.0f), FVector(-1800.0f, -4050.0f, 100.0f),
-		FVector(-250.0f, -4050.0f, 100.0f), FVector(1250.0f, -4050.0f, 100.0f), FVector(3000.0f, -4050.0f, 100.0f), FVector(5000.0f, -4050.0f, 100.0f),
-		FVector(-5750.0f, 4050.0f, 100.0f), FVector(-5000.0f, 4050.0f, 100.0f), FVector(-3100.0f, 4050.0f, 100.0f), FVector(-1800.0f, 4050.0f, 100.0f),
-		FVector(-250.0f, 4050.0f, 100.0f), FVector(1250.0f, 4050.0f, 100.0f), FVector(3000.0f, 4050.0f, 100.0f), FVector(5000.0f, 4050.0f, 100.0f),
-		FVector(-5850.0f, -900.0f, 100.0f), FVector(-5850.0f, 900.0f, 100.0f), FVector(5850.0f, -900.0f, 100.0f), FVector(5850.0f, 900.0f, 100.0f),
-		FVector(2200.0f, -400.0f, 100.0f), FVector(2200.0f, 720.0f, 100.0f), FVector(-3100.0f, -640.0f, 100.0f), FVector(-3100.0f, 760.0f, 100.0f)
+		FVector(-5850.0f, -2400.0f, 100.0f), FVector(-5850.0f, -1000.0f, 100.0f), FVector(-5850.0f, 1000.0f, 100.0f), FVector(-5850.0f, 2400.0f, 100.0f),
+		FVector(-2200.0f, 0.0f, 100.0f), FVector(1600.0f, 0.0f, 100.0f),
+		FVector(-3500.0f, -2300.0f, 100.0f), FVector(-3500.0f, 2300.0f, 100.0f), FVector(2850.0f, -2300.0f, 100.0f), FVector(2850.0f, 2300.0f, 100.0f),
+		FVector(-700.0f, -3550.0f, 100.0f), FVector(-1000.0f, 3550.0f, 100.0f), FVector(1300.0f, 3550.0f, 100.0f), FVector(-700.0f, 3550.0f, 100.0f),
+		FVector(4100.0f, -1500.0f, 100.0f), FVector(4100.0f, 1500.0f, 100.0f)
 	};
 	for (const FVector& Location : Lockers)
 	{
 		GetWorld()->SpawnActor<ABHLocker>(Location, FRotator::ZeroRotator);
 	}
 
-	// ---- Hiding pass (mid map = hide-and-move): the Facility hiding vocabulary at lower density. Prone-only
-	// crawl ducts to break sightline + duck the hunter, squeeze pockets reachable only by turning sideways
-	// (auto-squeeze), and glowing blue control panels as cold orientation accents. All placed in the open outer
-	// rooms / perimeter aisles, clear of the transformer bays, doors, spawns and the exit platform. ----
+	// ---- Hiding pass (mid map = hide-and-move): prone-only crawl tunnels that punch THROUGH interior dividers to
+	// connect two rooms -- a survivor-only shortcut (the Teacher is ejected and a sheltering prone survivor is
+	// uncapturable), so the hunter must loop to a door while the hider slips across or jukes between the two
+	// mouths. Plus squeeze pockets (turn-sideways auto-squeeze) and glowing blue control panels as accents. ----
 	const FLinearColor DuctTint(0.16f, 0.18f, 0.19f, 1.0f);
 	const FLinearColor PanelBlue(0.20f, 0.55f, 1.0f, 1.0f);
 
@@ -8934,16 +9120,24 @@ void ABHGameMode::BuildSubstationLevel()
 			Crawl->Configure(FVector(lenScale * 50.0f + 40.0f, 95.0f, 110.0f));
 		}
 	};
-	const float DuctSpecs[8][4] = {
-		{ -3400.0f, -3350.0f, 0.0f, 4.8f }, { 1500.0f, -3350.0f, 0.0f, 4.6f },
-		{ -3400.0f, 3350.0f, 0.0f, 4.8f }, { 600.0f, 3350.0f, 0.0f, 4.6f },
-		{ -5650.0f, 0.0f, 90.0f, 4.8f }, { -5650.0f, -3000.0f, 0.0f, 3.6f },
-		{ -5650.0f, 3000.0f, 0.0f, 3.6f }, { 4300.0f, -3350.0f, 0.0f, 4.6f }
-	};
-	for (const float (&Duct)[4] : DuctSpecs)
+	// Each crawl TUNNELS THROUGH an interior divider via a lintel-capped gap (the 4 split wall segments are up in
+	// the Walls array): a prone-only mouth joining two rooms, with ~325u of low duct each side so a fleeing
+	// survivor can slide straight in. The lintel (bottom Z150 -> wall top) blocks standing; the crawl volume ejects
+	// the Teacher and grants capture immunity -- a real escape route the hunter cannot follow.
+	auto SpawnCrawlGate = [&](float cx, float cy, float tunnelYaw, bool bWallAlongX, float lenScale)
 	{
-		SpawnCrawlDuct(Duct[0], Duct[1], Duct[2], Duct[3]);
-	}
+		const float GapW = 2.4f;      // lintel width, overlaps the ~220u wall gap
+		const float LintelH = 1.75f;  // bottom Z150 -> wall top Z325 (so the wall reads continuous above the mouth)
+		const FVector LintelScale = bWallAlongX ? FVector(GapW, 0.35f, LintelH) : FVector(0.35f, GapW, LintelH);
+		SpawnBlock(FVector(cx, cy, CenterZForBlockBottom(150.0f, LintelH)), LintelScale, Wall, FRotator::ZeroRotator, true, EBHBlockMaterial::ConcreteWACool);
+		const FVector StripeScale = bWallAlongX ? FVector(GapW, 0.05f, 0.10f) : FVector(0.05f, GapW, 0.10f);
+		SpawnBlock(FVector(cx, cy, CenterZForBlockBottom(138.0f, 0.10f)), StripeScale, Warning, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign); // maintenance-hatch signpost
+		SpawnCrawlDuct(cx, cy, tunnelYaw, lenScale);
+	};
+	SpawnCrawlGate(-2500.0f, -2200.0f, 0.0f, false, 6.5f);  // C1 room   <-> central hall (SW divider, X=-2500)
+	SpawnCrawlGate(1800.0f, 2200.0f, 0.0f, false, 6.5f);    // central hall <-> C4 room  (NE divider, X=1800)
+	SpawnCrawlGate(-2400.0f, 2500.0f, 90.0f, true, 6.5f);   // north band <-> central hall (NW divider, Y=2500)
+	SpawnCrawlGate(1675.0f, -2500.0f, 90.0f, true, 6.5f);   // south band <-> central hall (SE divider, Y=-2500)
 
 	// A snug ~2.6m hidey-pocket whose only entrance is a ~40u front slot: too narrow for the round standing
 	// capsule, so the survivor must turn sideways (auto-squeeze) to slip in. Three solid walls + a slotted front.
@@ -8962,9 +9156,7 @@ void ABHGameMode::BuildSubstationLevel()
 		SpawnBlock(LP(-150.0f, 75.0f, CenterZForBlockBottom(0.0f, H)), FVector(0.4f, 1.1f, H), Wall, Rot, true, EBHBlockMaterial::ConcreteWACool);
 	};
 	SpawnSqueezePocket(-1900.0f, -3350.0f, 0.0f);
-	SpawnSqueezePocket(2700.0f, -3350.0f, 180.0f);
 	SpawnSqueezePocket(-1900.0f, 3350.0f, 0.0f);
-	SpawnSqueezePocket(2700.0f, 3350.0f, 180.0f);
 
 	// Glowing blue control panels mounted on the perimeter walls + a soft blue light each (cold accents / faint
 	// orientation landmarks). Falls back to a solid blue tint if the screen material is missing.
@@ -8987,9 +9179,8 @@ void ABHGameMode::BuildSubstationLevel()
 	}
 
 	const FVector Batteries[] = {
-		FVector(-5200.0f, -1650.0f, 70.0f), FVector(-5200.0f, 1650.0f, 70.0f), FVector(-1500.0f, -3650.0f, 70.0f), FVector(-1500.0f, 3650.0f, 70.0f),
-		FVector(900.0f, -3650.0f, 70.0f), FVector(900.0f, 3650.0f, 70.0f), FVector(3300.0f, -1450.0f, 70.0f), FVector(3300.0f, 1450.0f, 70.0f),
-		FVector(5400.0f, -600.0f, 70.0f), FVector(5400.0f, 1900.0f, 70.0f)
+		FVector(-5650.0f, -700.0f, 70.0f), FVector(-5650.0f, 700.0f, 70.0f), FVector(-3500.0f, 0.0f, 70.0f), FVector(2850.0f, 0.0f, 70.0f),
+		FVector(-1900.0f, -1900.0f, 70.0f), FVector(1100.0f, 1900.0f, 70.0f), FVector(-350.0f, 0.0f, 70.0f), FVector(5300.0f, 0.0f, 70.0f)
 	};
 	for (const FVector& Location : Batteries)
 	{
@@ -8997,10 +9188,10 @@ void ABHGameMode::BuildSubstationLevel()
 	}
 
 	const FVector Alarms[] = {
-		FVector(-5600.0f, -2400.0f, 105.0f), FVector(-5600.0f, 2400.0f, 105.0f),
-		FVector(-850.0f, -2500.0f, 105.0f), FVector(850.0f, 2500.0f, 105.0f),
-		FVector(3650.0f, -2500.0f, 105.0f), FVector(3650.0f, 2500.0f, 105.0f),
-		FVector(5600.0f, -900.0f, 105.0f), FVector(5600.0f, 900.0f, 105.0f)
+		FVector(-5650.0f, -2400.0f, 105.0f), FVector(-5650.0f, 2400.0f, 105.0f),
+		FVector(-3500.0f, -600.0f, 105.0f), FVector(2850.0f, -600.0f, 105.0f),
+		FVector(-1500.0f, 1250.0f, 105.0f), FVector(600.0f, -1250.0f, 105.0f),
+		FVector(4000.0f, 1900.0f, 105.0f), FVector(4000.0f, -1900.0f, 105.0f)
 	};
 	for (const FVector& Location : Alarms)
 	{
@@ -9037,25 +9228,27 @@ void ABHGameMode::BuildSubstationLevel()
 		}
 	}
 
-	for (const FVector& Location : {FVector(-900.0f, 0.0f, 120.0f), FVector(1800.0f, 0.0f, 120.0f), FVector(3900.0f, 0.0f, 120.0f), FVector(-2500.0f, 2500.0f, 120.0f)})
+	// Circuit-gated shutters on three through-passages (vertical-wall doorways) -- counterplay: open the matching
+	// circuit to pass and to blind the cameras on it. Each gated room still has other entrances if a shutter shuts.
+	for (const FVector& Location : {FVector(-2500.0f, -1250.0f, 120.0f), FVector(1800.0f, 1250.0f, 120.0f), FVector(3900.0f, 350.0f, 120.0f)})
 	{
-		if (ABHSecurityShutter* Shutter = GetWorld()->SpawnActor<ABHSecurityShutter>(Location, FRotator(0.0f, 90.0f, 0.0f)))
+		if (ABHSecurityShutter* Shutter = GetWorld()->SpawnActor<ABHSecurityShutter>(Location, FRotator::ZeroRotator))
 		{
 			Shutter->Configure(200);
 		}
 	}
-	if (ABHSecurityTerminal* Terminal = GetWorld()->SpawnActor<ABHSecurityTerminal>(FVector(-5850.0f, 0.0f, 110.0f), FRotator(0.0f, 90.0f, 0.0f)))
+	if (ABHSecurityTerminal* Terminal = GetWorld()->SpawnActor<ABHSecurityTerminal>(FVector(-2700.0f, -1250.0f, 110.0f), FRotator(0.0f, 90.0f, 0.0f)))
 	{
 		Terminal->Configure(200, FText::FromString(TEXT("Toggle Substation Shutters")));
 	}
-	if (ABHSecurityTerminal* Terminal = GetWorld()->SpawnActor<ABHSecurityTerminal>(FVector(5800.0f, 2100.0f, 110.0f), FRotator(0.0f, -90.0f, 0.0f)))
+	if (ABHSecurityTerminal* Terminal = GetWorld()->SpawnActor<ABHSecurityTerminal>(FVector(4000.0f, 350.0f, 110.0f), FRotator(0.0f, -90.0f, 0.0f)))
 	{
 		Terminal->Configure(200, FText::FromString(TEXT("Toggle Substation Shutters")));
 	}
 	GetWorld()->SpawnActor<ABHSecurityMonitor>(FVector(-5450.0f, -850.0f, 115.0f), FRotator(0.0f, 90.0f, 0.0f));
 	const TArray<TPair<FVector, FRotator>> SubstationCameras = {
-		{FVector(-4550.0f, -2650.0f, 355.0f), FRotator(0.0f, 35.0f, 0.0f)},
-		{FVector(4550.0f, 2650.0f, 355.0f), FRotator(0.0f, -145.0f, 0.0f)}
+		{FVector(-1800.0f, -2350.0f, 355.0f), FRotator(0.0f, 35.0f, 0.0f)},   // overlooks the central transformer hall
+		{FVector(1800.0f, 2350.0f, 355.0f), FRotator(0.0f, -145.0f, 0.0f)}
 	};
 	for (int32 CameraIndex = 0; CameraIndex < SubstationCameras.Num(); ++CameraIndex)
 	{
@@ -9079,17 +9272,17 @@ void ABHGameMode::BuildSubstationLevel()
 	SpawnBlock(FVector(5650.0f, 0.0f, CenterZForBlockBottom(0.5f, 0.06f)), FVector(4.0f, 6.0f, 0.06f), SickGreen, FRotator::ZeroRotator, false);
 
 	ScarePoints.Append({
-		FVector(-5550.0f, -3650.0f, 110.0f),
-		FVector(-5400.0f, 3650.0f, 110.0f),
-		FVector(-850.0f, -3800.0f, 110.0f),
-		FVector(850.0f, 3800.0f, 110.0f),
-		FVector(3300.0f, -3750.0f, 110.0f),
-		FVector(5450.0f, 3300.0f, 110.0f),
-		FVector(5200.0f, 350.0f, 110.0f),
-		FVector(-5850.0f, -900.0f, 110.0f),
-		FVector(5850.0f, 900.0f, 110.0f),
-		FVector(1800.0f, 0.0f, 110.0f),
-		FVector(-2500.0f, 2500.0f, 110.0f)
+		FVector(-5650.0f, -3400.0f, 110.0f),
+		FVector(-5650.0f, 3400.0f, 110.0f),
+		FVector(-1500.0f, -3700.0f, 110.0f),
+		FVector(2850.0f, -3700.0f, 110.0f),
+		FVector(750.0f, 3700.0f, 110.0f),
+		FVector(2850.0f, 3700.0f, 110.0f),
+		FVector(5300.0f, -1700.0f, 110.0f),
+		FVector(5300.0f, 1700.0f, 110.0f),
+		FVector(-1200.0f, 0.0f, 110.0f),
+		FVector(1100.0f, 0.0f, 110.0f),
+		FVector(4250.0f, 0.0f, 110.0f)
 	});
 
 	AddMoodPass(FLinearColor(0.018f, 0.045f, 0.052f, 1.0f), 0.010f, 0.50f, 0.10f);
