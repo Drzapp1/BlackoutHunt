@@ -406,6 +406,38 @@ void BHSetAccessoryPiece(
 	BHPropVisuals::SetPartVisible(Part, bVisible);
 }
 
+// Finds a skeletal mesh's head bone for headwear attachment (common names first, then any bone containing
+// "head"). Returns NAME_None when there's no head bone (e.g. a static role mesh) so callers fall back to root.
+static FName BHFindHeadBone(const USkeletalMeshComponent* Mesh)
+{
+	if (!Mesh)
+	{
+		return NAME_None;
+	}
+	static const TCHAR* Candidates[] = { TEXT("head"), TEXT("Head"), TEXT("B-head"), TEXT("Bip001 Head"), TEXT("mixamorig:Head"), TEXT("Head_M"), TEXT("spine_05") };
+	for (const TCHAR* Name : Candidates)
+	{
+		if (Mesh->GetBoneIndex(FName(Name)) != INDEX_NONE)
+		{
+			return FName(Name);
+		}
+	}
+	if (const USkeletalMesh* Asset = Mesh->GetSkeletalMeshAsset())
+	{
+		const FReferenceSkeleton& RefSkel = Asset->GetRefSkeleton();
+		const int32 BoneCount = RefSkel.GetNum();
+		for (int32 BoneIdx = 0; BoneIdx < BoneCount; ++BoneIdx)
+		{
+			const FName BoneName = RefSkel.GetBoneName(BoneIdx);
+			if (BoneName.ToString().Contains(TEXT("head"), ESearchCase::IgnoreCase))
+			{
+				return BoneName;
+			}
+		}
+	}
+	return NAME_None;
+}
+
 const TCHAR* BHSelectQuaterniusMeshPath(const ABHPlayerState* BHPS)
 {
 	static const TCHAR* SurvivorMeshes[] = {
@@ -3382,6 +3414,11 @@ static TAutoConsoleVariable<float> CVarBHMomentumChainSpeedScale(
 	1.15f,
 	TEXT("Speed multiplier applied to a chained special move. (Default 1.15)"),
 	ECVF_Default);
+static TAutoConsoleVariable<int32> CVarBHHatsFollowHead(
+	TEXT("bh.HatsFollowHead"),
+	1,
+	TEXT("1 (default) = procedural headwear attaches to the skeletal head bone so it follows the head through crouch/prone/animation; 0 = anchor to the role mesh's bounds top (the previous static behavior)."),
+	ECVF_Default);
 
 bool ABHCharacter::TryStartSpecialMoveAuthority(EBHMovementSpecialState RequestedState, bool bEndProne, bool bEndProneRequiresInput)
 {
@@ -5964,6 +6001,12 @@ void ABHCharacter::ApplyAvatarStyle()
 	};
 	for (UStaticMeshComponent* Part : RoleHeadwearParts)
 	{
+		// Re-home to RoleModelRoot before re-positioning, in case the previous update parented this piece to the
+		// head bone -- so the offsets below stay root-relative. The head-bone re-attach happens after positioning.
+		if (Part && RoleModelRoot && Part->GetAttachParent() != RoleModelRoot)
+		{
+			Part->AttachToComponent(RoleModelRoot, FAttachmentTransformRules::KeepRelativeTransform);
+		}
 		BHPropVisuals::SetPartVisible(Part, false);
 	}
 	for (UStaticMeshComponent* Part : RoleGearParts)
@@ -6025,6 +6068,27 @@ void ABHCharacter::ApplyAvatarStyle()
 			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCylinder, AccessoryBlack, RoleAccessoryLocation(FVector(6.0f, 0.0f, 77.0f)), FRotator::ZeroRotator, FVector(0.27f, 0.27f, 0.06f), true);
 			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCube, AccessoryBlack, RoleAccessoryLocation(FVector(6.0f, 0.0f, 82.0f)), FRotator::ZeroRotator, FVector(0.42f, 0.42f, 0.02f), true);
 			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessoryCube, AccessoryColor, RoleAccessoryLocation(FVector(24.0f, 0.0f, 78.0f)), FRotator::ZeroRotator, FVector(0.02f, 0.02f, 0.10f), true);
+		}
+	}
+
+	// Pixel-accurate headwear: now that the visible pieces are positioned (root-relative, at the head top),
+	// re-attach them to the skeletal HEAD BONE so they follow the head through crouch / prone / animation instead
+	// of floating at the last-known bounds top. KeepWorldTransform preserves the position computed above, so there
+	// is no placement downside when a head bone is found; a static role mesh (the hider) has no bone, so its pieces
+	// just stay on RoleModelRoot as before. Toggle with bh.HatsFollowHead. (Visual change -- worth a playtest.)
+	if (bShowRoleAccessories && HeadwearIndex > 0 && CVarBHHatsFollowHead.GetValueOnGameThread() != 0
+		&& RoleSkeletalMesh && RoleSkeletalMesh->IsVisible())
+	{
+		const FName HeadBone = BHFindHeadBone(RoleSkeletalMesh);
+		if (!HeadBone.IsNone())
+		{
+			for (UStaticMeshComponent* Part : RoleHeadwearParts)
+			{
+				if (Part && Part->IsVisible())
+				{
+					Part->AttachToComponent(RoleSkeletalMesh, FAttachmentTransformRules::KeepWorldTransform, HeadBone);
+				}
+			}
 		}
 	}
 

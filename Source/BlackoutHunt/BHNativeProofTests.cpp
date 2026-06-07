@@ -39,6 +39,7 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
+#include "HAL/IConsoleManager.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/PackageName.h"
@@ -1178,7 +1179,29 @@ bool FBHCharacterSpecialMovementTest::RunTest(const FString& Parameters)
 		World->AudioTimeSeconds += 0.70f;
 		Survivor->Tick(0.70f);
 		TestEqual(TEXT("Roll finishes back to normal state."), Survivor->GetMovementSpecialState(), EBHMovementSpecialState::None);
+
+		// The base special-move cooldown blocks an immediate reuse. The survivor-only "flow chain" momentum tech
+		// (bh.MomentumTech) can intentionally bypass it once within a frame-perfect window, so assert the base
+		// rule with the tech OFF, then assert the chain bypass with it ON -- and leave the cvar as we found it.
+		IConsoleVariable* MomentumTechCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("bh.MomentumTech"));
+		const int32 PrevMomentumTech = MomentumTechCVar ? MomentumTechCVar->GetInt() : 1;
+
+		if (MomentumTechCVar) { MomentumTechCVar->Set(0); }
 		TestFalse(TEXT("Roll cooldown blocks immediate reuse after finishing."), Survivor->TryStartSpecialMoveForTest(EBHMovementSpecialState::Rolling, false));
+		TestEqual(TEXT("Cooldown-refused reuse leaves the survivor in normal state."), Survivor->GetMovementSpecialState(), EBHMovementSpecialState::None);
+
+		if (MomentumTechCVar) { MomentumTechCVar->Set(1); }
+		TestTrue(TEXT("Frame-perfect flow chain bypasses the cooldown once."), Survivor->TryStartSpecialMoveForTest(EBHMovementSpecialState::Rolling, false));
+		TestEqual(TEXT("Flow chain re-enters the rolling state."), Survivor->GetMovementSpecialState(), EBHMovementSpecialState::Rolling);
+
+		// Finish the chained roll so the prone checks below start from a clean, idle state, then restore the cvar.
+		World->TimeSeconds += 0.70f;
+		World->UnpausedTimeSeconds += 0.70f;
+		World->RealTimeSeconds += 0.70f;
+		World->AudioTimeSeconds += 0.70f;
+		Survivor->Tick(0.70f);
+		TestEqual(TEXT("Chained roll finishes back to normal state."), Survivor->GetMovementSpecialState(), EBHMovementSpecialState::None);
+		if (MomentumTechCVar) { MomentumTechCVar->Set(PrevMomentumTech); }
 
 		TestTrue(TEXT("Prone state can be entered."), Survivor->TrySetProneForTest(true));
 		TestEqual(TEXT("Prone state is replicated state value."), Survivor->GetMovementSpecialState(), EBHMovementSpecialState::Prone);

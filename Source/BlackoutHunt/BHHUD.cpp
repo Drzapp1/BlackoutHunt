@@ -2731,7 +2731,13 @@ void ABHHUD::DrawNearbyNameTags(const ABHCharacter* Character)
 		float TextW = 0.0f;
 		float TextH = 0.0f;
 		Canvas->TextSize(GEngine->GetSmallFont(), Label, TextW, TextH, Scale, Scale);
-		const float X = ScreenPosition.X - TextW * 0.5f;
+		// If this survivor shows an emblem badge to the left of the name, reserve its footprint and shift the
+		// name (and its title caption) right by half of it, so the badge+name group stays centred over the
+		// character instead of hanging lopsided to the left.
+		const bool bShowEmblem = !bThreatRole && OtherPS->SelectedEmblemIndex > 0;
+		const float EmblemBadgeSize = bShowEmblem ? FMath::Max(8.0f, TextH * 0.55f) : 0.0f;
+		const float EmblemFootprint = bShowEmblem ? EmblemBadgeSize + 5.0f : 0.0f;
+		const float X = ScreenPosition.X - TextW * 0.5f + EmblemFootprint * 0.5f;
 		const float Y = ScreenPosition.Y - TextH * 0.5f;
 		DrawHudText(Label, X + 1.0f, Y + 1.0f, FLinearColor(0.0f, 0.0f, 0.0f, Alpha * 0.70f), GEngine->GetSmallFont(), Scale);
 		DrawHudText(Label, X, Y, TextColor, GEngine->GetSmallFont(), Scale);
@@ -2741,11 +2747,12 @@ void ABHHUD::DrawNearbyNameTags(const ABHCharacter* Character)
 		// a small emblem badge to the left of the name, and an earned title underneath it. Cosmetic only.
 		if (!bThreatRole)
 		{
-			if (OtherPS->SelectedEmblemIndex > 0)
+			if (bShowEmblem)
 			{
 				const FLinearColor EmblemColor = BHNameplateEmblemColor(OtherPS->SelectedEmblemIndex);
-				const float BadgeSize = FMath::Max(8.0f, TextH * 0.55f);
-				DrawPanel(X - BadgeSize - 5.0f, ScreenPosition.Y - BadgeSize * 0.5f, BadgeSize, BadgeSize,
+				// Sits just left of the name's left edge (X already includes the half-footprint shift) and is
+				// vertically centred on the name.
+				DrawPanel(X - EmblemFootprint, ScreenPosition.Y - EmblemBadgeSize * 0.5f, EmblemBadgeSize, EmblemBadgeSize,
 					FLinearColor(EmblemColor.R, EmblemColor.G, EmblemColor.B, Alpha),
 					FLinearColor(0.0f, 0.0f, 0.0f, Alpha * 0.55f));
 			}
@@ -2756,8 +2763,10 @@ void ABHHUD::DrawNearbyNameTags(const ABHCharacter* Character)
 				float TitleW = 0.0f;
 				float TitleH = 0.0f;
 				Canvas->TextSize(GEngine->GetSmallFont(), TitleText, TitleW, TitleH, TitleScale, TitleScale);
-				const float TitleX = ScreenPosition.X - TitleW * 0.5f;
-				const float TitleY = Y + TextH + 6.0f;
+				// Centre the title under the NAME (which may be shifted right by the emblem), not the raw
+				// character point, so name + title read as one column; drop it just below the underline.
+				const float TitleX = (X + TextW * 0.5f) - TitleW * 0.5f;
+				const float TitleY = Y + TextH + 8.0f;
 				DrawHudText(TitleText, TitleX + 1.0f, TitleY + 1.0f, FLinearColor(0.0f, 0.0f, 0.0f, Alpha * 0.55f), GEngine->GetSmallFont(), TitleScale);
 				DrawHudText(TitleText, TitleX, TitleY, FLinearColor(0.86f, 0.78f, 0.52f, Alpha * 0.92f), GEngine->GetSmallFont(), TitleScale);
 			}
