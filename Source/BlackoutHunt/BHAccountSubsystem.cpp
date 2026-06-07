@@ -1300,6 +1300,18 @@ TArray<FBHAchievementDisplay> UBHAccountSubsystem::GetAchievementsForDisplay() c
 		Display.Difficulty = Def.Difficulty;
 		Display.bHidden = Def.bHidden;
 		Display.bUnlocked = Progress.UnlockedAchievements.Contains(Display.Id);
+		// Progress toward countable achievements (drives the Awards-tab progress bar). Event/binary ones leave
+		// ProgressTarget at 0 (no bar).
+		{
+			auto BitCount4 = [](int32 Mask) { int32 Count = 0; for (int32 Bit = 0; Bit < 4; ++Bit) { if (Mask & (1 << Bit)) { ++Count; } } return Count; };
+			if (Display.Id == FName(TEXT("veteran"))) { Display.ProgressCurrent = Progress.RoundsPlayed; Display.ProgressTarget = 25; }
+			else if (Display.Id == FName(TEXT("graduate"))) { Display.ProgressCurrent = Progress.RoundsPlayed; Display.ProgressTarget = 50; }
+			else if (Display.Id == FName(TEXT("on_a_roll"))) { Display.ProgressCurrent = Progress.CurrentWinStreak; Display.ProgressTarget = 3; }
+			else if (Display.Id == FName(TEXT("honor_roll"))) { Display.ProgressCurrent = Progress.CurrentAnswerStreak; Display.ProgressTarget = 5; }
+			else if (Display.Id == FName(TEXT("tourist"))) { Display.ProgressCurrent = BitCount4(Progress.TrainActivityMask); Display.ProgressTarget = 4; }
+			else if (Display.Id == FName(TEXT("polymath"))) { Display.ProgressCurrent = BitCount4(Progress.TopicsEverCorrectMask); Display.ProgressTarget = 4; }
+			if (Display.ProgressTarget > 0) { Display.ProgressCurrent = FMath::Clamp(Display.ProgressCurrent, 0, Display.ProgressTarget); }
+		}
 		Result.Add(MoveTemp(Display));
 	}
 	return Result;

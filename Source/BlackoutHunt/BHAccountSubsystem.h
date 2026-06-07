@@ -134,6 +134,10 @@ struct FBHAchievementDisplay
 	int32 Difficulty = 1;  // 1..5 (the badge's star meter + tier colour)
 	bool bUnlocked = false;
 	bool bHidden = false;  // a secret achievement: the tab shows "???" until it is earned
+	// Progress toward a countable achievement (e.g. 18/25 rounds). ProgressTarget == 0 means "not countable"
+	// (an event/binary achievement) and the badge draws no progress bar.
+	int32 ProgressCurrent = 0;
+	int32 ProgressTarget = 0;
 };
 
 UCLASS()

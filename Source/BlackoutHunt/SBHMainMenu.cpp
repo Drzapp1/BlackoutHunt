@@ -3988,6 +3988,9 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 		const FString RewardStr = Ach.RewardLabel.IsEmpty() ? FString() : (FString(TEXT("Reward: ")) + Ach.RewardLabel);
 		const FString StateStr = Ach.bUnlocked ? FString(TEXT("EARNED")) : (bSecret ? FString(TEXT("???")) : BHAchievementTierName(Ach.Difficulty));
 		const FLinearColor StateColor = Ach.bUnlocked ? FLinearColor(0.40f, 0.86f, 0.52f, 1.0f) : TierColor;
+		const float ProgressPct = Ach.ProgressTarget > 0 ? static_cast<float>(Ach.ProgressCurrent) / static_cast<float>(Ach.ProgressTarget) : 0.0f;
+		const FString ProgressStr = FString::Printf(TEXT("%d / %d"), Ach.ProgressCurrent, Ach.ProgressTarget);
+		const bool bShowProgress = Ach.ProgressTarget > 0 && !Ach.bUnlocked && !bSecret;
 
 		BadgeList->AddSlot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 6.0f)
 		[
@@ -4037,6 +4040,33 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 						.Font(MenuFont(9, FName(TEXT("Bold"))))
 						.ColorAndOpacity(FLinearColor(0.70f, 0.82f, 0.74f, 1.0f))
 						.Text(FText::FromString(RewardStr))
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f, 0.0f, 0.0f)
+					[
+						SNew(SBox)
+						.Visibility(bShowProgress ? EVisibility::Visible : EVisibility::Collapsed)
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+							[
+								SNew(SBox).HeightOverride(7.0f)
+								[
+									SNew(SHorizontalBox)
+									+ SHorizontalBox::Slot().FillWidth(FMath::Max(ProgressPct, 0.0001f))
+									[
+										SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(TierColor)
+									]
+									+ SHorizontalBox::Slot().FillWidth(FMath::Max(1.0f - ProgressPct, 0.0001f))
+									[
+										SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(FLinearColor(0.13f, 0.14f, 0.16f, 1.0f))
+									]
+								]
+							]
+							+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+							[
+								SNew(STextBlock).Font(MenuFont(8)).ColorAndOpacity(FLinearColor(0.62f, 0.66f, 0.70f, 1.0f)).Text(FText::FromString(ProgressStr))
+							]
+						]
 					]
 				]
 				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(8.0f, 0.0f, 0.0f, 0.0f)
