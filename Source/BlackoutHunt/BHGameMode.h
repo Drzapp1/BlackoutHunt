@@ -279,6 +279,10 @@ protected:
 	// fallback path needs it): baked to /Game/BlackoutHunt/Maps/Tutorial.umap via the export commandlet,
 	// and it bakes in an ABHTutorialDirector that drives the guided lesson at runtime.
 	void BuildTutorialLevel();
+	// Hidden easter-egg HUB (reached by Escape at the main menu, EBHTutorialPhase::EasterEgg): a clear central
+	// gallery ringed by themed sector rooms (trophy/stats, arcade, dev/credits, an eerie nook) and skill-training
+	// rooms (movement, teacher-evasion), plus a secret room mapping the hidden eggs. Built procedurally here.
+	void BuildEasterEggRoom();
 	void BuildFoggroundsFinalStation();
 	void BuildMapSubwayExitStation(const FVector& GateLocation, float DirectionSign, const FString& StationName, const FString& DestinationText);
 	void BuildRuntimeNavigation();

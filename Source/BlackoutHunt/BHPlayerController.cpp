@@ -1663,6 +1663,7 @@ void ABHPlayerController::HostTutorialPhase(EBHTutorialPhase StartPhase, bool bC
 	case EBHTutorialPhase::Teacher: PhaseName = TEXT("Teacher"); break;
 	case EBHTutorialPhase::Monitor: PhaseName = TEXT("Monitor"); break;
 	case EBHTutorialPhase::Movement: PhaseName = TEXT("Movement"); break;
+	case EBHTutorialPhase::EasterEgg: PhaseName = TEXT("EasterEgg"); break;
 	case EBHTutorialPhase::Survivor:
 	default:                        PhaseName = TEXT("Survivor"); break;
 	}
@@ -2601,6 +2602,7 @@ bool ABHPlayerController::HostTutorialPhaseForMenu(EBHTutorialPhase StartPhase, 
 	case EBHTutorialPhase::Teacher: Label = TEXT("Teacher"); break;
 	case EBHTutorialPhase::Monitor: Label = TEXT("Hall Monitor"); break;
 	case EBHTutorialPhase::Movement: Label = TEXT("Movement"); break;
+	case EBHTutorialPhase::EasterEgg: Label = TEXT("Easter Egg"); break;
 	case EBHTutorialPhase::Survivor:
 	default:                        Label = TEXT("Survivor"); break;
 	}

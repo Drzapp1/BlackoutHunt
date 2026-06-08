@@ -64,6 +64,11 @@
 #include "BHTrainTicTacToeTable.h"
 #include "BHTrainConnectFourTable.h"
 #include "BHTrainSlotMachine.h"
+#include "BHTrainDartboard.h"
+#include "BHTrainCat.h"
+#include "BHTrainAquarium.h"
+#include "Engine/PointLight.h"
+#include "Components/PointLightComponent.h"
 #include "BHTrainTunnelMotionActor.h"
 #include "Components/BoxComponent.h"
 #include "Components/BrushComponent.h"
@@ -5529,6 +5534,10 @@ AStaticMeshActor* ABHGameMode::SpawnAuthoredBlockActor(const FVector& Location, 
 		case EBHBlockMaterial::PaintedMetal: return TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_PaintedMetal.M_BH_PaintedMetal");
 		case EBHBlockMaterial::Tiles:        return TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_Tiles.M_BH_Tiles");
 		case EBHBlockMaterial::WarningSign:  return TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_WarningSign.M_BH_WarningSign");
+		case EBHBlockMaterial::Wood:         return TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_Wood.M_BH_Wood");
+		case EBHBlockMaterial::Carpet:       return TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_Carpet.M_BH_Carpet");
+		case EBHBlockMaterial::Leather:      return TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_Leather.M_BH_Leather");
+		case EBHBlockMaterial::Marble:       return TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_Marble.M_BH_Marble");
 		default:                             return TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_PaintedMetal.M_BH_PaintedMetal");
 		}
 	};
@@ -6008,6 +6017,10 @@ void ABHGameMode::BuildRuntimeFacility()
 		{
 			RuntimeTutorialPhase = EBHTutorialPhase::Movement;
 		}
+		else if (TutorialPhaseOption.Equals(TEXT("EasterEgg"), ESearchCase::IgnoreCase))
+		{
+			RuntimeTutorialPhase = EBHTutorialPhase::EasterEgg;
+		}
 		else
 		{
 			RuntimeTutorialPhase = EBHTutorialPhase::Survivor;
@@ -6142,6 +6155,14 @@ void ABHGameMode::BuildRuntimeFacility()
 
 void ABHGameMode::BuildTutorialLevel()
 {
+	// The Escape-from-menu easter egg reuses this tutorial map slot but builds its own hidden HUB instead of the
+	// teaching greybox.
+	if (RuntimeTutorialPhase == EBHTutorialPhase::EasterEgg)
+	{
+		BuildEasterEggRoom();
+		return;
+	}
+
 	// A larger linear greybox for the self-serve solo tutorial, sized so the Teacher encounter is a REAL
 	// chase. Teaching rooms run west->east, separated by partition walls with a central 6 m doorway:
 	// (1) entry/move/flashlight, (2) locker alcove, (3) crawl-duct room, (4) breaker/blackout room, then a
@@ -8357,10 +8378,11 @@ void ABHGameMode::BuildTrainLobbyLevel()
 	const FLinearColor CoveTint(0.40f, 0.66f, 0.70f, 1.0f);
 	const FLinearColor SkirtTint(0.05f, 0.055f, 0.05f, 1.0f);
 
-	// Seven cars, kept symmetric about x=0 so the full-length shell pieces below stay aligned. Car i centre = -4500 + i*1500.
-	const int32 NumCars = 9;
-	const float TubeMinX = -6750.0f;
-	const float TubeMaxX = 6750.0f;
+	// A long lobby train (15 cars), kept symmetric about x=0 so the full-length shell pieces below stay aligned.
+	// Car i centre = TubeMinX + 750 + i*1500. Cars host games up front and relax/social spaces toward the back.
+	const int32 NumCars = 15;
+	const float TubeMinX = -11250.0f;
+	const float TubeMaxX = 11250.0f;
 	const float TubeLen = (TubeMaxX - TubeMinX) / 100.0f;
 	const float WallY = 300.0f;
 	const float CeilZ = 300.0f;
@@ -8484,7 +8506,7 @@ void ABHGameMode::BuildTrainLobbyLevel()
 
 		// Spawn points along the aisle. The two GAME cars (CarIndex 2 & 4) carry a centred feature table, so skip
 		// their centre spawn to avoid materialising a player on top of the table; the side spawns stay clear.
-		const bool bGameCar = (CarIndex >= 1 && CarIndex <= 7);
+		const bool bGameCar = (CarIndex >= 1 && CarIndex <= NumCars - 2);
 		if (!bGameCar)
 		{
 			SurvivorSpawns.Add(FVector(CenterX, 0.0f, 124.0f));
@@ -8558,37 +8580,171 @@ void ABHGameMode::BuildTrainLobbyLevel()
 		}
 	};
 
+	// Soft coloured accent light for the relax/social cars (movable so a runtime spawn lights immediately).
+	auto AddAccentLight = [&](const FVector& Loc, const FLinearColor& Color, float Intensity, float Radius)
+	{
+		if (APointLight* L = GetWorld()->SpawnActor<APointLight>(Loc, FRotator::ZeroRotator))
+		{
+			L->SetMobility(EComponentMobility::Movable);
+			if (UPointLightComponent* PLC = Cast<UPointLightComponent>(L->GetLightComponent()))
+			{
+				PLC->SetLightColor(Color);
+				PLC->SetIntensity(Intensity);
+				PLC->SetAttenuationRadius(Radius);
+				PLC->SetCastShadows(false);
+			}
+		}
+	};
+
+	const FLinearColor Warm(1.0f, 0.78f, 0.5f, 1.0f);
+	const FLinearColor PlantGreen(0.16f, 0.5f, 0.22f, 1.0f);
+	const FLinearColor BottleA(0.2f, 0.8f, 0.5f, 1.0f);
+	const FLinearColor BottleB(0.85f, 0.5f, 0.2f, 1.0f);
+	const FLinearColor BookTints[5] = {
+		FLinearColor(0.55f, 0.16f, 0.16f, 1.0f), FLinearColor(0.16f, 0.30f, 0.55f, 1.0f),
+		FLinearColor(0.20f, 0.45f, 0.25f, 1.0f), FLinearColor(0.55f, 0.45f, 0.16f, 1.0f),
+		FLinearColor(0.35f, 0.22f, 0.45f, 1.0f) };
+
+	// ARCADE: a dartboard on the back wall plus a high-top table and a couple of slot machines.
+	auto AddArcadeCar = [&](float TX)
+	{
+		GetWorld()->SpawnActor<ABHTrainDartboard>(FVector(TX, 250.0f, 0.0f), FRotator::ZeroRotator);
+		GetWorld()->SpawnActor<ABHTrainSlotMachine>(FVector(TX - 520.0f, 240.0f, 0.0f), FRotator::ZeroRotator);
+		GetWorld()->SpawnActor<ABHTrainSlotMachine>(FVector(TX + 520.0f, 240.0f, 0.0f), FRotator::ZeroRotator);
+		// A throw-line stand-up table with stools on the aisle side.
+		SpawnBlock(FVector(TX, -120.0f, 95.0f), FVector(0.7f, 0.7f, 0.06f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Marble);
+		SpawnBlock(FVector(TX, -120.0f, 47.0f), FVector(0.14f, 0.14f, 0.95f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Wood);
+		for (float SX : {-110.0f, 110.0f})
+		{
+			SpawnBlock(FVector(TX + SX, -200.0f, 40.0f), FVector(0.4f, 0.4f, 0.40f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Leather);
+		}
+		AddAccentLight(FVector(TX, 0.0f, 250.0f), FLinearColor(0.5f, 0.7f, 1.0f, 1.0f), 70.0f, 600.0f);
+	};
+
+	// BAR / LOUNGE: a marble-topped wood bar with stools, a back-bar of bottles, and leather booths opposite.
+	auto AddBarLoungeCar = [&](float TX)
+	{
+		SpawnBlock(FVector(TX, 0.0f, 2.0f), FVector(14.0f, 5.6f, 0.03f), FLinearColor(0.5f, 0.3f, 0.2f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::Carpet);
+		// Bar counter along the +Y wall.
+		SpawnBlock(FVector(TX, 235.0f, 52.0f), FVector(10.0f, 0.6f, 1.02f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Wood);
+		SpawnBlock(FVector(TX, 232.0f, 106.0f), FVector(10.4f, 0.8f, 0.10f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Marble);
+		SpawnBlock(FVector(TX, 285.0f, 175.0f), FVector(10.0f, 0.25f, 1.4f), FLinearColor::White, FRotator::ZeroRotator, false, EBHBlockMaterial::Wood);   // back-bar shelf wall
+		for (float BX = TX - 420.0f; BX <= TX + 420.0f; BX += 120.0f)
+		{
+			SpawnBlock(FVector(BX, 150.0f, 44.0f), FVector(0.36f, 0.36f, 0.86f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Leather);   // stools
+			SpawnBlock(FVector(BX, 278.0f, 150.0f + ((int)BX % 40)), FVector(0.10f, 0.10f, 0.30f), (((int)BX / 120) % 2 ? BottleA : BottleB), FRotator::ZeroRotator, false, EBHBlockMaterial::Tiles);   // bottles
+		}
+		// Leather booths along the -Y wall.
+		for (float BX : {TX - 380.0f, TX + 380.0f})
+		{
+			SpawnBlock(FVector(BX, -230.0f, 40.0f), FVector(1.6f, 0.5f, 0.40f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Leather);   // bench seat
+			SpawnBlock(FVector(BX, -255.0f, 95.0f), FVector(1.6f, 0.18f, 0.70f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Leather);   // bench back
+			SpawnBlock(FVector(BX, -150.0f, 55.0f), FVector(0.8f, 0.8f, 0.06f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Wood);       // table
+		}
+		AddAccentLight(FVector(TX, 120.0f, 220.0f), Warm, 90.0f, 700.0f);
+		AddAccentLight(FVector(TX, -150.0f, 200.0f), Warm, 55.0f, 600.0f);
+		GetWorld()->SpawnActor<ABHTrainCat>(FVector(TX, -90.0f, 6.0f), FRotator::ZeroRotator);
+	};
+
+	// LIBRARY / QUIET car: bookshelves down both walls, leather reading chairs, soft warm light.
+	auto AddLibraryCar = [&](float TX)
+	{
+		SpawnBlock(FVector(TX, 0.0f, 2.0f), FVector(14.0f, 5.6f, 0.03f), FLinearColor(0.3f, 0.2f, 0.25f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::Carpet);
+		for (float WallY2 : {255.0f, -255.0f})
+		{
+			SpawnBlock(FVector(TX, WallY2, 120.0f), FVector(11.0f, 0.5f, 2.2f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Wood);   // shelf body
+			for (float BX = TX - 520.0f; BX <= TX + 520.0f; BX += 40.0f)
+			{
+				const float ShelfZ = 60.0f + 50.0f * (((int)BX / 40) % 4);
+				SpawnBlock(FVector(BX, WallY2 + (WallY2 > 0 ? -26.0f : 26.0f), ShelfZ), FVector(0.34f, 0.04f, 0.34f), BookTints[((int)BX / 40) % 5], FRotator::ZeroRotator, false, EBHBlockMaterial::Tiles);   // books
+			}
+		}
+		for (float CX : {TX - 300.0f, TX + 300.0f})
+		{
+			SpawnBlock(FVector(CX, 60.0f, 42.0f), FVector(0.55f, 0.55f, 0.42f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Leather);   // armchair seat
+			SpawnBlock(FVector(CX, 85.0f, 90.0f), FVector(0.55f, 0.16f, 0.55f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Leather);   // chair back
+			SpawnBlock(FVector(CX, -60.0f, 50.0f), FVector(0.5f, 0.5f, 0.06f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Wood);       // side table
+		}
+		AddAccentLight(FVector(TX, 0.0f, 240.0f), FLinearColor(1.0f, 0.86f, 0.62f, 1.0f), 60.0f, 650.0f);
+		GetWorld()->SpawnActor<ABHTrainCat>(FVector(TX - 150.0f, 0.0f, 6.0f), FRotator::ZeroRotator);   // a library cat
+		GetWorld()->SpawnActor<ABHTrainAquarium>(FVector(TX + 560.0f, 235.0f, 0.0f), FRotator::ZeroRotator);
+	};
+
+	// OBSERVATION car: leather benches facing the windows, a glowing skylight strip, cool calm light.
+	auto AddObservationCar = [&](float TX)
+	{
+		for (float WallY2 : {235.0f, -235.0f})
+		{
+			SpawnBlock(FVector(TX, WallY2, 40.0f), FVector(11.0f, 0.6f, 0.40f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Leather);   // long window bench
+		}
+		SpawnBlock(FVector(TX, 0.0f, 55.0f), FVector(1.2f, 1.2f, 0.10f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Marble);           // centre table
+		SpawnBlock(FVector(TX, 0.0f, 291.0f), FVector(9.0f, 1.6f, 0.04f), FLinearColor(0.6f, 0.85f, 1.0f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::Tinted);   // glowing skylight
+		AddAccentLight(FVector(TX, 0.0f, 250.0f), FLinearColor(0.55f, 0.75f, 1.0f, 1.0f), 65.0f, 700.0f);
+		GetWorld()->SpawnActor<ABHTrainAquarium>(FVector(TX - 430.0f, 0.0f, 0.0f), FRotator::ZeroRotator);
+	};
+
+	// GREENHOUSE / GARDEN: planters, a central tree, benches, grassy floor.
+	auto AddGreenhouseCar = [&](float TX)
+	{
+		SpawnBlock(FVector(TX, 0.0f, 2.0f), FVector(14.0f, 5.6f, 0.03f), FLinearColor(0.18f, 0.40f, 0.20f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::Carpet);   // lawn
+		for (float WallY2 : {235.0f, -235.0f})
+		{
+			for (float BX = TX - 500.0f; BX <= TX + 500.0f; BX += 250.0f)
+			{
+				SpawnBlock(FVector(BX, WallY2, 30.0f), FVector(0.7f, 0.7f, 0.55f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Wood);   // planter box
+				SpawnBlock(FVector(BX, WallY2, 95.0f), FVector(0.9f, 0.9f, 0.8f), PlantGreen, FRotator::ZeroRotator, false, EBHBlockMaterial::Tiles);           // foliage
+			}
+		}
+		// Central tree.
+		SpawnBlock(FVector(TX, 0.0f, 70.0f), FVector(0.28f, 0.28f, 1.4f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Wood);
+		SpawnBlock(FVector(TX, 0.0f, 170.0f), FVector(1.8f, 1.8f, 1.6f), PlantGreen, FRotator::ZeroRotator, false, EBHBlockMaterial::Tiles);
+		for (float BX : {TX - 360.0f, TX + 360.0f})
+		{
+			SpawnBlock(FVector(BX, 0.0f, 40.0f), FVector(1.2f, 0.4f, 0.10f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Wood);   // bench
+		}
+		AddAccentLight(FVector(TX, 0.0f, 250.0f), FLinearColor(0.85f, 1.0f, 0.8f, 1.0f), 80.0f, 700.0f);
+		GetWorld()->SpawnActor<ABHTrainCat>(FVector(TX + 120.0f, 60.0f, 6.0f), FRotator::ZeroRotator);   // a garden cat
+	};
+
+	// KARAOKE / SOCIAL: a small stage with a glowing screen and mic, rows of seats, coloured stage lights.
+	auto AddKaraokeCar = [&](float TX)
+	{
+		SpawnBlock(FVector(TX, 0.0f, 2.0f), FVector(14.0f, 5.6f, 0.03f), FLinearColor(0.25f, 0.18f, 0.35f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::Carpet);
+		// Stage at the +Y wall with a big screen and a mic.
+		SpawnBlock(FVector(TX, 235.0f, 20.0f), FVector(5.0f, 1.0f, 0.40f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Wood);     // stage deck
+		SpawnBlock(FVector(TX, 288.0f, 170.0f), FVector(3.4f, 0.12f, 1.5f), FLinearColor(0.2f, 0.5f, 1.0f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::Tinted);   // screen
+		SpawnBlock(FVector(TX, 210.0f, 75.0f), FVector(0.06f, 0.06f, 0.7f), FLinearColor::White, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);   // mic stand
+		SpawnBlock(FVector(TX, 210.0f, 112.0f), FVector(0.14f, 0.14f, 0.14f), FLinearColor(0.05f, 0.05f, 0.05f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::Tiles);   // mic head
+		// Audience seating facing the stage.
+		for (float RowY = -60.0f; RowY >= -230.0f; RowY -= 85.0f)
+		{
+			for (float SX = TX - 360.0f; SX <= TX + 360.0f; SX += 180.0f)
+			{
+				SpawnBlock(FVector(SX, RowY, 40.0f), FVector(0.42f, 0.42f, 0.40f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Leather);
+			}
+		}
+		AddAccentLight(FVector(TX - 200.0f, 150.0f, 250.0f), FLinearColor(1.0f, 0.2f, 0.7f, 1.0f), 80.0f, 600.0f);
+		AddAccentLight(FVector(TX + 200.0f, 150.0f, 250.0f), FLinearColor(0.2f, 0.8f, 1.0f, 1.0f), 80.0f, 600.0f);
+	};
+
 	for (int32 LoungeCar = 1; LoungeCar <= NumCars - 2; ++LoungeCar)
 	{
 		const float CenterX = TubeMinX + 750.0f + LoungeCar * 1500.0f;
 
 		// A couple of cars are GAME cars (chess, blackjack) so there's something to gather around; they get one
 		// feature table down the centre instead of the twin booths so the table has room.
-		if (LoungeCar == 2 || LoungeCar == 6)
-		{
-			AddChessTable(CenterX);
-			continue;
-		}
-		if (LoungeCar == 3 || LoungeCar == 4)
-		{
-			AddBlackjackCar(CenterX);
-			continue;
-		}
-		if (LoungeCar == 5)
-		{
-			AddTicTacToeTable(CenterX);
-			continue;
-		}
-		if (LoungeCar == 1)
-		{
-			AddConnectFourTable(CenterX);
-			continue;
-		}
-		if (LoungeCar == 7)
-		{
-			AddSlotsCar(CenterX);
-			continue;
-		}
+		// Games up front (cars 1-8), relax/social spaces toward the back (cars 9-13).
+		if (LoungeCar == 1) { AddConnectFourTable(CenterX); continue; }
+		if (LoungeCar == 2 || LoungeCar == 7) { AddChessTable(CenterX); continue; }
+		if (LoungeCar == 3 || LoungeCar == 8) { AddBlackjackCar(CenterX); continue; }
+		if (LoungeCar == 4) { AddTicTacToeTable(CenterX); continue; }
+		if (LoungeCar == 5) { AddSlotsCar(CenterX); continue; }
+		if (LoungeCar == 6) { AddArcadeCar(CenterX); continue; }
+		if (LoungeCar == 9) { AddBarLoungeCar(CenterX); continue; }
+		if (LoungeCar == 10) { AddLibraryCar(CenterX); continue; }
+		if (LoungeCar == 11) { AddObservationCar(CenterX); continue; }
+		if (LoungeCar == 12) { AddGreenhouseCar(CenterX); continue; }
+		if (LoungeCar == 13) { AddKaraokeCar(CenterX); continue; }
 
 		for (float BoothX : {CenterX - 300.0f, CenterX + 300.0f})
 		{
