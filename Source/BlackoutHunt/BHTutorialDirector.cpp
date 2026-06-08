@@ -1090,6 +1090,30 @@ void ABHTutorialDirector::EvaluateMovementStep()
 	// instead of vanishing the instant a quick player acts. See the note on the action-bit cases below.
 	constexpr float kMoveMinRead = 2.0f;
 
+	// Keep stamina topped up during the advanced-move PRACTICE steps. By the last of them the player has spent a lot
+	// of stamina, and a special move is REJECTED below the stamina floor -- most painfully the FLOW-CHAIN, which needs
+	// two rolls back-to-back: a stamina-starved player's second roll silently fails, so it never fires the chain (no
+	// camera, no flow-chain latch -> the step never registers). Refilling here lets every advanced move always be
+	// attempted; the stamina-management lesson already happened at the Sprint step.
+	if (Survivor)
+	{
+		switch (MovementStep)
+		{
+		case EMovementStep::Roll:
+		case EMovementStep::Slide:
+		case EMovementStep::Dive:
+		case EMovementStep::QuietRoll:
+		case EMovementStep::DropRoll:
+		case EMovementStep::SlideStop:
+		case EMovementStep::LockerRoll:
+		case EMovementStep::FlowChain:
+			Survivor->RecoverStamina(1000.0f);
+			break;
+		default:
+			break;
+		}
+	}
+
 	// Advance the instant the player performs the taught move; a generous timeout fallback guarantees the lesson can
 	// never hard-lock (a stuck input / missing key just skips ahead after a while), per the tutorial design rules.
 	switch (MovementStep)

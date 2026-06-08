@@ -3949,8 +3949,8 @@ static TAutoConsoleVariable<int32> CVarBHMomentumTech(
 // (the defaults match the original constants). See Docs/EASTER_EGGS.md.
 static TAutoConsoleVariable<float> CVarBHMomentumChainWindow(
 	TEXT("bh.MomentumChainWindow"),
-	0.30f,
-	TEXT("Survivor flow-chain input window in seconds: chain the next special move within this of the previous one ending. Lower = harder. (Default 0.30 -- 0.12 was so tight that input + the replicated end-of-move round-trip made the chain practically impossible to hit, so it 'never counted'.)"),
+	0.40f,
+	TEXT("Survivor flow-chain input window in seconds: chain the next special move within this of the previous one ending. Lower = harder. (Default 0.40 -- 0.12 was unhittable through input/replication latency; widened so the chain, and the tutorial's flow-chain step, are actually achievable.)"),
 	ECVF_Default);
 static TAutoConsoleVariable<int32> CVarBHMomentumChainMaxLinks(
 	TEXT("bh.MomentumChainMaxLinks"),
@@ -5229,6 +5229,7 @@ void ABHCharacter::SendFakeHunterHint(bool bRealHint)
 
 	const ABHPlayerState* FakePS = GetPlayerState<ABHPlayerState>();
 	FVector HintLocation = FVector::ZeroVector;
+	ABHCharacter* HintTarget = nullptr; // the hinted survivor -- passed to ReportBotStimulus so an AI Teacher routes to it
 	bool bFoundSignal = false;
 
 	if (bRealHint)
@@ -5252,6 +5253,7 @@ void ABHCharacter::SendFakeHunterHint(bool bRealHint)
 			{
 				BestDistSq = DistSq;
 				HintLocation = Target->GetActorLocation();
+				HintTarget = Target;
 				bFoundSignal = true;
 			}
 		}
@@ -5314,7 +5316,7 @@ void ABHCharacter::SendFakeHunterHint(bool bRealHint)
 	// (ReportBotStimulus), so a real hint finally has a visible effect against an AI Teacher.
 	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
 	{
-		BHGM->ReportBotStimulus(EBHBotStimulusType::Sight, HintLocation, this, nullptr, TEXT("hall monitor real hint"), 1.0f);
+		BHGM->ReportBotStimulus(EBHBotStimulusType::Sight, HintLocation, this, HintTarget, TEXT("hall monitor real hint"), 1.0f);
 	}
 
 	SendStatusMessage(FString::Printf(TEXT("Real hint sent to %d Teacher(s)."), HuntersNotified));
