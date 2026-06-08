@@ -515,7 +515,7 @@ namespace
 				// Restrained hover/press feedback: lerp the caller's colour toward the ember accent on hover,
 				// brighten on press. Wires the theme AccentBright/hover roles into real feedback across every
 				// button (tabs, START, host/join/classroom) without per-call-site edits.
-				.ButtonColorAndOpacity(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateLambda([BaseColorAttr, bPressed, bHovered]()
+				.ButtonColorAndOpacity(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateLambda([this, BaseColorAttr, bPressed, bHovered]()
 				{
 					const FSlateColor BaseSlate = BaseColorAttr.Get();
 					const FLinearColor Base = BaseSlate.IsColorSpecified() ? BaseSlate.GetSpecifiedColor() : FLinearColor::White;
@@ -523,7 +523,7 @@ namespace
 					{
 						return FSlateColor(Base * 1.15f);
 					}
-					if (*bHovered)
+					if (*bHovered || HasKeyboardFocus())
 					{
 						const FLinearColor Ember = BHResolveActiveThemeColor(&FBHMenuTheme::AccentBright);
 						FLinearColor Out = FMath::Lerp(Base, Ember, 0.32f);
@@ -538,9 +538,9 @@ namespace
 				.ClickedSoundOverride(FSlateSound())
 				.HoveredSoundOverride(FSlateSound())
 				.RenderTransform(TAttribute<TOptional<FSlateRenderTransform>>::Create(
-					TAttribute<TOptional<FSlateRenderTransform>>::FGetter::CreateLambda([bPressed, bHovered]()
+					TAttribute<TOptional<FSlateRenderTransform>>::FGetter::CreateLambda([this, bPressed, bHovered]()
 					{
-						const float Scale = *bPressed ? 1.035f : (*bHovered ? 1.012f : 1.0f);
+						const float Scale = *bPressed ? 1.035f : ((*bHovered || HasKeyboardFocus()) ? 1.012f : 1.0f);
 						return TOptional<FSlateRenderTransform>(FSlateRenderTransform(FScale2D(Scale)));
 					})))
 				.RenderTransformPivot(FVector2D(0.5f, 0.5f))
@@ -3537,6 +3537,16 @@ FReply SBHMainMenu::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKe
 			bShowStartCredentials = false;
 			return FReply::Handled();
 		}
+	}
+	else
+	{
+		// In the tabbed menu: arrow keys drive Slate's spatial focus navigation across the tabs and action
+		// rows; the focused SBHMenuButton highlights (see its focus-aware tint), and Enter/Space activates it.
+		const FKey MenuKey = InKeyEvent.GetKey();
+		if (MenuKey == EKeys::Up)    { return FReply::Handled().SetNavigation(EUINavigation::Up, ENavigationGenesis::Keyboard); }
+		if (MenuKey == EKeys::Down)  { return FReply::Handled().SetNavigation(EUINavigation::Down, ENavigationGenesis::Keyboard); }
+		if (MenuKey == EKeys::Left)  { return FReply::Handled().SetNavigation(EUINavigation::Left, ENavigationGenesis::Keyboard); }
+		if (MenuKey == EKeys::Right) { return FReply::Handled().SetNavigation(EUINavigation::Right, ENavigationGenesis::Keyboard); }
 	}
 
 	if (InKeyEvent.GetKey() == EKeys::Escape)

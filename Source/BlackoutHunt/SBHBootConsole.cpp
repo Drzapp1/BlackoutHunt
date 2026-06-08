@@ -180,8 +180,9 @@ void SBHBootConsole::Construct(const FArguments& InArgs)
 		// [2] Fake blue-screen-of-death "reboot" beat (its own layer above the terminal).
 		+ SOverlay::Slot()
 		[
-			SNew(SBox)
+			SAssignNew(BSODLayer, SBox)
 			.Visibility(this, &SBHBootConsole::GetBSODVisibility)
+			.RenderTransformPivot(FVector2D(0.5f, 0.5f))
 			[
 				BuildBSODScreen()
 			]
@@ -832,10 +833,15 @@ FText SBHBootConsole::GetBSODProgressText() const
 	{
 		P = HoldPct; // frozen
 	}
+	else if (Elapsed < BSODCatchTime())
+	{
+		// Slow, unnatural crawl 62% -> ~93%.
+		const float SlowSpan = FMath::Max(0.1f, (BSODCatchTime() - BSODStartTime()) - FreezeEnd);
+		P = HoldPct + FMath::Clamp((T - FreezeEnd) / SlowSpan, 0.0f, 1.0f) * (0.93f - HoldPct);
+	}
 	else
 	{
-		const float SlowSpan = FMath::Max(0.1f, BSODSeconds - FreezeEnd);
-		P = HoldPct + FMath::Clamp((T - FreezeEnd) / SlowSpan, 0.0f, 1.0f) * (0.99f - HoldPct);
+		P = 1.0f; // caught -- the takeover snaps it straight to 100%
 	}
 	return FText::FromString(FString::Printf(TEXT("%d%% complete"), FMath::RoundToInt(P * 100.0f)));
 }
@@ -844,6 +850,10 @@ FText SBHBootConsole::GetBSODFaceText() const
 {
 	// Sad :( until the freeze hits, then it quietly turns angry >:( -- the discreet "something took over".
 	const float T = Elapsed - BSODStartTime();
+	if (Elapsed >= BSODCatchTime())
+	{
+		return FText::FromString(TEXT(">:]")); // caught -- the quiet grin of whatever just took over
+	}
 	return FText::FromString(T >= 0.9f ? TEXT(">:(") : TEXT(":("));
 }
 
@@ -907,6 +917,29 @@ void SBHBootConsole::Tick(const FGeometry& AllottedGeometry, const double InCurr
 		else
 		{
 			JitterLayer->SetRenderTransform(TOptional<FSlateRenderTransform>());
+		}
+	}
+
+	// "Caught it" beat: ~0.55s before the cut to black, something intercepts the slow crawl. The BSOD screen
+	// warps -- a slight non-uniform scale + shear + jitter that snaps then settles -- to show the takeover.
+	if (BSODLayer.IsValid())
+	{
+		if (InBSOD() && !bReducedFlash && Elapsed >= BSODCatchTime())
+		{
+			const float W = Elapsed - BSODCatchTime();
+			const float Span = FMath::Max(0.1f, BlackStartTime() - BSODCatchTime());
+			const float Decay = FMath::Clamp(1.0f - W / Span, 0.0f, 1.0f);
+			const float Pulse = Decay * Decay;
+			const float Sx = 1.0f + 0.055f * Pulse;
+			const float Sy = 1.0f - 0.040f * Pulse;
+			const float Shear = 0.045f * Pulse * FMath::Sin(W * 58.0f);
+			const float Off = 7.0f * Pulse * FMath::Sin(W * 47.0f + 1.0f);
+			const FMatrix2x2 Warp(Sx, Shear, 0.0f, Sy);
+			BSODLayer->SetRenderTransform(FSlateRenderTransform(Warp, FVector2D(Off, -Off * 0.5f)));
+		}
+		else
+		{
+			BSODLayer->SetRenderTransform(TOptional<FSlateRenderTransform>());
 		}
 	}
 

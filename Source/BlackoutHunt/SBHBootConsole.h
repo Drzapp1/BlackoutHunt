@@ -88,6 +88,9 @@ private:
 	float GlitchStartTime() const { return PrerollSeconds + BootScriptDuration; }
 	float BSODStartTime() const { return GlitchStartTime() + GlitchSeconds; }
 	float BlackStartTime() const { return BSODStartTime() + BSODSeconds; }
+	// The "caught it" beat: ~0.55s before the cut to black, the slow crawl is intercepted -- it snaps to
+	// 100%, the face changes, and the screen warps to show that something took over.
+	float BSODCatchTime() const { return BSODStartTime() + BSODSeconds - 0.55f; }
 	float FadeStartTime() const { return BlackStartTime() + BlackHoldSeconds; }
 	float TotalDuration() const { return FadeStartTime() + MenuFadeSeconds; }
 	bool InPreroll() const;
@@ -161,6 +164,8 @@ private:
 	// The shaken content group (terminal + banner + dialogs); the static black backdrop sits behind it
 	// so the shake never reveals a hard edge.
 	TSharedPtr<SWidget> JitterLayer;
+	// The BSOD blue-screen layer; warped via a render transform during the "caught it" beat (see Tick).
+	TSharedPtr<SWidget> BSODLayer;
 
 	float Elapsed = 0.0f;
 	bool bReducedFlash = false;
