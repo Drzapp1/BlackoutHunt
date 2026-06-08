@@ -9,6 +9,8 @@
 #include "Widgets/SCompoundWidget.h"
 
 class SWidget;
+class UWorld;
+class USoundBase;
 
 // Cosmetic cold-boot "bare-metal" terminal. Streams a scripted facility-mainframe boot log
 // (POST, shader compile, subsystem bring-up, blackout protocol) that ESCALATES INTO A FAKE SYSTEM
@@ -39,6 +41,8 @@ public:
 		// When true (accessibility comfort setting) the strobe, shake and per-frame text scramble are
 		// suppressed in favour of a steady, low-contrast corruption.
 		SLATE_ARGUMENT(bool, ReducedFlash)
+		// World used to play the boot SFX via UGameplayStatics::PlaySound2D. Null = silent.
+		SLATE_ARGUMENT(UWorld*, SoundWorld)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
@@ -75,6 +79,11 @@ private:
 	void RequestSkip();
 	// Idempotently end the sequence: zero this widget's opacity and fire OnFinished so the owner removes it.
 	void Finish();
+
+	// Boot SFX (reuses existing project audio): machine hum, POST beeps, the SYSTEM-FAILURE impact + static,
+	// error-dialog ticks, the "caught it" glitch hit, and the blackout rumble -- fired at the timeline beats.
+	void UpdateBootSounds();
+	void PlayBootSound(const TCHAR* AssetPath, float Volume, float Pitch);
 
 	// ---- timeline ----------------------------------------------------------------------------------
 	// [0, PrerollSeconds]                       fast-scrolling raw dev/debug log flood
@@ -171,6 +180,16 @@ private:
 	bool bReducedFlash = false;
 	bool bMenuRevealFired = false;
 	bool bFinished = false;
+
+	// --- boot SFX state ---
+	TWeakObjectPtr<UWorld> SoundWorld;
+	bool bSfxHum = false;
+	bool bSfxCrash = false;
+	bool bSfxBsod = false;
+	bool bSfxCaught = false;
+	bool bSfxBlackout = false;
+	int32 NextDialogSfx = 0;
+	float NextBeepTime = 0.5f;
 	FSimpleDelegate OnReadyForMenuDelegate;
 	FSimpleDelegate OnFinishedDelegate;
 };

@@ -3,7 +3,10 @@
 // Unauthorized copying or distribution is strictly prohibited.
 
 #include "SBHBootConsole.h"
+#include "Engine/World.h"
 #include "HAL/PlatformMisc.h"
+#include "Kismet/GameplayStatics.h"
+#include "Sound/SoundBase.h"
 #include "Styling/CoreStyle.h"
 #include "Templates/Function.h"
 #include "Types/SlateEnums.h"
@@ -67,6 +70,7 @@ void SBHBootConsole::Construct(const FArguments& InArgs)
 	OnReadyForMenuDelegate = InArgs._OnReadyForMenu;
 	OnFinishedDelegate = InArgs._OnFinished;
 	bReducedFlash = InArgs._ReducedFlash;
+	SoundWorld = InArgs._SoundWorld;
 
 	BuildBootScript();
 	BuildPrerollLines();
@@ -746,6 +750,47 @@ TSharedRef<SWidget> SBHBootConsole::BuildBSODScreen()
 	const FSlateColor White(FLinearColor::White);
 	const FSlateColor Faint(FLinearColor(0.80f, 0.88f, 0.97f, 1.0f));
 
+	// A horizontal corruption bar for the "caught it" beat: it jumps left/right and recolours each frame-step
+	// (occasionally a big rip), and is dark/empty otherwise -- digital signal tearing, only during the catch.
+	auto MakeTearBar = [this](int32 Idx, float BarHeight) -> TSharedRef<SWidget>
+	{
+		return SNew(SBox)
+			.HeightOverride(BarHeight)
+			.RenderTransform(TAttribute<TOptional<FSlateRenderTransform>>::Create([this, Idx]()
+			{
+				if (Elapsed < BSODCatchTime() || Elapsed >= BlackStartTime())
+				{
+					return TOptional<FSlateRenderTransform>();
+				}
+				const int32 Step = FMath::FloorToInt(Elapsed * 19.0f);
+				const float Hx = (static_cast<float>(BHHash(Step * 31 + Idx * 13) & 0xFFFF) / 65535.0f) * 2.0f - 1.0f;
+				const bool bBig = (BHHash(Step * 9 + Idx) & 0xFF) > 150;
+				return TOptional<FSlateRenderTransform>(FSlateRenderTransform(FVector2D(Hx * (bBig ? 120.0f : 24.0f), 0.0f)));
+			}))
+			[
+				SNew(SBorder)
+				.BorderImage(BootWhiteBrush())
+				.BorderBackgroundColor(TAttribute<FSlateColor>::Create([this, Idx]()
+				{
+					if (Elapsed < BSODCatchTime() || Elapsed >= BlackStartTime())
+					{
+						return FSlateColor(FLinearColor(0.0f, 0.0f, 0.0f, 0.0f));
+					}
+					const int32 Step = FMath::FloorToInt(Elapsed * 19.0f);
+					if ((BHHash(Step * 7 + Idx * 5) & 0xFF) < 96)
+					{
+						return FSlateColor(FLinearColor(0.0f, 0.0f, 0.0f, 0.0f)); // empty this step
+					}
+					const float H = static_cast<float>(BHHash(Step * 11 + Idx * 3) & 0xFFFF) / 65535.0f;
+					const FLinearColor C = (H < 0.34f) ? FLinearColor(1.0f, 1.0f, 1.0f, 0.85f)
+						: (H < 0.60f) ? FLinearColor(0.95f, 0.12f, 0.12f, 0.80f)
+						: (H < 0.84f) ? FLinearColor(0.20f, 0.55f, 1.0f, 0.80f)
+						: FLinearColor(0.02f, 0.02f, 0.03f, 0.92f);
+					return FSlateColor(C);
+				}))
+			];
+	};
+
 	return SNew(SOverlay)
 		+ SOverlay::Slot()
 		[
@@ -808,6 +853,23 @@ TSharedRef<SWidget> SBHBootConsole::BuildBSODScreen()
 					.Text(FText::FromString(TEXT("What failed: blackout.sys")))
 				]
 			]
+		]
+		// Broken-screen corruption layer: horizontal tear bars that rip + recolour during the catch beat.
+		+ SOverlay::Slot()
+		[
+			SNew(SVerticalBox)
+			.Visibility(EVisibility::HitTestInvisible)
+			+ SVerticalBox::Slot().FillHeight(0.55f)[ SNew(SBox) ]
+			+ SVerticalBox::Slot().AutoHeight()[ MakeTearBar(0, 22.0f) ]
+			+ SVerticalBox::Slot().FillHeight(0.90f)[ SNew(SBox) ]
+			+ SVerticalBox::Slot().AutoHeight()[ MakeTearBar(1, 13.0f) ]
+			+ SVerticalBox::Slot().FillHeight(0.70f)[ SNew(SBox) ]
+			+ SVerticalBox::Slot().AutoHeight()[ MakeTearBar(2, 30.0f) ]
+			+ SVerticalBox::Slot().FillHeight(1.20f)[ SNew(SBox) ]
+			+ SVerticalBox::Slot().AutoHeight()[ MakeTearBar(3, 11.0f) ]
+			+ SVerticalBox::Slot().FillHeight(0.50f)[ SNew(SBox) ]
+			+ SVerticalBox::Slot().AutoHeight()[ MakeTearBar(4, 18.0f) ]
+			+ SVerticalBox::Slot().FillHeight(1.00f)[ SNew(SBox) ]
 		];
 }
 
@@ -855,6 +917,86 @@ FText SBHBootConsole::GetBSODFaceText() const
 		return FText::FromString(TEXT(">:]")); // caught -- the quiet grin of whatever just took over
 	}
 	return FText::FromString(T >= 0.9f ? TEXT(">:(") : TEXT(":("));
+}
+
+void SBHBootConsole::PlayBootSound(const TCHAR* AssetPath, float Volume, float Pitch)
+{
+	UWorld* World = SoundWorld.Get();
+	if (!World || !AssetPath)
+	{
+		return;
+	}
+	if (USoundBase* Sound = LoadObject<USoundBase>(nullptr, AssetPath))
+	{
+		UGameplayStatics::PlaySound2D(World, Sound, Volume, Pitch);
+	}
+}
+
+void SBHBootConsole::UpdateBootSounds()
+{
+	if (!SoundWorld.IsValid())
+	{
+		return;
+	}
+
+	// Existing project audio repurposed into a machine-boot-then-crash soundscape.
+	static const TCHAR* SfxHum    = TEXT("/Game/SecurityCameras/Sounds/Wav_Electricity.Wav_Electricity");
+	static const TCHAR* SfxBeep   = TEXT("/Game/BlackoutHunt/Audio/SW_MenuClick.SW_MenuClick");
+	static const TCHAR* SfxStatic = TEXT("/Game/SecurityCameras/Sounds/Wav_Static_CCTV.Wav_Static_CCTV");
+	static const TCHAR* SfxImpact = TEXT("/Game/SoundsOfHorror/Impacts/CUE/CUE_SOH_IP_03.CUE_SOH_IP_03");
+	static const TCHAR* SfxRumble = TEXT("/Game/SoundsOfHorror/Rumbles/CUE/CUE_SOH_RU_04.CUE_SOH_RU_04");
+
+	// Low electric machine hum as the hardware powers up.
+	if (!bSfxHum && Elapsed >= 0.15f)
+	{
+		bSfxHum = true;
+		PlayBootSound(SfxHum, 0.30f, 0.80f);
+	}
+
+	// Sparse POST beeps / data ticks while the log floods (until the crash begins).
+	if (Elapsed < GlitchStartTime() && Elapsed >= NextBeepTime)
+	{
+		const uint32 R = BHHash(static_cast<uint32>(FMath::FloorToInt(Elapsed * 1000.0f)));
+		NextBeepTime = Elapsed + 0.45f + static_cast<float>(R & 0xFF) / 255.0f * 0.7f;
+		PlayBootSound(SfxBeep, 0.14f, 0.85f + static_cast<float>(R & 0x7) * 0.06f);
+	}
+
+	// SYSTEM FAILURE: a hard impact + a burst of static as it crashes.
+	if (!bSfxCrash && Elapsed >= GlitchStartTime())
+	{
+		bSfxCrash = true;
+		PlayBootSound(SfxImpact, 0.95f, 1.0f);
+		PlayBootSound(SfxStatic, 0.55f, 1.0f);
+	}
+
+	// Each stacked error dialog pops with a sharp tick.
+	while (NextDialogSfx < 6 && Elapsed >= GlitchStartTime() + CrashDialogDelays[NextDialogSfx])
+	{
+		PlayBootSound(SfxBeep, 0.5f, 0.6f);
+		++NextDialogSfx;
+	}
+
+	// Blue screen: a low static bed underneath it.
+	if (!bSfxBsod && Elapsed >= BSODStartTime())
+	{
+		bSfxBsod = true;
+		PlayBootSound(SfxStatic, 0.35f, 0.85f);
+	}
+
+	// The "caught it" hijack hit: a glitch impact + a sharp electric snap as the screen breaks.
+	if (!bSfxCaught && Elapsed >= BSODCatchTime())
+	{
+		bSfxCaught = true;
+		PlayBootSound(SfxImpact, 0.80f, 0.60f);
+		PlayBootSound(SfxHum, 0.60f, 1.50f);
+	}
+
+	// Blackout / reboot: a deep rumble as everything cuts to black.
+	if (!bSfxBlackout && Elapsed >= BlackStartTime())
+	{
+		bSfxBlackout = true;
+		PlayBootSound(SfxRumble, 0.80f, 0.85f);
+	}
 }
 
 float SBHBootConsole::FxFlashAlpha() const
@@ -920,22 +1062,26 @@ void SBHBootConsole::Tick(const FGeometry& AllottedGeometry, const double InCurr
 		}
 	}
 
-	// "Caught it" beat: ~0.55s before the cut to black, something intercepts the slow crawl. The BSOD screen
-	// warps -- a slight non-uniform scale + shear + jitter that snaps then settles -- to show the takeover.
+	// Drive the boot SFX (machine hum, crash impact, dialog ticks, the catch hit, the blackout rumble).
+	UpdateBootSounds();
+
+	// "Caught it" beat: ~0.55s before the cut to black, the system is hijacked and the BSOD "breaks" like a
+	// failing digital signal -- a HARD, stepped tear (the whole frame snaps to choppy offsets, with the odd
+	// big horizontal rip), NOT a smooth wobble. The colour-flash tear bars live in BuildBSODScreen.
 	if (BSODLayer.IsValid())
 	{
 		if (InBSOD() && !bReducedFlash && Elapsed >= BSODCatchTime())
 		{
 			const float W = Elapsed - BSODCatchTime();
 			const float Span = FMath::Max(0.1f, BlackStartTime() - BSODCatchTime());
-			const float Decay = FMath::Clamp(1.0f - W / Span, 0.0f, 1.0f);
-			const float Pulse = Decay * Decay;
-			const float Sx = 1.0f + 0.055f * Pulse;
-			const float Sy = 1.0f - 0.040f * Pulse;
-			const float Shear = 0.045f * Pulse * FMath::Sin(W * 58.0f);
-			const float Off = 7.0f * Pulse * FMath::Sin(W * 47.0f + 1.0f);
-			const FMatrix2x2 Warp(Sx, Shear, 0.0f, Sy);
-			BSODLayer->SetRenderTransform(FSlateRenderTransform(Warp, FVector2D(Off, -Off * 0.5f)));
+			const float Intensity = FMath::Clamp(1.0f - W / Span, 0.25f, 1.0f);
+			const int32 Step = FMath::FloorToInt(Elapsed * 19.0f); // choppy: ~19 discrete steps/sec
+			const float Hx = (static_cast<float>(BHHash(Step * 23 + 5) & 0xFFFF) / 65535.0f) * 2.0f - 1.0f;
+			const float Hy = (static_cast<float>(BHHash(Step * 7 + 11) & 0xFFFF) / 65535.0f) * 2.0f - 1.0f;
+			const bool bBigRip = (BHHash(Step * 5 + 3) & 0xFF) > 178; // occasional large horizontal rip
+			const float Ox = Hx * (bBigRip ? 46.0f : 9.0f) * Intensity;
+			const float Oy = Hy * 5.0f * Intensity;
+			BSODLayer->SetRenderTransform(FSlateRenderTransform(FVector2D(Ox, Oy)));
 		}
 		else
 		{

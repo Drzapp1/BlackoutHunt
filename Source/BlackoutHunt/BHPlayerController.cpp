@@ -2285,6 +2285,7 @@ void ABHPlayerController::ShowBootConsole()
 
 	SAssignNew(BootConsoleWidget, SBHBootConsole)
 		.ReducedFlash(IsReducedFlashEnabled())
+		.SoundWorld(GetWorld())
 		.OnReadyForMenu(FSimpleDelegate::CreateUObject(this, &ABHPlayerController::OnBootConsoleRevealMenu))
 		.OnFinished(FSimpleDelegate::CreateUObject(this, &ABHPlayerController::OnBootConsoleFinished));
 
