@@ -110,6 +110,18 @@ void ABHAlarmTrap::NotifyActorBeginOverlap(AActor* OtherActor)
 	if (ABHPlayerController* PC = Cast<ABHPlayerController>(Survivor->GetController()))
 	{
 		PC->ClientShowStatusMessage(TEXT("You tripped a fake seeker trap."), 2.75f);
+		// Punch the trip with a short alarm sting (flash + shake) on the victim, landing on the same frame as the
+		// fear spike -- the device is named an "alarm" but used to go off with only a faint ambient hum.
+		FBHClientHorrorCue TrapCue;
+		TrapCue.EventType = EBHScareEventType::Ambient;
+		TrapCue.FocusLocation = GetActorLocation();
+		TrapCue.DurationSeconds = 0.45f;
+		TrapCue.ShakeIntensity = 0.5f;
+		TrapCue.CameraJitterDuration = 0.35f;
+		TrapCue.CameraJitterFrequency = 50.0f;
+		TrapCue.FlashIntensity = 0.55f;
+		TrapCue.FlashColor = FLinearColor(1.0f, 0.82f, 0.20f, 1.0f); // alarm amber
+		PC->ClientPlayHorrorCue(TrapCue);
 	}
 
 	if (ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)

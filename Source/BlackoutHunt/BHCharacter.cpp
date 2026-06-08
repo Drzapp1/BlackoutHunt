@@ -3201,7 +3201,9 @@ void ABHCharacter::ToggleFlashlight()
 
 	if (!bFlashlightOn && FlashlightBattery <= 20.0f)
 	{
-		SendStatusMessage(TEXT("Flashlight battery is almost gone."));
+		// State that it DID turn on, so this low-battery note doesn't read like the "battery is dead" refusal above
+		// it (a player at 8% could otherwise think the light failed to come on).
+		SendStatusMessage(TEXT("Flashlight on - battery almost gone."));
 	}
 
 	ServerSetFlashlight(!bFlashlightOn);
