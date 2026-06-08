@@ -93,6 +93,18 @@ struct FBHAccountProgress
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	TArray<int32> TopicCorrectCounts;
 
+	// Lifetime captures made as the Teacher (drives the Truant Officer achievement). Cosmetic/local.
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	int32 LifetimeCaptures = 0;
+
+	// Lifetime distinct locker-hide events (drives Ghost in the Walls). Counts entries, not frames. Cosmetic/local.
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	int32 LockerHideCount = 0;
+
+	// Lifetime perfect momentum chains landed (drives Momentum Maestro). Cosmetic/local.
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	int32 PerfectChainCount = 0;
+
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	int32 XP = 0;
 
@@ -122,6 +134,16 @@ struct FBHAccountProgress
 
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	int32 SelectedEmblemIndex = 0;
+
+	// Selected UI menu theme (index into the BHMenuTheme registry). Local UI-only preference -- never replicated.
+	// UNLOCK-GATED by XP/achievements (see BHMenuThemeIsUnlocked); 0 = Classic (always free).
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	int32 SelectedThemeIndex = 0;
+
+	// UI menu theme STRENGTH (0 = faint/near-neutral, 1 = full theme colour). Local UI-only preference; never
+	// replicated. 1 = full-strength (today's look).
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	float SelectedThemeStrength = 1.0f;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	FString LastUpdatedUtc;
@@ -215,6 +237,12 @@ public:
 	// Records a graded answer (physics topic 0..3, correct?). Updates the answer streak / topic mask and earns
 	// the Honor Roll / Polymath achievements. Cosmetic/local only; never affects scoring, mastery, or reports.
 	void RecordQuestionResult(int32 TopicIndex, bool bCorrect);
+	// Records one capture made as the Teacher; earns Truant Officer at the 50-capture milestone. Cosmetic/local.
+	void RecordCapture();
+	// Records one distinct locker-hide entry; earns Ghost in the Walls at 25 hides. Cosmetic/local.
+	void RecordLockerHide();
+	// Records one perfect momentum chain; earns Momentum Maestro at 10 chains. Cosmetic/local.
+	void RecordPerfectChain();
 
 	// Cosmetic achievements (local, persisted). UnlockAchievement is idempotent: the first time only, it awards
 	// the achievement's XP, unlocks any tint gated on it, saves, and shows a one-line toast. Never affects play.
@@ -241,6 +269,13 @@ public:
 	bool IsCosmeticUnlocked(EBHCosmeticCategory Category, int32 Index) const;
 	int32 GetSelectedCosmeticIndex(EBHCosmeticCategory Category) const;
 	bool SetSelectedCosmetic(EBHCosmeticCategory Category, int32 Index, FString& OutMessage);
+	// Persist the selected UI menu theme (BHMenuTheme registry index). UI-only; saves immediately.
+	void SetSelectedThemeIndex(int32 ThemeIndex);
+	// Select + persist a menu theme, but only if it is unlocked for this account. Returns false (with OutMessage) when
+	// locked, mirroring SetSelectedCosmetic's gate. Use this from the UI; SetSelectedThemeIndex stays the raw setter.
+	bool SetSelectedThemeIndexChecked(int32 ThemeIndex, FString& OutMessage);
+	// Persist the UI menu theme STRENGTH (0..1). UI-only; saves immediately.
+	void SetSelectedThemeStrength(float Strength);
 	// Recolour one clothing slot of the current skin. SlotIndex is a BHColorableMaterialNames registry index;
 	// ColorIndex is into the 18-entry avatar palette, or -1 to clear back to the skin's authored colour. Persists.
 	bool SetAvatarSlotColor(int32 SlotIndex, int32 ColorIndex, FString& OutMessage);

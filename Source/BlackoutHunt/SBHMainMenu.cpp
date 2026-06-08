@@ -37,6 +37,7 @@
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Misc/Paths.h"
+#include "HAL/PlatformMisc.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Styling/CoreStyle.h"
 #include "Types/SlateEnums.h"
@@ -3478,14 +3479,51 @@ FReply SBHMainMenu::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKe
 		{
 			KonamiProgress = (Pressed == KonamiSequence[0]) ? 1 : 0;
 		}
+
+		// Second secret code: G 9 8 1 ("g = 9.81"). Unlocks the hidden It Still Pulls achievement. Tracked
+		// independently of the Konami code; like it, only the final key is consumed.
+		static const FKey GravitySequence[] = { EKeys::G, EKeys::Nine, EKeys::Eight, EKeys::One };
+		if (Pressed == GravitySequence[GravityCodeProgress])
+		{
+			++GravityCodeProgress;
+			if (GravityCodeProgress >= static_cast<int32>(UE_ARRAY_COUNT(GravitySequence)))
+			{
+				GravityCodeProgress = 0;
+				StatusText = FText::FromString(TEXT("g = 9.81 m/s squared  --  it still pulls, even down here. well found."));
+				if (ABHPlayerController* GravityPC = PlayerController.Get())
+				{
+					if (UBHAccountSubsystem* Account = GravityPC->GetGameInstance() ? GravityPC->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+					{
+						Account->UnlockAchievement(FName(TEXT("gravity_code")));
+					}
+				}
+				return FReply::Handled();
+			}
+		}
+		else
+		{
+			GravityCodeProgress = (Pressed == GravitySequence[0]) ? 1 : 0;
+		}
 	}
 
 #if !UE_BUILD_SHIPPING
 	// Developer-only: F9 unlocks every cosmetic for playtesting. The main menu runs in UI-only input mode, so the
 	// engine console key never reaches the viewport here -- but the menu receives key events directly (this
 	// handler), so a hotkey is the reliable path. Compiled out of Shipping. Undo: AccountResetLocalClassroomData.
+	//
+	// Gated on a DEV CREDENTIAL marker on the machine so a shared dev/test build doesn't hand the unlock to whoever
+	// runs it: set environment variable BH_DEV=1, or drop an empty file at Saved/.bhdev. Without the marker, F9 no-ops
+	// (with a hint). The marker is local-only and never ships (Saved/ is excluded from packages).
 	if (InKeyEvent.GetKey() == EKeys::F9)
 	{
+		const bool bHasDevCredential =
+			FPlatformMisc::GetEnvironmentVariable(TEXT("BH_DEV")) == TEXT("1")
+			|| FPaths::FileExists(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT(".bhdev")));
+		if (!bHasDevCredential)
+		{
+			StatusText = FText::FromString(TEXT("F9 dev unlock requires dev credentials (set BH_DEV=1 or add Saved/.bhdev)."));
+			return FReply::Handled();
+		}
 		if (ABHPlayerController* DevPC = PlayerController.Get())
 		{
 			if (UGameInstance* DevGI = DevPC->GetGameInstance())
@@ -3493,7 +3531,7 @@ FReply SBHMainMenu::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKe
 				if (UBHAccountSubsystem* DevAccount = DevGI->GetSubsystem<UBHAccountSubsystem>())
 				{
 					DevAccount->BHUnlockAllCosmetics();
-					StatusText = FText::FromString(TEXT("[DEV] F9: unlocked all cosmetics -- pick a hat / title / emblem in the Character tab."));
+					StatusText = FText::FromString(TEXT("[DEV] F9: unlocked all cosmetics -- pick an outfit / title / emblem in the Character tab."));
 				}
 			}
 		}
@@ -10007,36 +10045,8 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 			];
 	}
 
-	TSharedRef<SGridPanel> HeadwearButtons = SNew(SGridPanel);
-	for (int32 Index = 0; Index <= BHCosmeticMaxIndex(EBHCosmeticCategory::Headwear); ++Index)
-	{
-		// The procedural cosmetic HATS (Cap, Beanie, Top Hat, Crown, Halo, Graduation Cap) stack on the Quaternius
-		// skins' baked-in headwear and read wrong, so hide them from the picker until the hat art is separated.
-		// Keep None + the face accessories (Glasses index 2, Visor index 4), which don't conflict.
-		if (Index == 1 || Index == 3 || Index == 5 || Index == 6 || Index == 7 || Index == 8)
-		{
-			continue;
-		}
-		HeadwearButtons->AddSlot(Index % 3, Index / 3)
-			.Padding(0.0f, 0.0f, 6.0f, 6.0f)
-			[
-				SNew(SBox)
-				.WidthOverride(118.0f)
-				.HeightOverride(30.0f)
-				[
-					SNew(SBHMenuButton)
-					.IsEnabled(this, &SBHMainMenu::IsCosmeticUnlockedForMenu, EBHCosmeticCategory::Headwear, Index)
-					.ButtonColorAndOpacity(this, &SBHMainMenu::GetCosmeticButtonColor, EBHCosmeticCategory::Headwear, Index)
-					.ContentPadding(FMargin(7.0f, 4.0f))
-					.OnClicked(this, &SBHMainMenu::OnAvatarHeadwearClicked, Index)
-					[
-						SNew(STextBlock)
-						.Font(MenuFont(8, FName(TEXT("Bold"))))
-						.Text(this, &SBHMainMenu::GetCosmeticButtonText, EBHCosmeticCategory::Headwear, Index)
-					]
-				]
-			];
-	}
+	// Headwear was removed in 2026 (it conflicted with the avatars' baked-in hats), so the Character tab no longer
+	// has a Headwear picker -- see BHCosmeticUnlocks.cpp (the category is now "None" only).
 
 	TSharedRef<SVerticalBox> TitleButtons = SNew(SVerticalBox);
 	for (int32 Index = 0; Index <= BHCosmeticMaxIndex(EBHCosmeticCategory::Title); ++Index)
@@ -10184,21 +10194,6 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 					.AutoHeight()
 					[
 						BuildThemeSection()
-					]
-					+ SVerticalBox::Slot()
-					.AutoHeight()
-					.Padding(0.0f, 12.0f, 0.0f, 0.0f)
-					[
-						SNew(STextBlock)
-						.Font(MenuFont(10, FName(TEXT("Bold"))))
-						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
-						.Text(FText::FromString(TEXT("Headwear")))
-					]
-					+ SVerticalBox::Slot()
-					.AutoHeight()
-					.Padding(0.0f, 5.0f, 0.0f, 6.0f)
-					[
-						HeadwearButtons
 					]
 					+ SVerticalBox::Slot()
 					.AutoHeight()

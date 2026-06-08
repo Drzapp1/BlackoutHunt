@@ -131,6 +131,8 @@ protected:
 	bool bTaughtSpectator;
 	// One-time "the faculty remembers" easter-egg greeting (cosmetic, client-local). See Docs/EASTER_EGGS.md.
 	bool bShownPhysicistGreeting = false;
+	// Rising-edge tracker so each locker ENTRY counts once toward Ghost in the Walls (not once per frame hidden).
+	bool bWasHiddenInLockerLastTick = false;
 	int32 LastSeenPresencePulse;
 	float PresencePulseEndTime;
 	bool bHasVisibleHunterCue;

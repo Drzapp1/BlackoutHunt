@@ -5,6 +5,7 @@
 #include "BHAccountSubsystem.h"
 
 #include "BHAccountSettings.h"
+#include "BHMenuTheme.h"
 #include "BHPlayerController.h"
 #include "Containers/StringConv.h"
 #include "Dom/JsonObject.h"
@@ -65,7 +66,9 @@ namespace
 	// refuse to parse it with the old schema and refuse to overwrite it (avoids silently wiping a
 	// newer build's data when an older build runs against the same profile).
 	// v2 added unlocked_achievements (cosmetic achievements + the hidden prestige tints they unlock).
-	constexpr int32 BHCurrentProgressVersion = 2;
+	// v3 added lifetime_captures / locker_hide_count / perfect_chain_count counters behind the expanded
+	// achievement set (Truant Officer / Ghost in the Walls / Momentum Maestro).
+	constexpr int32 BHCurrentProgressVersion = 3;
 
 	// Cosmetic achievement registry. Earning one awards XP (so achievements feed the same economy as play) and
 	// unlocks any tint gated on its id (see BHCosmeticUnlocks.cpp). Purely cosmetic -- never affects gameplay.
@@ -89,19 +92,57 @@ namespace
 		// Newer achievements (rewards: Veteran / Faculty tints + the Top Hat headwear). See Docs/EASTER_EGGS.md.
 		{ TEXT("veteran"),          TEXT("Veteran"),           TEXT("Played 25 rounds. A familiar face."),     60, 2, TEXT("Veteran tint"),                false },
 		{ TEXT("top_of_the_class"), TEXT("Top of the Class"),  TEXT("Won a Hunt as the Teacher."),             50, 3, TEXT("Faculty tint"),                false },
-		{ TEXT("roof_rider"),       TEXT("Roof Rider"),        TEXT("Found a way onto the train roof."),       70, 3, TEXT("Top Hat"),                     true  },
+		{ TEXT("roof_rider"),       TEXT("Roof Rider"),        TEXT("Found a way onto the train roof."),       70, 3, TEXT("Roof Rider title"),            true  },
 		{ TEXT("roof_parkour"),     TEXT("Roof Runner"),       TEXT("Cleared the rooftop parkour course."),   55, 3, TEXT(""),                            true  },
 		// Skill / Teacher / Exploration / Dedication achievements. Rewards: tints + Crown / Halo / Graduation Cap.
 		{ TEXT("flow_master"),      TEXT("Flow Master"),       TEXT("Chained a full three-link flow chain."),  90, 5, TEXT("Slipstream tint"),             false },
 		{ TEXT("first_blood"),      TEXT("First Blood"),       TEXT("Captured your first survivor as Teacher."), 40, 2, TEXT("Detention tint"),            false },
 		{ TEXT("flawless_hunt"),    TEXT("Flawless Hunt"),     TEXT("Caught every survivor in one round."),    75, 4, TEXT("Apex tint"),                   false },
 		{ TEXT("tourist"),          TEXT("Tourist"),           TEXT("Tried all four train activities."),       45, 2, TEXT("Commuter tint"),               false },
-		{ TEXT("completionist"),    TEXT("Completionist"),     TEXT("Found every hidden easter egg."),         120, 5, TEXT("Halo"),                       true  },
-		{ TEXT("graduate"),         TEXT("Graduate"),          TEXT("Played 50 rounds. A classroom regular."),  80, 3, TEXT("Graduation Cap"),             false },
-		{ TEXT("on_a_roll"),        TEXT("On a Roll"),         TEXT("Won three rounds in a row."),             70, 3, TEXT("Crown"),                       false },
+		{ TEXT("completionist"),    TEXT("Completionist"),     TEXT("Found every hidden easter egg."),         120, 5, TEXT("Halo emblem + title"),        true  },
+		{ TEXT("graduate"),         TEXT("Graduate"),          TEXT("Played 50 rounds. A classroom regular."),  80, 3, TEXT("Graduate title"),              false },
+		{ TEXT("on_a_roll"),        TEXT("On a Roll"),         TEXT("Won three rounds in a row."),             70, 3, TEXT("Crown emblem"),                false },
 		// Educational achievements (reward: nameplate titles). Earned from in-round physics answers.
 		{ TEXT("honor_roll"),       TEXT("Honor Roll"),        TEXT("Answered five questions correctly in a row."), 60, 3, TEXT("Honor Roll title"),      false },
-		{ TEXT("polymath"),         TEXT("Polymath"),          TEXT("Answered correctly in all four physics topics."), 70, 3, TEXT("Polymath title"),    false }
+		{ TEXT("polymath"),         TEXT("Polymath"),          TEXT("Answered correctly in all four physics topics."), 70, 3, TEXT("Polymath title"),    false },
+		// Tutorial-completion achievements: one per guided lesson + a capstone for finishing all four. Awarded by the
+		// tutorial director on each lesson's terminal step; tutorial_all auto-rolls up in UnlockAchievement.
+		{ TEXT("tutorial_survivor"), TEXT("Survival 101"),       TEXT("Completed the Survivor tutorial."),           25, 1, TEXT(""), false },
+		{ TEXT("tutorial_teacher"),  TEXT("Teaching Assistant"), TEXT("Completed the Teacher tutorial."),            25, 1, TEXT(""), false },
+		{ TEXT("tutorial_monitor"),  TEXT("Hall Pass"),          TEXT("Completed the Hall Monitor tutorial."),       25, 1, TEXT(""), false },
+		{ TEXT("tutorial_movement"), TEXT("Free Runner"),        TEXT("Completed the Advanced Movement tutorial."),  25, 1, TEXT(""), false },
+		{ TEXT("tutorial_all"),      TEXT("Fully Briefed"),      TEXT("Completed every tutorial."),                  60, 3, TEXT(""), false },
+		// === Expanded set (2026): dedication, skill, education, and a wave of secret/easter-egg awards, to give
+		// regulars a long tail of goals. Rewards are nameplate TITLES, nameplate EMBLEMS, or re-gated outfits --
+		// no new procedural hats (the characters already wear hats). Phase B re-points some of these to shoes. ===
+		// Dedication / progression (derived from lifetime stats in RecordRoundResult).
+		{ TEXT("centurion"),     TEXT("Centurion"),       TEXT("Played 100 rounds. A fixture of the building."),   100, 4, TEXT("Farmer outfit"),     false },
+		{ TEXT("houdini"),       TEXT("Houdini"),         TEXT("Reached the exit and escaped 10 times."),           80, 3, TEXT("Beach outfit"),      false },
+		{ TEXT("survivalist"),   TEXT("Survivalist"),     TEXT("Won 10 Hunts as a survivor."),                      90, 4, TEXT("Survivalist title"), false },
+		{ TEXT("headmaster"),    TEXT("Headmaster"),      TEXT("Won 10 Hunts as the Teacher."),                     90, 4, TEXT("Headmaster title"),  false },
+		{ TEXT("unstoppable"),   TEXT("Unstoppable"),     TEXT("Won five rounds in a row."),                       100, 4, TEXT("Punk outfit"),       false },
+		{ TEXT("honor_society"), TEXT("Honor Society"),   TEXT("Reached 1,000 XP."),                                40, 2, TEXT("Honor Society title"), false },
+		{ TEXT("deans_list"),    TEXT("Dean's List"),     TEXT("Reached 5,000 XP. A model student."),               80, 4, TEXT("Dean's List title"),  false },
+		// Teacher / education (capture + answer milestones).
+		{ TEXT("truant_officer"), TEXT("Truant Officer"), TEXT("Captured 50 survivors as the Teacher."),            90, 4, TEXT("Hall Pass emblem"),   false },
+		{ TEXT("valedictorian"), TEXT("Valedictorian"),   TEXT("Answered ten questions correctly in a row."),       80, 4, TEXT("Valedictorian title"), false },
+		{ TEXT("bookworm"),      TEXT("Bookworm"),        TEXT("Answered 100 questions correctly in total."),       70, 3, TEXT("Bookworm title"),     false },
+		{ TEXT("subject_expert"), TEXT("Subject Expert"), TEXT("Answered 25 correctly in a single physics topic."), 70, 3, TEXT("Atom emblem"),        false },
+		// Secret / easter-egg awards (shown as ??? until earned).
+		{ TEXT("momentum_maestro"), TEXT("Momentum Maestro"), TEXT("Landed ten perfect momentum chains."),          90, 5, TEXT("Maestro title"),      true  },
+		{ TEXT("pop_quiz"),      TEXT("Pop Quiz"),        TEXT("Captured a survivor in the first 20 seconds."),     70, 4, TEXT("Pop Quiz emblem"),    true  },
+		{ TEXT("ghost_in_walls"), TEXT("Ghost in the Walls"), TEXT("Hid in a locker 25 times. The dark knows you."), 60, 3, TEXT("Ghost title"),       true  },
+		{ TEXT("saved_by_bell"), TEXT("Saved by the Bell"), TEXT("Boarded the evacuation train in the final escape."), 70, 4, TEXT("Saved by the Bell title"), true },
+		{ TEXT("comeback_kid"),  TEXT("Comeback Kid"),    TEXT("Won as the last survivor while others were caught."), 80, 4, TEXT("Phoenix emblem"),    true  },
+		{ TEXT("lights_on"),     TEXT("Lights On"),       TEXT("Threw the breaker and lit the train roof."),        30, 2, TEXT(""),                  true  },
+		{ TEXT("did_you_see_that"), TEXT("Did You See That?"), TEXT("Witnessed a whisper in the static."),           40, 3, TEXT("Static emblem"),     true  },
+		{ TEXT("night_owl"),     TEXT("Burning the Midnight Oil"), TEXT("Played after midnight."),                   30, 2, TEXT("Night Owl title"),    true  },
+		{ TEXT("dont_panic"),    TEXT("Don't Panic"),     TEXT("Played under the name of the great Answer."),       42, 2, TEXT("Hitchhiker title"),   true  },
+		{ TEXT("gravity_code"),  TEXT("It Still Pulls"),  TEXT("Found the code that always pulls you down."),       30, 3, TEXT("Falling Apple emblem"), true },
+		{ TEXT("wall_reader"),   TEXT("Wall Reader"),     TEXT("Read what a previous student scratched in a locker."), 25, 2, TEXT(""),               true  },
+		// Capstones.
+		{ TEXT("honor_graduate"), TEXT("Honor Graduate"), TEXT("Earned every standard achievement."),              150, 5, TEXT("Honor Graduate title"), false },
+		{ TEXT("perfectionist"), TEXT("Perfectionist"),   TEXT("Earned every achievement, secrets and all."),      200, 5, TEXT("Perfectionist title"), true  }
 	};
 	const FBHAchievementDef* BHFindAchievement(FName Id)
 	{
@@ -201,6 +242,18 @@ namespace
 		int32 Value = DefaultValue;
 		JsonObject->TryGetNumberField(FieldName, Value);
 		return Value;
+	}
+
+	float JsonFloat(const TSharedPtr<FJsonObject>& JsonObject, const TCHAR* FieldName, const float DefaultValue = 0.0f)
+	{
+		if (!JsonObject.IsValid())
+		{
+			return DefaultValue;
+		}
+
+		double Value = DefaultValue;
+		JsonObject->TryGetNumberField(FieldName, Value);
+		return static_cast<float>(Value);
 	}
 
 	FString UtcNowString()
@@ -1202,6 +1255,43 @@ void UBHAccountSubsystem::RecordRoundResult(EBHPlayerRole Role, EBHPlayerLifeSta
 	{
 		UnlockAchievement(FName(TEXT("on_a_roll")));
 	}
+
+	// Expanded dedication / progression milestones (all idempotent, so each toasts once at its threshold).
+	if (Progress.RoundsPlayed >= 100)
+	{
+		UnlockAchievement(FName(TEXT("centurion")));
+	}
+	if (Progress.Escapes >= 10)
+	{
+		UnlockAchievement(FName(TEXT("houdini")));
+	}
+	if (Progress.SurvivorWins >= 10)
+	{
+		UnlockAchievement(FName(TEXT("survivalist")));
+	}
+	if (Progress.HunterWins >= 10)
+	{
+		UnlockAchievement(FName(TEXT("headmaster")));
+	}
+	if (Progress.CurrentWinStreak >= 5)
+	{
+		UnlockAchievement(FName(TEXT("unstoppable")));
+	}
+	if (Progress.XP >= 1000)
+	{
+		UnlockAchievement(FName(TEXT("honor_society")));
+	}
+	if (Progress.XP >= 5000)
+	{
+		UnlockAchievement(FName(TEXT("deans_list")));
+	}
+
+	// Secret: played late at night (local clock, after midnight and before 5am). Checked on any round result so it
+	// can fire from a real match too, not just the menu.
+	if (FDateTime::Now().GetHour() < 5)
+	{
+		UnlockAchievement(FName(TEXT("night_owl")));
+	}
 }
 
 void UBHAccountSubsystem::UnlockAchievement(FName AchievementId)
@@ -1256,6 +1346,74 @@ void UBHAccountSubsystem::UnlockAchievement(FName AchievementId)
 		if (bAllEggs)
 		{
 			UnlockAchievement(FName(TEXT("completionist")));
+		}
+	}
+
+	// Fully Briefed: completing all four guided tutorials earns the capstone. Same guarded/idempotent pattern as
+	// completionist; works across separate per-phase map loads because it re-checks the persisted set on each unlock.
+	if (AchievementId != FName(TEXT("tutorial_all")))
+	{
+		static const FName TutorialAchievements[] = {
+			FName(TEXT("tutorial_survivor")), FName(TEXT("tutorial_teacher")),
+			FName(TEXT("tutorial_monitor")),  FName(TEXT("tutorial_movement"))
+		};
+		bool bAllTutorials = true;
+		for (const FName& Tut : TutorialAchievements)
+		{
+			if (!Progress.UnlockedAchievements.Contains(Tut))
+			{
+				bAllTutorials = false;
+				break;
+			}
+		}
+		if (bAllTutorials)
+		{
+			UnlockAchievement(FName(TEXT("tutorial_all")));
+		}
+	}
+
+	// Capstones (computed from the registry so they stay correct as achievements are added):
+	//  - Honor Graduate: every STANDARD (non-secret) achievement earned.
+	//  - Perfectionist: every achievement earned, secrets and all.
+	// Both guard against self-recursion; UnlockAchievement is idempotent so the recursion bottoms out at once.
+	if (AchievementId != FName(TEXT("honor_graduate")))
+	{
+		bool bAllStandard = true;
+		for (const FBHAchievementDef& RegDef : GBHAchievements)
+		{
+			if (RegDef.bHidden || FName(RegDef.Id) == FName(TEXT("honor_graduate")))
+			{
+				continue;
+			}
+			if (!Progress.UnlockedAchievements.Contains(FName(RegDef.Id)))
+			{
+				bAllStandard = false;
+				break;
+			}
+		}
+		if (bAllStandard)
+		{
+			UnlockAchievement(FName(TEXT("honor_graduate")));
+		}
+	}
+	if (AchievementId != FName(TEXT("perfectionist")))
+	{
+		bool bAll = true;
+		for (const FBHAchievementDef& RegDef : GBHAchievements)
+		{
+			if (FName(RegDef.Id) == FName(TEXT("perfectionist")))
+			{
+				continue;
+			}
+			if (!Progress.UnlockedAchievements.Contains(FName(RegDef.Id)))
+			{
+				bAll = false;
+				break;
+			}
+		}
+		if (bAll)
+		{
+			UnlockAchievement(FName(TEXT("perfectionist")));
 		}
 	}
 }
@@ -1317,6 +1475,68 @@ void UBHAccountSubsystem::RecordQuestionResult(int32 TopicIndex, bool bCorrect)
 	{
 		UnlockAchievement(FName(TEXT("polymath")));
 	}
+
+	// Expanded education milestones (idempotent).
+	if (Progress.CurrentAnswerStreak >= 10)
+	{
+		UnlockAchievement(FName(TEXT("valedictorian")));
+	}
+	{
+		int32 TotalCorrect = 0;
+		for (int32 Count : Progress.TopicCorrectCounts) { TotalCorrect += Count; }
+		if (TotalCorrect >= 100)
+		{
+			UnlockAchievement(FName(TEXT("bookworm")));
+		}
+	}
+	if (Progress.TopicCorrectCounts.IsValidIndex(TopicIndex) && Progress.TopicCorrectCounts[TopicIndex] >= 25)
+	{
+		UnlockAchievement(FName(TEXT("subject_expert")));
+	}
+}
+
+void UBHAccountSubsystem::RecordCapture()
+{
+	if (Progress.LifetimeCaptures < MAX_int32)
+	{
+		++Progress.LifetimeCaptures;
+	}
+	Progress.LastUpdatedUtc = UtcNowString();
+	SaveProgress();
+	if (Progress.LifetimeCaptures >= 50)
+	{
+		UnlockAchievement(FName(TEXT("truant_officer")));
+	}
+}
+
+void UBHAccountSubsystem::RecordLockerHide()
+{
+	if (Progress.LockerHideCount < MAX_int32)
+	{
+		++Progress.LockerHideCount;
+	}
+	Progress.LastUpdatedUtc = UtcNowString();
+	SaveProgress();
+	// First hide also earns the original Spelunker (idempotent); 25 distinct hides earns Ghost in the Walls.
+	UnlockAchievement(FName(TEXT("spelunker")));
+	if (Progress.LockerHideCount >= 25)
+	{
+		UnlockAchievement(FName(TEXT("ghost_in_walls")));
+	}
+}
+
+void UBHAccountSubsystem::RecordPerfectChain()
+{
+	if (Progress.PerfectChainCount < MAX_int32)
+	{
+		++Progress.PerfectChainCount;
+	}
+	Progress.LastUpdatedUtc = UtcNowString();
+	SaveProgress();
+	if (Progress.PerfectChainCount >= 10)
+	{
+		UnlockAchievement(FName(TEXT("momentum_maestro")));
+	}
 }
 
 bool UBHAccountSubsystem::HasAchievement(FName AchievementId) const
@@ -1349,6 +1569,20 @@ TArray<FBHAchievementDisplay> UBHAccountSubsystem::GetAchievementsForDisplay() c
 			else if (Display.Id == FName(TEXT("honor_roll"))) { Display.ProgressCurrent = Progress.CurrentAnswerStreak; Display.ProgressTarget = 5; }
 			else if (Display.Id == FName(TEXT("tourist"))) { Display.ProgressCurrent = BitCount4(Progress.TrainActivityMask); Display.ProgressTarget = 4; }
 			else if (Display.Id == FName(TEXT("polymath"))) { Display.ProgressCurrent = BitCount4(Progress.TopicsEverCorrectMask); Display.ProgressTarget = 4; }
+			// Expanded set.
+			else if (Display.Id == FName(TEXT("centurion"))) { Display.ProgressCurrent = Progress.RoundsPlayed; Display.ProgressTarget = 100; }
+			else if (Display.Id == FName(TEXT("houdini"))) { Display.ProgressCurrent = Progress.Escapes; Display.ProgressTarget = 10; }
+			else if (Display.Id == FName(TEXT("survivalist"))) { Display.ProgressCurrent = Progress.SurvivorWins; Display.ProgressTarget = 10; }
+			else if (Display.Id == FName(TEXT("headmaster"))) { Display.ProgressCurrent = Progress.HunterWins; Display.ProgressTarget = 10; }
+			else if (Display.Id == FName(TEXT("unstoppable"))) { Display.ProgressCurrent = Progress.CurrentWinStreak; Display.ProgressTarget = 5; }
+			else if (Display.Id == FName(TEXT("honor_society"))) { Display.ProgressCurrent = Progress.XP; Display.ProgressTarget = 1000; }
+			else if (Display.Id == FName(TEXT("deans_list"))) { Display.ProgressCurrent = Progress.XP; Display.ProgressTarget = 5000; }
+			else if (Display.Id == FName(TEXT("truant_officer"))) { Display.ProgressCurrent = Progress.LifetimeCaptures; Display.ProgressTarget = 50; }
+			else if (Display.Id == FName(TEXT("ghost_in_walls"))) { Display.ProgressCurrent = Progress.LockerHideCount; Display.ProgressTarget = 25; }
+			else if (Display.Id == FName(TEXT("momentum_maestro"))) { Display.ProgressCurrent = Progress.PerfectChainCount; Display.ProgressTarget = 10; }
+			else if (Display.Id == FName(TEXT("valedictorian"))) { Display.ProgressCurrent = Progress.CurrentAnswerStreak; Display.ProgressTarget = 10; }
+			else if (Display.Id == FName(TEXT("bookworm"))) { int32 T = 0; for (int32 C : Progress.TopicCorrectCounts) { T += C; } Display.ProgressCurrent = T; Display.ProgressTarget = 100; }
+			else if (Display.Id == FName(TEXT("subject_expert"))) { int32 M = 0; for (int32 C : Progress.TopicCorrectCounts) { M = FMath::Max(M, C); } Display.ProgressCurrent = M; Display.ProgressTarget = 25; }
 			if (Display.ProgressTarget > 0) { Display.ProgressCurrent = FMath::Clamp(Display.ProgressCurrent, 0, Display.ProgressTarget); }
 		}
 		Result.Add(MoveTemp(Display));
@@ -1559,6 +1793,51 @@ bool UBHAccountSubsystem::SetSelectedCosmetic(EBHCosmeticCategory Category, int3
 	return true;
 }
 
+void UBHAccountSubsystem::SetSelectedThemeIndex(int32 ThemeIndex)
+{
+	const int32 Clamped = FMath::Max(0, ThemeIndex);
+	if (Progress.SelectedThemeIndex == Clamped)
+	{
+		return;
+	}
+	Progress.SelectedThemeIndex = Clamped;
+	Progress.LastUpdatedUtc = UtcNowString();
+	SaveProgress();
+}
+
+bool UBHAccountSubsystem::SetSelectedThemeIndexChecked(int32 ThemeIndex, FString& OutMessage)
+{
+	const int32 Clamped = FMath::Clamp(ThemeIndex, 0, BHMenuThemeCount() - 1);
+	if (!BHMenuThemeIsUnlocked(Clamped, Progress.XP, &Progress.UnlockedAchievements))
+	{
+		const TCHAR* Ach = BHMenuThemeRequiredAchievement(Clamped);
+		if (Ach && Ach[0] != TEXT('\0'))
+		{
+			OutMessage = FString::Printf(TEXT("Theme %s is an achievement reward -- earn the matching achievement to unlock it."), BHMenuThemeName(Clamped));
+		}
+		else
+		{
+			OutMessage = FString::Printf(TEXT("Theme %s unlocks at %d XP. Current XP: %d."), BHMenuThemeName(Clamped), BHMenuThemeRequiredXP(Clamped), Progress.XP);
+		}
+		SetLastAccountMessage(OutMessage);
+		return false;
+	}
+	SetSelectedThemeIndex(Clamped);
+	return true;
+}
+
+void UBHAccountSubsystem::SetSelectedThemeStrength(float Strength)
+{
+	const float Clamped = FMath::Clamp(Strength, 0.0f, 1.0f);
+	if (FMath::IsNearlyEqual(Progress.SelectedThemeStrength, Clamped))
+	{
+		return;
+	}
+	Progress.SelectedThemeStrength = Clamped;
+	Progress.LastUpdatedUtc = UtcNowString();
+	SaveProgress();
+}
+
 FString UBHAccountSubsystem::GetCosmeticSummary() const
 {
 	return FString::Printf(
@@ -1727,6 +2006,11 @@ void UBHAccountSubsystem::SanitizeProgressCosmetics()
 	Progress.SelectedAvatarGearIndex = 0;
 	Progress.SelectedTitleIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Title, Progress.SelectedTitleIndex, Progress.XP, &Progress.UnlockedAchievements);
 	Progress.SelectedEmblemIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Emblem, Progress.SelectedEmblemIndex, Progress.XP, &Progress.UnlockedAchievements);
+	// Menu theme: fall back to Classic if the persisted theme is now locked (save predates the gate, or XP/achievements changed).
+	if (!BHMenuThemeIsUnlocked(Progress.SelectedThemeIndex, Progress.XP, &Progress.UnlockedAchievements))
+	{
+		Progress.SelectedThemeIndex = 0;
+	}
 }
 
 TSharedRef<FJsonObject> UBHAccountSubsystem::ProfileToJson() const
@@ -1769,6 +2053,9 @@ TSharedRef<FJsonObject> UBHAccountSubsystem::ProgressToJson() const
 		JsonObject->SetArrayField(TEXT("topic_answer_counts"), AnswerCountsJson);
 		JsonObject->SetArrayField(TEXT("topic_correct_counts"), CorrectCountsJson);
 	}
+	JsonObject->SetNumberField(TEXT("lifetime_captures"), Progress.LifetimeCaptures);
+	JsonObject->SetNumberField(TEXT("locker_hide_count"), Progress.LockerHideCount);
+	JsonObject->SetNumberField(TEXT("perfect_chain_count"), Progress.PerfectChainCount);
 	JsonObject->SetNumberField(TEXT("xp"), Progress.XP);
 	JsonObject->SetStringField(TEXT("selected_avatar_url"), Progress.SelectedAvatarUrl);
 	JsonObject->SetNumberField(TEXT("selected_avatar_index"), Progress.SelectedAvatarIndex);
@@ -1777,6 +2064,8 @@ TSharedRef<FJsonObject> UBHAccountSubsystem::ProgressToJson() const
 	JsonObject->SetNumberField(TEXT("selected_avatar_gear_index"), Progress.SelectedAvatarGearIndex);
 	JsonObject->SetNumberField(TEXT("selected_title_index"), Progress.SelectedTitleIndex);
 	JsonObject->SetNumberField(TEXT("selected_emblem_index"), Progress.SelectedEmblemIndex);
+	JsonObject->SetNumberField(TEXT("selected_theme_index"), Progress.SelectedThemeIndex);
+	JsonObject->SetNumberField(TEXT("selected_theme_strength"), Progress.SelectedThemeStrength);
 	{
 		TArray<TSharedPtr<FJsonValue>> SlotColorsJson;
 		for (uint8 SlotColor : Progress.AvatarSlotColors)
@@ -1864,6 +2153,9 @@ void UBHAccountSubsystem::ApplyProgressJson(const TSharedPtr<FJsonObject>& JsonO
 			}
 		}
 	}
+	Progress.LifetimeCaptures = JsonInt(JsonObject, TEXT("lifetime_captures"));
+	Progress.LockerHideCount = JsonInt(JsonObject, TEXT("locker_hide_count"));
+	Progress.PerfectChainCount = JsonInt(JsonObject, TEXT("perfect_chain_count"));
 	Progress.XP = JsonInt(JsonObject, TEXT("xp"));
 	Progress.SelectedAvatarUrl = JsonString(JsonObject, TEXT("selected_avatar_url"));
 	Progress.SelectedAvatarIndex = JsonInt(JsonObject, TEXT("selected_avatar_index"));
@@ -1872,6 +2164,8 @@ void UBHAccountSubsystem::ApplyProgressJson(const TSharedPtr<FJsonObject>& JsonO
 	Progress.SelectedAvatarGearIndex = JsonInt(JsonObject, TEXT("selected_avatar_gear_index"));
 	Progress.SelectedTitleIndex = JsonInt(JsonObject, TEXT("selected_title_index"));
 	Progress.SelectedEmblemIndex = JsonInt(JsonObject, TEXT("selected_emblem_index"));
+	Progress.SelectedThemeIndex = JsonInt(JsonObject, TEXT("selected_theme_index"));
+	Progress.SelectedThemeStrength = FMath::Clamp(JsonFloat(JsonObject, TEXT("selected_theme_strength"), 1.0f), 0.0f, 1.0f);
 	Progress.LastUpdatedUtc = JsonString(JsonObject, TEXT("last_updated_utc"));
 	Progress.AvatarSlotColors.Reset();
 	const TArray<TSharedPtr<FJsonValue>>* SlotColorsJson = nullptr;
@@ -1880,7 +2174,7 @@ void UBHAccountSubsystem::ApplyProgressJson(const TSharedPtr<FJsonObject>& JsonO
 		for (const TSharedPtr<FJsonValue>& Value : *SlotColorsJson)
 		{
 			const int32 Raw = Value.IsValid() ? static_cast<int32>(Value->AsNumber()) : 0;
-			Progress.AvatarSlotColors.Add(static_cast<uint8>(FMath::Clamp(Raw, 0, 18)));
+			Progress.AvatarSlotColors.Add(static_cast<uint8>(FMath::Clamp(Raw, 0, BHCosmeticMaxIndex(EBHCosmeticCategory::ShirtColor) + 1)));
 		}
 	}
 	Progress.UnlockedAchievements.Reset();

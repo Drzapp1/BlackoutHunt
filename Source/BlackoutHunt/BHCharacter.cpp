@@ -2643,6 +2643,13 @@ void ABHCharacter::MarkCaptured()
 		return;
 	}
 
+	// Belt-and-suspenders capture shield for the guided tutorial: no path whatsoever captures an immune student before
+	// the scripted Encounter (closes the Loom spawn race and any stray swing). Cleared by the director at the climax.
+	if (bTutorialCaptureImmune)
+	{
+		return;
+	}
+
 	ExitLocker();
 
 	if (ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>())
@@ -7816,7 +7823,7 @@ bool ABHCharacter::IsTeacherCaptureCandidateAuthority(const ABHCharacter* Target
 	}
 
 	const ABHPlayerState* TargetPS = Target->GetPlayerState<ABHPlayerState>();
-	if (!TargetPS || !TargetPS->IsAliveSurvivor() || Target->IsHiddenInLocker())
+	if (!TargetPS || !TargetPS->IsAliveSurvivor() || Target->IsHiddenInLocker() || Target->IsTutorialCaptureImmune())
 	{
 		return false;
 	}
@@ -7968,7 +7975,7 @@ void ABHCharacter::NotifyNearbySurvivorsOfTeacherCaptureWindup(float Now)
 	{
 		ABHCharacter* Target = *It;
 		ABHPlayerState* TargetPS = Target ? Target->GetPlayerState<ABHPlayerState>() : nullptr;
-		if (!Target || Target == this || !TargetPS || !TargetPS->IsAliveSurvivor() || Target->IsHiddenInLocker())
+		if (!Target || Target == this || !TargetPS || !TargetPS->IsAliveSurvivor() || Target->IsHiddenInLocker() || Target->IsTutorialCaptureImmune())
 		{
 			continue;
 		}

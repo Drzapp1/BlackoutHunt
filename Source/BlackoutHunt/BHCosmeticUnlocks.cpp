@@ -47,10 +47,12 @@ const FBHCosmeticUnlockDefinition* BHCosmeticDefinitions(EBHCosmeticCategory Cat
 	static const FBHCosmeticUnlockDefinition OutfitDefinitions[] = {
 		{ TEXT("Casual"), 0 },
 		{ TEXT("Worker"), 0 },
-		{ TEXT("Adventurer"), 100 },
-		{ TEXT("Farmer"), 250 },
-		{ TEXT("Beach"), 450 },
-		{ TEXT("Punk"), 700 },
+		{ TEXT("Adventurer"), 100 },          // the one early XP carrot kept for brand-new players
+		// Most outfits now gate behind ACHIEVEMENTS rather than raw XP, so the bulk of the wardrobe rewards play
+		// goals (see Docs/EASTER_EGGS.md). Farmer/Beach/Punk were XP unlocks (250/450/700) before the 2026 pass.
+		{ TEXT("Farmer"), 0, TEXT("centurion") },
+		{ TEXT("Beach"), 0, TEXT("houdini") },
+		{ TEXT("Punk"), 0, TEXT("unstoppable") },
 		// Prestige outfits -- unlocked by ACHIEVEMENTS instead of XP (see Docs/EASTER_EGGS.md).
 		{ TEXT("Suit"), 0, TEXT("survivor") },
 		{ TEXT("Spacesuit"), 0, TEXT("perfect_chain") }
@@ -77,19 +79,16 @@ const FBHCosmeticUnlockDefinition* BHCosmeticDefinitions(EBHCosmeticCategory Cat
 		{ TEXT("Slipstream"), 0, TEXT("flow_master") },
 		{ TEXT("Detention"), 0, TEXT("first_blood") },
 		{ TEXT("Apex"), 0, TEXT("flawless_hunt") },
-		{ TEXT("Commuter"), 0, TEXT("tourist") }
+		{ TEXT("Commuter"), 0, TEXT("tourist") },
+		// Free neutral. Recolour-only black -- maps to the dedicated Black Quaternius body material (index 18).
+		{ TEXT("Black"), 0 }
 	};
 	static const FBHCosmeticUnlockDefinition HeadwearDefinitions[] = {
-		{ TEXT("None"), 0 },
-		{ TEXT("Cap"), 150 },
-		{ TEXT("Glasses"), 300 },
-		{ TEXT("Beanie"), 500 },
-		{ TEXT("Visor"), 750 },
-		// Achievement-gated procedural headwear. See Docs/EASTER_EGGS.md.
-		{ TEXT("Top Hat"), 0, TEXT("roof_rider") },
-		{ TEXT("Crown"), 0, TEXT("on_a_roll") },
-		{ TEXT("Halo"), 0, TEXT("completionist") },
-		{ TEXT("Graduation Cap"), 0, TEXT("graduate") }
+		// Headwear was REMOVED (2026): the procedural hats + face accessories (Cap/Glasses/Beanie/Visor/Top Hat/
+		// Crown/Halo/Graduation Cap) stacked on the Quaternius skins' baked-in headwear and read wrong, so the whole
+		// category is now just "None". The picker row is hidden in the menu and nothing renders. The achievements
+		// that used to grant hats (Roof Rider / On a Roll / Completionist / Graduate) now reward titles/emblems.
+		{ TEXT("None"), 0 }
 	};
 	static const FBHCosmeticUnlockDefinition GearDefinitions[] = {
 		{ TEXT("None"), 0 }
@@ -106,7 +105,21 @@ const FBHCosmeticUnlockDefinition* BHCosmeticDefinitions(EBHCosmeticCategory Cat
 		{ TEXT("Roof Rider"), 0, TEXT("roof_rider") },
 		{ TEXT("Completionist"), 0, TEXT("completionist") },
 		{ TEXT("Honor Roll"), 0, TEXT("honor_roll") },
-		{ TEXT("Polymath"), 0, TEXT("polymath") }
+		{ TEXT("Polymath"), 0, TEXT("polymath") },
+		// 2026 expansion titles (each gated on a new achievement; pure nameplate text -- no art).
+		{ TEXT("Survivalist"), 0, TEXT("survivalist") },
+		{ TEXT("Headmaster"), 0, TEXT("headmaster") },
+		{ TEXT("Honor Society"), 0, TEXT("honor_society") },
+		{ TEXT("Dean's List"), 0, TEXT("deans_list") },
+		{ TEXT("Maestro"), 0, TEXT("momentum_maestro") },
+		{ TEXT("Valedictorian"), 0, TEXT("valedictorian") },
+		{ TEXT("Bookworm"), 0, TEXT("bookworm") },
+		{ TEXT("Ghost"), 0, TEXT("ghost_in_walls") },
+		{ TEXT("Saved by the Bell"), 0, TEXT("saved_by_bell") },
+		{ TEXT("Night Owl"), 0, TEXT("night_owl") },
+		{ TEXT("Hitchhiker"), 0, TEXT("dont_panic") },
+		{ TEXT("Honor Graduate"), 0, TEXT("honor_graduate") },
+		{ TEXT("Perfectionist"), 0, TEXT("perfectionist") }
 	};
 	static const FBHCosmeticUnlockDefinition EmblemDefinitions[] = {
 		{ TEXT("No Emblem"), 0 },
@@ -114,7 +127,14 @@ const FBHCosmeticUnlockDefinition* BHCosmeticDefinitions(EBHCosmeticCategory Cat
 		{ TEXT("Exit Sign"), 0, TEXT("escape_artist") },
 		{ TEXT("Crown"), 0, TEXT("on_a_roll") },
 		{ TEXT("Halo"), 0, TEXT("completionist") },
-		{ TEXT("Ember"), 0, TEXT("flawless_hunt") }
+		{ TEXT("Ember"), 0, TEXT("flawless_hunt") },
+		// 2026 expansion emblems (index order MUST match the colour cases in BHHUD.cpp BHNameplateEmblemColor).
+		{ TEXT("Pop Quiz"), 0, TEXT("pop_quiz") },            // 6
+		{ TEXT("Falling Apple"), 0, TEXT("gravity_code") },   // 7
+		{ TEXT("Static"), 0, TEXT("did_you_see_that") },      // 8
+		{ TEXT("Phoenix"), 0, TEXT("comeback_kid") },         // 9
+		{ TEXT("Hall Pass"), 0, TEXT("truant_officer") },     // 10
+		{ TEXT("Atom"), 0, TEXT("subject_expert") }           // 11
 	};
 
 	switch (Category)

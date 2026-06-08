@@ -60,7 +60,7 @@ it unlocks nothing and changes no settings. Normal menu navigation still works w
 corner** — tucked against the wall is a small, dark **maintenance hatch**. Look at it and interact, and you're
 lifted **out onto the roof of the train**: a low-railed walkway above the carriages with the tunnel rushing past.
 It's a quiet vantage to enjoy while the timer runs (the rails are there so you don't wander off into the trench).
-First time up earns the **Roof Rider** achievement (→ the **Top Hat** headwear). Cosmetic only: the intermission
+First time up earns the **Roof Rider** achievement (→ the **Roof Rider** nameplate title). Cosmetic only: the intermission
 advances on its **own timer**, so a roof visit never blocks boarding, changes scoring, or affects the round.
 *(`BHTrainRoofHatch.cpp`, spawned in `BuildTrainIntermissionLevel`; gated by `bh.EasterEggs`.)*
 
@@ -106,24 +106,67 @@ description, the cosmetic it unlocks, and an EARNED / locked state. Hidden ("sec
 | **Veteran** | ★★ | Play 25 rounds. | **Veteran** tint |
 | **Last One Standing** | ★★★ | Win a Hunt as a survivor. | **Suit** outfit |
 | **Top of the Class** | ★★★ | Win a Hunt as the Teacher. | **Faculty** tint |
-| **Roof Rider** | ★★★ (secret) | Find the hatch onto the train roof (egg #5). | **Top Hat** |
+| **Roof Rider** | ★★★ (secret) | Find the hatch onto the train roof (egg #5). | **Roof Rider** title |
 | **Roof Runner** | ★★★ (secret) | Clear the rooftop parkour course (egg #5). | (XP only) |
-| **On a Roll** | ★★★ | Win three rounds in a row. | **Crown** |
-| **Graduate** | ★★★ | Play 50 rounds. | **Graduation Cap** |
+| **On a Roll** | ★★★ | Win three rounds in a row. | **Crown** emblem |
+| **Graduate** | ★★★ | Play 50 rounds. | **Graduate** title |
 | **Flawless Hunt** | ★★★★ | Catch every survivor in one round (nobody escapes). | **Apex** tint |
 | **Flow Master** | ★★★★★ | Land a full three-link flow chain. | **Slipstream** tint |
 | **Perfect Chain** | ★★★★★ | Nail the momentum tech below (frame-perfect). | **Afterimage** tint + **Spacesuit** outfit |
-| **Completionist** | ★★★★★ (secret) | Earn every hidden easter-egg award. | **Halo** |
+| **Completionist** | ★★★★★ (secret) | Earn every hidden easter-egg award. | **Halo** emblem + **Completionist** title |
 | **Honor Roll** | ★★★ | Answer five questions correctly in a row. | **Honor Roll** title |
 | **Polymath** | ★★★ | Answer correctly in all four physics topics. | **Polymath** title |
+
+### 2026 expansion — the long tail
+
+A second wave of achievements so regulars always have a next goal, with a heavy share of **secret** ones.
+Rewards are nameplate **titles**, nameplate **emblems**, or **re-gated outfits** — no new hats (the avatars already
+wear hats; new procedural headwear is intentionally out of scope). Most of the wardrobe now sits behind play goals:
+the **Farmer / Beach / Punk** outfits moved off raw XP and onto the *Centurion / Houdini / Unstoppable* achievements
+(only **Adventurer** is kept as an early 100-XP carrot).
+
+| Achievement | Difficulty | How to earn it | Reward |
+| --- | --- | --- | --- |
+| **Centurion** | ★★★★ | Play 100 rounds. | **Farmer** outfit |
+| **Houdini** | ★★★ | Escape 10 times. | **Beach** outfit |
+| **Unstoppable** | ★★★★ | Win five rounds in a row. | **Punk** outfit |
+| **Survivalist** | ★★★★ | Win 10 Hunts as a survivor. | *Survivalist* title |
+| **Headmaster** | ★★★★ | Win 10 Hunts as the Teacher. | *Headmaster* title |
+| **Honor Society** | ★★ | Reach 1,000 XP. | *Honor Society* title |
+| **Dean's List** | ★★★★ | Reach 5,000 XP. | *Dean's List* title |
+| **Truant Officer** | ★★★★ | Capture 50 survivors (lifetime). | **Hall Pass** emblem |
+| **Valedictorian** | ★★★★ | Answer ten questions correctly in a row. | *Valedictorian* title |
+| **Bookworm** | ★★★ | Answer 100 questions correctly (lifetime). | *Bookworm* title |
+| **Subject Expert** | ★★★ | Answer 25 correctly in a single topic. | **Atom** emblem |
+| **Momentum Maestro** | ★★★★★ (secret) | Land ten perfect momentum chains. | *Maestro* title |
+| **Pop Quiz** | ★★★★ (secret) | Capture a survivor in the first 20 seconds. | **Pop Quiz** emblem |
+| **Ghost in the Walls** | ★★★ (secret) | Hide in a locker 25 times. | *Ghost* title |
+| **Saved by the Bell** | ★★★★ (secret) | Board the evacuation train in the final escape. | *Saved by the Bell* title |
+| **Comeback Kid** | ★★★★ (secret) | Win as the last survivor while others were caught. | **Phoenix** emblem |
+| **Lights On** | ★★ (secret) | Throw the breaker and light the train roof. | (XP only) |
+| **Did You See That?** | ★★★ (secret) | Witness a "whisper in the static" (egg #3). | **Static** emblem |
+| **Burning the Midnight Oil** | ★★ (secret) | Finish a round after midnight (local clock). | *Night Owl* title |
+| **Don't Panic** | ★★ (secret) | Play named `42` / `Adams`. | *Hitchhiker* title |
+| **It Still Pulls** | ★★★ (secret) | On the menu, enter the code **G 9 8 1** (`g = 9.81`). | **Falling Apple** emblem |
+| **Wall Reader** | ★★ (secret) | Read a piece of locker graffiti (egg #1). | (XP only) |
+| **Honor Graduate** | ★★★★★ | Earn every *standard* (non-secret) achievement. | *Honor Graduate* title |
+| **Perfectionist** | ★★★★★ (secret) | Earn every achievement, secrets and all. | *Perfectionist* title |
+
+These ride the same plumbing as the originals: countable milestones live in `RecordRoundResult` /
+`RecordQuestionResult` / the new `RecordCapture` / `RecordLockerHide` / `RecordPerfectChain` (account schema **v3**
+added the lifetime-capture, locker-hide, and perfect-chain counters); event/secret ones grant through the existing
+`ClientGrantAchievement` RPC or a client-local `UnlockAchievement`; and the two capstones roll up automatically in
+`UnlockAchievement` by scanning the registry, so they stay correct as more achievements are added.
 
 The ten hidden **tints** (Chalk / Arcade / Exit Sign / Afterimage / Veteran / Faculty / Slipstream / Detention /
 Apex / Commuter) appear as locked swatches in the **Shirt** colour picker until earned, then become selectable
 like any colour and persist. Their exact colour shows on **nameplates, the lobby roster, and map blips**; on the
 8-material Quaternius body mesh they map to the nearest base material (a tint needs its own body material to render
-exactly on the 3D model — easy to add later with the Quaternius art). The **Headwear** picker also has four
-procedural achievement hats — **Top Hat** (Roof Rider), **Crown** (On a Roll), **Halo** (Completionist), and
-**Graduation Cap** (Graduate) — each built from primitives and anchored to the head. Two **prestige outfits** are
+exactly on the 3D model — easy to add later with the Quaternius art). **Headwear has been removed** (2026): the
+procedural achievement hats and XP hats stacked on the Quaternius skins' baked-in headwear and read wrong, so the
+**Headwear** category is now empty (the picker is gone). The four achievements that used to grant hats now reward
+nameplate flair instead — **Roof Rider** → *Roof Rider* title, **On a Roll** → **Crown** emblem, **Completionist** →
+**Halo** emblem + *Completionist* title, **Graduate** → *Graduate* title. Two **prestige outfits** are
 achievement-locked rather than XP-gated: **Suit** (Last One Standing) and **Spacesuit** (Perfect Chain).
 Achievements live in a small registry in `BHAccountSubsystem.cpp`; `UnlockAchievement()` is idempotent and toasts
 on first earn.

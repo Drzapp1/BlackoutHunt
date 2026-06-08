@@ -47,6 +47,11 @@ public:
 	void ExitLocker(bool bAllowMovementExit = false);
 	void MarkCaptured();
 	void MarkEscaped();
+	// Tutorial-only capture shield: the guided-tutorial director sets this TRUE on the student for the whole teaching
+	// half so a stray/early Teacher swing (or the Loom spawn race) can't capture them before the scripted Encounter,
+	// and clears it at the climax. Server-side gate only (capture is decided on authority); default false in live play.
+	void SetTutorialCaptureImmune(bool bImmune) { bTutorialCaptureImmune = bImmune; }
+	bool IsTutorialCaptureImmune() const { return bTutorialCaptureImmune; }
 	void RefillFlashlight(float Amount);
 	void RecoverStamina(float Amount);
 	void AddFear(float Amount);
@@ -309,6 +314,11 @@ public:
 	// Easter-egg hook: the server tells the owning client it completed a train activity (type 0..3) -> Tourist progress.
 	UFUNCTION(Client, Reliable)
 	void ClientRecordTrainActivity(uint8 ActivityIndex);
+
+	// Achievement hook: the server tells the owning (human) Teacher it just made a capture -> lifetime-capture
+	// count behind the Truant Officer achievement. Account progress is client-local, so the server asks the client.
+	UFUNCTION(Client, Reliable)
+	void ClientRecordCapture();
 
 	// Easter-egg hook (PUBLIC so the train-roof breaker can call it): the server tells the owning client to
 	// toggle ITS per-player roof service lights. Per-player lighting is client-local, so the server can't flip
@@ -780,6 +790,9 @@ protected:
 
 	UPROPERTY(ReplicatedUsing = OnRep_HiddenInLocker, BlueprintReadOnly, Category = "Stealth")
 	bool bHiddenInLocker;
+
+	// Server-only tutorial capture shield (see SetTutorialCaptureImmune). Not replicated -- capture is authority-decided.
+	bool bTutorialCaptureImmune = false;
 
 	UPROPERTY(ReplicatedUsing = OnRep_OutOfPlay, BlueprintReadOnly, Category = "Round")
 	bool bOutOfPlay;

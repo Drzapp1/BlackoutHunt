@@ -421,6 +421,8 @@ private:
 	TArray<TSharedPtr<bool>> StartNavHovers;
 	// Progress through the Konami code (easter egg, cosmetic). See Docs/EASTER_EGGS.md.
 	int32 KonamiProgress = 0;
+	// Progress through the second secret code (G 9 8 1 -> "g = 9.81"), unlocking the It Still Pulls achievement.
+	int32 GravityCodeProgress = 0;
 	// Per-part recolour: which skin material slot (a BHColorableMaterialNames registry index) the swatches recolour.
 	int32 RecolorSelectedSlot = INDEX_NONE;
 	// Rebuildable container for the recolour parts, so switching skin re-enumerates the new skin's slots.
