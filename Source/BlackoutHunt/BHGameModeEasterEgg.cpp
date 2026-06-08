@@ -78,6 +78,15 @@ void ABHGameMode::BuildEasterEggRoom()
 	BuildSideRoom(FVector(0.0f, -(HY + 700.0f), 0.0f), 700.0f, 600.0f, FLinearColor(0.34f, 0.16f, 0.16f, 1.0f), EBHBlockMaterial::ConcreteWA, 3); // Teacher evasion (opens north)
 	BuildSideRoom(FVector(HX + 650.0f, 0.0f, 0.0f), 650.0f, 550.0f, FLinearColor(0.30f, 0.26f, 0.10f, 1.0f), EBHBlockMaterial::Concrete, 0); // Secret room (opens west)
 
+	// Bridge the ~100 cm floor gap between the gallery and the N/S skill rooms at each doorway. The gallery floor
+	// ends at Y=+/-HY and the room floors begin at Y=+/-(HY+100), so without these sills the player falls out of the
+	// level the instant they step through the only entrances to the skill rooms. Each sill spans the doorway width
+	// and overlaps both floors slightly so there's no seam. (The east/secret room is flush, so it needs none.)
+	for (float Sy : { HY + 50.0f, -(HY + 50.0f) })
+	{
+		SpawnBlock(FVector(0.0f, Sy, CenterZForBlockTop(0.0f, 0.25f)), FVector(4.0f, 1.4f, 0.25f), FloorTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+	}
+
 	for (float Lx : { -700.0f, 700.0f })
 	{
 		if (ABHFlickerLight* L = World->SpawnActor<ABHFlickerLight>(FVector(Lx, 0.0f, 320.0f), FRotator::ZeroRotator)) { (void)L; }

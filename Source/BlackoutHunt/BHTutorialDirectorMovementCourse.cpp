@@ -14,6 +14,7 @@
 #include "BHTutorialDirector.h"
 
 #include "BHBlockActor.h"
+#include "BHLocker.h"
 #include "Components/TextRenderComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
@@ -62,13 +63,16 @@ void ABHTutorialDirector::BuildMovementCourse()
 	CoverWallLoc = CoverWall + FVector(0.0f, 0.0f, 90.0f);
 	OverhangLoc = FVector(CoverWall.X + 130.0f, CoverWall.Y, 150.0f);
 
-	// --- (a2) DROP LEDGE (drop-roll target): a ~250 cm platform to the south, with a two-step stair on its west face
-	// so the player can climb up, then drop-roll off the east edge back onto the main floor.
+	// --- (a2) DROP LEDGE (drop-roll target): a ~135 cm platform to the south, with a three-step stair on its west
+	// face whose rises are each ~44 cm so they are WALKABLE at the default character MaxStepHeight (45 cm) -- the
+	// player walks up, then drop-rolls off the east edge back onto the main floor. (Earlier 90/80 cm rises were not
+	// walkable and had to be jumped, reading as broken geometry.)
 	const FVector Ledge(900.0f, -550.0f, 0.0f);
-	const float LedgeTop = 250.0f;
+	const float LedgeTop = 134.0f;
 	SpawnProp(FVector(Ledge.X, Ledge.Y, CourseCenterZForTop(LedgeTop, 0.25f)), FVector(4.5f, 4.5f, 0.25f), LedgeTint, FRotator::ZeroRotator, true, EBHBlockMaterial::DiamondPlate);
-	SpawnProp(FVector(Ledge.X - 280.0f, Ledge.Y, CourseCenterZForTop(90.0f, 0.9f)), FVector(1.0f, 4.5f, 0.9f), LedgeTint, FRotator::ZeroRotator, true, EBHBlockMaterial::DiamondPlate);
-	SpawnProp(FVector(Ledge.X - 180.0f, Ledge.Y, CourseCenterZForTop(170.0f, 1.7f)), FVector(1.0f, 4.5f, 1.7f), LedgeTint, FRotator::ZeroRotator, true, EBHBlockMaterial::DiamondPlate);
+	SpawnProp(FVector(Ledge.X - 340.0f, Ledge.Y, CourseCenterZForTop(44.0f, 0.44f)), FVector(0.8f, 4.5f, 0.44f), LedgeTint, FRotator::ZeroRotator, true, EBHBlockMaterial::DiamondPlate);   // step top 44
+	SpawnProp(FVector(Ledge.X - 260.0f, Ledge.Y, CourseCenterZForTop(88.0f, 0.88f)), FVector(0.8f, 4.5f, 0.88f), LedgeTint, FRotator::ZeroRotator, true, EBHBlockMaterial::DiamondPlate);   // step top 88
+	SpawnProp(FVector(Ledge.X - 180.0f, Ledge.Y, CourseCenterZForTop(132.0f, 1.32f)), FVector(0.8f, 4.5f, 1.32f), LedgeTint, FRotator::ZeroRotator, true, EBHBlockMaterial::DiamondPlate); // step top 132 (~ledge)
 	DropLedgeLoc = FVector(Ledge.X + 150.0f, Ledge.Y, LedgeTop + 60.0f); // the east lip you drop off
 
 	// --- (a3) Stationary CHASE DUMMY in a DOORWAY (dive / flow-chain target): a doorway frame astride the running
@@ -80,6 +84,14 @@ void ABHTutorialDirector::BuildMovementCourse()
 	SpawnProp(FVector(Door.X, Door.Y, CourseCenterZForBottom(220.0f, 0.3f)), FVector(0.3f, 3.6f, 0.3f), FrameTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete); // lintel
 	SpawnProp(FVector(Door.X, Door.Y, CourseCenterZForBottom(0.0f, 1.85f)), FVector(0.55f, 0.55f, 1.85f), DummyTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal); // the dummy (non-colliding)
 	ChaseDummyLoc = FVector(Door.X, Door.Y, 120.0f);
+
+	// --- (a4) A practice LOCKER in the bay (north-east corner) for the LockerRoll step, so the marker points at a
+	// nearby locker instead of yanking the player two rooms east to the nearest map locker. Spawned the same way the
+	// game mode spawns tutorial lockers (Z=95). Its location is cached so PublishStepBeat's LockerRoll beat uses it.
+	if (ABHLocker* Locker = World->SpawnActor<ABHLocker>(FVector(1150.0f, 600.0f, 95.0f), FRotator(0.0f, 180.0f, 0.0f)))
+	{
+		PracticeLockerLoc = Locker->GetActorLocation();
+	}
 
 	// A floating "DUMMY" plaque over the silhouette so it reads as a practice target, not a real Teacher
 	// (lightweight UTextRenderComponent on a bare actor -- same approach as the easter-egg plaques).

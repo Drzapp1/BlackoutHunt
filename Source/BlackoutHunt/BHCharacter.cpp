@@ -693,9 +693,25 @@ UAnimSequence* BHLoadSpecialAnimation(EBHMovementSpecialState State, bool bMovin
 		}
 	}
 
-	if (State == EBHMovementSpecialState::Rolling)
+	// The FreeAnimationLibrary clips this normally wants aren't present on disk, so without these Quaternius fallbacks
+	// only Rolling animated and Slide/Dive/Prone froze the third-person mesh on its prior pose (a sliding/crawling
+	// body that visibly didn't move its limbs). Reuse the closest existing Quaternius clip per state.
+	switch (State)
 	{
+	case EBHMovementSpecialState::Rolling:
+	case EBHMovementSpecialState::Diving:
+		// No dedicated dive clip; the roll reads as a committed forward lunge for a dive too.
 		return LoadObject<UAnimSequence>(nullptr, TEXT("/Game/BlackoutHunt/Art/Characters/Quaternius/Animations/BH_Q_AnimationsCharacterArmature_Roll.BH_Q_AnimationsCharacterArmature_Roll"));
+	case EBHMovementSpecialState::Sliding:
+		// No slide clip; a run clip (the caller can slow the play rate) beats a frozen pose while the body slides.
+		return LoadObject<UAnimSequence>(nullptr, TEXT("/Game/BlackoutHunt/Art/Characters/Quaternius/Animations/A_BH_Q_Run.A_BH_Q_Run"));
+	case EBHMovementSpecialState::Prone:
+		// No prone clip; idle (still) / walk (crawling) keep the body posed rather than frozen mid-stand.
+		return LoadObject<UAnimSequence>(nullptr, bMoving
+			? TEXT("/Game/BlackoutHunt/Art/Characters/Quaternius/Animations/A_BH_Q_Walk.A_BH_Q_Walk")
+			: TEXT("/Game/BlackoutHunt/Art/Characters/Quaternius/Animations/A_BH_Q_Idle.A_BH_Q_Idle"));
+	default:
+		break;
 	}
 
 	return nullptr;
@@ -3737,7 +3753,10 @@ void ABHCharacter::UpdateSpecialMoveAuthority(float DeltaSeconds)
 	const FBHMovementSpecialTuning Tuning = BHGetSpecialMoveTuning(BHPS, MovementSpecialState);
 	const float Duration = FMath::Max(0.01f, Tuning.DurationSeconds);
 	const float NormalizedTime = FMath::Clamp((GetWorld()->GetTimeSeconds() - SpecialMoveStartTime) / Duration, 0.0f, 1.0f);
-	const float TargetDistance = FMath::Max(0.0f, Tuning.Curve.Distance) * BHMovementCurveAlpha(Tuning, NormalizedTime);
+	// Apply the flow-chain momentum bonus to the actual DISTANCE travelled (not just MaxWalkSpeed, which is
+	// irrelevant while input is suppressed during the move) so a frame-perfect chain visibly travels farther/faster.
+	// The swept AddActorWorldOffset below still stops at any wall, so a longer chained move can't punch through one.
+	const float TargetDistance = FMath::Max(0.0f, Tuning.Curve.Distance) * SpecialMoveMomentumScale * BHMovementCurveAlpha(Tuning, NormalizedTime);
 	const float DeltaDistance = FMath::Max(0.0f, TargetDistance - SpecialMoveDistanceTravelled);
 	if (DeltaDistance > KINDA_SMALL_NUMBER && !SpecialMoveDirection.IsNearlyZero())
 	{
@@ -4042,6 +4061,13 @@ void ABHCharacter::FinishSpecialMoveAuthority()
 		LastSpecialMoveEndedTime = GetWorld()->GetTimeSeconds();
 	}
 
+	// Capture the move's exit momentum BEFORE the state fields are reset below. The move drives displacement via
+	// AddActorWorldOffset and never writes the CMC velocity, so without re-injecting it the survivor brakes to a
+	// dead stop the instant a roll/slide/dive ends -- right when they're fleeing. Seed forward velocity on exit.
+	const FVector ExitDir = SpecialMoveDirection.GetSafeNormal2D();
+	const float ExitDuration = FMath::Max(0.05f, SpecialMoveEndTime - SpecialMoveStartTime);
+	const float ExitSpeed = SpecialMoveDistanceTravelled / ExitDuration;
+
 	const bool bShouldEndProne = bSpecialMoveEndsProne && (!bSpecialMoveEndProneRequiresInput || bProneInputHeld);
 	const bool bShouldEndCrouched = bSpecialMoveEarlyBrake && !bShouldEndProne; // silent slide-stop
 	MovementSpecialState = bShouldEndProne ? EBHMovementSpecialState::Prone : EBHMovementSpecialState::None;
@@ -4062,6 +4088,19 @@ void ABHCharacter::FinishSpecialMoveAuthority()
 		&& GetCharacterMovement() && GetCharacterMovement()->IsMovingOnGround() && GetCharacterMovement()->CanEverCrouch())
 	{
 		Crouch();
+	}
+	// Re-inject the captured momentum so the move flows into a run instead of dead-stopping. Skip when ending prone
+	// or braking to a crouch (those intentionally stop). Cap at the player's current MaxWalkSpeed (which reflects
+	// sprint state) so the exit never exceeds normal speed -- the swept move already validated this much clearance.
+	if (MovementSpecialState == EBHMovementSpecialState::None && !bShouldEndCrouched && !ExitDir.IsNearlyZero())
+	{
+		if (UCharacterMovementComponent* ExitMove = GetCharacterMovement())
+		{
+			if (ExitMove->IsMovingOnGround())
+			{
+				ExitMove->Velocity = ExitDir * FMath::Clamp(ExitSpeed, 0.0f, ExitMove->MaxWalkSpeed);
+			}
+		}
 	}
 	ForceNetUpdate();
 }
@@ -4087,7 +4126,9 @@ bool ABHCharacter::SetProneAuthority(bool bNewProne, bool bShowFailureMessages)
 		{
 			UnCrouch();
 		}
-		bSprintInputHeld = false;
+		// NOTE: do NOT clear bSprintInputHeld here. Prone speed is already enforced by the IsProne() branch in
+		// RefreshMovementSpeedFromState, and the owning client never reconciles this flag, so clearing it server-side
+		// only made a player who taps Prone-then-stands while holding Sprint rubber-band (client predicts sprint).
 		MovementSpecialState = EBHMovementSpecialState::Prone;
 		LastCaptureEvasionTime = GetWorld() ? GetWorld()->GetTimeSeconds() : LastCaptureEvasionTime;
 		ApplyMovementSpecialState();
@@ -5932,7 +5973,28 @@ void ABHCharacter::UpdatePOVAnimation(float DeltaSeconds)
 	// The first-person camera uses bUsePawnControlRotation, which overwrites component-relative ROTATION every frame,
 	// so the barrel roll can't be applied on the camera component here -- publish it to ABHPlayerCameraManager, which
 	// stamps it onto the view rotation in ProcessViewRotation. (Relative LOCATION still survives, so keep that.)
-	ViewRollOffsetDeg = SpecialMoveCameraRollDeg;
+	// While actively rolling, follow the somersault curve directly. When a roll ENDS mid-flip (e.g. cut short by a
+	// wall bonk), don't snap the view upright in one frame -- ease the published offset to the nearest upright
+	// orientation (0 or 360) so it settles smoothly. A roll that completes naturally is already at ~0/360, so this
+	// is a no-op there.
+	const bool bRollingNow = (MovementSpecialState == EBHMovementSpecialState::Rolling || CosmeticMovementSpecialState == EBHMovementSpecialState::Rolling);
+	if (bRollingNow)
+	{
+		ViewRollOffsetDeg = SpecialMoveCameraRollDeg;
+	}
+	else if (!FMath::IsNearlyZero(ViewRollOffsetDeg, 0.5f))
+	{
+		const float SettleTarget = ViewRollOffsetDeg > 180.0f ? 360.0f : 0.0f;
+		ViewRollOffsetDeg = FMath::FInterpTo(ViewRollOffsetDeg, SettleTarget, DeltaSeconds, 12.0f);
+		if (FMath::Abs(ViewRollOffsetDeg - SettleTarget) < 0.5f)
+		{
+			ViewRollOffsetDeg = 0.0f; // 360 == 0 == upright
+		}
+	}
+	else
+	{
+		ViewRollOffsetDeg = 0.0f;
+	}
 	Camera->SetRelativeRotation(POVAnimRotationCurrent + ComputeJumpscareCameraFlinch());
 	Camera->SetRelativeLocation(ViewFeelCameraLocation + POVAnimLocationCurrent);
 }
@@ -7816,7 +7878,10 @@ void ABHCharacter::NotifyNearbySurvivorsOfTeacherCaptureWindup(float Now)
 			continue;
 		}
 
-		if (Now - Target->LastTeacherCounterplayHintTime < 5.5f || !HasDirectVisibilityToCharacter(Target))
+		// This fires once per swing (not per frame), so the old 5.5s re-warn suppression just silently denied the
+		// dodge cue to a survivor who was warned by a recent earlier swing -- exactly the player being chased and
+		// swung at repeatedly, who most needs it. Keep only the line-of-sight gate (the swing target is in front).
+		if (!HasDirectVisibilityToCharacter(Target))
 		{
 			continue;
 		}

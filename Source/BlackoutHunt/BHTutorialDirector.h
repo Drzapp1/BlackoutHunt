@@ -253,6 +253,9 @@ protected:
 	// Monitor phase (Hint step): true once the one-shot "the marker vanishes while the student is hidden" signpost
 	// has fired, so it is shown at most once per Hint step.
 	bool bMonitorLockerSignpostShown = false;
+	// Teacher phase (Counterplay step): true once the one-shot "the student vanished into a locker" caption has
+	// fired, so the staged locker-vanish demo is called out at most once. Re-armed each EnterTeacherStep.
+	bool bTeacherLockerSignpostShown = false;
 	// Teacher phase: deterministic patrol loop for the scripted student + the index it's currently heading to.
 	TArray<FVector> ScriptedWaypoints;
 	int32 ScriptedWaypointIndex = 0;
@@ -273,6 +276,9 @@ protected:
 	FVector OverhangLoc = FVector::ZeroVector;
 	FVector DropLedgeLoc = FVector::ZeroVector;
 	FVector ChaseDummyLoc = FVector::ZeroVector;
+	// A practice locker spawned IN the bay for the LockerRoll step, so the marker doesn't pull the player two rooms
+	// east to the nearest map locker. Zero until BuildMovementCourse spawns it.
+	FVector PracticeLockerLoc = FVector::ZeroVector;
 
 	FTimerHandle ActivateTimerHandle;
 	FTimerHandle EvalTimerHandle;

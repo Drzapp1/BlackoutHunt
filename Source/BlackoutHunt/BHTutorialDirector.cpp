@@ -238,6 +238,7 @@ void ABHTutorialDirector::EnterStep(EStep NewStep)
 	case EStep::Sprint:
 		// Teach the chase's prerequisite up front: a survivor-only player otherwise meets the climax never having
 		// been told how to run or that stamina is a managed resource. Detected via the sprint latch.
+		SetAllInputLocked(false); // self-sufficient: don't rely on Move having unlocked, in case of a future reorder
 		if (ABHCharacter* SprintSurvivor = FindTutorialSurvivor())
 		{
 			SprintSurvivor->ResetTutorialActionMask();
@@ -462,12 +463,24 @@ void ABHTutorialDirector::EvaluateStep()
 		}
 		break;
 	case EStep::Crawl:
+	{
 		// Advance once the student has actually gone low-profile by the duct, or on the generous timeout.
 		if (SurvivorIsCrawlingNearDuct() || Elapsed >= 20.0f)
 		{
 			EnterStep(EStep::Decoy);
+			break;
+		}
+		// The prompt teaches crouch first, but the duct needs PRONE -- nudge a player who is only crouching so the
+		// gate that requires prone/slide/dive doesn't read as "nothing happened".
+		const UCharacterMovementComponent* CrawlMove = Survivor ? Survivor->GetCharacterMovement() : nullptr;
+		const float CrawlNow = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+		if (Survivor && CrawlMove && CrawlMove->IsCrouching() && !Survivor->IsProne() && CrawlNow >= NextMoveHintServerTime)
+		{
+			NextMoveHintServerTime = CrawlNow + 4.0f;
+			Broadcast(TEXT("Lower! Crouch isn't low enough for the duct - tap LEFT ALT to go PRONE, then crawl in."), 4.0f);
 		}
 		break;
+	}
 	case EStep::Decoy:
 	{
 		// Advance once the student has actually dropped a decoy (LastDecoyTime moves past step entry), or on
@@ -529,7 +542,10 @@ void ABHTutorialDirector::EvaluateStep()
 		// (the reveal cutscene + caption need to land first); after it, advance the instant they drive any direction.
 		// A generous 20s hard fallback still guarantees the lesson can never hard-lock, and a frozen player is nudged.
 		const uint8 MoveMask = Survivor ? Survivor->GetTutorialMovementMask() : 0;
-		const bool bMoved = MoveMask != 0;
+		// Count any real movement, not just WASD: a player who panics and rolls/slides/dives is moving fast but sets
+		// no WASD mask bit (the mask only writes under !IsSpecialMoveActive()), so a speed check stops the "MOVE!"
+		// nudge from firing at someone who is clearly already fleeing.
+		const bool bMoved = (MoveMask != 0) || (Survivor && Survivor->GetVelocity().SizeSquared2D() > FMath::Square(50.0f));
 		if ((Elapsed >= 5.0f && bMoved) || Elapsed >= 20.0f)
 		{
 			EnterStep(EStep::Escape);
@@ -1124,9 +1140,14 @@ void ABHTutorialDirector::EvaluateMovementStep()
 				else if (SpecState == EBHMovementSpecialState::Sliding) { Coach = TEXT("That was a SLIDE (you held SHIFT). For a ROLL, tap CTRL (not ALT) while sprinting."); }
 				break;
 			case EMovementStep::Slide:
-			case EMovementStep::SlideStop:
 				if (bWallBonk) { Coach = TEXT("You bonked the cover -- line up the open gap and slide (SHIFT then ALT) straight through it."); }
 				else if (SpecState == EBHMovementSpecialState::Rolling) { Coach = TEXT("That was a ROLL. For a SLIDE, sprint then tap ALT (not CTRL) -- longer and lower, under the overhang."); }
+				break;
+			case EMovementStep::SlideStop:
+				// The SlideStop skill is RELEASING Alt early to brake; coach that specifically rather than reusing the
+				// generic slide line, so a player who just slides the full distance learns the difference.
+				if (SpecState == EBHMovementSpecialState::Rolling) { Coach = TEXT("That was a ROLL. Start a SLIDE (sprint then ALT), then RELEASE Alt early to brake."); }
+				else { Coach = TEXT("SLIDE-STOP: start a slide (SHIFT then ALT), then RELEASE Alt early to brake into a quiet crouch instead of sliding the whole way."); }
 				break;
 			case EMovementStep::Dive:
 				if (SpecState == EBHMovementSpecialState::Sliding) { Coach = TEXT("That was a slide -- press ALT in the AIR, not on the ground, and let go of SHIFT as you do. Jump first, then ALT before you land."); }
@@ -1234,9 +1255,10 @@ void ABHTutorialDirector::PublishStepBeat() const
 	// Teacher / Monitor phases point the marker at their own targets (the AI student, a station, or the exit).
 	if (Phase == EBHTutorialPhase::Teacher)
 	{
-		// Point at the student through the observe-the-student beats and the chase itself.
-		if (TeacherStep == ETeacherStep::Noise
-			|| TeacherStep == ETeacherStep::Counterplay
+		// Point at the student through the observe-the-student beats and the chase itself. NOTE: the Noise step is
+		// deliberately excluded -- it teaches "that footstep could be a fake, confirm with a scan", so pinning a
+		// confident "Student" marker on the decoy spot would assert the certainty the caption tells you NOT to trust.
+		if (TeacherStep == ETeacherStep::Counterplay
 			|| TeacherStep == ETeacherStep::Hunt
 			|| TeacherStep == ETeacherStep::Capture)
 		{
@@ -1350,7 +1372,13 @@ void ABHTutorialDirector::PublishStepBeat() const
 			break;
 		case EMovementStep::LockerRoll:
 		{
-			// The locker roll-out step needs the player at a locker, so point the marker at the nearest one.
+			// Prefer the practice locker BuildMovementCourse spawned in the bay so the marker stays local; only fall
+			// back to the nearest map locker (two rooms east) if the course didn't build one.
+			if (bMovementCourseBuilt && !PracticeLockerLoc.IsZero())
+			{
+				SetSingleBeat(TEXT("Locker"), PracticeLockerLoc);
+				return;
+			}
 			const ABHCharacter* MoveSurvivor = FindTutorialSurvivor();
 			if (ABHLocker* Locker = FindNearestLocker(MoveSurvivor ? MoveSurvivor->GetActorLocation() : GetActorLocation()))
 			{
@@ -1892,6 +1920,7 @@ void ABHTutorialDirector::EnterTeacherStep(ETeacherStep NewStep)
 {
 	TeacherStep = NewStep;
 	StepStartServerTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	bTeacherLockerSignpostShown = false; // re-arm the Counterplay locker-vanish caption for this step
 
 	switch (NewStep)
 	{
@@ -1920,6 +1949,13 @@ void ABHTutorialDirector::EnterTeacherStep(ETeacherStep NewStep)
 	case ETeacherStep::Axe:
 		// COMMIT tool, now taught AFTER the READ tools (Scan/Noise).
 		SetAllInputLocked(false);
+		// Top up stamina so the taught practice swing always lands: the prior Sprint tip encourages holding Shift,
+		// and a swing is REJECTED below the capture stamina floor -- a stamina-starved player's clicks would do
+		// nothing (reading as a broken axe) until the 22s timeout bailed them out.
+		if (ABHCharacter* AxeTeacher = FindHumanPlayer())
+		{
+			AxeTeacher->RecoverStamina(1000.0f);
+		}
 		Broadcast(TEXT("Now your COMMIT tool. You carry an AXE - press LEFT MOUSE to swing it, and a hit on a student captures them. You've read the room with Scan and learned the fakes; take a practice swing now."), 14.0f);
 		break;
 	case ETeacherStep::Counterplay:
@@ -2030,6 +2066,20 @@ void ABHTutorialDirector::EvaluateTeacherStep()
 	case ETeacherStep::Counterplay:
 		// Explanation beat (lockers + crawl ducts) - the longest caption, so give it the most reading time, then
 		// into the two-stage climax (Hunt -> Capture).
+		// Call out the staged vanish: DriveScriptedTutorialStudent force-hides the student in a locker during this
+		// step and the marker silently clears -- without this line most players miss that the disappearing marker IS
+		// the lesson. One-shot (re-armed on step entry).
+		if (!bTeacherLockerSignpostShown)
+		{
+			if (const ABHCharacter* CpStudent = FindStudentCharacter())
+			{
+				if (CpStudent->IsHiddenInLocker())
+				{
+					bTeacherLockerSignpostShown = true;
+					Broadcast(TEXT("See that? The student ducked into a LOCKER and dropped off your sight - you can't scan or grab them in there. Watch the doors for them to climb back out."), 5.0f);
+				}
+			}
+		}
 		if (Elapsed >= 13.0f)
 		{
 			EnterTeacherStep(ETeacherStep::Hunt);

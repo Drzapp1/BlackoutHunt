@@ -251,10 +251,20 @@ void ABHLocker::OnRep_Occupant()
 void ABHLocker::ApplyLockerVisuals()
 {
 	const bool bOccupied = Occupant != nullptr;
-	const FLinearColor DoorColor = bOccupied ? FLinearColor(0.13f, 0.16f, 0.17f, 1.0f) : FLinearColor(0.18f, 0.24f, 0.27f, 1.0f);
+	// The bright-red "occupied" indicator must NOT be visible to the alive Teacher: this runs client-side via
+	// OnRep_Occupant, and showing the glow to everyone broadcast exactly which locker a hidden survivor was in
+	// (the pawn is correctly hidden, but the locker lit up) -- defeating the core hide mechanic across the room.
+	// Gate it: survivors and dead/spectating players still see it (teammate convenience), but the hunting Teacher
+	// only gets the fair, look-at-it "Hidden From Teacher" interaction label, not a free across-the-room tell.
+	const APlayerController* LocalPC = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
+	const ABHPlayerState* LocalPS = LocalPC ? LocalPC->GetPlayerState<ABHPlayerState>() : nullptr;
+	const bool bLocalIsAliveHunter = LocalPS && LocalPS->IsAliveHunter();
+	const bool bRevealOccupied = bOccupied && !bLocalIsAliveHunter;
+
+	const FLinearColor DoorColor = bRevealOccupied ? FLinearColor(0.13f, 0.16f, 0.17f, 1.0f) : FLinearColor(0.18f, 0.24f, 0.27f, 1.0f);
 	const FLinearColor VentColor(0.018f, 0.020f, 0.022f, 1.0f);
 	const FLinearColor HandleColor(0.72f, 0.68f, 0.56f, 1.0f);
-	const FLinearColor IndicatorColor = bOccupied ? FLinearColor(0.95f, 0.12f, 0.06f, 1.0f) : FLinearColor(0.10f, 0.36f, 0.26f, 1.0f);
+	const FLinearColor IndicatorColor = bRevealOccupied ? FLinearColor(0.95f, 0.12f, 0.06f, 1.0f) : FLinearColor(0.10f, 0.36f, 0.26f, 1.0f);
 
 	BHPropVisuals::TintPart(LeftDoorPanel, DoorColor);
 	BHPropVisuals::TintPart(RightDoorPanel, DoorColor * 0.85f);
@@ -263,5 +273,5 @@ void ABHLocker::ApplyLockerVisuals()
 	BHPropVisuals::TintPart(LowerVentLeft, VentColor);
 	BHPropVisuals::TintPart(LowerVentRight, VentColor);
 	BHPropVisuals::TintPart(LockerHandle, HandleColor);
-	BHPropVisuals::TintPart(OccupiedIndicator, IndicatorColor, bOccupied ? 2.2f : 0.4f);
+	BHPropVisuals::TintPart(OccupiedIndicator, IndicatorColor, bRevealOccupied ? 2.2f : 0.4f);
 }

@@ -67,6 +67,14 @@
 #include "BHTrainDartboard.h"
 #include "BHTrainCat.h"
 #include "BHTrainAquarium.h"
+#include "BHTrainDanceFloor.h"
+#include "BHTrainJukebox.h"
+#include "BHTrainGhost.h"
+#include "BHTrainSecretSwitch.h"
+#include "BHTrainFireplace.h"
+#include "BHTrainOthelloTable.h"
+#include "BHTrainVendingMachine.h"
+#include "BHTrainToyTrain.h"
 #include "Engine/PointLight.h"
 #include "Components/PointLightComponent.h"
 #include "BHTrainTunnelMotionActor.h"
@@ -1655,12 +1663,15 @@ void ABHGameMode::NotifySurvivorCaptured(ABHCharacter* Survivor, ABHCharacter* C
 		CaptureImpactCue.FocusLocation = CapturingHunter
 			? CapturingHunter->GetActorLocation() + FVector(0.0f, 0.0f, 92.0f)
 			: CaptureLocation + FVector(0.0f, 0.0f, 92.0f);
-		CaptureImpactCue.DurationSeconds = 0.48f;
-		CaptureImpactCue.ShakeIntensity = 0.24f;
-		CaptureImpactCue.CameraJitterDuration = 0.28f;
-		CaptureImpactCue.CameraJitterFrequency = 42.0f;
-		CaptureImpactCue.FlashIntensity = 0.24f;
-		CaptureImpactCue.FlashColor = FLinearColor(1.0f, 0.70f, 0.30f, 1.0f);
+		// Getting caught is the single most important horror beat, but it used to be a faint amber blink (0.24) then
+		// an instant vanish -- it barely read as an event. Punch it up to a sharp red hit-flash + hard shake so the
+		// axe landing actually lands on screen. (Visual only; EventType stays Ambient to avoid any asset-gated path.)
+		CaptureImpactCue.DurationSeconds = 0.60f;
+		CaptureImpactCue.ShakeIntensity = 0.72f;
+		CaptureImpactCue.CameraJitterDuration = 0.45f;
+		CaptureImpactCue.CameraJitterFrequency = 55.0f;
+		CaptureImpactCue.FlashIntensity = 0.85f;
+		CaptureImpactCue.FlashColor = FLinearColor(1.0f, 0.13f, 0.07f, 1.0f);
 		SurvivorPC->ClientPlayHorrorCue(CaptureImpactCue);
 	}
 	Survivor->MarkCaptured();
@@ -8571,6 +8582,14 @@ void ABHGameMode::BuildTrainLobbyLevel()
 		SpawnBlock(FVector(TX, 150.0f, 40.0f), FVector(0.42f, 0.42f, 0.40f), CarAccents[4], FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
 	};
 
+	// Othello / Reversi table with stools either side.
+	auto AddOthelloTable = [&](float TX)
+	{
+		GetWorld()->SpawnActor<ABHTrainOthelloTable>(FVector(TX, 0.0f, 0.0f), FRotator::ZeroRotator);
+		SpawnBlock(FVector(TX, -150.0f, 40.0f), FVector(0.42f, 0.42f, 0.40f), CarAccents[5], FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+		SpawnBlock(FVector(TX, 150.0f, 40.0f), FVector(0.42f, 0.42f, 0.40f), CarAccents[5], FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+	};
+
 	// A little casino corner: a row of slot machines players approach from the -Y aisle side.
 	auto AddSlotsCar = [&](float TX)
 	{
@@ -8619,6 +8638,7 @@ void ABHGameMode::BuildTrainLobbyLevel()
 			SpawnBlock(FVector(TX + SX, -200.0f, 40.0f), FVector(0.4f, 0.4f, 0.40f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Leather);
 		}
 		AddAccentLight(FVector(TX, 0.0f, 250.0f), FLinearColor(0.5f, 0.7f, 1.0f, 1.0f), 70.0f, 600.0f);
+		GetWorld()->SpawnActor<ABHTrainVendingMachine>(FVector(TX - 600.0f, 250.0f, 0.0f), FRotator::ZeroRotator);
 	};
 
 	// BAR / LOUNGE: a marble-topped wood bar with stools, a back-bar of bottles, and leather booths opposite.
@@ -8644,6 +8664,8 @@ void ABHGameMode::BuildTrainLobbyLevel()
 		AddAccentLight(FVector(TX, 120.0f, 220.0f), Warm, 90.0f, 700.0f);
 		AddAccentLight(FVector(TX, -150.0f, 200.0f), Warm, 55.0f, 600.0f);
 		GetWorld()->SpawnActor<ABHTrainCat>(FVector(TX, -90.0f, 6.0f), FRotator::ZeroRotator);
+		GetWorld()->SpawnActor<ABHTrainFireplace>(FVector(TX, -255.0f, 0.0f), FRotator::ZeroRotator);
+		GetWorld()->SpawnActor<ABHTrainVendingMachine>(FVector(TX + 640.0f, 250.0f, 0.0f), FRotator::ZeroRotator);
 	};
 
 	// LIBRARY / QUIET car: bookshelves down both walls, leather reading chairs, soft warm light.
@@ -8681,6 +8703,8 @@ void ABHGameMode::BuildTrainLobbyLevel()
 		SpawnBlock(FVector(TX, 0.0f, 291.0f), FVector(9.0f, 1.6f, 0.04f), FLinearColor(0.6f, 0.85f, 1.0f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::Tinted);   // glowing skylight
 		AddAccentLight(FVector(TX, 0.0f, 250.0f), FLinearColor(0.55f, 0.75f, 1.0f, 1.0f), 65.0f, 700.0f);
 		GetWorld()->SpawnActor<ABHTrainAquarium>(FVector(TX - 430.0f, 0.0f, 0.0f), FRotator::ZeroRotator);
+		GetWorld()->SpawnActor<ABHTrainGhost>(FVector(TX + 300.0f, 0.0f, 6.0f), FRotator::ZeroRotator);   // easter egg: a rare passenger
+		GetWorld()->SpawnActor<ABHTrainToyTrain>(FVector(TX + 480.0f, 150.0f, 0.0f), FRotator::ZeroRotator);   // a model train, inside the train
 	};
 
 	// GREENHOUSE / GARDEN: planters, a central tree, benches, grassy floor.
@@ -8704,6 +8728,7 @@ void ABHGameMode::BuildTrainLobbyLevel()
 		}
 		AddAccentLight(FVector(TX, 0.0f, 250.0f), FLinearColor(0.85f, 1.0f, 0.8f, 1.0f), 80.0f, 700.0f);
 		GetWorld()->SpawnActor<ABHTrainCat>(FVector(TX + 120.0f, 60.0f, 6.0f), FRotator::ZeroRotator);   // a garden cat
+		GetWorld()->SpawnActor<ABHTrainSecretSwitch>(FVector(TX + 640.0f, -255.0f, 0.0f), FRotator::ZeroRotator);   // easter egg: tucked in the back corner
 	};
 
 	// KARAOKE / SOCIAL: a small stage with a glowing screen and mic, rows of seats, coloured stage lights.
@@ -8725,6 +8750,8 @@ void ABHGameMode::BuildTrainLobbyLevel()
 		}
 		AddAccentLight(FVector(TX - 200.0f, 150.0f, 250.0f), FLinearColor(1.0f, 0.2f, 0.7f, 1.0f), 80.0f, 600.0f);
 		AddAccentLight(FVector(TX + 200.0f, 150.0f, 250.0f), FLinearColor(0.2f, 0.8f, 1.0f, 1.0f), 80.0f, 600.0f);
+		GetWorld()->SpawnActor<ABHTrainDanceFloor>(FVector(TX, 90.0f, 0.0f), FRotator::ZeroRotator);
+		GetWorld()->SpawnActor<ABHTrainJukebox>(FVector(TX + 330.0f, 235.0f, 0.0f), FRotator::ZeroRotator);
 	};
 
 	for (int32 LoungeCar = 1; LoungeCar <= NumCars - 2; ++LoungeCar)
@@ -8735,7 +8762,8 @@ void ABHGameMode::BuildTrainLobbyLevel()
 		// feature table down the centre instead of the twin booths so the table has room.
 		// Games up front (cars 1-8), relax/social spaces toward the back (cars 9-13).
 		if (LoungeCar == 1) { AddConnectFourTable(CenterX); continue; }
-		if (LoungeCar == 2 || LoungeCar == 7) { AddChessTable(CenterX); continue; }
+		if (LoungeCar == 2) { AddChessTable(CenterX); continue; }
+		if (LoungeCar == 7) { AddOthelloTable(CenterX); continue; }
 		if (LoungeCar == 3 || LoungeCar == 8) { AddBlackjackCar(CenterX); continue; }
 		if (LoungeCar == 4) { AddTicTacToeTable(CenterX); continue; }
 		if (LoungeCar == 5) { AddSlotsCar(CenterX); continue; }
