@@ -60,7 +60,10 @@ protected:
 		Escape,
 		Complete,
 	};
-	enum class ETeacherStep : uint8 { Intro, Move, Sprint, Axe, Scan, Noise, Counterplay, Capture, Blackout, Exit, Done };
+	// True hunter loop: learn the READ tools (Scan, Noise) BEFORE the COMMIT tool (Axe), then a two-stage climax --
+	// Hunt (close to ~600u of the fleeing student) then Capture (land the grab). No Move step: the Survivor lesson
+	// already taught WASD and the Teacher Intro hands control straight to Sprint, so a Move step was unreachable.
+	enum class ETeacherStep : uint8 { Intro, Sprint, Scan, Noise, Axe, Counterplay, Hunt, Capture, Blackout, Exit, Done };
 	enum class EMonitorStep : uint8 { Intro, Move, Unlock, Hint, Marker, Trap, Exit, Done };
 	// Advanced-movement lesson (EBHTutorialPhase::Movement): each step teaches one link and auto-advances once the
 	// player performs it (detected from the character's live state + the tutorial action latches), with a generous

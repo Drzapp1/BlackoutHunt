@@ -147,6 +147,22 @@ void ABHTutorialDirector::Activate()
 		}
 		EnterMonitorStep(EMonitorStep::Intro);
 		break;
+	case EBHTutorialPhase::EasterEgg:
+	{
+		// Hidden HUB: NO step machine. The room is already built by ABHGameMode::BuildEasterEggRoom; here we just
+		// make the lone host free-roaming and greet them. EnsurePlayablyConfigured (called above + re-asserted every
+		// EvaluateStep tick) already promoted them to a live/ready Survivor in the Hunt practice phase exactly as the
+		// Movement sandbox does, so all that's left is to release the BeginPlay intro freeze and clear any marker.
+		SetAllInputLocked(false);
+		ClearBeats();
+		// A slow practice Teacher parked in the teacher-evasion room (centre ~(0,-1600,120) in BuildEasterEggRoom).
+		// It just idles - DriveScriptedCast issues no intent for EasterEgg (its switch default), so it never chases;
+		// a static sparring dummy to practise evasion routes against.
+		TeacherBot = SpawnScriptedBot(EBHPlayerRole::Hunter, TEXT("Teacher"), FVector(0.0f, -1600.0f, 120.0f));
+		ShowTutorialCard(TEXT("YOU FOUND IT"), TEXT("The hidden HUB. Wander the gallery, read the plaques, and visit the skill rooms. Press Esc again any time to head back."), 5.5f);
+		Broadcast(TEXT("Welcome to the secret HUB - free roam. Check the MOVEMENT RANGE, the TEACHER EVASION drill, and the room marked '?' to the east. Esc returns to the menu."), 8.0f);
+		break;
+	}
 	case EBHTutorialPhase::Survivor:
 	default:
 		// The Survivor lesson forces fixed visual + interactive questions onto the two stations.
@@ -341,6 +357,12 @@ void ABHTutorialDirector::EvaluateStep()
 	if (Phase == EBHTutorialPhase::Movement)
 	{
 		EvaluateMovementStep();
+		return;
+	}
+	if (Phase == EBHTutorialPhase::EasterEgg)
+	{
+		// Free-roam HUB: no step machine. EnsurePlayablyConfigured / PublishStepBeat / DriveScriptedCast /
+		// ReviveIfCaught already ran above this tick (keeping the host playable and the parked Teacher harmless).
 		return;
 	}
 
@@ -998,6 +1020,7 @@ void ABHTutorialDirector::PublishStepBeat() const
 		// Point at the student through the observe-the-student beats and the chase itself.
 		if (TeacherStep == ETeacherStep::Noise
 			|| TeacherStep == ETeacherStep::Counterplay
+			|| TeacherStep == ETeacherStep::Hunt
 			|| TeacherStep == ETeacherStep::Capture)
 		{
 			if (const ABHCharacter* Student = FindStudentCharacter())
@@ -1052,6 +1075,12 @@ void ABHTutorialDirector::PublishStepBeat() const
 				return;
 			}
 		}
+		ClearBeats();
+		return;
+	}
+	if (Phase == EBHTutorialPhase::EasterEgg)
+	{
+		// Free-roam HUB has no objective; never pin a marker.
 		ClearBeats();
 		return;
 	}
@@ -1492,8 +1521,9 @@ void ABHTutorialDirector::DriveScriptedTutorialStudent()
 		}
 	}
 
-	// Capture beat: a real evasion - flee directly away from the human Teacher so the chase has stakes.
-	if (TeacherStep == ETeacherStep::Capture)
+	// Hunt + Capture beats: a real evasion - flee directly away from the human Teacher so the chase has stakes
+	// across both the close-the-distance (Hunt) and land-the-grab (Capture) beats.
+	if (TeacherStep == ETeacherStep::Hunt || TeacherStep == ETeacherStep::Capture)
 	{
 		if (const ABHCharacter* Hunter = FindHumanPlayer())
 		{
@@ -1550,29 +1580,14 @@ void ABHTutorialDirector::EnterTeacherStep(ETeacherStep NewStep)
 		ShowTutorialCard(TEXT("TEACHER TRAINING"), TEXT("Now you're the Hunter. Swing your axe, scan for heartbeats, and capture the student."), 4.5f);
 		Broadcast(TEXT("Now you're the TEACHER - hunt the student down before they escape. Watch a moment; your controls unlock shortly."), 5.0f);
 		break;
-	case ETeacherStep::Move:
-		SetAllInputLocked(false);
-		if (ABHCharacter* Human = FindHumanPlayer())
-		{
-			Human->ResetTutorialMovementMask();
-			BroadcastMoveHint(Human->GetTutorialMovementMask());
-		}
-		else
-		{
-			BroadcastMoveHint(0);
-		}
-		NextMoveHintServerTime = StepStartServerTime + 3.0f;
-		break;
 	case ETeacherStep::Sprint:
 		// First step after the (locked) intro now that the WASD lesson is skipped - hand back control here.
 		SetAllInputLocked(false);
 		Broadcast(TEXT("Quick tip: as the TEACHER you SPRINT faster than students (hold LEFT SHIFT), but your stamina is short and your normal walk is slow - so save sprint to close the gap for a capture, don't waste it wandering."), 14.0f);
 		break;
-	case ETeacherStep::Axe:
-		SetAllInputLocked(false);
-		Broadcast(TEXT("You carry an AXE. Press LEFT MOUSE to swing it - a hit on a student captures them. Take a practice swing now."), 14.0f);
-		break;
 	case ETeacherStep::Scan:
+		// First hands-on READ tool, taught BEFORE the COMMIT tool (Axe).
+		SetAllInputLocked(false);
 		Broadcast(TEXT("Press Q to SCAN. It detects the nearest student's HEARTBEAT and reports their direction and distance - they can't mask it. Use it whenever you lose them."), 16.0f);
 		break;
 	case ETeacherStep::Noise:
@@ -1582,11 +1597,19 @@ void ABHTutorialDirector::EnterTeacherStep(ETeacherStep NewStep)
 		PlaceDemoDecoyNearStudent();
 		Broadcast(TEXT("Students fight back with NOISE: they throw DECOYS that sound exactly like real footsteps and breathing, away from where they actually are. One just dropped - that 'Noise' could be a student or a trick. Confirm with a Q scan before you commit."), 16.0f);
 		break;
+	case ETeacherStep::Axe:
+		// COMMIT tool, now taught AFTER the READ tools (Scan/Noise).
+		SetAllInputLocked(false);
+		Broadcast(TEXT("Now your COMMIT tool. You carry an AXE - press LEFT MOUSE to swing it, and a hit on a student captures them. You've read the room with Scan and learned the fakes; take a practice swing now."), 14.0f);
+		break;
 	case ETeacherStep::Counterplay:
 		Broadcast(TEXT("They also vanish: a student in a LOCKER drops off your sight until they climb back out - watch the locker doors. And they slip into low CRAWL DUCTS you can't fit through. Cut them off; don't chase into a duct."), 18.0f);
 		break;
+	case ETeacherStep::Hunt:
+		Broadcast(TEXT("Time to put it together. The STUDENT is fleeing (follow the marker) - SPRINT to close the gap and get right on top of them. Use lockers and corners to cut them off; don't lose them."), 16.0f);
+		break;
 	case ETeacherStep::Capture:
-		Broadcast(TEXT("Now hunt the STUDENT (follow the marker). Get close and swing your AXE (LEFT MOUSE) to capture them - they'll dodge into lockers and ducts, so corner them."), 16.0f);
+		Broadcast(TEXT("You're on them - now LAND IT. Swing your AXE (LEFT MOUSE) while you're right next to the student to capture them. A swing at empty air won't grab; stay close and time it."), 16.0f);
 		break;
 	case ETeacherStep::Blackout:
 		Broadcast(TEXT("Press R for a BLACKOUT - it kills the lights so students lose their bearings."), 14.0f);
@@ -1646,32 +1669,9 @@ void ABHTutorialDirector::EvaluateTeacherStep()
 			EnterTeacherStep(ETeacherStep::Sprint);
 		}
 		break;
-	case ETeacherStep::Move:
-	{
-		const uint8 Mask = Human ? Human->GetTutorialMovementMask() : 0;
-		if ((Human && (Mask & ABHCharacter::TutorialMoveAllMask) == ABHCharacter::TutorialMoveAllMask) || Elapsed >= 60.0f)
-		{
-			EnterTeacherStep(ETeacherStep::Axe);
-			break;
-		}
-		const float Now = GetWorld()->GetTimeSeconds();
-		if (Now >= NextMoveHintServerTime)
-		{
-			BroadcastMoveHint(Mask);
-			NextMoveHintServerTime = Now + 3.0f;
-		}
-		break;
-	}
 	case ETeacherStep::Sprint:
-		// Hold long enough to actually read the ~14s tip before Axe overwrites it (was 8s, cutting the line short).
+		// Hold long enough to actually read the ~14s tip before the next prompt overwrites it (was 8s, cutting it short).
 		if (Elapsed >= 13.0f)
-		{
-			EnterTeacherStep(ETeacherStep::Axe);
-		}
-		break;
-	case ETeacherStep::Axe:
-		// Advance once they swing the axe (the capture attack), or on the generous timeout.
-		if ((Human && Human->IsTeacherCaptureAttackActive()) || Elapsed >= 22.0f)
 		{
 			EnterTeacherStep(ETeacherStep::Scan);
 		}
@@ -1693,19 +1693,55 @@ void ABHTutorialDirector::EvaluateTeacherStep()
 		break;
 	}
 	case ETeacherStep::Noise:
-		// Explanation beat with the single staged decoy; hold long enough to read it unrushed, then teach the rest.
+		// Explanation beat with the single staged decoy; hold long enough to read it unrushed, then the COMMIT tool.
 		if (Elapsed >= 11.0f)
+		{
+			EnterTeacherStep(ETeacherStep::Axe);
+		}
+		break;
+	case ETeacherStep::Axe:
+		// COMMIT tool, taught AFTER the READ tools (Scan/Noise). Advance once they swing the axe (the capture
+		// attack), or on the generous timeout so a player who can't find LEFT MOUSE is never stuck.
+		if ((Human && Human->IsTeacherCaptureAttackActive()) || Elapsed >= 22.0f)
 		{
 			EnterTeacherStep(ETeacherStep::Counterplay);
 		}
 		break;
 	case ETeacherStep::Counterplay:
-		// Explanation beat (lockers + crawl ducts) - the longest caption, so give it the most reading time.
+		// Explanation beat (lockers + crawl ducts) - the longest caption, so give it the most reading time, then
+		// into the two-stage climax (Hunt -> Capture).
 		if (Elapsed >= 13.0f)
+		{
+			EnterTeacherStep(ETeacherStep::Hunt);
+		}
+		break;
+	case ETeacherStep::Hunt:
+	{
+		// Close-the-distance beat: advance once the Teacher is within ~600u of the fleeing student (a real
+		// approach), or on a generous timeout so a player who can't close the gap is never hard-locked. If the
+		// student is already downed (an early grab), skip straight past Capture.
+		bool bClose = false;
+		bool bAlreadyCaptured = false;
+		if (const ABHCharacter* Student = FindStudentCharacter())
+		{
+			if (Human)
+			{
+				bClose = FVector::Dist(Human->GetActorLocation(), Student->GetActorLocation()) < 600.0f;
+			}
+			const ABHPlayerState* StudentPS = Student->GetPlayerState<ABHPlayerState>();
+			bAlreadyCaptured = StudentPS && StudentPS->LifeState == EBHPlayerLifeState::Captured;
+		}
+		if (bAlreadyCaptured)
+		{
+			EnterTeacherStep(ETeacherStep::Blackout);
+			break;
+		}
+		if (bClose || Elapsed >= 35.0f)
 		{
 			EnterTeacherStep(ETeacherStep::Capture);
 		}
 		break;
+	}
 	case ETeacherStep::Capture:
 	{
 		// Advance when they swing the capture attack (the lesson), the student is downed, or timeout.

@@ -3468,6 +3468,16 @@ FReply SBHMainMenu::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKe
 			return OnResumeClicked();
 		}
 
+		// Front-end (no live game) Escape is the hidden easter-egg trigger: drop the lone host into the HUB room.
+		// HostTutorialPhaseForMenu reuses the tutorial map + director; bChain=false so finishing returns to the menu.
+		if (ABHPlayerController* PC = PlayerController.Get())
+		{
+			FString Message;
+			PC->HostTutorialPhaseForMenu(EBHTutorialPhase::EasterEgg, false, Message);
+			StatusText = FText::FromString(Message);
+			return FReply::Handled();
+		}
+
 		StatusText = FText::FromString(TEXT("Host or join a direct-IP game to start."));
 		return FReply::Handled();
 	}
