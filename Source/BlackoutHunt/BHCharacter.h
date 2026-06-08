@@ -52,6 +52,9 @@ public:
 	// and clears it at the climax. Server-side gate only (capture is decided on authority); default false in live play.
 	void SetTutorialCaptureImmune(bool bImmune) { bTutorialCaptureImmune = bImmune; }
 	bool IsTutorialCaptureImmune() const { return bTutorialCaptureImmune; }
+	// True if a capture swing RIGHT NOW would actually land on Target (the same range/angle/alive/not-immune gate the
+	// real grab uses). Public so the tutorial director can tell a genuine "too far" swing from a valid close one.
+	bool CanTeacherCaptureTargetNow(const ABHCharacter* Target) const { float Score = 0.0f; return IsTeacherCaptureCandidateAuthority(Target, Score); }
 	void RefillFlashlight(float Amount);
 	void RecoverStamina(float Amount);
 	void AddFear(float Amount);

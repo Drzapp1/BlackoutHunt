@@ -424,6 +424,31 @@ public:
 	bool ApplyLessonPresetForMenu(const FString& PresetId, FString& OutMessage);
 	bool SaveCurrentLessonPresetForMenu(const FString& DisplayName, const FString& SelectedMapName, FString& OutMessage);
 	bool GenerateManualQuestionSetForMenu(int32 QuestionCount, FString& OutPath, FString& OutMessage);
+
+	// --- Host advanced lesson options (staged locally; folded into the preset snapshot, applied live via
+	//     ApplyAdvancedLessonOptionsForMenu, and persisted by SaveCurrentLessonPresetForMenu). Host-only. ---
+	bool SetMenuStartingDifficultyForMenu(int32 Tier, FString& OutMessage);
+	bool SetMenuMinDifficultyForMenu(int32 Tier, FString& OutMessage);
+	bool SetMenuMaxDifficultyForMenu(int32 Tier, FString& OutMessage);
+	bool SetMenuQuestionSetForMenu(const FString& SetId, FString& OutMessage);
+	bool AppendMenuMapRouteStageForMenu(const FString& MapName, FString& OutMessage);
+	bool ClearMenuMapRouteForMenu(FString& OutMessage);
+	bool StepMenuBreakerCountForMenu(int32 Delta, FString& OutMessage);
+	bool StepMenuLayoutDensityForMenu(int32 Delta, FString& OutMessage);
+	bool ToggleMenuForceProceduralForMenu(FString& OutMessage);
+	bool RandomizeMenuLayoutSeedForMenu(FString& OutMessage);
+	bool ClearMenuLayoutSeedForMenu(FString& OutMessage);
+	bool ApplyAdvancedLessonOptionsForMenu(FString& OutMessage);
+	void GetAvailableQuestionSetIdsForMenu(TArray<FString>& OutSetIds) const;
+	int32 GetMenuStartingDifficulty() const { return static_cast<int32>(MenuStartingDifficulty); }
+	int32 GetMenuMinDifficulty() const { return static_cast<int32>(MenuMinDifficulty); }
+	int32 GetMenuMaxDifficulty() const { return static_cast<int32>(MenuMaxDifficulty); }
+	FString GetMenuQuestionSetId() const { return MenuQuestionSetId; }
+	FString GetMenuMapRouteText() const;
+	int32 GetMenuBreakerCount() const { return MenuLayoutBreakerCount; }
+	int32 GetMenuLayoutDensity() const { return MenuLayoutDensity; }
+	bool IsMenuForceProcedural() const { return bMenuForceProcedural; }
+	bool HasMenuLayoutSeed() const { return MenuLayoutSeed > 0; }
 	bool ApplyGraphicsPresetForMenu(int32 Quality, FString& OutMessage);
 	bool ApplyAutoGraphicsForMenu(FString& OutMessage);
 	bool SetAdaptiveGraphicsForMenu(bool bEnabled, FString& OutMessage);
@@ -485,6 +510,8 @@ public:
 	const FString& GetCCTVRevealTargetName() const;
 	const ABHCharacter* GetCCTVRevealTarget() const;
 	void PlayMenuSelectionSound();
+	// A short, welcoming two-note "login" flourish played for the local player when a tutorial begins.
+	void PlayTutorialStartCue();
 	float GetMasterVolumeForMenu() const;
 	float GetMusicVolumeForMenu() const;
 	float GetUiVolumeForMenu() const;
@@ -790,6 +817,10 @@ private:
 	float GetEffectiveMusicVolume() const;
 	float GetEffectiveUiVolume() const;
 	USoundBase* GetAmbientMusicSound();
+	// The train Lobby plays a chill lo-fi bed instead of the eerie menu loop; falls back to the eerie loop if no
+	// lo-fi asset is present so there is never silence. NOT the Train Intermission (it carries the stage intro).
+	USoundBase* GetLobbyMusicSound();
+	USoundBase* GetDesiredAmbientSound();
 	USoundBase* GetMenuSelectionSound();
 	FBHLessonPreset BuildCurrentLessonPresetSnapshot(const FString& DisplayName, const FString& SelectedMapName) const;
 	bool IsLocalHostAdminContext() const;
@@ -830,6 +861,8 @@ private:
 	TObjectPtr<UAudioComponent> AmbientMusicComponent;
 	UPROPERTY(Transient)
 	TObjectPtr<USoundBase> AmbientMusicSound;
+	UPROPERTY(Transient)
+	TObjectPtr<USoundBase> AmbientLofiSound;
 	UPROPERTY(Transient)
 	TObjectPtr<USoundBase> MenuSelectionSound;
 	FString StatusMessage;
@@ -913,6 +946,17 @@ private:
 	float HudTextScale = 1.0f;
 	float HudPanelOpacity = 1.0f;
 	bool bColorblindHud = false;
+	// Host advanced lesson options staged in the menu (local authoring state; not replicated). Folded into
+	// BuildCurrentLessonPresetSnapshot and applied via ApplyAdvancedLessonOptionsForMenu.
+	EBHQuestionDifficulty MenuStartingDifficulty = EBHQuestionDifficulty::Easy;
+	EBHQuestionDifficulty MenuMinDifficulty = EBHQuestionDifficulty::Easy;
+	EBHQuestionDifficulty MenuMaxDifficulty = EBHQuestionDifficulty::Hard;
+	FString MenuQuestionSetId;
+	TArray<FString> MenuMapRoute;
+	int32 MenuLayoutSeed = 0;
+	int32 MenuLayoutBreakerCount = 0;
+	int32 MenuLayoutDensity = 0;
+	bool bMenuForceProcedural = false;
 	bool bShowHudMinimap = true;
 	bool bShowHudNameplates = true;
 	bool bShowHudVitals = true;

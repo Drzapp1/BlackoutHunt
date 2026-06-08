@@ -16,6 +16,7 @@
 #include "BHJumpscareMonster.h"
 #include "BHJumpscareVariantLibrary.h"
 #include "BHLessonPreset.h"
+#include "BHRevisionQuestionBank.h"
 #include "BHNetworkSupport.h"
 #include "BHPlayerState.h"
 #include "BHTrainSwayCameraShake.h"
@@ -86,6 +87,14 @@ constexpr TCHAR BHGraphicsConfigSection[] = TEXT("BlackoutHunt.Graphics");
 constexpr TCHAR BHAtmosphereProfileConfigSection[] = TEXT("BlackoutHunt.FoggroundsAtmosphereProfile");
 constexpr TCHAR BHAmbientMusicAssetPath[] = TEXT("/Game/BlackoutHunt/Audio/SW_EerieLobbyLoop.SW_EerieLobbyLoop");
 constexpr TCHAR BHMenuClickAssetPath[] = TEXT("/Game/BlackoutHunt/Audio/SW_MenuClick.SW_MenuClick");
+// Chill lo-fi bed for the train Lobby (the pre-match social hub). Whichever path resolves first becomes the train
+// music, so dropping a CC0 lo-fi loop at any of these auto-enables it; if none exist we fall back to the eerie loop.
+const TCHAR* const BHLobbyLofiAssetPaths[] = {
+	TEXT("/Game/BlackoutHunt/Audio/SW_LofiTrain.SW_LofiTrain"),
+	TEXT("/Game/BlackoutHunt/Audio/SW_LoungeChill.SW_LoungeChill"),
+	TEXT("/Game/BlackoutHunt/Audio/SW_LoungeGroove.SW_LoungeGroove"),
+	TEXT("/Game/BlackoutHunt/Audio/SW_NightDrive.SW_NightDrive"),
+};
 constexpr float BHGraphicsGiB = 1024.0f * 1024.0f * 1024.0f;
 constexpr int32 BHAdaptiveMinRenderScale = 50;
 constexpr int32 BHAdaptiveMaxStep = 4;
@@ -1595,6 +1604,9 @@ void ABHPlayerController::SetupInputComponent()
 		InputComponent->BindKey(EKeys::F7, IE_Pressed, this, &ABHPlayerController::TesterGrantTrainResources);
 		InputComponent->BindKey(EKeys::F8, IE_Pressed, this, &ABHPlayerController::TesterOpenTrainIntermission);
 		InputComponent->BindKey(EKeys::F9, IE_Pressed, this, &ABHPlayerController::TesterAdvanceTrainPhase);
+		// New unique dev chord (Ctrl+Alt+F9) for the tester train-phase advance, in addition to plain F9. The
+		// chord is collision-proof; both work for the host in non-Shipping builds (see CanUseTesterShortcut).
+		InputComponent->BindKey(FInputChord(EKeys::F9, false, true, true, false), IE_Pressed, this, &ABHPlayerController::TesterAdvanceTrainPhase);
 		InputComponent->BindKey(EKeys::F11, IE_Pressed, this, &ABHPlayerController::ToggleAtmosphereConsole);
 		InputComponent->BindKey(EKeys::Pause, IE_Pressed, this, &ABHPlayerController::ToggleAtmosphereConsole);
 		InputComponent->BindKey(EKeys::Backslash, IE_Pressed, this, &ABHPlayerController::ToggleAtmosphereConsole);
@@ -4768,6 +4780,170 @@ bool ABHPlayerController::SaveCurrentLessonPresetForMenu(const FString& DisplayN
 	return bSaved;
 }
 
+bool ABHPlayerController::SetMenuStartingDifficultyForMenu(int32 Tier, FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("set the starting difficulty"))) { return false; }
+	MenuStartingDifficulty = static_cast<EBHQuestionDifficulty>(FMath::Clamp(Tier, 0, static_cast<int32>(EBHQuestionDifficulty::Hard)));
+	if (static_cast<uint8>(MenuStartingDifficulty) < static_cast<uint8>(MenuMinDifficulty)) { MenuStartingDifficulty = MenuMinDifficulty; }
+	if (static_cast<uint8>(MenuStartingDifficulty) > static_cast<uint8>(MenuMaxDifficulty)) { MenuStartingDifficulty = MenuMaxDifficulty; }
+	OutMessage = FString::Printf(TEXT("Starting difficulty: %s."), *FBHLessonPresetStore::QuestionDifficultyToString(MenuStartingDifficulty));
+	ShowLocalStatusMessage(OutMessage, 2.5f);
+	return true;
+}
+
+bool ABHPlayerController::SetMenuMinDifficultyForMenu(int32 Tier, FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("set the minimum difficulty"))) { return false; }
+	MenuMinDifficulty = static_cast<EBHQuestionDifficulty>(FMath::Clamp(Tier, 0, static_cast<int32>(EBHQuestionDifficulty::Hard)));
+	if (static_cast<uint8>(MenuMaxDifficulty) < static_cast<uint8>(MenuMinDifficulty)) { MenuMaxDifficulty = MenuMinDifficulty; }
+	if (static_cast<uint8>(MenuStartingDifficulty) < static_cast<uint8>(MenuMinDifficulty)) { MenuStartingDifficulty = MenuMinDifficulty; }
+	OutMessage = FString::Printf(TEXT("Difficulty band: %s-%s."), *FBHLessonPresetStore::QuestionDifficultyToString(MenuMinDifficulty), *FBHLessonPresetStore::QuestionDifficultyToString(MenuMaxDifficulty));
+	ShowLocalStatusMessage(OutMessage, 2.5f);
+	return true;
+}
+
+bool ABHPlayerController::SetMenuMaxDifficultyForMenu(int32 Tier, FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("set the maximum difficulty"))) { return false; }
+	MenuMaxDifficulty = static_cast<EBHQuestionDifficulty>(FMath::Clamp(Tier, 0, static_cast<int32>(EBHQuestionDifficulty::Hard)));
+	if (static_cast<uint8>(MenuMinDifficulty) > static_cast<uint8>(MenuMaxDifficulty)) { MenuMinDifficulty = MenuMaxDifficulty; }
+	if (static_cast<uint8>(MenuStartingDifficulty) > static_cast<uint8>(MenuMaxDifficulty)) { MenuStartingDifficulty = MenuMaxDifficulty; }
+	OutMessage = FString::Printf(TEXT("Difficulty band: %s-%s."), *FBHLessonPresetStore::QuestionDifficultyToString(MenuMinDifficulty), *FBHLessonPresetStore::QuestionDifficultyToString(MenuMaxDifficulty));
+	ShowLocalStatusMessage(OutMessage, 2.5f);
+	return true;
+}
+
+bool ABHPlayerController::SetMenuQuestionSetForMenu(const FString& SetId, FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("choose a question set"))) { return false; }
+	MenuQuestionSetId = SetId.TrimStartAndEnd();
+	OutMessage = MenuQuestionSetId.IsEmpty()
+		? FString(TEXT("Question set: full bank (no restriction)."))
+		: FString::Printf(TEXT("Question set: %s."), *MenuQuestionSetId);
+	ShowLocalStatusMessage(OutMessage, 2.5f);
+	return true;
+}
+
+bool ABHPlayerController::AppendMenuMapRouteStageForMenu(const FString& MapName, FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("edit the map route"))) { return false; }
+	if (MenuMapRoute.Num() >= 8)
+	{
+		OutMessage = TEXT("Map route is full (8 stages max).");
+		ShowLocalStatusMessage(OutMessage, 3.0f);
+		return false;
+	}
+	MenuMapRoute.Add(FBHLessonPresetStore::NormalizeMapName(MapName));
+	OutMessage = FString::Printf(TEXT("Route: %s"), *FBHLessonPresetStore::MapRouteToString(MenuMapRoute));
+	ShowLocalStatusMessage(OutMessage, 2.5f);
+	return true;
+}
+
+bool ABHPlayerController::ClearMenuMapRouteForMenu(FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("edit the map route"))) { return false; }
+	MenuMapRoute.Reset();
+	OutMessage = TEXT("Map route cleared (default Facility -> Substation -> Foggrounds).");
+	ShowLocalStatusMessage(OutMessage, 2.5f);
+	return true;
+}
+
+bool ABHPlayerController::StepMenuBreakerCountForMenu(int32 Delta, FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("set the breaker count"))) { return false; }
+	// 0 = generator default; otherwise 3..12. Stepping up from default jumps into the valid band.
+	int32 NewCount = (MenuLayoutBreakerCount == 0 && Delta > 0) ? 3 : MenuLayoutBreakerCount + Delta;
+	if (NewCount < 3) { NewCount = 0; }   // stepping below 3 returns to default
+	NewCount = FMath::Min(NewCount, 12);
+	MenuLayoutBreakerCount = NewCount;
+	OutMessage = MenuLayoutBreakerCount == 0 ? FString(TEXT("Breakers: default.")) : FString::Printf(TEXT("Breakers: %d."), MenuLayoutBreakerCount);
+	ShowLocalStatusMessage(OutMessage, 2.5f);
+	return true;
+}
+
+bool ABHPlayerController::StepMenuLayoutDensityForMenu(int32 Delta, FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("set the layout density"))) { return false; }
+	int32 NewDensity = (MenuLayoutDensity == 0 && Delta > 0) ? 100 : MenuLayoutDensity + Delta;
+	if (NewDensity < 50) { NewDensity = 0; }   // stepping below 50% returns to default
+	NewDensity = FMath::Min(NewDensity, 160);
+	MenuLayoutDensity = NewDensity;
+	OutMessage = MenuLayoutDensity == 0 ? FString(TEXT("Cover density: default.")) : FString::Printf(TEXT("Cover density: %d%%."), MenuLayoutDensity);
+	ShowLocalStatusMessage(OutMessage, 2.5f);
+	return true;
+}
+
+bool ABHPlayerController::ToggleMenuForceProceduralForMenu(FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("toggle procedural layout"))) { return false; }
+	bMenuForceProcedural = !bMenuForceProcedural;
+	OutMessage = bMenuForceProcedural
+		? TEXT("Custom procedural layout ON (runs the generator so seed/density/breakers apply; Facility only).")
+		: TEXT("Custom procedural layout OFF (uses the authored map).");
+	ShowLocalStatusMessage(OutMessage, 3.5f);
+	return true;
+}
+
+bool ABHPlayerController::RandomizeMenuLayoutSeedForMenu(FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("randomize the layout seed"))) { return false; }
+	MenuLayoutSeed = FMath::Max(1, FMath::Rand());
+	bMenuForceProcedural = true;   // a layout seed only matters on the procedural path
+	OutMessage = FString::Printf(TEXT("New random layout seed %d (procedural layout ON)."), MenuLayoutSeed);
+	ShowLocalStatusMessage(OutMessage, 3.0f);
+	return true;
+}
+
+bool ABHPlayerController::ClearMenuLayoutSeedForMenu(FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("clear the layout seed"))) { return false; }
+	MenuLayoutSeed = 0;
+	OutMessage = TEXT("Layout seed cleared (fixed default layout).");
+	ShowLocalStatusMessage(OutMessage, 2.5f);
+	return true;
+}
+
+void ABHPlayerController::GetAvailableQuestionSetIdsForMenu(TArray<FString>& OutSetIds) const
+{
+	FBHRevisionQuestionBank::GetAvailableQuestionSetIds(OutSetIds);
+}
+
+FString ABHPlayerController::GetMenuMapRouteText() const
+{
+	return MenuMapRoute.Num() > 0
+		? FBHLessonPresetStore::MapRouteToString(MenuMapRoute)
+		: FString(TEXT("Default (Facility, Substation, Foggrounds)"));
+}
+
+bool ABHPlayerController::ApplyAdvancedLessonOptionsForMenu(FString& OutMessage)
+{
+	if (!RequireLocalHostAdmin(OutMessage, TEXT("apply advanced lesson options"))) { return false; }
+
+	UWorld* World = GetWorld();
+	ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
+	ABHGameMode* BHGM = World ? World->GetAuthGameMode<ABHGameMode>() : nullptr;
+	const bool bCanApplyLive = World
+		&& World->GetNetMode() == NM_ListenServer
+		&& BHGS && BHGS->bRevisionMode
+		&& BHGS->RoundPhase == EBHRoundPhase::Lobby
+		&& BHGM;
+	if (!bCanApplyLive)
+	{
+		OutMessage = TEXT("Host Live Classroom and return to the lobby to apply these live. They are also saved into a preset and applied when you host.");
+		ShowLocalStatusMessage(OutMessage, 4.5f);
+		return false;
+	}
+
+	const FBHLessonPreset Preset = BuildCurrentLessonPresetSnapshot(TEXT("Advanced options"), FString());
+	const bool bApplied = BHGM->ApplyLessonPreset(this, Preset, OutMessage);
+	if (!bApplied && OutMessage.IsEmpty())
+	{
+		OutMessage = TEXT("Could not apply advanced options.");
+	}
+	ShowLocalStatusMessage(OutMessage, 4.0f);
+	return bApplied;
+}
+
 bool ABHPlayerController::GenerateManualQuestionSetForMenu(int32 QuestionCount, FString& OutPath, FString& OutMessage)
 {
 	if (!RequireLocalHostAdmin(OutMessage, TEXT("generate manual question sets")))
@@ -6531,6 +6707,17 @@ FBHLessonPreset ABHPlayerController::BuildCurrentLessonPresetSnapshot(const FStr
 	Preset.bReducedCameraShake = bReducedCameraShake;
 	Preset.bCaptions = bCaptionsEnabled;
 	Preset.bHighContrastHud = bHighContrastHud;
+
+	// Host advanced lesson options staged in the menu (difficulty band, exact set, map route, layout knobs).
+	Preset.StartingDifficulty = MenuStartingDifficulty;
+	Preset.MinDifficulty = MenuMinDifficulty;
+	Preset.MaxDifficulty = MenuMaxDifficulty;
+	Preset.QuestionSetId = MenuQuestionSetId;
+	Preset.MapRoute = MenuMapRoute;
+	Preset.LayoutSeed = MenuLayoutSeed;
+	Preset.BreakerCount = MenuLayoutBreakerCount;
+	Preset.LayoutDensity = MenuLayoutDensity;
+	Preset.bForceProcedural = bMenuForceProcedural;
 	return FBHLessonPresetStore::ValidatePreset(Preset);
 }
 
@@ -6738,7 +6925,7 @@ void ABHPlayerController::EnsureAmbientMusic()
 	}
 
 	EnsureAudioPreferencesLoaded();
-	USoundBase* Sound = GetAmbientMusicSound();
+	USoundBase* Sound = GetDesiredAmbientSound();
 	if (!Sound)
 	{
 		return;
@@ -6764,6 +6951,16 @@ void ABHPlayerController::EnsureAmbientMusic()
 
 	if (AmbientMusicComponent)
 	{
+		// Swap the bed when the context changes (menu eerie loop <-> train lo-fi) without dropping the channel.
+		if (AmbientMusicComponent->Sound != Sound)
+		{
+			const bool bWasPlaying = AmbientMusicComponent->IsPlaying();
+			AmbientMusicComponent->SetSound(Sound);
+			if (bWasPlaying)
+			{
+				AmbientMusicComponent->Play();
+			}
+		}
 		ApplyAmbientMusicVolume();
 		if (!AmbientMusicComponent->IsPlaying())
 		{
@@ -6813,8 +7010,8 @@ bool ABHPlayerController::ShouldPlayAmbientMusic() const
 		return false;
 	}
 
-	const bool bMainMenuOutsideMatch = MainMenuWidget.IsValid() && World->GetNetMode() == NM_Standalone;
-	if (bMainMenuOutsideMatch)
+	const bool bFrontEndMenu = (MainMenuWidget.IsValid() || bBootConsoleForMenu) && World->GetNetMode() == NM_Standalone;
+	if (bFrontEndMenu)
 	{
 		return true;
 	}
@@ -6859,6 +7056,54 @@ USoundBase* ABHPlayerController::GetAmbientMusicSound()
 	return AmbientMusicSound;
 }
 
+USoundBase* ABHPlayerController::GetLobbyMusicSound()
+{
+	if (!AmbientLofiSound)
+	{
+		for (const TCHAR* Path : BHLobbyLofiAssetPaths)
+		{
+			if (USoundBase* Loaded = LoadObject<USoundBase>(nullptr, Path))
+			{
+				AmbientLofiSound = Loaded;
+				if (USoundWave* SoundWave = Cast<USoundWave>(AmbientLofiSound))
+				{
+					SoundWave->bLooping = true;
+				}
+				break;
+			}
+		}
+	}
+
+	return AmbientLofiSound;
+}
+
+USoundBase* ABHPlayerController::GetDesiredAmbientSound()
+{
+	const UWorld* World = GetWorld();
+	// Front-end menu = the menu widget is up OR the menu intro (boot console) is still running. Either way this is
+	// the standalone front-end, which must use the eerie menu loop -- NEVER the train-Lobby lo-fi bed. (Without the
+	// boot-console clause the lo-fi leaked onto the start screen, because the menu widget is removed during the intro.)
+	const bool bFrontEndMenu = (MainMenuWidget.IsValid() || bBootConsoleForMenu) && World && World->GetNetMode() == NM_Standalone;
+	if (!bFrontEndMenu)
+	{
+		const ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
+		// Lo-fi belongs to the actual pre-match TRAIN LOBBY level only. NOT tutorials / the practice sandbox / the
+		// hunt maps / the Train Intermission -- those keep the eerie loop (or silence in Hunt) exactly as before lo-fi
+		// existed, so the chill bed never bleeds into gameplay or the game's intro.
+		if (BHGS && BHGS->RoundPhase == EBHRoundPhase::Lobby
+			&& !BHGS->bTutorialMode
+			&& BHGS->ActiveLevelName.Equals(TEXT("TrainLobby"), ESearchCase::IgnoreCase))
+		{
+			if (USoundBase* Lofi = GetLobbyMusicSound())
+			{
+				return Lofi;
+			}
+		}
+	}
+
+	return GetAmbientMusicSound();
+}
+
 USoundBase* ABHPlayerController::GetMenuSelectionSound()
 {
 	if (!MenuSelectionSound)
@@ -6893,6 +7138,26 @@ void ABHPlayerController::PlayMenuSelectionSound()
 	if (USoundBase* Sound = GetMenuSelectionSound())
 	{
 		UGameplayStatics::PlaySound2D(this, Sound, GetEffectiveUiVolume(), 1.0f, 0.0f, nullptr, this, true);
+	}
+}
+
+void ABHPlayerController::PlayTutorialStartCue()
+{
+	UWorld* World = GetWorld();
+	if (!World || !IsLocalController() || GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+
+	EnsureAudioPreferencesLoaded();
+	if (USoundBase* Sound = GetMenuSelectionSound())
+	{
+		// A brief two-note flourish for tutorial start: the UI cue pitched up, with a higher, softer companion note so
+		// it reads as a welcoming "login" chime rather than a flat menu click. Reuses the existing UI asset (no new
+		// content needed); UI sounds bypass world attenuation so it plays cleanly regardless of camera position.
+		const float Volume = GetEffectiveUiVolume();
+		UGameplayStatics::PlaySound2D(this, Sound, Volume, 1.18f, 0.0f, nullptr, this, true);
+		UGameplayStatics::PlaySound2D(this, Sound, Volume * 0.7f, 1.78f, 0.0f, nullptr, this, true);
 	}
 }
 

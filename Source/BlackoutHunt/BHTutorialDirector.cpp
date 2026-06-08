@@ -84,6 +84,15 @@ void ABHTutorialDirector::Activate()
 	bActivated = true;
 	GetWorldTimerManager().ClearTimer(IntroLockTimerHandle);
 
+	// A little welcoming "login" chime as any tutorial begins (local player only; harmless on a dedicated server).
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		if (ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get()))
+		{
+			PC->PlayTutorialStartCue();
+		}
+	}
+
 	// Which tutorial are we running, and is it the chained full course or a single selected lesson?
 	if (const ABHGameMode* GameMode = GetWorld()->GetAuthGameMode<ABHGameMode>())
 	{
@@ -2044,6 +2053,9 @@ void ABHTutorialDirector::EnterTeacherStep(ETeacherStep NewStep)
 		Broadcast(TEXT("Time to put it together. The STUDENT is fleeing (follow the marker) - SPRINT to close the gap and get right on top of them. Use lockers and corners to cut them off; don't lose them."), 16.0f);
 		break;
 	case ETeacherStep::Capture:
+		// Backdate the "Too far" coaching throttle (it shares ScanDemoServerTime, free by now) so the FIRST swing in this
+		// step gets immediate feedback instead of being suppressed by a scan the player did seconds ago in the Scan step.
+		ScanDemoServerTime = StepStartServerTime - 10.0f;
 		Broadcast(TEXT("You're on them - now LAND IT. Swing your AXE (LEFT MOUSE) while you're right next to the student to capture them. A swing at empty air won't grab; stay close and time it."), 16.0f);
 		break;
 	case ETeacherStep::Blackout:
@@ -2088,6 +2100,18 @@ void ABHTutorialDirector::EvaluateTeacherStep()
 {
 	ABHCharacter* Human = FindHumanPlayer();
 	const float Elapsed = StepElapsed();
+
+	// Keep the scripted student UNCAPTURABLE until the COMMIT tool (Axe) is taught, so an early wander-in during the
+	// read-tool lessons can't end the tutorial before the player has learned anything. Asserted every tick (robust to
+	// the student bot spawning a little late); released from the Axe step onward. Live play is unaffected --
+	// ResetRoleWarmupStateForRoundStart clears the flag at round start.
+	if (ABHCharacter* Student = FindStudentCharacter())
+	{
+		const bool bImmuneUntilAxe = TeacherStep == ETeacherStep::Intro || TeacherStep == ETeacherStep::Sprint
+			|| TeacherStep == ETeacherStep::Scan || TeacherStep == ETeacherStep::Noise;
+		Student->SetTutorialCaptureImmune(bImmuneUntilAxe);
+	}
+
 	switch (TeacherStep)
 	{
 	case ETeacherStep::Intro:
@@ -2209,8 +2233,14 @@ void ABHTutorialDirector::EvaluateTeacherStep()
 		const bool bSwung = Human && Human->IsTeacherCaptureAttackActive();
 		if (bSwung)
 		{
+			// Only nag "too far" when a student EXISTS and a swing right now would genuinely miss. Reuse the exact
+			// capture-candidacy test the real grab uses, so a CLOSE, valid swing (the one that lands) never gets falsely
+			// scolded -- the old code fired this on every active swing regardless of range. The student-exists guard
+			// avoids a phantom nag if the bot is momentarily missing.
+			const ABHCharacter* SwingStudent = FindStudentCharacter();
+			const bool bWouldMiss = SwingStudent && !Human->CanTeacherCaptureTargetNow(SwingStudent);
 			const float Now = GetWorld()->GetTimeSeconds();
-			if (Now - ScanDemoServerTime > 3.0f) // throttle the coaching nudge (ScanDemoServerTime is free by Capture)
+			if (bWouldMiss && Now - ScanDemoServerTime > 3.0f) // throttle the coaching nudge (reset on Capture step entry)
 			{
 				ScanDemoServerTime = Now;
 				Broadcast(TEXT("Too far - SPRINT to close the gap, THEN swing. You have to be right on the student to grab them."), 3.0f);

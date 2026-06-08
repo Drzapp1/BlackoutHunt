@@ -683,6 +683,16 @@ void ABHBotController::OnTargetPerceptionUpdated(AActor* Actor, FAIStimulus Stim
 	const bool bSightStimulus = Stimulus.Type == UAISense::GetSenseID<UAISense_Sight>();
 	const bool bHearingStimulus = Stimulus.Type == UAISense::GetSenseID<UAISense_Hearing>();
 
+	// Scripted hold (tutorial): the director hand-drives every intent, so live SIGHT must not override it. On a Hall
+	// Monitor FAKE hint the Teacher is being sent to a decoy spot and must HOLD there -- without this, the student
+	// walking into view re-acquires the Teacher and breaks the misdirection (the spawn-camp bug). Only Sight is gated;
+	// hearing (which never pins a hard target) still flows, and explicitly-reported stimuli -- e.g. a REAL hint via
+	// ReportBotStimulus -> RecordStimulus -- are unaffected because they do not route through this perception callback.
+	if (bScriptedHoldPosition && bSightStimulus)
+	{
+		return;
+	}
+
 	if (const ABHCharacter* SeenCharacter = Cast<ABHCharacter>(Actor))
 	{
 		const ABHPlayerState* SeenPS = SeenCharacter->GetPlayerState<ABHPlayerState>();

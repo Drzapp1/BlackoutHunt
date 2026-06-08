@@ -2524,34 +2524,20 @@ void ABHCharacter::EnterLocker(ABHLocker* Locker)
 
 static FVector ResolveLockerExitLocation(UWorld* World, const FVector& Origin, const FVector& Forward)
 {
-	// Try candidates scattered across the front semicircle at various radii.
-	// Random start index gives a different spread each exit so the teacher can't
-	// predict exactly where the player will appear.
-	struct FLockerCandidate { float AngleDeg; float Radius; };
-	static const FLockerCandidate Candidates[] = {
-		{   0.0f, 180.0f },
-		{  30.0f, 220.0f },
-		{ -30.0f, 220.0f },
-		{  60.0f, 180.0f },
-		{ -60.0f, 180.0f },
-		{   0.0f, 280.0f },
-		{  45.0f, 260.0f },
-		{ -45.0f, 260.0f },
-		{  90.0f, 200.0f },
-		{ -90.0f, 200.0f },
-		{   0.0f, 120.0f },
-	};
-
+	// Probe FRESHLY-RANDOM spots across the front arc at varied radii, so the exit point genuinely differs every time.
+	// (A fixed spot -- or even a fixed SET of spots cycled in random order, as this used to be -- let the Teacher learn
+	// exactly where to camp.) Each candidate draws a new angle across the front semicircle and a new distance in a band,
+	// then is collision-tested; the first that fits wins.
 	const FCollisionShape Capsule = FCollisionShape::MakeCapsule(42.0f, 98.0f);
 	const FVector Right = FVector::CrossProduct(FVector::UpVector, Forward).GetSafeNormal();
-	const int32 StartIdx = FMath::RandRange(0, UE_ARRAY_COUNT(Candidates) - 1);
 
-	for (int32 i = 0; i < UE_ARRAY_COUNT(Candidates); ++i)
+	for (int32 i = 0; i < 12; ++i)
 	{
-		const FLockerCandidate& C = Candidates[(StartIdx + i) % UE_ARRAY_COUNT(Candidates)];
-		const float Rad = FMath::DegreesToRadians(C.AngleDeg);
+		const float AngleDeg = FMath::FRandRange(-90.0f, 90.0f);
+		const float Radius = FMath::FRandRange(120.0f, 280.0f);
+		const float Rad = FMath::DegreesToRadians(AngleDeg);
 		const FVector Dir = Forward * FMath::Cos(Rad) + Right * FMath::Sin(Rad);
-		const FVector Candidate = Origin + Dir * C.Radius;
+		const FVector Candidate = Origin + Dir * Radius;
 		if (World && !World->OverlapBlockingTestByChannel(Candidate, FQuat::Identity, ECC_Pawn, Capsule))
 		{
 			return Candidate;
@@ -8379,7 +8365,11 @@ bool ABHCharacter::UseScanAuthority(bool bShowFailureMessages)
 	}
 
 	const int32 ScanFocusCharges = FMath::Clamp(HunterPS->GetPowerupCharges(EBHPowerupType::TeacherScanFocus), 0, 2);
-	const float EffectiveScanCooldownSeconds = bRoleWarmup ? 2.0f : FMath::Max(8.0f, ScanCooldownSeconds * (1.0f - 0.18f * static_cast<float>(ScanFocusCharges)));
+	// The teacher tutorial teaches Scan, then asks for a SECOND scan a few seconds later to confirm a decoy (the Noise
+	// step). The full live cooldown (8-25s) left that confirm-scan dead, reading as a broken tool. Give the tutorial the
+	// same short cooldown as role warmup so the lesson's scans actually fire.
+	const bool bShortScanCooldown = bRoleWarmup || (BHGS && BHGS->bTutorialMode);
+	const float EffectiveScanCooldownSeconds = bShortScanCooldown ? 2.0f : FMath::Max(8.0f, ScanCooldownSeconds * (1.0f - 0.18f * static_cast<float>(ScanFocusCharges)));
 	const float ScanFearRadius = 3000.0f + 450.0f * static_cast<float>(ScanFocusCharges);
 	const float Now = GetWorld()->GetTimeSeconds();
 	if (Now - LastScanTime < EffectiveScanCooldownSeconds)
