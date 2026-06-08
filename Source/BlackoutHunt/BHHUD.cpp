@@ -23,6 +23,8 @@
 #include "BHTrainTicTacToeTable.h"
 #include "BHTrainConnectFourTable.h"
 #include "BHTrainSlotMachine.h"
+#include "BHTrainOthelloTable.h"
+#include "BHTrainDartboard.h"
 #include "BHTrainBonusQuestionTerminal.h"
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
@@ -1491,6 +1493,14 @@ void ABHHUD::DrawMinigameStatus(ABHCharacter* Character)
 	{
 		Slots->GetHudLinesForPlayer(BHPS->GetPlayerId(), Lines, Accent);
 	}
+	else if (ABHTrainOthelloTable* Othello = Cast<ABHTrainOthelloTable>(Table))
+	{
+		Othello->GetHudLinesForPlayer(BHPS->GetPlayerId(), Lines, Accent);
+	}
+	else if (ABHTrainDartboard* Dartboard = Cast<ABHTrainDartboard>(Table))
+	{
+		Dartboard->GetHudLinesForPlayer(BHPS->GetPlayerId(), Lines, Accent);
+	}
 	if (Lines.Num() == 0)
 	{
 		return;
@@ -1779,7 +1789,7 @@ void ABHHUD::DrawRightAlignedText(const FString& Text, float RightX, float Y, co
 	DrawHudText(Text, RightX - TextW, Y, Color, DrawFont, Scale);
 }
 
-float ABHHUD::DrawWrappedHudText(const FString& Text, float X, float Y, float MaxWidth, const FLinearColor& Color, const UFont* Font, float Scale, float LineHeight, int32 MaxLines) const
+float ABHHUD::DrawWrappedHudText(const FString& Text, float X, float Y, float MaxWidth, const FLinearColor& Color, const UFont* Font, float Scale, float LineHeight, int32 MaxLines, bool bCenterEachLine) const
 {
 	if (!Canvas || Text.IsEmpty() || MaxWidth <= 1.0f || MaxLines <= 0)
 	{
@@ -1856,7 +1866,17 @@ float ABHHUD::DrawWrappedHudText(const FString& Text, float X, float Y, float Ma
 
 	for (int32 LineIndex = 0; LineIndex < Lines.Num(); ++LineIndex)
 	{
-		DrawHudText(Lines[LineIndex], X, Y + LineIndex * LineHeight, Color, DrawFont, Scale);
+		float LineX = X;
+		if (bCenterEachLine && Canvas)
+		{
+			// Centre each wrapped line within [X, X+MaxWidth] so multi-line captions read as a tidy centred block
+			// instead of a ragged left-aligned stack.
+			float LineW = 0.0f;
+			float LineH = 0.0f;
+			Canvas->TextSize(DrawFont, Lines[LineIndex], LineW, LineH, Scale, Scale);
+			LineX = X + FMath::Max(0.0f, (MaxWidth - LineW) * 0.5f);
+		}
+		DrawHudText(Lines[LineIndex], LineX, Y + LineIndex * LineHeight, Color, DrawFont, Scale);
 	}
 
 	return Lines.Num() * LineHeight;
@@ -2869,6 +2889,17 @@ void ABHHUD::DrawNearbyNameTags(const ABHCharacter* Character)
 			continue;
 		}
 
+		// Social emote bubble, drawn just above the nameplate when the player recently emoted (press X).
+		FString EmoteLabel;
+		if (OtherCharacter->GetActiveEmote(EmoteLabel))
+		{
+			const float EmoteScale = 1.1f * HudTextScale;
+			float EmoteW = 0.0f;
+			float EmoteH = 0.0f;
+			Canvas->TextSize(GEngine->GetLargeFont(), EmoteLabel, EmoteW, EmoteH, EmoteScale, EmoteScale);
+			DrawHudText(EmoteLabel, ScreenPosition.X - EmoteW * 0.5f, ScreenPosition.Y - 36.0f * HudTextScale, FLinearColor(1.0f, 0.95f, 0.5f, 1.0f), GEngine->GetLargeFont(), EmoteScale);
+		}
+
 		FString Label = OtherPS->GetPlayerName().IsEmpty() ? FString(TEXT("PLAYER")) : OtherPS->GetPlayerName().ToUpper();
 		const bool bTeacherRole = OtherPS->PlayerRole == EBHPlayerRole::Hunter || OtherPS->PlayerRole == EBHPlayerRole::Tester;
 		const bool bHallMonitorRole = OtherPS->PlayerRole == EBHPlayerRole::FakeHunter;
@@ -3820,12 +3851,22 @@ void ABHHUD::DrawTutorialPrompt(const ABHPlayerController* BHPC)
 	const UFont* Font = GEngine->GetSmallFont();
 	const float S = FMath::Max(HudWidgetScale, HudTextScale);
 
+	// Bigger, centred caption. The old 0.95 small-font line read too small and was left-aligned inside a wide panel,
+	// so the text looked off-centre. Enlarge it, size the panel to the wrapped line count (up to 3 lines), and centre
+	// each line both horizontally (bCenterEachLine) and vertically within the panel.
+	const float FS = 1.28f * S;
+	const float Pad = 34.0f * S;
+	const float LineH = 27.0f * S;
 	float TextW = 0.0f;
 	float TextH = 0.0f;
-	Canvas->TextSize(Font, Message, TextW, TextH, 0.95f * S, 0.95f * S);
-	const float PanelW = FMath::Clamp(TextW + 56.0f * S, 340.0f * S, Canvas->ClipX * 0.84f);
-	const bool bWrap = TextW > PanelW - 56.0f * S;
-	const float PanelH = (bWrap ? 72.0f : 46.0f) * S;
+	Canvas->TextSize(Font, Message, TextW, TextH, FS, FS);
+	const float MaxPanelW = Canvas->ClipX * 0.86f;
+	const float PanelW = FMath::Clamp(TextW + 2.0f * Pad, 420.0f * S, MaxPanelW);
+	const float InnerW = PanelW - 2.0f * Pad;
+	// Bias the estimate up (0.9 * InnerW): word-wrap rarely fills a line completely, so dividing by the full width can
+	// undercount by one and let a wrapped line spill below the panel. A slightly tall panel is harmless; an overflow isn't.
+	const int32 NumLines = FMath::Clamp(FMath::CeilToInt(TextW / FMath::Max(1.0f, InnerW * 0.9f)), 1, 3);
+	const float PanelH = NumLines * LineH + 24.0f * S;
 	const float PanelX = (Canvas->ClipX - PanelW) * 0.5f;
 	// Top of the screen, well clear of the shared status toast (which sits at ~0.72) and below any phase banner.
 	const float PanelY = Canvas->ClipY * 0.11f;
@@ -3835,5 +3876,6 @@ void ABHHUD::DrawTutorialPrompt(const ABHPlayerController* BHPC)
 	const FLinearColor Accent = bHighContrastHud ? FLinearColor(0.55f, 0.95f, 1.0f, 1.0f) : FLinearColor(0.32f, 0.74f, 0.95f, 0.96f);
 	const FLinearColor TextColor = bHighContrastHud ? FLinearColor(1.0f, 1.0f, 1.0f, 1.0f) : FLinearColor(0.92f, 0.96f, 0.99f, 1.0f);
 	DrawPanel(PanelX, PanelY, PanelW, PanelH, WithAlpha(Fill, Alpha), WithAlpha(Accent, Alpha));
-	DrawWrappedHudText(Message, PanelX + 28.0f * S, PanelY + 14.0f * S, PanelW - 56.0f * S, WithAlpha(TextColor, Alpha), Font, 0.95f * S, 18.0f * S, 2);
+	const float TextY = PanelY + (PanelH - NumLines * LineH) * 0.5f;
+	DrawWrappedHudText(Message, PanelX + Pad, TextY, InnerW, WithAlpha(TextColor, Alpha), Font, FS, LineH, 3, true);
 }

@@ -37,7 +37,7 @@ protected:
 	void DrawStatusPill(const FString& Label, float X, float Y, float W, const FLinearColor& AccentColor, bool bLit = true);
 	void DrawHudText(const FString& Text, float X, float Y, const FLinearColor& Color, const UFont* Font = nullptr, float Scale = 1.0f) const;
 	void DrawRightAlignedText(const FString& Text, float RightX, float Y, const FLinearColor& Color, const UFont* Font = nullptr, float Scale = 1.0f) const;
-	float DrawWrappedHudText(const FString& Text, float X, float Y, float MaxWidth, const FLinearColor& Color, const UFont* Font = nullptr, float Scale = 1.0f, float LineHeight = 16.0f, int32 MaxLines = 2) const;
+	float DrawWrappedHudText(const FString& Text, float X, float Y, float MaxWidth, const FLinearColor& Color, const UFont* Font = nullptr, float Scale = 1.0f, float LineHeight = 16.0f, int32 MaxLines = 2, bool bCenterEachLine = false) const;
 	void DrawProgressBar(const FString& Label, float Value, float X, float Y, float W, const FLinearColor& FillColor, const FString& ValueText = FString());
 	void DrawRawMeter(const FString& Label, float Value, float X, float Y, float W, const FLinearColor& FillColor, bool bHighIsBad = false);
 	void DrawVisibleHunterArrow(const ABHCharacter* Character, const FVector& HunterLocation, float DistanceCm, float CueStrength);

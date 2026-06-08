@@ -945,15 +945,15 @@ void ABHTutorialDirector::EnterMovementStep(EMovementStep NewStep)
 		}
 		break;
 	case EMovementStep::Sprint:
-		CurrentMovementPrompt = TEXT("Hold LEFT SHIFT to SPRINT - fast, but LOUD and it drains the stamina bar at the bottom of the screen. Notice how much noisier you are than walking. Let it refill before a chase.");
+		CurrentMovementPrompt = TEXT("Hold LEFT SHIFT to SPRINT: fast, but loud and it drains your stamina. Let it refill before a chase.");
 		Broadcast(CurrentMovementPrompt, 10.0f);
 		break;
 	case EMovementStep::Crouch:
-		CurrentMovementPrompt = TEXT("Hold LEFT CTRL to CROUCH - slower, lower, and much quieter for sneaking. Release to stand. (Don't hold Shift while you do - Shift+Ctrl is a Roll, taught soon.)");
+		CurrentMovementPrompt = TEXT("Hold LEFT CTRL to CROUCH: slower, lower, much quieter. Release to stand.");
 		Broadcast(CurrentMovementPrompt, 10.0f);
 		break;
 	case EMovementStep::Prone:
-		CurrentMovementPrompt = TEXT("Tap LEFT ALT to go PRONE - the slowest, quietest, hardest-to-see stance. Tap SPACE or CTRL to get back up.");
+		CurrentMovementPrompt = TEXT("Tap LEFT ALT to go PRONE: slowest, quietest, hardest to see. SPACE or CTRL to get up.");
 		Broadcast(CurrentMovementPrompt, 10.0f);
 		break;
 	case EMovementStep::Jump:
@@ -962,22 +962,26 @@ void ABHTutorialDirector::EnterMovementStep(EMovementStep NewStep)
 		break;
 	case EMovementStep::BunnyHop:
 		PrimeForPractice();
-		CurrentMovementPrompt = TEXT("BUNNY-HOP: KEEP holding SHIFT to run, then chain SPACE jumps - tap Space again just before each landing. In the air your sprint stamina stops draining, so a clean chain travels cheaper than just running. Chain three hops.");
+		CurrentMovementPrompt = TEXT("BUNNY-HOP: hold SHIFT and chain SPACE jumps - tap Space just before each landing. Airborne, stamina stops draining. Chain three.");
 		Broadcast(CurrentMovementPrompt, 12.0f);
 		break;
 	case EMovementStep::Roll:
 		PrimeForPractice();
-		CurrentMovementPrompt = TEXT("ROLL: hold SHIFT (sprint), then tap CTRL. You dash forward and are briefly UNCATCHABLE - perfect for dodging the Teacher's grab in a doorway.");
+		CurrentMovementPrompt = TEXT("ROLL: hold SHIFT, then tap CTRL. A fast dash that makes you briefly UNCATCHABLE - dodge a grab.");
 		Broadcast(CurrentMovementPrompt, 12.0f);
+		// The roll pitches the camera forward (a comfort/motion-sickness factor). Tell the player ONCE, at their first
+		// roll, that it is adjustable -- there is a real "Roll Cam" row (Off / Subtle / Dip / Full) in the menu's
+		// Comfort options (SBHMainMenu), persisted to [BlackoutHunt.Comfort] RollCamStyle.
+		ShowTutorialCard(TEXT("ROLL CAMERA"), TEXT("Rolling tips your view forward. If that's too much motion, change it - set Roll Cam to Off / Subtle / Dip / Full in the menu's Comfort options."), 6.0f);
 		break;
 	case EMovementStep::Slide:
 		PrimeForPractice();
-		CurrentMovementPrompt = TEXT("SLIDE: hold SHIFT, then tap ALT. Longer and lower than a roll - HOLD Alt to finish flat in prone, or release early to pop up. It's loud, so the Teacher will hear it.");
+		CurrentMovementPrompt = TEXT("SLIDE: hold SHIFT, then tap ALT - lower and longer than a roll. HOLD Alt to end prone, release early to pop up.");
 		Broadcast(CurrentMovementPrompt, 12.0f);
 		break;
 	case EMovementStep::Dive:
 		PrimeForPractice();
-		CurrentMovementPrompt = TEXT("DIVE - your last-ditch lunge. While running forward, tap SPACE to leap, then ALT in the AIR before you land. Let go of Shift as you press Alt, or you'll SLIDE instead. Ends flat in prone.");
+		CurrentMovementPrompt = TEXT("DIVE: while running, tap SPACE then ALT in mid-AIR. Release Shift as you tap Alt (or you'll slide). Ends prone.");
 		Broadcast(CurrentMovementPrompt, 12.0f);
 		break;
 	case EMovementStep::AdvancedIntro:
@@ -988,27 +992,27 @@ void ABHTutorialDirector::EnterMovementStep(EMovementStep NewStep)
 		break;
 	case EMovementStep::QuietRoll:
 		PrimeForPractice();
-		CurrentMovementPrompt = TEXT("QUIET ROLL: roll (Shift+Ctrl) through OPEN space without bumping a wall. A clean roll is much quieter than one that bonks - good spacing keeps you stealthy.");
+		CurrentMovementPrompt = TEXT("QUIET ROLL: roll (Shift+Ctrl) through OPEN space without hitting a wall - a clean roll is much quieter.");
 		Broadcast(CurrentMovementPrompt, 12.0f);
 		break;
 	case EMovementStep::DropRoll:
 		PrimeForPractice();
-		CurrentMovementPrompt = TEXT("DROP-ROLL: jump, then HOLD Shift+Ctrl together through the landing. You roll out on touchdown and the loud landing thud is silenced - a quiet drop.");
+		CurrentMovementPrompt = TEXT("DROP-ROLL: jump, then HOLD Shift+Ctrl through the landing. You roll out and land silently.");
 		Broadcast(CurrentMovementPrompt, 12.0f);
 		break;
 	case EMovementStep::SlideStop:
 		PrimeForPractice();
-		CurrentMovementPrompt = TEXT("SILENT SLIDE-STOP: start a slide (Shift+Alt), then RELEASE Alt early to brake into a quiet crouch instead of a loud full slide - trade distance for silence.");
+		CurrentMovementPrompt = TEXT("SLIDE-STOP: start a slide (Shift+Alt), then RELEASE Alt early to brake into a quiet crouch - distance for silence.");
 		Broadcast(CurrentMovementPrompt, 12.0f);
 		break;
 	case EMovementStep::LockerRoll:
 		PrimeForPractice();
-		CurrentMovementPrompt = TEXT("LOCKER ROLL-OUT: go to the LOCKER (follow the marker), press E to hide inside, then HOLD Shift and press E again to roll out - fast and capture-immune instead of stepping out exposed.");
+		CurrentMovementPrompt = TEXT("LOCKER ROLL-OUT: at the locker (follow the marker) press E to hide, then HOLD Shift + press E to roll out fast and unseen.");
 		Broadcast(CurrentMovementPrompt, 14.0f);
 		break;
 	case EMovementStep::FlowChain:
 		PrimeForPractice();
-		CurrentMovementPrompt = TEXT("FLOW-CHAIN (hardest): right as one move ENDS, immediately start another (e.g. roll, then roll again) to keep your speed. The timing is tight - a few tries, or wait to finish.");
+		CurrentMovementPrompt = TEXT("FLOW-CHAIN (hardest): the instant one move ENDS, start another (roll, then roll again) to keep speed. Tight timing - a few tries.");
 		Broadcast(CurrentMovementPrompt, 14.0f);
 		break;
 	case EMovementStep::Complete:
@@ -1043,6 +1047,9 @@ void ABHTutorialDirector::EvaluateMovementStep()
 	const float Now = GetWorld()->GetTimeSeconds();
 	const int32 ActionMask = Survivor ? Survivor->GetTutorialActionMask() : 0;
 	const UCharacterMovementComponent* Move = Survivor ? Survivor->GetCharacterMovement() : nullptr;
+	// Minimum seconds a latched-action step stays up after its move fires, so the caption is readable for a beat
+	// instead of vanishing the instant a quick player acts. See the note on the action-bit cases below.
+	constexpr float kMoveMinRead = 2.0f;
 
 	// Advance the instant the player performs the taught move; a generous timeout fallback guarantees the lesson can
 	// never hard-lock (a stuck input / missing key just skips ahead after a while), per the tutorial design rules.
@@ -1069,41 +1076,47 @@ void ABHTutorialDirector::EvaluateMovementStep()
 	case EMovementStep::Prone:
 		if ((Survivor && Survivor->IsProne()) || Elapsed >= 45.0f) { EnterMovementStep(EMovementStep::Sprint); }
 		break;
+	// Min-read linger: the action-bit steps below latch their bit when the move fires, so we hold the step (and its
+	// just-read caption on screen) for at least kMoveMinRead seconds before advancing -- otherwise a player who knows
+	// the move executes it in <1s and the prompt vanishes the instant they act. The bits are latched (not momentary),
+	// so the `&&` is safe; the generous timeout fallback is left untouched so a stuck player still advances. The basic
+	// state-gated steps (Crouch/Prone/Jump) are NOT gated this way -- their IsCrouching/IsProne/IsFalling checks are
+	// momentary, so a min-read `&&` there could strand a player who released before the timer.
 	case EMovementStep::Sprint:
-		if ((ActionMask & ABHCharacter::TutorialActSprintBit) != 0 || Elapsed >= 45.0f) { EnterMovementStep(EMovementStep::Jump); }
+		if (((ActionMask & ABHCharacter::TutorialActSprintBit) != 0 && Elapsed >= kMoveMinRead) || Elapsed >= 45.0f) { EnterMovementStep(EMovementStep::Jump); }
 		break;
 	case EMovementStep::Jump:
 		if ((Move && Move->IsFalling()) || Elapsed >= 45.0f) { EnterMovementStep(EMovementStep::BunnyHop); }
 		break;
 	case EMovementStep::BunnyHop:
-		if ((ActionMask & ABHCharacter::TutorialActBhopBit) != 0 || Elapsed >= 75.0f) { EnterMovementStep(EMovementStep::Roll); }
+		if (((ActionMask & ABHCharacter::TutorialActBhopBit) != 0 && Elapsed >= kMoveMinRead) || Elapsed >= 75.0f) { EnterMovementStep(EMovementStep::Roll); }
 		break;
 	case EMovementStep::Roll:
-		if ((ActionMask & ABHCharacter::TutorialActRollBit) != 0 || Elapsed >= 60.0f) { EnterMovementStep(EMovementStep::Slide); }
+		if (((ActionMask & ABHCharacter::TutorialActRollBit) != 0 && Elapsed >= kMoveMinRead) || Elapsed >= 60.0f) { EnterMovementStep(EMovementStep::Slide); }
 		break;
 	case EMovementStep::Slide:
-		if ((ActionMask & ABHCharacter::TutorialActSlideBit) != 0 || Elapsed >= 60.0f) { EnterMovementStep(EMovementStep::Dive); }
+		if (((ActionMask & ABHCharacter::TutorialActSlideBit) != 0 && Elapsed >= kMoveMinRead) || Elapsed >= 60.0f) { EnterMovementStep(EMovementStep::Dive); }
 		break;
 	case EMovementStep::Dive:
-		if ((ActionMask & ABHCharacter::TutorialActDiveBit) != 0 || Elapsed >= 60.0f) { EnterMovementStep(EMovementStep::AdvancedIntro); }
+		if (((ActionMask & ABHCharacter::TutorialActDiveBit) != 0 && Elapsed >= kMoveMinRead) || Elapsed >= 60.0f) { EnterMovementStep(EMovementStep::AdvancedIntro); }
 		break;
 	case EMovementStep::AdvancedIntro:
 		if (Elapsed >= 5.0f) { EnterMovementStep(EMovementStep::QuietRoll); }
 		break;
 	case EMovementStep::QuietRoll:
-		if ((ActionMask & ABHCharacter::TutorialActQuietRollBit) != 0 || Elapsed >= 60.0f) { EnterMovementStep(EMovementStep::DropRoll); }
+		if (((ActionMask & ABHCharacter::TutorialActQuietRollBit) != 0 && Elapsed >= kMoveMinRead) || Elapsed >= 60.0f) { EnterMovementStep(EMovementStep::DropRoll); }
 		break;
 	case EMovementStep::DropRoll:
-		if ((ActionMask & ABHCharacter::TutorialActDropRollBit) != 0 || Elapsed >= 75.0f) { EnterMovementStep(EMovementStep::SlideStop); }
+		if (((ActionMask & ABHCharacter::TutorialActDropRollBit) != 0 && Elapsed >= kMoveMinRead) || Elapsed >= 75.0f) { EnterMovementStep(EMovementStep::SlideStop); }
 		break;
 	case EMovementStep::SlideStop:
-		if ((ActionMask & ABHCharacter::TutorialActSlideStopBit) != 0 || Elapsed >= 75.0f) { EnterMovementStep(EMovementStep::LockerRoll); }
+		if (((ActionMask & ABHCharacter::TutorialActSlideStopBit) != 0 && Elapsed >= kMoveMinRead) || Elapsed >= 75.0f) { EnterMovementStep(EMovementStep::LockerRoll); }
 		break;
 	case EMovementStep::LockerRoll:
-		if ((ActionMask & ABHCharacter::TutorialActLockerRollBit) != 0 || Elapsed >= 90.0f) { EnterMovementStep(EMovementStep::FlowChain); }
+		if (((ActionMask & ABHCharacter::TutorialActLockerRollBit) != 0 && Elapsed >= kMoveMinRead) || Elapsed >= 90.0f) { EnterMovementStep(EMovementStep::FlowChain); }
 		break;
 	case EMovementStep::FlowChain:
-		if ((ActionMask & ABHCharacter::TutorialActFlowChainBit) != 0 || Elapsed >= 90.0f) { EnterMovementStep(EMovementStep::Complete); }
+		if (((ActionMask & ABHCharacter::TutorialActFlowChainBit) != 0 && Elapsed >= kMoveMinRead) || Elapsed >= 90.0f) { EnterMovementStep(EMovementStep::Complete); }
 		break;
 	case EMovementStep::Complete:
 	default:
