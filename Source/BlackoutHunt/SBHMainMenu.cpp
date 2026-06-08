@@ -2899,12 +2899,44 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 			+ SVerticalBox::Slot()
 			.AutoHeight()
 			[
-				SNew(STextBlock)
-				.Font(MenuFont(40, FName(TEXT("Bold"))))
-				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Accent))
-				.ShadowOffset(FVector2D(2.0f, 2.0f))
-				.ShadowColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, 0.8f))
-				.Text(FText::FromString(TEXT("BLACKOUT HUNT")))
+				SNew(SVerticalBox)
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						SNew(STextBlock)
+						.Font(MenuFont(40, FName(TEXT("Bold"))))
+						.ColorAndOpacity(TAttribute<FSlateColor>::Create([this]() {
+							const FLinearColor H = BHResolveActiveThemeColor(&FBHMenuTheme::Header);
+							const FLinearColor A = BHResolveActiveThemeColor(&FBHMenuTheme::AccentBright);
+							FLinearColor C = FMath::Lerp(H, A, 0.18f) * FlickerAlpha;
+							C.A = 1.0f;
+							return FSlateColor(C);
+						}))
+						.ShadowOffset(FVector2D(2.0f, 3.0f))
+						.ShadowColorAndOpacity(TAttribute<FLinearColor>::Create([this]() {
+							return FLinearColor(0.30f, 0.0f, 0.0f, 0.8f * FlickerAlpha);
+						}))
+						.Text(FText::FromString(TEXT("B L A C K O U T   H U N T")))
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(3.0f, 7.0f, 0.0f, 0.0f)
+					.HAlign(HAlign_Left)
+					[
+						SNew(SBox)
+						.HeightOverride(2.0f)
+						.WidthOverride(300.0f)
+						[
+							SNew(SBorder)
+							.Visibility(EVisibility::HitTestInvisible)
+							.BorderImage(WhiteBrush())
+							.BorderBackgroundColor(TAttribute<FSlateColor>::Create([this]() {
+								FLinearColor C = BHResolveActiveThemeColor(&FBHMenuTheme::Accent);
+								C.A = 0.6f + 0.4f * FlickerAlpha;
+								return FSlateColor(C);
+							}))
+						]
+					]
 			]
 			+ SVerticalBox::Slot()
 			.AutoHeight()
@@ -5252,7 +5284,20 @@ TSharedRef<SWidget> SBHMainMenu::BuildStartScreen()
 		.Padding(56.0f, 0.0f, 56.0f, 22.0f)
 		[
 			BuildStatusPanel()
-		];
+		]
+			// One-shot entrance fade: a black curtain that bleeds away over the menu's first ~0.85s.
+			+ SOverlay::Slot()
+			[
+				SNew(SBorder)
+				.Visibility(EVisibility::HitTestInvisible)
+				.BorderImage(WhiteBrush())
+				.BorderBackgroundColor(TAttribute<FSlateColor>::Create([this]() {
+					const float P = FMath::Clamp(HorrorTimeAccum / 0.85f, 0.0f, 1.0f);
+					const float Smooth = P * P * (3.0f - 2.0f * P);
+					return FSlateColor(FLinearColor(0.0f, 0.0f, 0.0f, 1.0f - Smooth));
+				}))
+			]
+		;
 }
 
 TSharedRef<SWidget> SBHMainMenu::BuildMenuTabButton(EBHMainMenuTab Tab, const FText& Label)
@@ -9351,6 +9396,9 @@ TSharedRef<SWidget> SBHMainMenu::BuildStatusPanel()
 	return SNew(SBorder)
 		.BorderImage(WhiteBrush())
 		.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
+		// Status text is non-interactive; make the whole panel click-through so it never steals clicks from
+		// the start-screen credential panel layered beneath it in the overlay (self + child text).
+		.Visibility(EVisibility::HitTestInvisible)
 		.Padding(14.0f)
 		[
 			SNew(STextBlock)
