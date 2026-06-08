@@ -3400,7 +3400,12 @@ void ABHCharacter::StartProne()
 		return;
 	}
 
-	if (bSprintInputHeld)
+	// SLIDE is a GROUND move (Shift+Alt). It must be gated to the ground, otherwise -- because the intended DIVE is
+	// "run (Shift held) -> jump -> Alt in the AIR" -- this branch would fire first while airborne, request a Sliding
+	// move that the air gate then rejects ("Get your footing first"), and the dive below would never be reached. That
+	// was exactly why dive "didn't work": you're still sprinting when you leave the ground. Ground-gating lets the
+	// airborne Alt fall through to the dive branch.
+	if (bSprintInputHeld && GetCharacterMovement() && GetCharacterMovement()->IsMovingOnGround())
 	{
 		StartCosmeticSpecialMove(EBHMovementSpecialState::Sliding);
 		ServerStartSpecialMove(EBHMovementSpecialState::Sliding, true, true);
@@ -3471,6 +3476,8 @@ void ABHCharacter::ClientNotifyPerfectChain_Implementation(int32 ChainCount)
 		if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
 		{
 			Account->UnlockAchievement(FName(TEXT("perfect_chain")));
+			// Count every clean chain toward Momentum Maestro (10 lifetime).
+			Account->RecordPerfectChain();
 			// A full three-link chain (the cap, BHMomentumChainMaxLinks) earns Flow Master.
 			if (ChainCount >= 3)
 			{
@@ -3493,6 +3500,18 @@ void ABHCharacter::ClientRecordTrainActivity_Implementation(uint8 ActivityIndex)
 		if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
 		{
 			Account->RecordTrainActivityUse(static_cast<int32>(ActivityIndex));
+		}
+	}
+}
+
+void ABHCharacter::ClientRecordCapture_Implementation()
+{
+	// Cosmetic only: count this capture on the owning client (-> the Truant Officer achievement at 50).
+	if (UWorld* World = GetWorld())
+	{
+		if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+		{
+			Account->RecordCapture();
 		}
 	}
 }
@@ -3536,6 +3555,17 @@ void ABHCharacter::ClientToggleRoofServiceLights_Implementation()
 	{
 		BHPC->ShowLocalStatusMessage(
 			bRoofServiceLightsOn ? TEXT("Roof service lights: ON") : TEXT("Roof service lights: OFF"), 2.5f);
+	}
+	// Secret achievement: lit the roof at least once (-> Lights On). Idempotent.
+	if (bRoofServiceLightsOn)
+	{
+		if (UWorld* World = GetWorld())
+		{
+			if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+			{
+				Account->UnlockAchievement(FName(TEXT("lights_on")));
+			}
+		}
 	}
 }
 
@@ -3680,6 +3710,8 @@ void ABHCharacter::ClearCosmeticSpecialMove()
 		CosmeticMovementSpecialState = EBHMovementSpecialState::None;
 		LastRoleAnimationName = NAME_None;
 	}
+	// Also clear the POV-clock state so a re-attempt after a rejected/cleared predicted move re-stamps the roll camera.
+	LocalSpecialAnimState = EBHMovementSpecialState::None;
 }
 
 bool ABHCharacter::ValidateSpecialMoveSpaceAuthority(EBHMovementSpecialState RequestedState, const FBHMovementSpecialTuning& Tuning, FString& OutFailureReason) const
@@ -3882,8 +3914,8 @@ static TAutoConsoleVariable<int32> CVarBHMomentumTech(
 // (the defaults match the original constants). See Docs/EASTER_EGGS.md.
 static TAutoConsoleVariable<float> CVarBHMomentumChainWindow(
 	TEXT("bh.MomentumChainWindow"),
-	0.12f,
-	TEXT("Survivor flow-chain input window in seconds: chain the next special move within this of the previous one ending. Lower = harder. (Default 0.12)"),
+	0.30f,
+	TEXT("Survivor flow-chain input window in seconds: chain the next special move within this of the previous one ending. Lower = harder. (Default 0.30 -- 0.12 was so tight that input + the replicated end-of-move round-trip made the chain practically impossible to hit, so it 'never counted'.)"),
 	ECVF_Default);
 static TAutoConsoleVariable<int32> CVarBHMomentumChainMaxLinks(
 	TEXT("bh.MomentumChainMaxLinks"),
@@ -4234,6 +4266,14 @@ void ABHCharacter::ApplyMovementSpecialState()
 	{
 		LocalSpecialAnimStartTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 		LocalSpecialAnimState = MovementSpecialState;
+	}
+	else if (!BHIsTransientSpecialMove(MovementSpecialState))
+	{
+		// The transient move ended (state is now None/Prone). Clear the POV-clock state so the NEXT transient move --
+		// even the SAME kind (a chained roll -> roll) -- re-stamps LocalSpecialAnimStartTime above and replays the roll
+		// camera. Without this, LocalSpecialAnimState stayed == Rolling, the re-stamp was skipped on the second roll,
+		// and its camera curve read a long-finished clock (P>=1 -> no spin) -- the "chained rolls don't spin" bug.
+		LocalSpecialAnimState = EBHMovementSpecialState::None;
 	}
 
 	const bool bNeedsLowCapsule = IsProne()
@@ -5211,20 +5251,35 @@ void ABHCharacter::SendFakeHunterHint(bool bRealHint)
 		return;
 	}
 
-	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	// Iterate ALL controllers, not just player controllers: a bot Teacher is driven by ABHBotController (an
+	// AAIController), so the old GetPlayerControllerIterator + Cast<ABHPlayerController> skipped every bot Teacher and
+	// reported "sent to 0 Teacher(s)." (the common case -- the solo Monitor tutorial and any bot-filled live round).
+	// Count every alive Hunter (bot or human), steer bot Teachers toward the hint, and gate the player-only RPC.
+	for (FConstControllerIterator It = GetWorld()->GetControllerIterator(); It; ++It)
 	{
-		ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get());
-		APawn* Pawn = PC ? PC->GetPawn() : nullptr;
-		const ABHPlayerState* HunterPS = PC ? PC->GetPlayerState<ABHPlayerState>() : nullptr;
-		if (!PC || !Pawn || !HunterPS || !HunterPS->IsAliveHunter())
+		AController* Ctrl = It->Get();
+		APawn* Pawn = Ctrl ? Ctrl->GetPawn() : nullptr;
+		const ABHPlayerState* HunterPS = Ctrl ? Ctrl->GetPlayerState<ABHPlayerState>() : nullptr;
+		if (!Ctrl || !Pawn || !HunterPS || !HunterPS->IsAliveHunter())
 		{
 			continue;
 		}
 
 		const FVector Delta = HintLocation - Pawn->GetActorLocation();
 		const float DistanceMeters = Delta.Size2D() / 100.0f;
-		PC->ClientShowStatusMessage(FString::Printf(TEXT("%s hint: movement %s, %.0fm away."), *SenderName, *BHCompassFromDelta(Delta), DistanceMeters), 4.0f);
+		if (ABHPlayerController* PC = Cast<ABHPlayerController>(Ctrl))
+		{
+			PC->ClientShowStatusMessage(FString::Printf(TEXT("%s hint: movement %s, %.0fm away."), *SenderName, *BHCompassFromDelta(Delta), DistanceMeters), 4.0f);
+		}
 		++HuntersNotified;
+	}
+
+	// Steer AI Teachers too: a UI toast means nothing to a bot, so feed a "sighting" stimulus at the hinted survivor
+	// location and the bot Teacher's brain reacts (turns/heads there). This is how the fake hint already drives bots
+	// (ReportBotStimulus), so a real hint finally has a visible effect against an AI Teacher.
+	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+	{
+		BHGM->ReportBotStimulus(EBHBotStimulusType::Sight, HintLocation, this, nullptr, TEXT("hall monitor real hint"), 1.0f);
 	}
 
 	SendStatusMessage(FString::Printf(TEXT("Real hint sent to %d Teacher(s)."), HuntersNotified));

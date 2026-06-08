@@ -1198,6 +1198,11 @@ void ABHHUD::DrawHUD()
 						if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
 						{
 							Account->UnlockAchievement(FName(TEXT("honorary_faculty")));
+							// Secret: the Hitchhiker's nod -- playing as the great Answer earns Don't Panic.
+							if (LowerName == TEXT("42") || LowerName == TEXT("adams"))
+							{
+								Account->UnlockAchievement(FName(TEXT("dont_panic")));
+							}
 						}
 					}
 				}
@@ -1205,17 +1210,20 @@ void ABHHUD::DrawHUD()
 		}
 
 		// Achievement: hid in a locker (a gameplay achievement, so NOT gated by the cosmetic easter-egg toggle).
-		// UnlockAchievement is idempotent, so the per-frame call no-ops after the first hide.
-		if (Character->IsHiddenInLocker())
+		// Edge-triggered on ENTRY so each distinct hide counts once toward Ghost in the Walls (25). RecordLockerHide
+		// also unlocks the original Spelunker on the first hide (idempotent).
+		const bool bHiddenNow = Character->IsHiddenInLocker();
+		if (bHiddenNow && !bWasHiddenInLockerLastTick)
 		{
 			if (UWorld* World = GetWorld())
 			{
 				if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
 				{
-					Account->UnlockAchievement(FName(TEXT("spelunker")));
+					Account->RecordLockerHide();
 				}
 			}
 		}
+		bWasHiddenInLockerLastTick = bHiddenNow;
 
 		// Easter egg ("scratched into the locker"): while hidden, a faint message someone left in the wood.
 		// Stable per-locker (hashed from the spot you're hiding in) so each locker keeps its own "graffiti".
@@ -1243,6 +1251,14 @@ void ABHHUD::DrawHUD()
 			const FVector HideSpot = Character->GetActorLocation();
 			const int32 ScratchIndex = FMath::Abs(FMath::FloorToInt(HideSpot.X) * 73 + FMath::FloorToInt(HideSpot.Y) * 31) % static_cast<int32>(UE_ARRAY_COUNT(LockerScratches));
 			DrawWrappedHudText(LockerScratches[ScratchIndex], Canvas->ClipX * 0.5f - 230.0f * TextScale, Canvas->ClipY * 0.60f, 460.0f * TextScale, FLinearColor(0.62f, 0.58f, 0.52f, 0.42f), GEngine->GetSmallFont(), 0.52f * TextScale, 12.0f * TextScale, 2);
+			// Secret: the player has now actually seen a piece of locker graffiti (-> Wall Reader). Idempotent.
+			if (UWorld* World = GetWorld())
+			{
+				if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+				{
+					Account->UnlockAchievement(FName(TEXT("wall_reader")));
+				}
+			}
 		}
 
 		// Probe teacher proximity once -- it feeds both the vitals meter and the threat arrow,
@@ -1870,10 +1886,13 @@ float ABHHUD::DrawWrappedHudText(const FString& Text, float X, float Y, float Ma
 		if (bCenterEachLine && Canvas)
 		{
 			// Centre each wrapped line within [X, X+MaxWidth] so multi-line captions read as a tidy centred block
-			// instead of a ragged left-aligned stack.
+			// instead of a ragged left-aligned stack. Measure at scale 1.0 then multiply by Scale: Canvas->TextSize
+			// does not reliably apply the scale arg for every engine font, so measuring at the draw scale can return a
+			// too-narrow width and drift the centre; base-width * Scale is the true rendered width regardless.
 			float LineW = 0.0f;
 			float LineH = 0.0f;
-			Canvas->TextSize(DrawFont, Lines[LineIndex], LineW, LineH, Scale, Scale);
+			Canvas->TextSize(DrawFont, Lines[LineIndex], LineW, LineH, 1.0f, 1.0f);
+			LineW *= Scale;
 			LineX = X + FMath::Max(0.0f, (MaxWidth - LineW) * 0.5f);
 		}
 		DrawHudText(Lines[LineIndex], LineX, Y + LineIndex * LineHeight, Color, DrawFont, Scale);
@@ -2830,6 +2849,12 @@ namespace
 		case 3:  return FLinearColor(0.95f, 0.80f, 0.30f); // Crown
 		case 4:  return FLinearColor(0.45f, 0.88f, 0.95f); // Halo
 		case 5:  return FLinearColor(1.00f, 0.52f, 0.22f); // Ember
+		case 6:  return FLinearColor(0.98f, 0.66f, 0.12f); // Pop Quiz (amber)
+		case 7:  return FLinearColor(0.86f, 0.20f, 0.18f); // Falling Apple (red)
+		case 8:  return FLinearColor(0.62f, 0.40f, 0.90f); // Static (violet)
+		case 9:  return FLinearColor(1.00f, 0.42f, 0.10f); // Phoenix (fiery orange)
+		case 10: return FLinearColor(0.92f, 0.78f, 0.32f); // Hall Pass (brass)
+		case 11: return FLinearColor(0.40f, 0.84f, 0.92f); // Atom (cyan)
 		default: return FLinearColor(0.72f, 0.74f, 0.70f);
 		}
 	}
@@ -3826,14 +3851,20 @@ void ABHHUD::DrawTutorialCard(const ABHPlayerController* BHPC)
 
 	const FString& Title = BHPC->GetTutorialCardTitle();
 	const float TitleScale = 1.8f * S;
+	// Measure at scale 1.0 then multiply by TitleScale: Canvas->TextSize did not reliably apply the scale arg for the
+	// large title font, so measuring at the draw scale returned a too-narrow width and the "centred" title actually
+	// drew right-of-centre. base-width * scale is the true rendered width, so the centre is correct.
 	float TitleW = 0.0f;
 	float TitleH = 0.0f;
-	Canvas->TextSize(TitleFont, Title, TitleW, TitleH, TitleScale, TitleScale);
+	Canvas->TextSize(TitleFont, Title, TitleW, TitleH, 1.0f, 1.0f);
+	TitleW *= TitleScale;
+	TitleH *= TitleScale;
 	const float TitleY = Canvas->ClipY * 0.40f;
 	DrawHudText(Title, (Canvas->ClipX - TitleW) * 0.5f, TitleY, Accent, TitleFont, TitleScale);
 
-	const float BodyW = FMath::Min(Canvas->ClipX * 0.70f, 900.0f * S);
-	DrawWrappedHudText(BHPC->GetTutorialCardBody(), (Canvas->ClipX - BodyW) * 0.5f, TitleY + TitleH + 16.0f * S, BodyW, BodyColor, BodyFont, 1.0f * S, 20.0f * S, 3);
+	// Body: centre each line too (bCenterEachLine) so it isn't a left-aligned block under the centred title.
+	const float BodyW = FMath::Min(Canvas->ClipX * 0.74f, 980.0f * S);
+	DrawWrappedHudText(BHPC->GetTutorialCardBody(), (Canvas->ClipX - BodyW) * 0.5f, TitleY + TitleH + 16.0f * S, BodyW, BodyColor, BodyFont, 1.05f * S, 22.0f * S, 3, true);
 }
 
 void ABHHUD::DrawTutorialPrompt(const ABHPlayerController* BHPC)

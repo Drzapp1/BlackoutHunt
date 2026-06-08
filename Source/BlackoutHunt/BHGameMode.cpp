@@ -1645,6 +1645,13 @@ void ABHGameMode::NotifySurvivorCaptured(ABHCharacter* Survivor, ABHCharacter* C
 		if (CapturingHunter && !CapturingHunterPS->IsABot())
 		{
 			CapturingHunter->ClientGrantAchievement(FName(TEXT("first_blood")), TEXT("First capture. The hunt is on."));
+			// Count toward the Truant Officer milestone (50 lifetime captures).
+			CapturingHunter->ClientRecordCapture();
+			// Secret: a capture in the first 20 seconds of the Hunt is a Pop Quiz.
+			if (BHGS && BHGS->RoundPhase == EBHRoundPhase::Hunt && (HuntSeconds - BHGS->RemainingTime) <= 20)
+			{
+				CapturingHunter->ClientGrantAchievement(FName(TEXT("pop_quiz")), TEXT("Pop quiz! Caught one in the opening seconds."));
+			}
 		}
 	}
 	if (ABHPlayerController* SurvivorPC = Cast<ABHPlayerController>(SurvivorController))
@@ -1761,6 +1768,11 @@ void ABHGameMode::NotifySurvivorEscaped(ABHCharacter* Survivor)
 		if (BHGS->RoundPhase == EBHRoundPhase::FinalEscape || BHGS->FinalEscapeState == EBHFinalEscapeState::EscapeActive)
 		{
 			BroadcastStatus(TEXT("A student boarded the evacuation train."), 3.0f);
+			// Secret: boarding the evacuation train during the final escape is Saved by the Bell.
+			if (!Survivor->GetPlayerState<ABHPlayerState>() || !Survivor->GetPlayerState<ABHPlayerState>()->IsABot())
+			{
+				Survivor->ClientGrantAchievement(FName(TEXT("saved_by_bell")), TEXT("Saved by the bell -- boarded the last train out."));
+			}
 			if (CountAliveSurvivors() <= 0)
 			{
 				BHGS->SetFinalEscapeState(EBHFinalEscapeState::Departed, 0.0f, 0.0f, 0.0f);
@@ -1780,6 +1792,23 @@ void ABHGameMode::NotifySurvivorEscaped(ABHCharacter* Survivor)
 	if (StillInside <= 0)
 	{
 		BroadcastStatus(FString::Printf(TEXT("%s reached the exit. Everyone is out — the class escaped!"), *EscapedName), 4.0f);
+		// Secret: this survivor was the last one out AND at least one classmate was caught this round -> Comeback Kid.
+		if (GameState && (!EscapedPS || !EscapedPS->IsABot()))
+		{
+			int32 CapturedThisRound = 0;
+			for (APlayerState* RawPS : GameState->PlayerArray)
+			{
+				const ABHPlayerState* BHPS = Cast<ABHPlayerState>(RawPS);
+				if (BHPS && BHPS->PlayerRole == EBHPlayerRole::Survivor && BHPS->LifeState == EBHPlayerLifeState::Captured)
+				{
+					++CapturedThisRound;
+				}
+			}
+			if (CapturedThisRound > 0)
+			{
+				Survivor->ClientGrantAchievement(FName(TEXT("comeback_kid")), TEXT("Comeback kid -- last one out while the rest were caught."));
+			}
+		}
 		EndRound(EBHRoundPhase::SurvivorsWin);
 	}
 	else
@@ -2268,24 +2297,31 @@ int32 ABHGameMode::NotifyHallMonitorMisdirection(const FVector& Location, const 
 
 	int32 TeachersNotified = 0;
 	const FString SenderLabel = SenderName.IsEmpty() ? FString(TEXT("Hall monitor")) : SenderName.Left(22);
-	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	// Iterate ALL controllers (bot Teachers are AAIControllers, not player controllers): the old player-only loop never
+	// counted a bot Teacher, so the Monitor saw "sent to 0 Teacher(s)." even though the bot WAS steered by the
+	// ReportBotStimulus above. Count every alive Teacher; gate the client toast (a player-only RPC) behind a PC cast.
+	for (FConstControllerIterator It = GetWorld()->GetControllerIterator(); It; ++It)
 	{
-		ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get());
-		ABHPlayerState* BHPS = PC ? PC->GetPlayerState<ABHPlayerState>() : nullptr;
-		APawn* Pawn = PC ? PC->GetPawn() : nullptr;
-		if (!PC || !BHPS || !Pawn || BHPS->LifeState != EBHPlayerLifeState::Alive)
+		AController* Ctrl = It->Get();
+		ABHPlayerState* BHPS = Ctrl ? Ctrl->GetPlayerState<ABHPlayerState>() : nullptr;
+		APawn* Pawn = Ctrl ? Ctrl->GetPawn() : nullptr;
+		if (!Ctrl || !BHPS || !Pawn || BHPS->LifeState != EBHPlayerLifeState::Alive)
 		{
 			continue;
 		}
 
 		const FVector Delta = Location - Pawn->GetActorLocation();
 		const float DistanceMeters = Delta.Size2D() / 100.0f;
+		ABHPlayerController* PC = Cast<ABHPlayerController>(Ctrl);
 		if (BHPS->IsAliveHunter())
 		{
-			PC->ClientShowStatusMessage(FString::Printf(TEXT("%s marker: unverified corridor %s, %.0fm away."), *SenderLabel, *CompassFromDelta(Delta), DistanceMeters), 4.0f);
+			if (PC)
+			{
+				PC->ClientShowStatusMessage(FString::Printf(TEXT("%s marker: unverified corridor %s, %.0fm away."), *SenderLabel, *CompassFromDelta(Delta), DistanceMeters), 4.0f);
+			}
 			++TeachersNotified;
 		}
-		else if (BHPS->IsAliveSurvivor() && DistanceMeters <= 22.0f)
+		else if (PC && BHPS->IsAliveSurvivor() && DistanceMeters <= 22.0f)
 		{
 			PC->ClientShowStatusMessage(TEXT("A Hall Monitor marked this corridor. Rotate, hide, or bait the Teacher."), 3.0f);
 		}
@@ -3534,7 +3570,7 @@ void ABHGameMode::GetAdaptiveRevisionPlan(const ABHPlayerState* PlayerState, boo
 	if (!PlayerState)
 	{
 		OutTopic = GetWeakestRevisionTopic();
-		OutDifficulty = EBHQuestionDifficulty::Easy;
+		OutDifficulty = ClampRevisionDifficulty(RevisionStartingDifficulty);
 		OutReason = TEXT("No student profile yet; using the current class weak topic.");
 		return;
 	}
@@ -3544,6 +3580,13 @@ void ABHGameMode::GetAdaptiveRevisionPlan(const ABHPlayerState* PlayerState, boo
 	// Calibrate difficulty to the targeted (weakest) topic's mastery, not the cross-topic average,
 	// so a student who is strong overall but weak here is eased in rather than over-faced.
 	OutDifficulty = AdaptiveDifficultyForStats(Stats, RevisionTopicMastery(Stats, OutTopic), bLastAnswerCorrect);
+	// Host "starting difficulty": the student's first question starts at the configured tier instead of
+	// always Easy; every adaptive pick is then clamped into the host [Min, Max] band.
+	if (Stats.Attempts <= 0)
+	{
+		OutDifficulty = RevisionStartingDifficulty;
+	}
+	OutDifficulty = ClampRevisionDifficulty(OutDifficulty);
 	OutReason = FString::Printf(TEXT("Mastery %.0f%% after %d attempt(s); next question targets %s at %s difficulty."),
 		Stats.MasteryPercent,
 		Stats.Attempts,
@@ -3879,6 +3922,24 @@ bool ABHGameMode::ApplyLessonPreset(ABHPlayerController* RequestingController, c
 	RevisionScareIntensity = CleanPreset.ScareIntensity;
 	HuntSeconds = RevisionRoundDuration;
 	NextRuntimeLevelName = NormalizeBHLevelName(CleanPreset.MapName);
+
+	// Host lobby customization knobs (live in-lobby apply; launch path mirrors this in BuildRuntimeFacility).
+	RevisionStartingDifficulty = CleanPreset.StartingDifficulty;
+	RevisionMinDifficulty = CleanPreset.MinDifficulty;
+	RevisionMaxDifficulty = CleanPreset.MaxDifficulty;
+	RevisionQuestionSetId = CleanPreset.QuestionSetId;
+	ResolveAllowedQuestionIds();
+	RuntimeMapRoute = CleanPreset.MapRoute;
+	if (RuntimeMapRoute.Num() > 0)
+	{
+		// The route's first leg becomes the map the lobby departs to (and the displayed "next" map).
+		LobbyFirstLevelName = RuntimeMapRoute[0];
+		NextRuntimeLevelName = RuntimeMapRoute[0];
+	}
+	LayoutSeed = CleanPreset.LayoutSeed;
+	LayoutBreakerCount = CleanPreset.BreakerCount;
+	LayoutDensity = CleanPreset.LayoutDensity;
+	bForceProceduralLayout = CleanPreset.bForceProcedural;
 
 	TargetBotCount = FMath::Clamp(CleanPreset.BotCount, 0, FMath::Max(0, MaxPlayers - 1));
 	BotDifficulty = CleanPreset.BotDifficulty;
@@ -5996,8 +6057,11 @@ void ABHGameMode::BuildRuntimeFacility()
 	bLobbyLevel = IsTrueOption(LobbyOption);
 	// The hunt level the train lobby departs to when the round starts; defaults to Facility if unspecified.
 	LobbyFirstLevelName = NormalizeBHLevelName(GetWorld()->URL.GetOption(TEXT("BHFirstLevel="), TEXT("Facility")));
+	// Host map route (variable-length stage sequence). Parsed BEFORE the stage index so the stage clamp can
+	// use the route length; empty = the default Facility -> Substation -> Foggrounds sequence.
+	RuntimeMapRoute = FBHLessonPresetStore::ParseMapRoute(GetWorld()->URL.GetOption(TEXT("BHMapRoute="), TEXT("")));
 	const FString StageIndexOption = GetWorld()->URL.GetOption(TEXT("BHStageIndex="), TEXT(""));
-	RuntimeStageIndex = StageIndexOption.IsEmpty() ? GetConfiguredStageIndex() : FMath::Clamp(FCString::Atoi(*StageIndexOption), 0, 2);
+	RuntimeStageIndex = StageIndexOption.IsEmpty() ? GetConfiguredStageIndex() : FMath::Clamp(FCString::Atoi(*StageIndexOption), 0, GetMaxStageIndex());
 	PendingIntermissionResult = RoundPhaseFromUrlValue(GetWorld()->URL.GetOption(TEXT("BHIntermissionResult="), TEXT("")));
 	const FString TestOption = GetWorld()->URL.GetOption(TEXT("BHTestMode="), TEXT(""));
 	bTestMode = IsTrueOption(TestOption);
@@ -6065,6 +6129,19 @@ void ABHGameMode::BuildRuntimeFacility()
 		const FString ScareIntensityOption = GetWorld()->URL.GetOption(TEXT("BHScareIntensity="), *FString::FromInt(Settings->RevisionScareIntensity));
 		RevisionTopicMask = ParsePhysicsTopicMask(RevisionTopicsOption, 0x0F);
 		RevisionDifficultyMix = ParseRevisionDifficultyMix(RevisionMixOption, EBHRevisionDifficultyMix::Adaptive);
+		// Host difficulty range: clamp the live selection to [Min,Max] and start each student at StartingDifficulty.
+		RevisionStartingDifficulty = FBHLessonPresetStore::ParseQuestionDifficulty(GetWorld()->URL.GetOption(TEXT("BHStartDifficulty="), TEXT("Easy")), EBHQuestionDifficulty::Easy);
+		RevisionMinDifficulty = FBHLessonPresetStore::ParseQuestionDifficulty(GetWorld()->URL.GetOption(TEXT("BHMinDifficulty="), TEXT("Easy")), EBHQuestionDifficulty::Easy);
+		RevisionMaxDifficulty = FBHLessonPresetStore::ParseQuestionDifficulty(GetWorld()->URL.GetOption(TEXT("BHMaxDifficulty="), TEXT("Hard")), EBHQuestionDifficulty::Hard);
+		if (static_cast<uint8>(RevisionMinDifficulty) > static_cast<uint8>(RevisionMaxDifficulty))
+		{
+			Swap(RevisionMinDifficulty, RevisionMaxDifficulty);
+		}
+		RevisionStartingDifficulty = ClampRevisionDifficulty(RevisionStartingDifficulty);
+		// Exact question set: store the id now; the id list is resolved from the saved set file below
+		// (see ResolveAllowedQuestionIds) once the active bank is available.
+		RevisionQuestionSetId = GetWorld()->URL.GetOption(TEXT("BHQuestionSet="), TEXT(""));
+		ResolveAllowedQuestionIds();
 		RevisionClassThreshold = FMath::Clamp(FCString::Atof(*ClassThresholdOption), 0.0f, 100.0f);
 		RevisionIndividualThreshold = FMath::Clamp(FCString::Atof(*IndividualThresholdOption), 0.0f, 100.0f);
 		RevisionRoundDuration = FMath::Clamp(Settings->RevisionRoundSeconds, 60, 3600);
@@ -6113,6 +6190,12 @@ void ABHGameMode::BuildRuntimeFacility()
 	NextFogPreset = RuntimeFogPreset;
 	const FString FogOverrideOption = GetWorld()->URL.GetOption(TEXT("BHFogOverride="), TEXT(""));
 	bFogPresetOverride = IsTrueOption(FogOverrideOption);
+
+	// Host procedural layout knobs (0 = generator default; only applied when the round runs the generator).
+	LayoutSeed = FMath::Max(0, FCString::Atoi(GetWorld()->URL.GetOption(TEXT("BHLayoutSeed="), TEXT("0"))));
+	LayoutBreakerCount = FCString::Atoi(GetWorld()->URL.GetOption(TEXT("BHBreakerCount="), TEXT("0")));
+	LayoutDensity = FCString::Atoi(GetWorld()->URL.GetOption(TEXT("BHLayoutDensity="), TEXT("0")));
+	bForceProceduralLayout = IsTrueOption(GetWorld()->URL.GetOption(TEXT("BHForceProcedural="), TEXT("")));
 
 	if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
 	{
@@ -6341,7 +6424,11 @@ void ABHGameMode::BuildBackroomsFacility()
 	auto IsSpawnNode = [&](int32 c, int32 r) { return c >= Cols - 2 && r >= Rows - 2; };   // SE 2x2 spawn cluster
 	auto IsExitNode = [&](int32 c, int32 r) { return c <= 1 && r <= 1; };                  // NW exit corner
 
-	FRandomStream Rng(20260531);
+	// Host layout seed: a non-zero LayoutSeed yields a fresh-but-reproducible partition/clutter arrangement;
+	// 0 keeps the fixed shipping layout. (The pillar grid + objective placement are deterministic index math,
+	// so the seed varies cover/partitions, not breaker/exit positions.)
+	const int32 EffectiveLayoutSeed = LayoutSeed > 0 ? LayoutSeed : 20260531;
+	FRandomStream Rng(EffectiveLayoutSeed);
 
 	// ---- Dark, grimy, mono palette (the WA materials carry the texture colour; tints stay near-black). ----
 	const FLinearColor FloorTint(0.09f, 0.09f, 0.10f, 1.0f);
@@ -6418,7 +6505,10 @@ void ABHGameMode::BuildBackroomsFacility()
 	// ---- Tight cover: many freestanding angled partitions woven between the pillars. Finite segments at
 	// random angles never seal the hall into rooms (it stays one connected space), but locally they make tight
 	// slots, blind corners and dead-end alcoves to break line of sight and hide from the hunter. ----
-	const int32 TargetPartitions = (Cols * Rows * 11) / 10;   // ~1.1 per node
+	// Host layout density scales the partition (cover) count; 0 = default 100%. Clamped so the hall never
+	// seals into rooms (too dense) nor becomes an empty box (too sparse).
+	const int32 LayoutDensityPercent = LayoutDensity > 0 ? FMath::Clamp(LayoutDensity, 50, 160) : 100;
+	const int32 TargetPartitions = (Cols * Rows * 11 * LayoutDensityPercent) / (10 * 100);   // ~1.1 per node at 100%
 	int32 PartCount = 0;
 	for (int32 i = 0; i < TargetPartitions * 3 && PartCount < TargetPartitions; ++i)
 	{
@@ -6607,7 +6697,7 @@ void ABHGameMode::BuildBackroomsFacility()
 					++StationCount;
 				}
 			}
-			else if (BreakerCount < 7 && ((c + 2 * r) % 17) == 0)
+			else if (BreakerCount < (LayoutBreakerCount > 0 ? FMath::Clamp(LayoutBreakerCount, 3, 12) : 7) && ((c + 2 * r) % 17) == 0)
 			{
 				if (ABHBreaker* Breaker = World->SpawnActor<ABHBreaker>(NodeXY(c, r) + FVector(0.0f, Pitch * 0.28f, 80.0f), FRotator(0.0f, 180.0f, 0.0f)))
 				{
@@ -8088,7 +8178,7 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 	const FString Destination = PendingIntermissionResult == EBHRoundPhase::HunterWin
 		? TEXT("Remediation Platform")
 		: FString::Printf(TEXT("Next Stop: %s"), *GetNextMapAfterStage(RuntimeStageIndex));
-	const bool bFinalRecap = RuntimeStageIndex >= 2 || GetNextMapAfterStage(RuntimeStageIndex).Equals(TEXT("Final"), ESearchCase::IgnoreCase);
+	const bool bFinalRecap = IsFinalStage() || GetNextMapAfterStage(RuntimeStageIndex).Equals(TEXT("Final"), ESearchCase::IgnoreCase);
 
 	TrainIntermissionManager = GetWorld()->SpawnActor<ABHTrainIntermissionManager>(FVector::ZeroVector, FRotator::ZeroRotator);
 	if (TrainIntermissionManager)
@@ -11417,6 +11507,18 @@ void ABHGameMode::UpdatePresenceDirector()
 			TEXT("somewhere a bell rings for a period that isn't on the timetable.")
 		};
 		PresenceText = SelectPromptLine(WhisperLines, UE_ARRAY_COUNT(WhisperLines), PresenceTextSalt + 7);
+		// Secret: this hidden line is replicated to everyone's presence readout, so award "Did You See That?" to
+		// the human players present to witness it (idempotent client-side, so re-firing the rare line is harmless).
+		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+		{
+			if (ABHPlayerController* WitnessPC = Cast<ABHPlayerController>(It->Get()))
+			{
+				if (ABHCharacter* WitnessChar = Cast<ABHCharacter>(WitnessPC->GetPawn()))
+				{
+					WitnessChar->ClientGrantAchievement(FName(TEXT("did_you_see_that")), TEXT("...did you see that?"));
+				}
+			}
+		}
 	}
 
 	const bool bPulse = NewPresence >= 72.0f || FMath::Abs(NewPresence - CurrentPresence) >= 18.0f;
@@ -14483,6 +14585,34 @@ void ABHGameMode::ResetRoundByTravel()
 				RevisionIndividualThreshold,
 				RevisionRoundDuration,
 				RevisionScareIntensity);
+			TravelURL += FString::Printf(TEXT("?BHStartDifficulty=%s?BHMinDifficulty=%s?BHMaxDifficulty=%s"),
+				*FBHLessonPresetStore::QuestionDifficultyToString(RevisionStartingDifficulty),
+				*FBHLessonPresetStore::QuestionDifficultyToString(RevisionMinDifficulty),
+				*FBHLessonPresetStore::QuestionDifficultyToString(RevisionMaxDifficulty));
+			if (!RevisionQuestionSetId.IsEmpty())
+			{
+				TravelURL += FString::Printf(TEXT("?BHQuestionSet=%s"), *RevisionQuestionSetId);
+			}
+		}
+		if (RuntimeMapRoute.Num() > 0)
+		{
+			TravelURL += FString::Printf(TEXT("?BHMapRoute=%s"), *FBHLessonPresetStore::MapRouteToString(RuntimeMapRoute));
+		}
+		if (LayoutSeed > 0)
+		{
+			TravelURL += FString::Printf(TEXT("?BHLayoutSeed=%d"), LayoutSeed);
+		}
+		if (LayoutBreakerCount > 0)
+		{
+			TravelURL += FString::Printf(TEXT("?BHBreakerCount=%d"), LayoutBreakerCount);
+		}
+		if (LayoutDensity > 0)
+		{
+			TravelURL += FString::Printf(TEXT("?BHLayoutDensity=%d"), LayoutDensity);
+		}
+		if (bForceProceduralLayout)
+		{
+			TravelURL += TEXT("?BHForceProcedural=1");
 		}
 		GetWorld()->ServerTravel(TravelURL);
 	}
@@ -14492,13 +14622,38 @@ int32 ABHGameMode::GetConfiguredStageIndex() const
 {
 	if (const UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
 	{
-		return FMath::Clamp(BHGI->GetPersistentStageIndex(), 0, 2);
+		return FMath::Clamp(BHGI->GetPersistentStageIndex(), 0, GetMaxStageIndex());
 	}
 	return 0;
 }
 
+void ABHGameMode::ResolveAllowedQuestionIds()
+{
+	RevisionAllowedQuestionIds.Reset();
+	if (RevisionQuestionSetId.IsEmpty())
+	{
+		return;
+	}
+	FString Message;
+	if (FBHRevisionQuestionBank::LoadQuestionSetIds(RevisionQuestionSetId, RevisionAllowedQuestionIds, Message))
+	{
+		UE_LOG(LogTemp, Display, TEXT("[BlackoutHunt] %s"), *Message);
+	}
+	else
+	{
+		// Missing/empty set => fall back to the full bank (no restriction) rather than starving selection.
+		UE_LOG(LogTemp, Warning, TEXT("[BlackoutHunt] Question set '%s' not applied: %s"), *RevisionQuestionSetId, *Message);
+		RevisionAllowedQuestionIds.Reset();
+	}
+}
+
 FString ABHGameMode::GetDefaultMapForStage(int32 StageIndex) const
 {
+	// Host-authored route takes precedence; clamp into range so a too-high stage reuses the last leg.
+	if (RuntimeMapRoute.Num() > 0)
+	{
+		return RuntimeMapRoute[FMath::Clamp(StageIndex, 0, RuntimeMapRoute.Num() - 1)];
+	}
 	if (StageIndex <= 0)
 	{
 		return TEXT("Facility");
@@ -14512,6 +14667,13 @@ FString ABHGameMode::GetDefaultMapForStage(int32 StageIndex) const
 
 FString ABHGameMode::GetNextMapAfterStage(int32 StageIndex) const
 {
+	// "Final" is the sentinel that ends the run (no further map). With a host route, the final stage is
+	// the last entry; otherwise the default sequence ends after Foggrounds (stage 2).
+	if (RuntimeMapRoute.Num() > 0)
+	{
+		const int32 NextStage = StageIndex + 1;
+		return RuntimeMapRoute.IsValidIndex(NextStage) ? RuntimeMapRoute[NextStage] : TEXT("Final");
+	}
 	if (StageIndex <= 0)
 	{
 		return TEXT("Substation");
@@ -14554,6 +14716,15 @@ FString BHResolveLevelMapPackage(const FString& LevelName)
 
 FString ABHGameMode::ResolveTravelMapForLevel(const FString& NormalizedLevel) const
 {
+	// Host "custom layout" forces the procedural generator even when authored .umaps are the shipping
+	// default -- the baked maps are fixed geometry, so the seed/density knobs only matter on the runtime
+	// base map. The intermission/tutorial always resolve normally.
+	if (bForceProceduralLayout
+		&& !NormalizedLevel.Equals(TEXT("TrainIntermission"), ESearchCase::IgnoreCase)
+		&& !NormalizedLevel.Equals(TEXT("Tutorial"), ESearchCase::IgnoreCase))
+	{
+		return TEXT("/Engine/Maps/Entry");
+	}
 	return BHResolveLevelMapPackage(NormalizedLevel);
 }
 
@@ -14564,7 +14735,7 @@ FString ABHGameMode::BuildTravelOptionsForLevel(const FString& LevelName, bool b
 	FString TravelURL = FString::Printf(TEXT("%s?listen?BHFogPreset=%s?BHStageIndex=%d"),
 		*BaseMap,
 		*FogPresetToString(NextFogPreset),
-		FMath::Clamp(StageIndex, 0, 2));
+		FMath::Clamp(StageIndex, 0, GetMaxStageIndex()));
 
 	if (bIntermission)
 	{
@@ -14613,6 +14784,40 @@ FString ABHGameMode::BuildTravelOptionsForLevel(const FString& LevelName, bool b
 	if (bTestMode && !bIntermission)
 	{
 		TravelURL += TEXT("?BHTestMode=1");
+	}
+
+	// Host lobby customization carried across EVERY hop (incl. the intermission) so it does not silently
+	// revert mid-route -- inter-stage options are reconstructed from member state, not the original URL.
+	if (bRevisionMode)
+	{
+		TravelURL += FString::Printf(TEXT("?BHStartDifficulty=%s?BHMinDifficulty=%s?BHMaxDifficulty=%s"),
+			*FBHLessonPresetStore::QuestionDifficultyToString(RevisionStartingDifficulty),
+			*FBHLessonPresetStore::QuestionDifficultyToString(RevisionMinDifficulty),
+			*FBHLessonPresetStore::QuestionDifficultyToString(RevisionMaxDifficulty));
+		if (!RevisionQuestionSetId.IsEmpty())
+		{
+			TravelURL += FString::Printf(TEXT("?BHQuestionSet=%s"), *RevisionQuestionSetId);
+		}
+	}
+	if (RuntimeMapRoute.Num() > 0)
+	{
+		TravelURL += FString::Printf(TEXT("?BHMapRoute=%s"), *FBHLessonPresetStore::MapRouteToString(RuntimeMapRoute));
+	}
+	if (LayoutSeed > 0)
+	{
+		TravelURL += FString::Printf(TEXT("?BHLayoutSeed=%d"), LayoutSeed);
+	}
+	if (LayoutBreakerCount > 0)
+	{
+		TravelURL += FString::Printf(TEXT("?BHBreakerCount=%d"), LayoutBreakerCount);
+	}
+	if (LayoutDensity > 0)
+	{
+		TravelURL += FString::Printf(TEXT("?BHLayoutDensity=%d"), LayoutDensity);
+	}
+	if (bForceProceduralLayout)
+	{
+		TravelURL += TEXT("?BHForceProcedural=1");
 	}
 
 	// Non-seamless ServerTravel rebuilds AGameSession, whose MaxPlayers resets to the engine default (16)
