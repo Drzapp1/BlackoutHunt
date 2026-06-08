@@ -2651,6 +2651,9 @@ void ABHCharacter::MarkCaptured()
 	}
 
 	ExitLocker();
+	// Drop any half-RTT flow-chain request still buffered so a captured pawn can't fire a phantom roll on its way out.
+	BufferedChainMove = EBHMovementSpecialState::None;
+	BufferedChainMoveServerTime = -999.0f;
 
 	if (ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>())
 	{
@@ -2674,6 +2677,9 @@ void ABHCharacter::MarkEscaped()
 	}
 
 	ExitLocker();
+	// Drop any half-RTT flow-chain request still buffered so an escaped pawn can't fire a phantom roll on its way out.
+	BufferedChainMove = EBHMovementSpecialState::None;
+	BufferedChainMoveServerTime = -999.0f;
 
 	if (ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>())
 	{
@@ -2755,6 +2761,9 @@ void ABHCharacter::ResetRoleWarmupStateForRoundStart()
 	// Never let the tutorial-only capture shield survive into a live round (e.g. an abandoned tutorial whose pawn is
 	// reused) -- a round always starts with the student fully capturable.
 	bTutorialCaptureImmune = false;
+	// Drop any half-RTT flow-chain request still buffered from the previous round so it can't fire a phantom roll.
+	BufferedChainMove = EBHMovementSpecialState::None;
+	BufferedChainMoveServerTime = -999.0f;
 	EndInteractAuthority(CurrentServerInteractTarget);
 	CurrentInteractTarget = nullptr;
 	CurrentServerInteractTarget = nullptr;
@@ -3374,6 +3383,16 @@ void ABHCharacter::StartCrouch()
 
 	if (IsSpecialMoveActive())
 	{
+		// Remote-client flow-chain: the owning client still shows the current roll active for ~half-RTT after it has
+		// actually ended on the server, so a chain press during that tail would be dropped here and never reach the
+		// server. Forward it anyway when sprinting -- the server buffers it and fires the chained roll the instant the
+		// current move ends (see ServerStartSpecialMove / FinishSpecialMoveAuthority). No cosmetic is started here; the
+		// chained roll's camera is re-stamped by ClientNotifyPerfectChain when the link lands. The listen-server host
+		// (authority) has no lag and no buffer, so it keeps the original early-out and chains via direct timing.
+		if (!HasAuthority() && bSprintInputHeld && !IsProne())
+		{
+			ServerStartSpecialMove(EBHMovementSpecialState::Rolling, false, false);
+		}
 		return;
 	}
 
@@ -3484,8 +3503,32 @@ bool ABHCharacter::IsSpecialMoveWallBonk() const
 	return bSpecialMoveHitWall;
 }
 
-void ABHCharacter::ClientNotifyPerfectChain_Implementation(int32 ChainCount)
+void ABHCharacter::ClientNotifyPerfectChain_Implementation(int32 ChainCount, EBHMovementSpecialState ChainedMove)
 {
+	// Re-stamp the POV camera clock for the owning client so a chained move replays its camera spin even when the
+	// authoritative None->ChainedMove transition coalesced in replication. That happens specifically on the buffered
+	// remote path: the server fires the chained link in the SAME frame the previous move ended (Rolling->None->Rolling
+	// nets to Rolling), so MovementSpecialState never changes on the client and OnRep_MovementSpecialState -- which is
+	// what normally re-stamps the clock -- never fires. This reliable RPC always lands, so it is the dependable hook.
+	// Only re-stamp when the local clock is stale: the predicted (non-buffered) path already stamped a fresh clock via
+	// StartCosmeticSpecialMove, and re-stamping that would hitch the camera mid-spin.
+	if (BHIsTransientSpecialMove(ChainedMove) && GetWorld())
+	{
+		const float Now = GetWorld()->GetTimeSeconds();
+		// Re-stamp ONLY when the local POV clock is genuinely OLD. We deliberately key off clock AGE alone and NOT
+		// (LocalSpecialAnimState != ChainedMove): when the authoritative roll replicates in, ApplyMovementSpecialState
+		// calls ClearCosmeticSpecialMove which nulls LocalSpecialAnimState to None (while leaving the start time intact),
+		// so a state-mismatch test would be spuriously true on the PREDICTED path and re-stamp a fresh predicted clock --
+		// hitching a spin that was already running correctly. Age alone preserves a good prediction (clock age ~ half-RTT,
+		// under the threshold) yet still fires on the BUFFERED path, where the clock is the PREVIOUS roll's start and is
+		// stale by a full move duration (~0.5s). The threshold sits between those two regimes.
+		if ((Now - LocalSpecialAnimStartTime) > 0.25f)
+		{
+			LocalSpecialAnimStartTime = Now;
+			LocalSpecialAnimState = ChainedMove;
+		}
+	}
+
 	// Cosmetic only: unlock the perfect_chain achievement (-> the Afterimage tint) on the owning client.
 	if (UWorld* World = GetWorld())
 	{
@@ -4042,7 +4085,16 @@ bool ABHCharacter::TryStartSpecialMoveAuthority(EBHMovementSpecialState Requeste
 		&& PerfectChainCount < CVarBHMomentumChainMaxLinks.GetValueOnGameThread())
 	{
 		const float SinceEnded = Now - LastSpecialMoveEndedTime;
-		if (SinceEnded >= 0.0f && SinceEnded <= CVarBHMomentumChainWindow.GetValueOnGameThread())
+		// Latency compensation: this runs on authority, but for a REMOTE client the ServerStartSpecialMove RPC only
+		// reaches us ~RTT after the player actually pressed (and the move-end they reacted to was itself delayed
+		// downstream). Measured in server time, SinceEnded is therefore inflated by the full round trip, so without
+		// compensation the flow-chain window is effectively (window - RTT) -- unhittable on any real connection, even
+		// though it lands fine on a listen server (RTT 0). Add the controlling client's round-trip time back so the
+		// player's *reaction* budget matches local-play feel. Clamped so a very high ping can't buy an absurd free
+		// window. GetPingInMilliseconds() returns the server-accurate ExactPing (round-trip) in our authority context.
+		const float ChainWindow = CVarBHMomentumChainWindow.GetValueOnGameThread()
+			+ FMath::Clamp(BHPS->GetPingInMilliseconds() * 0.001f, 0.0f, 0.35f);
+		if (SinceEnded >= 0.0f && SinceEnded <= ChainWindow)
 		{
 			bPerfectChain = true;
 			SpecialMoveMomentumScale = CVarBHMomentumChainSpeedScale.GetValueOnGameThread();
@@ -4117,7 +4169,7 @@ bool ABHCharacter::TryStartSpecialMoveAuthority(EBHMovementSpecialState Requeste
 	if (bPerfectChain)
 	{
 		++PerfectChainCount;
-		ClientNotifyPerfectChain(PerfectChainCount);
+		ClientNotifyPerfectChain(PerfectChainCount, RequestedState);
 		MarkTutorialAction(TutorialActFlowChainBit); // movement-tutorial: a frame-perfect flow-chain link landed
 		// Greed tell: the link that reaches the chain cap broadcasts a single loud "overextension" burst, so a master
 		// who pushes the chain to its limit pays the noise economy back even though the earlier links were quiet.
@@ -4199,6 +4251,25 @@ void ABHCharacter::FinishSpecialMoveAuthority()
 			{
 				ExitMove->Velocity = ExitDir * FMath::Clamp(ExitSpeed, 0.0f, ExitMove->MaxWalkSpeed);
 			}
+		}
+	}
+
+	// Remote-client flow-chain: a link buffered while this move was still running now fires as a frame-perfect chain --
+	// LastSpecialMoveEndedTime was just stamped at the top of this function, so the chain window opens with SinceEnded
+	// ~ 0. Re-validate through the authority path; an expired (>0.30s) or now-invalid buffer simply no-ops. Cleared
+	// before the call so a rejected re-attempt cannot loop. The server emits Rolling->None->Rolling within this single
+	// frame, so the replicated state nets to Rolling and OnRep never fires on the owning client -- ClientNotifyPerfectChain
+	// (sent by the successful TryStart below) is what re-stamps that client's roll camera.
+	if (BufferedChainMove != EBHMovementSpecialState::None)
+	{
+		const float NowFinish = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+		const EBHMovementSpecialState PendingMove = BufferedChainMove;
+		const bool bFresh = (NowFinish - BufferedChainMoveServerTime) <= 0.30f;
+		BufferedChainMove = EBHMovementSpecialState::None;
+		BufferedChainMoveServerTime = -999.0f;
+		if (bFresh)
+		{
+			TryStartSpecialMoveAuthority(PendingMove, false, false);
 		}
 	}
 	ForceNetUpdate();
@@ -7695,6 +7766,21 @@ void ABHCharacter::ServerSetSprinting_Implementation(bool bNewSprinting)
 
 void ABHCharacter::ServerStartSpecialMove_Implementation(EBHMovementSpecialState RequestedState, bool bEndProne, bool bEndProneRequiresInput)
 {
+	// Remote-client flow-chain buffer: if a transient move is already running, the client pressed the next link a hair
+	// early -- it still shows the current move for ~half-RTT after the server ended it. Record the request instead of
+	// rejecting it; FinishSpecialMoveAuthority fires it the moment the current move ends, so a remote player chains with
+	// the same rhythm as the listen-server host. The buffered fire re-validates through TryStartSpecialMoveAuthority
+	// (sprint/stamina/space/chain window), so a stale or now-invalid request simply no-ops.
+	if (IsSpecialMoveActive() && BHIsTransientSpecialMove(RequestedState))
+	{
+		const ABHPlayerState* ChainPS = GetPlayerState<ABHPlayerState>();
+		if (ChainPS && ChainPS->IsAliveSurvivor())
+		{
+			BufferedChainMove = RequestedState;
+			BufferedChainMoveServerTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+			return;
+		}
+	}
 	TryStartSpecialMoveAuthority(RequestedState, bEndProne, bEndProneRequiresInput);
 }
 

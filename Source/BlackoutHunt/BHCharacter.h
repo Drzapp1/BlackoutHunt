@@ -310,6 +310,10 @@ public:
 	// is client-local, so the server can't write it directly -- it asks the owning client to.
 	UFUNCTION(Client, Reliable)
 	void ClientGrantAchievement(FName AchievementId, const FString& ToastMessage);
+	// Same bridge for collectable relics: the server tells the owning client to record a found relic in its
+	// (client-local) account and toast it. Called by ABHCollectable on collect.
+	UFUNCTION(Client, Reliable)
+	void ClientRecordCollectable(FName CollectableId, const FString& ToastMessage);
 
 	// Easter-egg hook: the server tells the owning client it completed a train activity (type 0..3) -> Tourist progress.
 	UFUNCTION(Client, Reliable)
@@ -482,7 +486,7 @@ protected:
 	// Momentum tech: the server tells the owning client they nailed a frame-perfect chain, so the client can
 	// unlock the (cosmetic) perfect_chain achievement locally and show a brief cue.
 	UFUNCTION(Client, Reliable)
-	void ClientNotifyPerfectChain(int32 ChainCount);
+	void ClientNotifyPerfectChain(int32 ChainCount, EBHMovementSpecialState ChainedMove);
 
 	UFUNCTION(Server, Reliable)
 	void ServerTryCapture();
@@ -924,6 +928,13 @@ protected:
 	float LastSpecialMoveEndedTime = -999.0f;
 	int32 PerfectChainCount = 0;
 	float SpecialMoveMomentumScale = 1.0f;
+	// Remote-client flow-chain buffer (server-only, never replicated): a chain press from a REMOTE client arrives
+	// while the previous move is still active server-side -- it was pressed during the ~half-RTT replication tail
+	// where the owning client still shows the move running. Rather than drop it (the listen-server host never hits
+	// this because RTT is 0), the server records the requested link here and fires it the instant the current move
+	// ends (FinishSpecialMoveAuthority), so a remote player chains with the same rhythm as the host. Auto-expires.
+	EBHMovementSpecialState BufferedChainMove = EBHMovementSpecialState::None;
+	float BufferedChainMoveServerTime = -999.0f;
 	// Quiet-roll discipline (bh.QuietRoll): set true if the active roll/slide/dive bonked a wall (MoveHit blocked),
 	// so the roll-impact stimulus fires LOUD (sloppy) while a clean, full-distance roll fires quiet (a stealth reward).
 	bool bSpecialMoveHitWall = false;
