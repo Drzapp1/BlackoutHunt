@@ -472,6 +472,8 @@ namespace
 			const FSimpleDelegate ExternalOnHovered = InArgs._OnHovered;
 			const FSimpleDelegate ExternalOnUnhovered = InArgs._OnUnhovered;
 			const FOnClicked ExternalOnClicked = InArgs._OnClicked;
+			// Base (caller-supplied) button colour; hover lerps it toward the theme ember accent.
+			const TAttribute<FSlateColor> BaseColorAttr = InArgs._ButtonColorAndOpacity;
 
 			SButton::Construct(SButton::FArguments()
 				.ButtonStyle(InArgs._ButtonStyle)
@@ -510,7 +512,26 @@ namespace
 					return ExternalOnClicked.IsBound() ? ExternalOnClicked.Execute() : FReply::Handled();
 				}))
 				.ContentScale(InArgs._ContentScale)
-				.ButtonColorAndOpacity(InArgs._ButtonColorAndOpacity)
+				// Restrained hover/press feedback: lerp the caller's colour toward the ember accent on hover,
+				// brighten on press. Wires the theme AccentBright/hover roles into real feedback across every
+				// button (tabs, START, host/join/classroom) without per-call-site edits.
+				.ButtonColorAndOpacity(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateLambda([BaseColorAttr, bPressed, bHovered]()
+				{
+					const FSlateColor BaseSlate = BaseColorAttr.Get();
+					const FLinearColor Base = BaseSlate.IsColorSpecified() ? BaseSlate.GetSpecifiedColor() : FLinearColor::White;
+					if (*bPressed)
+					{
+						return FSlateColor(Base * 1.15f);
+					}
+					if (*bHovered)
+					{
+						const FLinearColor Ember = BHResolveActiveThemeColor(&FBHMenuTheme::AccentBright);
+						FLinearColor Out = FMath::Lerp(Base, Ember, 0.32f);
+						Out.A = Base.A;
+						return FSlateColor(Out);
+					}
+					return FSlateColor(Base);
+				})))
 				.ForegroundColor(InArgs._ForegroundColor)
 				.IsFocusable(InArgs._IsFocusable)
 				.PressedSoundOverride(FSlateSound())
@@ -3714,11 +3735,16 @@ FSlateColor SBHMainMenu::GetMenuTabColor(EBHMainMenuTab Tab) const
 		return FSlateColor(BHResolveActiveThemeColor(&FBHMenuTheme::Accent));
 	}
 
-	return FSlateColor(BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle));
+	// Idle tabs recede into the near-black panel.
+	FLinearColor Idle = BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle);
+	Idle.A = 0.85f;
+	return FSlateColor(Idle);
 }
 
 FText SBHMainMenu::GetMenuTabLabel(EBHMainMenuTab Tab, FText BaseLabel) const
 {
+	// High-contrast uppercase tab labels.
+	FString Label = BaseLabel.ToString().ToUpper();
 	if (Tab == EBHMainMenuTab::Achievements)
 	{
 		const ABHPlayerController* PC = PlayerController.Get();
@@ -3727,10 +3753,10 @@ FText SBHMainMenu::GetMenuTabLabel(EBHMainMenuTab Tab, FText BaseLabel) const
 		const int32 Unseen = AccountSubsystem ? AccountSubsystem->GetUnseenAchievementCount() : 0;
 		if (Unseen > 0)
 		{
-			return FText::FromString(FString::Printf(TEXT("%s  (%d)"), *BaseLabel.ToString(), Unseen));
+			return FText::FromString(FString::Printf(TEXT("%s  (%d)"), *Label, Unseen));
 		}
 	}
-	return BaseLabel;
+	return FText::FromString(Label);
 }
 
 FSlateColor SBHMainMenu::GetMenuTabTextColor(EBHMainMenuTab Tab) const
@@ -4970,13 +4996,35 @@ TSharedRef<SWidget> SBHMainMenu::BuildStartScreen()
 		[
 			SNew(SImage)
 			.Image(TAttribute<const FSlateBrush*>::Create(TAttribute<const FSlateBrush*>::FGetter::CreateSP(this, &SBHMainMenu::GetStartBackgroundBrush)))
-			.ColorAndOpacity(FLinearColor(0.94f, 0.91f, 0.88f, 0.960f))
+			// Moody, slightly desaturated hero that "browns out" on the light flicker.
+			.ColorAndOpacity(TAttribute<FSlateColor>::Create([this]() {
+				const float D = 0.78f + 0.22f * FlickerAlpha;
+				return FSlateColor(FLinearColor(0.80f * D, 0.77f * D, 0.73f * D, 0.96f));
+			}))
 		]
+		// Deep, slowly "breathing" scrim that crushes the backdrop toward black for the horror mood.
 		+ SOverlay::Slot()
 		[
 			SNew(SBorder)
+			.Visibility(EVisibility::HitTestInvisible)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Background, 0.240f))
+			.BorderBackgroundColor(TAttribute<FSlateColor>::Create([this]() {
+				FLinearColor C = BHResolveActiveThemeColor(&FBHMenuTheme::Background);
+				C.A = 0.46f * VignettePulse;
+				return FSlateColor(C);
+			}))
+		]
+		// Faint animated film-grain shimmer (no texture needed: a low-alpha warm-dark wash whose alpha
+		// jitters per frame from the Tick-driven GrainPhase). Sits below the content so text stays crisp.
+		+ SOverlay::Slot()
+		[
+			SNew(SBorder)
+			.Visibility(EVisibility::HitTestInvisible)
+			.BorderImage(WhiteBrush())
+			.BorderBackgroundColor(TAttribute<FSlateColor>::Create([this]() {
+				const float A = 0.035f + 0.022f * FMath::Sin(GrainPhase * 6.2831853f);
+				return FSlateColor(FLinearColor(0.05f, 0.045f, 0.040f, A));
+			}))
 		]
 		+ SOverlay::Slot()
 		.HAlign(HAlign_Fill)
@@ -4987,7 +5035,12 @@ TSharedRef<SWidget> SBHMainMenu::BuildStartScreen()
 			[
 				SNew(SBorder)
 				.BorderImage(WhiteBrush())
-				.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Danger, 0.800f))
+				// Top accent bar pulses with the failing-light flicker.
+				.BorderBackgroundColor(TAttribute<FSlateColor>::Create([this]() {
+					FLinearColor C = BHResolveActiveThemeColor(&FBHMenuTheme::Danger);
+					C.A = 0.80f * FlickerAlpha;
+					return FSlateColor(C);
+				}))
 			]
 		]
 		+ SOverlay::Slot()
@@ -5016,20 +5069,53 @@ TSharedRef<SWidget> SBHMainMenu::BuildStartScreen()
 			+ SVerticalBox::Slot()
 			.AutoHeight()
 			[
-				SNew(STextBlock)
-				.Font(MenuFont(52, FName(TEXT("Bold"))))
-				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
-				.ShadowOffset(FVector2D(3.0f, 3.0f))
-				.ShadowColorAndOpacity(FLinearColor(0.35f, 0.0f, 0.0f, 1.0f))
-				.Text(FText::FromString(TEXT("BLACKOUT HUNT")))
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					SNew(STextBlock)
+					.Font(MenuFont(46, FName(TEXT("Bold"))))
+					// Bone-white carrying a faint ember tint, dimmed by the failing-light flicker.
+					.ColorAndOpacity(TAttribute<FSlateColor>::Create([this]() {
+						const FLinearColor H = BHResolveActiveThemeColor(&FBHMenuTheme::Header);
+						const FLinearColor A = BHResolveActiveThemeColor(&FBHMenuTheme::AccentBright);
+						FLinearColor C = FMath::Lerp(H, A, 0.18f) * FlickerAlpha;
+						C.A = 1.0f;
+						return FSlateColor(C);
+					}))
+					.ShadowOffset(FVector2D(3.0f, 4.0f))
+					.ShadowColorAndOpacity(TAttribute<FLinearColor>::Create([this]() {
+						return FLinearColor(0.32f, 0.0f, 0.0f, 0.85f * FlickerAlpha);
+					}))
+					.Text(FText::FromString(TEXT("B L A C K O U T   H U N T")))
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(3.0f, 9.0f, 0.0f, 0.0f)
+				.HAlign(HAlign_Left)
+				[
+					SNew(SBox)
+					.HeightOverride(2.0f)
+					.WidthOverride(360.0f)
+					[
+						SNew(SBorder)
+						.Visibility(EVisibility::HitTestInvisible)
+						.BorderImage(WhiteBrush())
+						.BorderBackgroundColor(TAttribute<FSlateColor>::Create([this]() {
+							FLinearColor C = BHResolveActiveThemeColor(&FBHMenuTheme::Accent);
+							C.A = 0.6f + 0.4f * FlickerAlpha;
+							return FSlateColor(C);
+						}))
+					]
+				]
 			]
 			+ SVerticalBox::Slot()
 			.AutoHeight()
-			.Padding(2.0f, 4.0f, 0.0f, 22.0f)
+			.Padding(3.0f, 10.0f, 0.0f, 22.0f)
 			[
 				SNew(STextBlock)
-				.Font(MenuFont(15))
-				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
+				.Font(MenuFont(14))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 				.Text(FText::FromString(TEXT("The lights are out. Something is listening.")))
 			]
 			+ SVerticalBox::Slot()
@@ -5113,15 +5199,38 @@ TSharedRef<SWidget> SBHMainMenu::BuildStartScreen()
 
 TSharedRef<SWidget> SBHMainMenu::BuildMenuTabButton(EBHMainMenuTab Tab, const FText& Label)
 {
-	return SNew(SBHMenuButton)
-		.ButtonColorAndOpacity(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateSP(this, &SBHMainMenu::GetMenuTabColor, Tab)))
-		.ContentPadding(FMargin(16.0f, 8.0f))
-		.OnClicked(this, &SBHMainMenu::OnMenuTabClicked, Tab)
+	return SNew(SVerticalBox)
+		+ SVerticalBox::Slot()
+		.AutoHeight()
 		[
-			SNew(STextBlock)
-			.Font(MenuFont(12, FName(TEXT("Bold"))))
-			.ColorAndOpacity(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateSP(this, &SBHMainMenu::GetMenuTabTextColor, Tab)))
-			.Text(TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &SBHMainMenu::GetMenuTabLabel, Tab, Label)))
+			SNew(SBHMenuButton)
+			.ButtonColorAndOpacity(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateSP(this, &SBHMainMenu::GetMenuTabColor, Tab)))
+			.ContentPadding(FMargin(16.0f, 8.0f))
+			.OnClicked(this, &SBHMainMenu::OnMenuTabClicked, Tab)
+			[
+				SNew(STextBlock)
+				.Font(MenuFont(12, FName(TEXT("Bold"))))
+				.ColorAndOpacity(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateSP(this, &SBHMainMenu::GetMenuTabTextColor, Tab)))
+				.Text(TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &SBHMainMenu::GetMenuTabLabel, Tab, Label)))
+			]
+		]
+		// Accent selection underline beneath the active tab (non-interactive).
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(3.0f, 2.0f, 3.0f, 0.0f)
+		[
+			SNew(SBox)
+			.HeightOverride(3.0f)
+			[
+				SNew(SBorder)
+				.Visibility(EVisibility::HitTestInvisible)
+				.BorderImage(WhiteBrush())
+				.BorderBackgroundColor(TAttribute<FSlateColor>::Create([this, Tab]() {
+					FLinearColor C = BHResolveActiveThemeColor(&FBHMenuTheme::AccentBright);
+					C.A = (ActiveMenuTab == Tab) ? 0.95f : 0.0f;
+					return FSlateColor(C);
+				}))
+			]
 		];
 }
 
