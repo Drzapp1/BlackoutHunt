@@ -398,7 +398,10 @@ protected:
 	// flickering value driven by FlashlightPulseTime so the beam stutters and nearly dies.
 	float ComputeBlackoutFlashlightFlicker() const;
 	void TryBHopJump();
-	bool TryStartSpecialMoveAuthority(EBHMovementSpecialState RequestedState, bool bEndProne, bool bEndProneRequiresInput);
+	// bLandingRoll: the call originates from Landed() (a confirmed touchdown), where the CharacterMovement mode has
+	// NOT yet flipped from Falling to Walking (UE calls Landed() before SetPostLandedPhysics), so IsMovingOnGround()
+	// is still false. Treat it as grounded so the drop-roll actually fires instead of being rejected/re-buffered.
+	bool TryStartSpecialMoveAuthority(EBHMovementSpecialState RequestedState, bool bEndProne, bool bEndProneRequiresInput, bool bLandingRoll = false);
 	bool ValidateSpecialMoveSpaceAuthority(EBHMovementSpecialState RequestedState, const FBHMovementSpecialTuning& Tuning, FString& OutFailureReason) const;
 	// Vault/mantle helper (ships dark behind bh.VaultTech): if a special move's forward hit is a low, vaultable ledge
 	// with clear headroom + floor on the far side, hop over it (consuming Curve.VerticalImpulse) and return true.

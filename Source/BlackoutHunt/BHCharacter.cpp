@@ -2365,7 +2365,11 @@ void ABHCharacter::Landed(const FHitResult& Hit)
 	if ((bHeldDropRoll || bBufferedDropRoll) && !IsSpecialMoveActive() && !IsProne())
 	{
 		LastDropRollInputTime = -999.0f;
-		if (TryStartSpecialMoveAuthority(EBHMovementSpecialState::Rolling, false, false))
+		// bLandingRoll = true: we are inside Landed(), where IsMovingOnGround() is still false (the mode flips to Walking
+		// only in SetPostLandedPhysics, AFTER this notify returns). Without this, the roll hit the airborne gate and was
+		// silently re-buffered every landing -- the reason "hold Shift+Ctrl through the landing" never fired (dive worked
+		// because diving is exempt from the ground gate).
+		if (TryStartSpecialMoveAuthority(EBHMovementSpecialState::Rolling, false, false, /*bLandingRoll=*/true))
 		{
 			MarkTutorialAction(TutorialActDropRollBit); // movement-tutorial: a drop-roll specifically fired
 			return; // silent landing: the roll-start stimulus replaces the hard-landing thud
@@ -4011,7 +4015,7 @@ static TAutoConsoleVariable<int32> CVarBHHatsFollowHead(
 	TEXT("1 (default) = procedural headwear attaches to the skeletal head bone so it follows the head through crouch/prone/animation; 0 = anchor to the role mesh's bounds top (the previous static behavior)."),
 	ECVF_Default);
 
-bool ABHCharacter::TryStartSpecialMoveAuthority(EBHMovementSpecialState RequestedState, bool bEndProne, bool bEndProneRequiresInput)
+bool ABHCharacter::TryStartSpecialMoveAuthority(EBHMovementSpecialState RequestedState, bool bEndProne, bool bEndProneRequiresInput, bool bLandingRoll)
 {
 	if (!HasAuthority() || !CanAct() || !GetWorld())
 	{
@@ -4029,8 +4033,10 @@ bool ABHCharacter::TryStartSpecialMoveAuthority(EBHMovementSpecialState Requeste
 
 	UCharacterMovementComponent* Movement = GetCharacterMovement();
 	// Diving may launch from the AIR (it is bound to Space-then-Alt: jump, then dive). Roll/Slide still require
-	// solid ground -- a roll requested in the air is instead buffered for a drop-roll on landing.
-	if (!Movement || (!Movement->IsMovingOnGround() && RequestedState != EBHMovementSpecialState::Diving))
+	// solid ground -- a roll requested in the air is instead buffered for a drop-roll on landing. bLandingRoll is the
+	// exception: it comes from Landed() on a confirmed touchdown where the movement mode has not yet flipped to Walking
+	// (UE notifies Landed() before SetPostLandedPhysics), so IsMovingOnGround() is momentarily false; honour it as grounded.
+	if (!Movement || (!Movement->IsMovingOnGround() && !bLandingRoll && RequestedState != EBHMovementSpecialState::Diving))
 	{
 		// Drop-roll: a roll requested in the air (Sprint held + Crouch) just before landing is BUFFERED rather than
 		// simply rejected, so Landed() can fire it on touchdown and suppress the hard-landing noise. Only the roll,
