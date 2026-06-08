@@ -252,7 +252,7 @@ void ABHTutorialDirector::EnterStep(EStep NewStep)
 	case EStep::Hide:
 		bHideRegistered = false;
 		HideScareServerTime = 0.0f;
-		Broadcast(TEXT("The TEACHER is closing in - get to the LOCKER (follow the marker) and press E to hide! Inside, it CANNOT grab you - it'll search, then give up. You pop out a few steps away, so it can't camp the door."), 16.0f);
+		Broadcast(TEXT("Lockers are your hiding spots - get to the LOCKER (follow the marker) and press E to climb in. Inside, you're completely hidden and safe."), 14.0f);
 		break;
 	case EStep::Crawl:
 		Broadcast(TEXT("Hold LEFT CTRL to CROUCH - quieter and lower for sneaking. For the low CRAWL DUCT ahead (follow the marker) go all the way down: tap LEFT ALT for prone, then crawl in. A standing Teacher can't follow."), 16.0f);
@@ -447,15 +447,15 @@ void ABHTutorialDirector::EvaluateStep()
 		}
 		break;
 	case EStep::Hide:
-		// Staged scare: the moment the student hides, record the time so the loomed Teacher (driven in
-		// DriveScriptedCast -> DriveTeacherToLocker) comes to SEARCH the locker for ~2s and then gives up via the
-		// DriveTeacherChase locker-retreat - proving the locker's capture-immunity with real stakes. The next prompt
-		// must NOT fire while they are still inside (they can't see/act on it), so advance only once they climb out.
+		// Teach the locker as a hiding spot on its own merits -- NO staged Teacher search here (it read as a promise of
+		// an event that didn't visibly happen, and the Teacher is too early to foreground at this step; it stays a
+		// distant loom). The next prompt must NOT fire while they are still inside (they can't see/act on it), so
+		// advance only once they climb out. HideScareServerTime is kept (harmless) so the gate logic below is untouched.
 		if (!bHideRegistered && Survivor && Survivor->IsHiddenInLocker())
 		{
 			bHideRegistered = true;
 			HideScareServerTime = GetWorld()->GetTimeSeconds();
-			Broadcast(TEXT("It's right outside - but it CAN'T reach you in here. Watch: it searches... and gives up. When you climb out (press E) you reappear a few steps from the locker, not at the door, so it can't corner you."), 12.0f);
+			Broadcast(TEXT("You're hidden now - completely out of sight. When you climb out (press E) you reappear a few steps away, not right at the door, so you can slip out somewhere safer."), 12.0f);
 		}
 		if ((bHideRegistered && Survivor && !Survivor->IsHiddenInLocker()) || Elapsed >= 28.0f)
 		{
@@ -692,12 +692,7 @@ void ABHTutorialDirector::DriveScriptedCast()
 		{
 			// Teaching half: brain off; the director scripts all motion so the Teacher behaves exactly as intended.
 			if (TeacherCtrl) { TeacherCtrl->SetScriptedHoldPosition(true); }
-			if (CurrentStep == EStep::Hide)
-			{
-				// Staged scare: drive the loomed Teacher to search the locker, then give up (no-ops if no Teacher).
-				DriveTeacherToLocker();
-			}
-			else if (CurrentStep == EStep::Decoy)
+			if (CurrentStep == EStep::Decoy)
 			{
 				// Misdirection demo: pull the loomed Teacher toward the dropped decoy so the trick is visibly proven.
 				DriveTeacherToDecoy();
