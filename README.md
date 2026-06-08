@@ -66,10 +66,11 @@ For machines without a dedicated GPU, keep `Auto` enabled or use `Low 4GB` plus 
 - `M` or `I`: HUD map
 - `V`: cycle reticle style
 - `F1-F6`: use owned train/shop powerups
-- `Space`: jump / hold to bunny hop
+- `Space`: jump — tap to bunny-hop (chain jumps at sprint speed; airborne the sprint stamina drain stops, so a clean chain is cheaper than holding Shift)
 - `Shift`: sprint
-- `Left Ctrl`: crouch / sprint roll
-- `Left Alt`: prone / sprint slide; combine with `Space` while moving for a dive
+- `Left Ctrl`: crouch / **roll** while sprinting (Sprint + Ctrl) / **drop-roll** (hold Shift+Ctrl through a landing for a silent touchdown)
+- `Left Alt`: prone / **slide** while sprinting (Sprint + Alt)
+- **Dive**: jump (`Space`) then tap `Left Alt` in the air while moving — a committed forward escape that ends prone
 - `Mouse1`: Teacher capture
 - `Q`: Teacher heartbeat scan / Hall Monitor real hint
 - `R`: Teacher blackout / Hall Monitor false hint

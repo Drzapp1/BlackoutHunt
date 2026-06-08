@@ -53,7 +53,11 @@ enum class EBHTutorialPhase : uint8
 	Monitor UMETA(DisplayName = "Monitor"),
 	// Standalone "advanced movement" lesson: walk, sprint, crouch, prone, jump, bunny-hop, then the special-move
 	// links (roll / slide / dive). Not part of the chained Survivor->Teacher->Monitor course; returns to the menu.
-	Movement UMETA(DisplayName = "Movement")
+	Movement UMETA(DisplayName = "Movement"),
+	// Hidden easter-egg HUB reached by pressing Escape at the main menu: a clear central room branching to sector
+	// rooms (trophy/stats, arcade, dev/credits, an eerie nook) and skill-training rooms, plus a secret room mapping
+	// the hidden easter eggs around the levels. Reuses the tutorial map + director; standalone, returns to the menu.
+	EasterEgg UMETA(DisplayName = "EasterEgg")
 };
 
 UENUM(BlueprintType)
@@ -440,6 +444,21 @@ enum class EBHPOVAnimIntensity : uint8
 	Punchy
 };
 
+// Dodge-roll camera style, a motion-sickness accessibility setting (persisted in GConfig [BlackoutHunt.Comfort]
+// RollCamStyle). The roll camera always pitches FORWARD (down -> up); the style sets how far:
+//   Off    - no camera motion on a roll.
+//   Subtle - a small forward dip and recover.
+//   Dip    - a strong forward nod (down then back up), no full revolution. The comfortable default.
+//   Full   - a complete forward somersault (down -> over the top -> back up).
+UENUM(BlueprintType)
+enum class EBHRollCamStyle : uint8
+{
+	Off,
+	Subtle,
+	Dip,
+	Full
+};
+
 // Procedural, asset-free first-person camera animation layer (additive camera tilt/roll/punch
 // synced to rolls, slides, dives, and the capture swing) plus the Hunter third-person body lunge.
 // All magnitudes are authored at the "Moderate" level and scaled by Intensity, then by
@@ -458,9 +477,10 @@ struct FBHPOVAnimationTuning
 	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|POV", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float ReducedMotionScale = 0.30f;
 
-	// Roll (degrees / cm)
+	// Roll (degrees / cm). RollSpinDegrees is the full lateral barrel-roll the camera sweeps over a roll; 360 = one
+	// clean revolution that ends upright (driven directly in UpdatePOVAnimation, NOT through the interp).
 	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|POV")
-	float RollSpinDegrees = 320.0f;
+	float RollSpinDegrees = 360.0f;
 	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|POV")
 	float RollPitchDipDeg = 14.0f;
 	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Blackout Hunt|POV")

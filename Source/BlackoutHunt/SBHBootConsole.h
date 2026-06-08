@@ -65,6 +65,8 @@ private:
 	};
 
 	void BuildBootScript();
+	void BuildPrerollLines();
+	TSharedRef<SWidget> BuildPrerollBody();
 	TSharedRef<SWidget> BuildLogBody();
 	TSharedRef<SWidget> BuildCrashDialogLayer();
 	TSharedRef<SWidget> MakeCrashDialog(const FString& Title, const FString& Line1, const FString& Line2) const;
@@ -75,17 +77,26 @@ private:
 	void Finish();
 
 	// ---- timeline ----------------------------------------------------------------------------------
-	// [0, BootScriptDuration]      boot stream
-	// [GlitchStart, BlackStart]    crash: glitch/shake/scramble + stacking error dialogs
-	// [BlackStart, FadeStart]      fully black, brief hold (OnReadyForMenu fires here)
-	// [FadeStart, TotalDuration]   console opacity 1->0, revealing the menu underneath
-	float GlitchStartTime() const { return BootScriptDuration; }
-	float BlackStartTime() const { return GlitchStartTime() + GlitchSeconds; }
+	// [0, PrerollSeconds]                       fast-scrolling raw dev/debug log flood
+	// [PrerollSeconds, +BootScriptDuration]     structured boot stream
+	// [GlitchStart, BSODStart]                  crash: glitch/shake/scramble + error-dialog storm
+	// [BSODStart, BlackStart]                   fake blue-screen "needs to restart" with a progress ramp
+	// [BlackStart, FadeStart]                   fully black, dead-air "reboot" hold (OnReadyForMenu fires)
+	// [FadeStart, TotalDuration]                console opacity 1->0, revealing the menu underneath
+	// Time since the structured boot stream began (negative during the pre-roll).
+	float BootElapsed() const { return Elapsed - PrerollSeconds; }
+	float GlitchStartTime() const { return PrerollSeconds + BootScriptDuration; }
+	float BSODStartTime() const { return GlitchStartTime() + GlitchSeconds; }
+	float BlackStartTime() const { return BSODStartTime() + BSODSeconds; }
 	float FadeStartTime() const { return BlackStartTime() + BlackHoldSeconds; }
 	float TotalDuration() const { return FadeStartTime() + MenuFadeSeconds; }
+	bool InPreroll() const;
 	bool InGlitch() const;
+	bool InBSOD() const;
 	bool IsBlackedOut() const;        // Elapsed >= BlackStart: hide all content, show only the black field
 	float GlitchProgress() const;     // 0..1 across the glitch window
+	// Sharp white flash on each crash transition (failure onset / BSOD cut / reboot). 0 when reduced-flash.
+	float FxFlashAlpha() const;
 
 	// Per-line state derived from Elapsed.
 	float LineStartTime(int32 Index) const;
@@ -103,14 +114,28 @@ private:
 	FText GetMasterPercentText() const;
 	FSlateColor GetMasterBarColor() const;
 
+	// Pre-roll (raw dev/debug log flood).
+	EVisibility GetPrerollVisibility() const;           // visible only during the pre-roll
+	FText GetPrerollLineText(int32 Row) const;
+	FSlateColor GetPrerollLineColor(int32 Row) const;
+
 	// Crash / glitch visuals.
-	EVisibility GetTerminalVisibility() const;          // collapses when blacked out
+	EVisibility GetTerminalVisibility() const;          // hidden during pre-roll; collapses when blacked out
+	EVisibility GetChromeVisibility() const;            // top scanline: visible until blacked out
 	EVisibility GetGlitchFlashVisibility() const;
 	FSlateColor GetGlitchFlashColor() const;            // full-screen flicker tint
 	EVisibility GetFailureBannerVisibility() const;
 	FText GetFailureBannerText() const;
+	FText GetFailureSubText() const;
 	FSlateColor GetFailureBannerColor() const;
 	EVisibility GetCrashDialogVisibility(int32 DialogIndex) const;
+
+	// Fake blue-screen-of-death "reboot" beat -- a discreet "hijack": it loads, freezes for a beat, the
+	// face turns from sad to angry, then it slowly resumes loading (something quietly took over).
+	TSharedRef<SWidget> BuildBSODScreen();
+	EVisibility GetBSODVisibility() const;
+	FText GetBSODProgressText() const;
+	FText GetBSODFaceText() const;
 
 	// Corrupts a string with random glyphs, scaling with the glitch progress. Steady (non-flickering)
 	// when reduced-flash is on.
@@ -118,13 +143,20 @@ private:
 
 	TArray<FBHBootLine> BootLines;
 	TArray<float> LineStartTimes;
+	// Raw log lines the pre-roll scrolls through (looped window).
+	TArray<FString> PrerollLines;
+	// Duration of the fast-scrolling raw log flood that precedes the structured boot stream.
+	float PrerollSeconds = 4.5f;
 	float BootScriptDuration = 5.0f;
-	float GlitchSeconds = 2.2f;
+	float GlitchSeconds = 2.0f;
+	// Fake blue-screen "needs to restart" beat between the glitch storm and the black reboot. Long enough
+	// for the discreet load -> freeze -> angry-face -> slow-resume "hijack".
+	float BSODSeconds = 3.8f;
 	// Dead-air beat on a fully black screen after the crash, before the start screen fades in.
 	float BlackHoldSeconds = 2.0f;
 	float MenuFadeSeconds = 1.6f;
-	// Times (relative to GlitchStart) at which each stacked crash dialog pops in.
-	float CrashDialogDelays[3] = { 0.15f, 0.6f, 1.05f };
+	// Times (relative to GlitchStart) at which each stacked crash dialog pops in -- a fast, escalating storm.
+	float CrashDialogDelays[6] = { 0.08f, 0.26f, 0.46f, 0.68f, 0.92f, 1.18f };
 
 	// The shaken content group (terminal + banner + dialogs); the static black backdrop sits behind it
 	// so the shake never reveals a hard edge.

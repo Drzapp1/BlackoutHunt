@@ -51,6 +51,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Misc/PackageName.h"
 #include "Net/UnrealNetwork.h"
 #include "NiagaraFunctionLibrary.h"
@@ -2269,6 +2270,13 @@ static TAutoConsoleVariable<float> CVarBHMomentumChainNoiseScale(
 	TEXT("bh.MomentumChainNoiseScale"),
 	0.18f,
 	TEXT("Per-link noise reduction for a chained special move (noise *= 1 - k*chainDepth, floored). 0 = off. (Default 0.18)"),
+	ECVF_Default);
+// Dodge-roll camera style override (motion sickness). -1 = use the player's GConfig setting [BlackoutHunt.Comfort]
+// RollCamStyle (default Dip); 0=Off, 1=Subtle, 2=Dip, 3=Full somersault. Reduced-camera-shake comfort clamps to Subtle.
+static TAutoConsoleVariable<int32> CVarBHRollCamStyle(
+	TEXT("bh.RollCamStyle"),
+	-1,
+	TEXT("Dodge-roll camera: -1 = use the player's comfort setting; 0=Off, 1=Subtle, 2=Dip, 3=Full forward somersault."),
 	ECVF_Default);
 // Silent slide-stop: releasing Prone within this early fraction of a Slide brakes into a quiet crouch instead of
 // standing/proning (trades distance for silence). 0 disables the early-brake outcome.
@@ -5772,6 +5780,27 @@ bool ABHCharacter::IsReducedCameraShakeLocal() const
 	return false;
 }
 
+EBHRollCamStyle ABHCharacter::ResolveRollCamStyle() const
+{
+	int32 Style = static_cast<int32>(EBHRollCamStyle::Dip); // comfortable default: a forward nod, no full flip
+	if (GConfig)
+	{
+		GConfig->GetInt(TEXT("BlackoutHunt.Comfort"), TEXT("RollCamStyle"), Style, GGameUserSettingsIni);
+	}
+	const int32 Override = CVarBHRollCamStyle.GetValueOnGameThread();
+	if (Override >= 0)
+	{
+		Style = Override; // dev/console override
+	}
+	Style = FMath::Clamp(Style, static_cast<int32>(EBHRollCamStyle::Off), static_cast<int32>(EBHRollCamStyle::Full));
+	// The reduced-camera-shake comfort toggle caps the roll camera at a gentle dip, whatever style is chosen.
+	if (IsReducedCameraShakeLocal() && Style > static_cast<int32>(EBHRollCamStyle::Subtle))
+	{
+		Style = static_cast<int32>(EBHRollCamStyle::Subtle);
+	}
+	return static_cast<EBHRollCamStyle>(Style);
+}
+
 void ABHCharacter::UpdatePOVAnimation(float DeltaSeconds)
 {
 	if (!Camera)
@@ -5808,14 +5837,26 @@ void ABHCharacter::UpdatePOVAnimation(float DeltaSeconds)
 			{
 			case EBHMovementSpecialState::Rolling:
 			{
-				// Forward SOMERSAULT: sweep a clean 0..RollSpinDegrees (360 = one full forward revolution, ending
-				// upright) over the move. Published to ABHPlayerCameraManager, which pitches the view about its local
-				// right axis (down -> over -> up) on the final POV -- it can't be done on the camera component here
-				// because bUsePawnControlRotation overwrites component rotation each frame. Disabled under
-				// reduced-motion (a tumbling horizon is nausea-inducing).
-				if (!IsReducedCameraShakeLocal())
+				// Forward roll camera, graded by the player's motion-sickness setting (ResolveRollCamStyle). It is
+				// published to ABHPlayerCameraManager, which pitches the view about its local right axis (down -> up)
+				// on the final POV -- it can't be done on the camera component here because bUsePawnControlRotation
+				// overwrites component rotation each frame. Dip/Subtle use a bell (down then back up, no flip); Full
+				// sweeps a clean 0..360 (a complete forward somersault, ending upright).
+				switch (ResolveRollCamStyle())
 				{
+				case EBHRollCamStyle::Full:
 					SpecialMoveCameraRollDeg = FMath::InterpEaseInOut(0.0f, 1.0f, P, 1.8f) * Tuning.RollSpinDegrees;
+					break;
+				case EBHRollCamStyle::Dip:
+					SpecialMoveCameraRollDeg = FMath::Sin(P * PI) * 110.0f;
+					break;
+				case EBHRollCamStyle::Subtle:
+					SpecialMoveCameraRollDeg = FMath::Sin(P * PI) * 32.0f;
+					break;
+				case EBHRollCamStyle::Off:
+				default:
+					SpecialMoveCameraRollDeg = 0.0f;
+					break;
 				}
 				TargetRot.Pitch = -Bell * Tuning.RollPitchDipDeg;
 				TargetLoc.Z = -Bell * Tuning.RollPosPunchCm;

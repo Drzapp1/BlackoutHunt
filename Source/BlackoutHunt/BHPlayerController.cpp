@@ -4,6 +4,7 @@
 
 #include "BHPlayerController.h"
 #include "BHAccountSubsystem.h"
+#include "BHPlayerCameraManager.h"
 #include "BHAutomationSupport.h"
 #include "BHFeedbackSubsystem.h"
 #include "BHCharacter.h"
@@ -764,7 +765,8 @@ FLinearColor BHAvatarPaletteColor(int32 Index)
 		FLinearColor(0.55f, 0.86f, 0.92f, 1.0f), // Slipstream
 		FLinearColor(0.80f, 0.20f, 0.18f, 1.0f), // Detention
 		FLinearColor(0.52f, 0.10f, 0.14f, 1.0f), // Apex
-		FLinearColor(0.40f, 0.54f, 0.56f, 1.0f)  // Commuter
+		FLinearColor(0.40f, 0.54f, 0.56f, 1.0f), // Commuter
+		FLinearColor(0.02f, 0.02f, 0.02f, 1.0f)  // Black (index 18; recolour-only)
 	};
 
 	return Palette[FMath::Abs(Index) % UE_ARRAY_COUNT(Palette)];
@@ -1416,6 +1418,9 @@ private:
 ABHPlayerController::ABHPlayerController()
 {
 	PrimaryActorTick.bCanEverTick = true;
+	// Custom camera manager that can stamp a cosmetic view roll (the dodge-roll barrel roll) onto the view rotation,
+	// which the camera's bUsePawnControlRotation would otherwise ignore.
+	PlayerCameraManagerClass = ABHPlayerCameraManager::StaticClass();
 }
 
 void ABHPlayerController::BeginPlay()
@@ -1439,21 +1444,23 @@ void ABHPlayerController::BeginPlay()
 		const bool bRemovedByHost = BHIsUrlOptionEnabled(World, TEXT("BHRemovedByHost="));
 		const bool bLiveClassroomHost = BHIsUrlOptionEnabled(World, TEXT("BHLiveClassroom=")) && GetNetMode() == NM_ListenServer;
 		UBHGameInstance* MenuBHGI = GetGameInstance<UBHGameInstance>();
+		// Play the cosmetic boot console once per process on the FIRST cold launch, then hand off to whatever
+		// this launch is: the main menu (Standalone boot) or live gameplay (a cold launch straight into a
+		// level, e.g. the tutorial listen server). Skipped under automation (the scripted intro would stall
+		// the headless harness) and on every later map (the flag is already set).
+		const bool bColdBoot = MenuBHGI && !MenuBHGI->HasPlayedBootSequence() && !MenuBHGI->IsAutomationEnabled();
 		if (GetNetMode() == NM_Standalone || bRemovedByHost || bLiveClassroomHost)
 		{
-			// On a clean single-player/host cold boot, play the cosmetic boot console once before the
-			// menu. Skipped when returning to the menu (flag already set), on the classroom-host /
-			// removed-by-host paths (they need the menu + their status messages immediately), and under
-			// automation (the scripted intro would stall the headless test harness).
-			const bool bColdBootIntro = GetNetMode() == NM_Standalone
+			// The removed-by-host / classroom-host paths need their menu + status messages immediately, so
+			// only the clean Standalone menu boot gets the console in front of the menu.
+			const bool bMenuColdBoot = bColdBoot
+				&& GetNetMode() == NM_Standalone
 				&& !bRemovedByHost
-				&& !bLiveClassroomHost
-				&& MenuBHGI
-				&& !MenuBHGI->HasPlayedBootSequence()
-				&& !MenuBHGI->IsAutomationEnabled();
-			if (bColdBootIntro)
+				&& !bLiveClassroomHost;
+			if (bMenuColdBoot)
 			{
 				MenuBHGI->MarkBootSequencePlayed();
+				bBootConsoleForMenu = true;
 				ShowBootConsole();
 			}
 			else
@@ -1482,6 +1489,14 @@ void ABHPlayerController::BeginPlay()
 					}
 				}
 			}
+		}
+		else if (bColdBoot)
+		{
+			// Cold launch straight into gameplay (e.g. the tutorial listen server): play the boot console
+			// over the freshly-loaded level, then reveal gameplay and restore controls when it finishes.
+			MenuBHGI->MarkBootSequencePlayed();
+			bBootConsoleForMenu = false;
+			ShowBootConsole();
 		}
 		else
 		{
@@ -2299,9 +2314,10 @@ void ABHPlayerController::OnBootConsoleRevealMenu()
 
 void ABHPlayerController::RevealMenuUnderBootConsole()
 {
-	// The boot console is fully black and on top (ZOrder 1500); show the menu beneath it (ZOrder 100) so
-	// the console's fade-out dissolves into the start screen. No-op if the menu already exists.
-	if (!MainMenuWidget.IsValid())
+	// The boot console is fully black and on top (ZOrder 1500). In the menu context, show the menu beneath
+	// it (ZOrder 100) so the console's fade-out dissolves into the start screen. In the gameplay context the
+	// live level is already underneath, so there is nothing to place.
+	if (bBootConsoleForMenu && !MainMenuWidget.IsValid())
 	{
 		ShowMainMenu();
 	}
@@ -2323,11 +2339,19 @@ void ABHPlayerController::OnBootConsoleFinished()
 
 void ABHPlayerController::FinishBootConsole()
 {
-	// If the reveal already ran, the menu is up and focused-behind the fading console; just remove the
-	// console and hand keyboard focus back to the menu (RemoveBootConsoleWidget clears focus). Otherwise
-	// (e.g. the player skipped before the reveal) show the menu now.
 	const bool bMenuAlreadyShown = MainMenuWidget.IsValid();
 	RemoveBootConsoleWidget();
+
+	// Gameplay context (cold launch into a level, e.g. the tutorial): the live level is underneath; just
+	// restore normal gameplay controls now that the intro is done.
+	if (!bBootConsoleForMenu)
+	{
+		ApplyGameplayInputMode();
+		return;
+	}
+
+	// Menu context: if the reveal already ran, the menu is up behind the fading console; just hand keyboard
+	// focus back to it (RemoveBootConsoleWidget cleared focus). Otherwise (skipped before reveal) show it now.
 	if (!bMenuAlreadyShown)
 	{
 		ShowMainMenu();

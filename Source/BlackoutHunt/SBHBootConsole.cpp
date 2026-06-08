@@ -35,6 +35,10 @@ namespace
 	const FLinearColor DlgErrorIcon(0.80f, 0.10f, 0.10f, 1.0f);
 
 	constexpr float BootFadeInSeconds = 0.25f;
+	// Pre-roll log flood: enough rows to fill the full screen (the bottom-anchored block overshoots and the
+	// oldest rows scroll off the top), and how fast lines scroll up.
+	constexpr int32 BHPrerollRowCount = 135;
+	constexpr float BHPrerollLinesPerSecond = 26.0f;
 
 	const FSlateBrush* BootWhiteBrush()
 	{
@@ -65,6 +69,7 @@ void SBHBootConsole::Construct(const FArguments& InArgs)
 	bReducedFlash = InArgs._ReducedFlash;
 
 	BuildBootScript();
+	BuildPrerollLines();
 
 	SetRenderOpacity(0.0f);
 
@@ -93,11 +98,26 @@ void SBHBootConsole::Construct(const FArguments& InArgs)
 			[
 				SNew(SBox)
 				.HeightOverride(3.0f)
-				.Visibility(this, &SBHBootConsole::GetTerminalVisibility)
+				.Visibility(this, &SBHBootConsole::GetChromeVisibility)
 				[
 					SNew(SBorder)
 					.BorderImage(BootWhiteBrush())
 					.BorderBackgroundColor(FLinearColor(BootTeal.R, BootTeal.G, BootTeal.B, 0.75f))
+				]
+			]
+
+			// Raw dev/debug log flood that scrolls fast before the structured boot stream. Bottom-anchored so
+			// the newest line sits at the bottom edge and the block fills the full screen height (the oldest
+			// rows overshoot and scroll off the top).
+			+ SOverlay::Slot()
+			.HAlign(HAlign_Fill)
+			.VAlign(VAlign_Bottom)
+			.Padding(40.0f, 0.0f, 40.0f, 14.0f)
+			[
+				SNew(SBox)
+				.Visibility(this, &SBHBootConsole::GetPrerollVisibility)
+				[
+					BuildPrerollBody()
 				]
 			]
 
@@ -116,19 +136,38 @@ void SBHBootConsole::Construct(const FArguments& InArgs)
 				]
 			]
 
-			// Huge red "SYSTEM FAILURE" banner that flickers in during the crash.
+			// Huge red "SYSTEM FAILURE" banner (+ subline) that flickers in during the crash.
 			+ SOverlay::Slot()
 			.HAlign(HAlign_Center)
 			.VAlign(VAlign_Center)
 			[
-				SNew(STextBlock)
+				SNew(SVerticalBox)
 				.Visibility(this, &SBHBootConsole::GetFailureBannerVisibility)
-				.Font(BootFont(48, FName(TEXT("Bold"))))
-				.Justification(ETextJustify::Center)
-				.ShadowOffset(FVector2D(3.0f, 3.0f))
-				.ShadowColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, 0.9f))
-				.Text(this, &SBHBootConsole::GetFailureBannerText)
-				.ColorAndOpacity(this, &SBHBootConsole::GetFailureBannerColor)
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.HAlign(HAlign_Center)
+				[
+					SNew(STextBlock)
+					.Font(BootFont(72, FName(TEXT("Bold"))))
+					.Justification(ETextJustify::Center)
+					.ShadowOffset(FVector2D(4.0f, 4.0f))
+					.ShadowColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, 0.95f))
+					.Text(this, &SBHBootConsole::GetFailureBannerText)
+					.ColorAndOpacity(this, &SBHBootConsole::GetFailureBannerColor)
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.HAlign(HAlign_Center)
+				.Padding(0.0f, 8.0f, 0.0f, 0.0f)
+				[
+					SNew(STextBlock)
+					.Font(BootFont(24, FName(TEXT("Bold"))))
+					.Justification(ETextJustify::Center)
+					.ShadowOffset(FVector2D(2.0f, 2.0f))
+					.ShadowColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, 0.9f))
+					.Text(this, &SBHBootConsole::GetFailureSubText)
+					.ColorAndOpacity(this, &SBHBootConsole::GetFailureBannerColor)
+				]
 			]
 
 			// Stacked Windows-style crash dialogs.
@@ -138,7 +177,17 @@ void SBHBootConsole::Construct(const FArguments& InArgs)
 			]
 		]
 
-		// [2] Full-screen flicker tint on top of everything (suppressed when reduced-flash is on).
+		// [2] Fake blue-screen-of-death "reboot" beat (its own layer above the terminal).
+		+ SOverlay::Slot()
+		[
+			SNew(SBox)
+			.Visibility(this, &SBHBootConsole::GetBSODVisibility)
+			[
+				BuildBSODScreen()
+			]
+		]
+
+		// [3] Full-screen flash/flicker tint on top of everything (suppressed when reduced-flash is on).
 		+ SOverlay::Slot()
 		[
 			SNew(SBorder)
@@ -217,6 +266,98 @@ void SBHBootConsole::BuildBootScript()
 		LineStartTimes.Add(Cursor);
 		Cursor += Line.Duration;
 	}
+}
+
+void SBHBootConsole::BuildPrerollLines()
+{
+	// Bare-metal cold boot flood: BIOS POST -> bootloader -> kernel dmesg -> systemd units, the way a
+	// machine spews text as it comes up. $A/$X/$N are substituted per displayed line with hash-derived
+	// hex/numbers so the flood never visibly repeats. (A monotonic [timestamp] is prepended at draw time,
+	// so these lines carry no timestamp of their own.)
+	const TCHAR* Templates[] = {
+		TEXT("AMIBIOS(C) 2026 American Megatrends Inc."),
+		TEXT("BIOS Date: 03/12/26  Ver: 2.71.1  Build 0x$X"),
+		TEXT("CPU: AMD Ryzen 9 7945HX 16-Core Processor"),
+		TEXT("Speed 2500 MHz | Cores 16 | Threads 32 | ucode 0x$X"),
+		TEXT("Installed Memory: 32768 MB  DDR5-5600"),
+		TEXT("Memory Test : 0x$A . OK"),
+		TEXT("Initializing USB Controllers .. Done"),
+		TEXT("USB Device(s): 1 Keyboard, 1 Mouse, 3 Storage"),
+		TEXT("Auto-Detecting NVMe0 .. Samsung SSD 990 PRO 2TB"),
+		TEXT("Auto-Detecting SATA1 .. Not Present"),
+		TEXT("PCIe Link Training x16 .. UP"),
+		TEXT("ACPI Tables Loaded .. Enabled"),
+		TEXT("Secure Boot: Disabled   TPM: 2.0 Present"),
+		TEXT("Boot Device: NVMe0   Verifying DMI pool data ...."),
+		TEXT("GRUB loading stage 1.5 ."),
+		TEXT("GRUB loading, please wait ..."),
+		TEXT("Loading Linux 6.8.0-blackout x86_64 ..."),
+		TEXT("Loading initial ramdisk (initrd) ..."),
+		TEXT("Decompressing kernel image .. ok, booting the kernel."),
+		TEXT("Linux version 6.8.0-blackout (root@facility-mainframe)"),
+		TEXT("Command line: ro quiet blackout=armed containment=degraded"),
+		TEXT("KERNEL supported cpus: GenuineIntel AuthenticAMD"),
+		TEXT("x86/fpu: Supporting XSAVE feature 0x$X 'AVX-512'"),
+		TEXT("BIOS-e820: [mem 0x$A] usable"),
+		TEXT("BIOS-e820: [mem 0x$A] reserved"),
+		TEXT("Memory: 32741M/33554M available (kernel code 14336k)"),
+		TEXT("SMP: Allowing 32 CPUs, 0 hotplug CPUs"),
+		TEXT("smpboot: CPU0 microcode updated early to 0x$X"),
+		TEXT("ACPI: Core revision 20230331"),
+		TEXT("clocksource: tsc: mask 0x$X max_cycles 0x$X"),
+		TEXT("pci 0000:01:00.0: [10de] NVIDIA GeForce RTX 4070 Laptop GPU"),
+		TEXT("pci 0000:00:14.0: xHCI Host Controller"),
+		TEXT("nvme nvme0: pci function 0000:02:00.0"),
+		TEXT("nvme0n1: p1 p2 p3"),
+		TEXT("EXT4-fs (nvme0n1p2): mounted filesystem, ordered data mode"),
+		TEXT("random: crng init done"),
+		TEXT("usb 1-$N: new high-speed USB device using xhci_hcd"),
+		TEXT("input: HID Keyboard as /devices/platform/i8042/serio0"),
+		TEXT("e1000e 0000:00:1f.6 eth0: NIC Link is Up 1000 Mbps"),
+		TEXT("IPv6: ADDRCONF(NETDEV_CHANGE): eth0: link becomes ready"),
+		TEXT("systemd[1]: Detected architecture x86-64"),
+		TEXT("systemd[1]: Hostname set to facility-mainframe"),
+		TEXT("systemd[1]: Reached target Local Encrypted Volumes"),
+		TEXT("[  OK  ] Mounted /boot/efi"),
+		TEXT("[  OK  ] Mounted /var/facility/cctv"),
+		TEXT("[  OK  ] Started Journal Service"),
+		TEXT("[  OK  ] Started Network Time Synchronization"),
+		TEXT("[  OK  ] Reached target Network"),
+		TEXT("[  OK  ] Started Containment Grid Daemon"),
+		TEXT("[  OK  ] Started Hunter Telemetry Collector"),
+		TEXT("[  OK  ] Reached target Multi-User System"),
+		TEXT("         Starting Facility Atmosphere Director ..."),
+		TEXT("         Starting Blackout Protocol Watchdog ..."),
+		TEXT("[ WARN ] emergency-lighting.service: entered degraded state"),
+		TEXT("[ WARN ] containment-field.service: pressure out of range"),
+		TEXT("[FAILED] Failed to start Lockdown Override Service"),
+		TEXT("0x$A: 4D 5A 90 00 03 00 00 00 04 00 00 00 FF FF"),
+		TEXT("0x$A: B8 00 00 00 00 00 00 00 40 00 00 00 00 00"),
+		TEXT("kauditd_printk: audit($N): apparmor='STATUS' profile='facility'"),
+	};
+
+	PrerollLines.Reset();
+	for (const TCHAR* T : Templates)
+	{
+		PrerollLines.Add(FString(T));
+	}
+}
+
+TSharedRef<SWidget> SBHBootConsole::BuildPrerollBody()
+{
+	TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
+	for (int32 Row = 0; Row < BHPrerollRowCount; ++Row)
+	{
+		Box->AddSlot()
+			.AutoHeight()
+			[
+				SNew(STextBlock)
+				.Font(BootFont(9))
+				.ColorAndOpacity_Lambda([this, Row]() { return GetPrerollLineColor(Row); })
+				.Text_Lambda([this, Row]() { return GetPrerollLineText(Row); })
+			];
+	}
+	return Box;
 }
 
 TSharedRef<SWidget> SBHBootConsole::MakeFillBar(float Width, float Height, TFunction<float()> FracFn, FLinearColor FillColor) const
@@ -407,16 +548,22 @@ TSharedRef<SWidget> SBHBootConsole::BuildCrashDialogLayer()
 		float OffsetY;
 	};
 
-	const FDialogSpec Specs[3] = {
-		{ TEXT("BlackoutHunt.exe"), TEXT("BlackoutHunt.exe has stopped working."),
-		  TEXT("Windows is checking for a solution to the problem..."), -156.0f, -94.0f },
+	const FDialogSpec Specs[6] = {
+		{ TEXT("BlackoutHunt.exe"), TEXT("BlackoutHunt.exe has stopped responding."),
+		  TEXT("Windows is searching for a solution to the problem..."), -262.0f, -150.0f },
 		{ TEXT("System Error"), TEXT("FATAL: containment breach detected in sector 0x0C."),
-		  TEXT("The facility was shut down to prevent damage."), 46.0f, 4.0f },
+		  TEXT("Emergency shutdown initiated."), 182.0f, -108.0f },
+		{ TEXT("blackout.sys"), TEXT("Unhandled exception at 0xDEAD00BH."),
+		  TEXT("The lights are going out."), -118.0f, -16.0f },
+		{ TEXT("winlogon.exe"), TEXT("The memory could not be read."),
+		  TEXT("Something is in the dark with you."), 250.0f, 58.0f },
+		{ TEXT("CONTAINMENT"), TEXT("Hull integrity 0%. All doors unlocked."),
+		  TEXT("It knows that you are here."), -300.0f, 120.0f },
 		{ TEXT("blackout.sys"), TEXT("he is already inside."),
-		  TEXT("do not turn off your light."), -86.0f, 98.0f },
+		  TEXT("do not turn off your light."), 70.0f, 172.0f },
 	};
 
-	for (int32 DialogIndex = 0; DialogIndex < 3; ++DialogIndex)
+	for (int32 DialogIndex = 0; DialogIndex < 6; ++DialogIndex)
 	{
 		const FDialogSpec& Spec = Specs[DialogIndex];
 		Canvas->AddSlot()
@@ -592,6 +739,134 @@ TSharedRef<SWidget> SBHBootConsole::MakeCrashDialog(const FString& Title, const 
 		];
 }
 
+TSharedRef<SWidget> SBHBootConsole::BuildBSODScreen()
+{
+	const FLinearColor BsodBlue(0.04f, 0.30f, 0.62f, 1.0f);
+	const FSlateColor White(FLinearColor::White);
+	const FSlateColor Faint(FLinearColor(0.80f, 0.88f, 0.97f, 1.0f));
+
+	return SNew(SOverlay)
+		+ SOverlay::Slot()
+		[
+			SNew(SBorder)
+			.BorderImage(BootWhiteBrush())
+			.BorderBackgroundColor(BsodBlue)
+		]
+		+ SOverlay::Slot()
+		.HAlign(HAlign_Center)
+		.VAlign(VAlign_Center)
+		.Padding(60.0f, 0.0f, 60.0f, 0.0f)
+		[
+			SNew(SBox)
+			.MaxDesiredWidth(940.0f)
+			[
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.0f, 0.0f, 0.0f, 20.0f)
+				[
+					SNew(STextBlock)
+					.Font(BootFont(96))
+					.ColorAndOpacity(White)
+					.Text_Lambda([this]() { return GetBSODFaceText(); })
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.0f, 0.0f, 0.0f, 14.0f)
+				[
+					SNew(STextBlock)
+					.Font(BootFont(22))
+					.ColorAndOpacity(White)
+					.AutoWrapText(true)
+					.Text(FText::FromString(TEXT("Your facility ran into a problem and needs to restart. We're just collecting some error info, and then it will restart for you.")))
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.0f, 0.0f, 0.0f, 22.0f)
+				[
+					SNew(STextBlock)
+					.Font(BootFont(22, FName(TEXT("Bold"))))
+					.ColorAndOpacity(White)
+					.Text_Lambda([this]() { return GetBSODProgressText(); })
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					SNew(STextBlock)
+					.Font(BootFont(13))
+					.ColorAndOpacity(Faint)
+					.Text(FText::FromString(TEXT("Stop code: FACILITY_CONTAINMENT_FAILURE")))
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.0f, 4.0f, 0.0f, 0.0f)
+				[
+					SNew(STextBlock)
+					.Font(BootFont(13))
+					.ColorAndOpacity(Faint)
+					.Text(FText::FromString(TEXT("What failed: blackout.sys")))
+				]
+			]
+		];
+}
+
+EVisibility SBHBootConsole::GetBSODVisibility() const
+{
+	return InBSOD() ? EVisibility::HitTestInvisible : EVisibility::Collapsed;
+}
+
+FText SBHBootConsole::GetBSODProgressText() const
+{
+	// Discreet "hijack" curve: load normally, FREEZE for a beat, then slowly resume loading. No garble --
+	// the only tells are the suspicious pause, the angry face, and the unnaturally slow crawl afterward.
+	const float T = Elapsed - BSODStartTime();
+	const float RampEnd = 0.9f;     // load 0 -> 62%
+	const float FreezeEnd = 1.9f;   // hold at 62% (the freeze)
+	const float HoldPct = 0.62f;
+	float P;
+	if (T < RampEnd)
+	{
+		P = (T / RampEnd) * HoldPct;
+	}
+	else if (T < FreezeEnd)
+	{
+		P = HoldPct; // frozen
+	}
+	else
+	{
+		const float SlowSpan = FMath::Max(0.1f, BSODSeconds - FreezeEnd);
+		P = HoldPct + FMath::Clamp((T - FreezeEnd) / SlowSpan, 0.0f, 1.0f) * (0.99f - HoldPct);
+	}
+	return FText::FromString(FString::Printf(TEXT("%d%% complete"), FMath::RoundToInt(P * 100.0f)));
+}
+
+FText SBHBootConsole::GetBSODFaceText() const
+{
+	// Sad :( until the freeze hits, then it quietly turns angry >:( -- the discreet "something took over".
+	const float T = Elapsed - BSODStartTime();
+	return FText::FromString(T >= 0.9f ? TEXT(">:(") : TEXT(":("));
+}
+
+float SBHBootConsole::FxFlashAlpha() const
+{
+	if (bReducedFlash)
+	{
+		return 0.0f;
+	}
+	// Sharp white blowout at each crash transition: failure onset, BSOD cut, reboot to black.
+	const float HitDur = 0.16f;
+	const float Hits[3] = { GlitchStartTime(), BSODStartTime(), BlackStartTime() };
+	float A = 0.0f;
+	for (float T : Hits)
+	{
+		if (Elapsed >= T && Elapsed < T + HitDur)
+		{
+			A = FMath::Max(A, 1.0f - (Elapsed - T) / HitDur);
+		}
+	}
+	return A;
+}
+
 void SBHBootConsole::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
 	SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
@@ -624,7 +899,8 @@ void SBHBootConsole::Tick(const FGeometry& AllottedGeometry, const double InCurr
 	{
 		if (InGlitch() && !bReducedFlash)
 		{
-			const float Mag = 3.0f + 8.0f * GlitchProgress();
+			// Shake ramps up hard as the glitch progresses.
+			const float Mag = 4.0f + 16.0f * GlitchProgress();
 			const FVector2D Offset(FMath::FRandRange(-Mag, Mag), FMath::FRandRange(-Mag, Mag));
 			JitterLayer->SetRenderTransform(FSlateRenderTransform(Offset));
 		}
@@ -682,7 +958,17 @@ FReply SBHBootConsole::OnMouseButtonDown(const FGeometry& MyGeometry, const FPoi
 
 bool SBHBootConsole::InGlitch() const
 {
-	return Elapsed >= GlitchStartTime() && Elapsed < BlackStartTime();
+	return Elapsed >= GlitchStartTime() && Elapsed < BSODStartTime();
+}
+
+bool SBHBootConsole::InPreroll() const
+{
+	return Elapsed < PrerollSeconds;
+}
+
+bool SBHBootConsole::InBSOD() const
+{
+	return Elapsed >= BSODStartTime() && Elapsed < BlackStartTime();
 }
 
 bool SBHBootConsole::IsBlackedOut() const
@@ -712,17 +998,17 @@ float SBHBootConsole::LineFraction(int32 Index) const
 	}
 	const float Start = LineStartTime(Index);
 	const float Duration = FMath::Max(0.05f, BootLines[Index].Duration);
-	return FMath::Clamp((Elapsed - Start) / Duration, 0.0f, 1.0f);
+	return FMath::Clamp((BootElapsed() - Start) / Duration, 0.0f, 1.0f);
 }
 
 bool SBHBootConsole::IsLineVisible(int32 Index) const
 {
-	return Elapsed >= LineStartTime(Index) - KINDA_SMALL_NUMBER;
+	return BootElapsed() >= LineStartTime(Index) - KINDA_SMALL_NUMBER;
 }
 
 float SBHBootConsole::OverallFraction() const
 {
-	return (BootScriptDuration > KINDA_SMALL_NUMBER) ? FMath::Clamp(Elapsed / BootScriptDuration, 0.0f, 1.0f) : 1.0f;
+	return (BootScriptDuration > KINDA_SMALL_NUMBER) ? FMath::Clamp(BootElapsed() / BootScriptDuration, 0.0f, 1.0f) : 1.0f;
 }
 
 FString SBHBootConsole::GlitchString(const FString& In, int32 Salt) const
@@ -868,16 +1154,88 @@ FSlateColor SBHBootConsole::GetMasterBarColor() const
 
 EVisibility SBHBootConsole::GetTerminalVisibility() const
 {
-	return IsBlackedOut() ? EVisibility::Collapsed : EVisibility::HitTestInvisible;
+	// Visible from the end of the pre-roll through the glitch; gone once the BSOD takes over.
+	return (InPreroll() || Elapsed >= BSODStartTime()) ? EVisibility::Collapsed : EVisibility::HitTestInvisible;
+}
+
+EVisibility SBHBootConsole::GetChromeVisibility() const
+{
+	// Top scanline: present through pre-roll, boot and glitch, gone once the BSOD takes over.
+	return (Elapsed >= BSODStartTime()) ? EVisibility::Collapsed : EVisibility::HitTestInvisible;
+}
+
+EVisibility SBHBootConsole::GetPrerollVisibility() const
+{
+	return InPreroll() ? EVisibility::HitTestInvisible : EVisibility::Collapsed;
+}
+
+FText SBHBootConsole::GetPrerollLineText(int32 Row) const
+{
+	if (PrerollLines.Num() == 0)
+	{
+		return FText::GetEmpty();
+	}
+	const int32 Scroll = FMath::Max(0, FMath::FloorToInt(Elapsed * BHPrerollLinesPerSecond));
+	const int32 LineIndex = Scroll + Row;
+	const uint32 H = BHHash(static_cast<uint32>(LineIndex) * 2654435761u + 17u);
+	FString Line = PrerollLines[H % static_cast<uint32>(PrerollLines.Num())];
+	if (Line.Contains(TEXT("$A")))
+	{
+		Line.ReplaceInline(TEXT("$A"), *FString::Printf(TEXT("%08X%08X"), BHHash(H ^ 0xA5u), BHHash(H ^ 0x5Au)));
+	}
+	if (Line.Contains(TEXT("$X")))
+	{
+		Line.ReplaceInline(TEXT("$X"), *FString::Printf(TEXT("%08X"), BHHash(H ^ 0x33u)));
+	}
+	if (Line.Contains(TEXT("$N")))
+	{
+		Line.ReplaceInline(TEXT("$N"), *FString::FromInt(static_cast<int32>(BHHash(H ^ 0x77u) % 100000u)));
+	}
+	// Monotonically increasing fake timestamp so the flood reads like a real log.
+	const float Ts = 0.42f + LineIndex * 0.019f;
+	return FText::FromString(FString::Printf(TEXT("[%08.3f] %s"), Ts, *Line));
+}
+
+FSlateColor SBHBootConsole::GetPrerollLineColor(int32 Row) const
+{
+	FLinearColor Base(0.42f, 0.70f, 0.50f, 1.0f); // dim terminal green
+	if (PrerollLines.Num() > 0)
+	{
+		const int32 Scroll = FMath::Max(0, FMath::FloorToInt(Elapsed * BHPrerollLinesPerSecond));
+		const uint32 H = BHHash(static_cast<uint32>(Scroll + Row) * 2654435761u + 17u);
+		const FString& Line = PrerollLines[H % static_cast<uint32>(PrerollLines.Num())];
+		// Default Contains is case-insensitive: catches "[ WARN ]", "[FAILED]", "kernel panic", etc.
+		if (Line.Contains(TEXT("WARN")))
+		{
+			Base = BootAmber;
+		}
+		else if (Line.Contains(TEXT("FAIL")) || Line.Contains(TEXT("panic")))
+		{
+			Base = BootRed;
+		}
+	}
+	// Older lines near the top fade out, so the flood feels like it is scrolling away upward.
+	const int32 Denom = FMath::Max(1, BHPrerollRowCount - 1);
+	const float Fade = FMath::Clamp(0.25f + 0.75f * (static_cast<float>(Row) / static_cast<float>(Denom)), 0.0f, 1.0f);
+	return FSlateColor(FLinearColor(Base.R, Base.G, Base.B, Base.A * Fade));
 }
 
 EVisibility SBHBootConsole::GetGlitchFlashVisibility() const
 {
-	return (InGlitch() && !bReducedFlash) ? EVisibility::HitTestInvisible : EVisibility::Collapsed;
+	// Active through the glitch and the transition flashes (failure onset / BSOD cut / reboot).
+	const bool bActive = !bReducedFlash && Elapsed >= GlitchStartTime() && Elapsed < BlackStartTime() + 0.25f;
+	return bActive ? EVisibility::HitTestInvisible : EVisibility::Collapsed;
 }
 
 FSlateColor SBHBootConsole::GetGlitchFlashColor() const
 {
+	// Sharp white blowout at each crash transition takes priority over the glitch flicker.
+	const float Hit = FxFlashAlpha();
+	if (Hit > 0.0f)
+	{
+		return FSlateColor(FLinearColor(1.0f, 0.96f, 0.96f, FMath::Min(0.92f, Hit)));
+	}
+	// Flicker only during the glitch storm; the BSOD stays clean (the hijack is discreet).
 	if (!InGlitch())
 	{
 		return FSlateColor(FLinearColor(0.0f, 0.0f, 0.0f, 0.0f));
@@ -913,6 +1271,11 @@ FText SBHBootConsole::GetFailureBannerText() const
 	return FText::FromString(GlitchString(TEXT("SYSTEM FAILURE"), 4242));
 }
 
+FText SBHBootConsole::GetFailureSubText() const
+{
+	return FText::FromString(GlitchString(TEXT("CONTAINMENT LOST"), 7777));
+}
+
 FSlateColor SBHBootConsole::GetFailureBannerColor() const
 {
 	if (bReducedFlash)
@@ -928,7 +1291,8 @@ FSlateColor SBHBootConsole::GetFailureBannerColor() const
 
 EVisibility SBHBootConsole::GetCrashDialogVisibility(int32 DialogIndex) const
 {
-	if (IsBlackedOut() || DialogIndex < 0 || DialogIndex >= 3)
+	// Dialogs storm in during the glitch and vanish when the BSOD takes over.
+	if (Elapsed >= BSODStartTime() || DialogIndex < 0 || DialogIndex >= 6)
 	{
 		return EVisibility::Collapsed;
 	}

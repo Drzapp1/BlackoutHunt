@@ -362,6 +362,9 @@ protected:
 	float ComputeJumpscareFOVPunch() const;
 	FRotator ComputeJumpscareCameraFlinch() const;
 	bool IsReducedCameraShakeLocal() const;
+	// Resolve the player's dodge-roll camera style (motion-sickness setting), honoring the cvar override and the
+	// reduced-camera-shake comfort clamp. See EBHRollCamStyle.
+	EBHRollCamStyle ResolveRollCamStyle() const;
 	void UpdateFlashlightFeel(float DeltaSeconds);
 	// Instantaneous [~0.02..0.55] beam-strength multiplier while caught in a Teacher blackout: a low, violently
 	// flickering value driven by FlashlightPulseTime so the beam stutters and nearly dies.

@@ -822,6 +822,9 @@ private:
 	TSharedPtr<SWidget> AtmosphereConsoleWidget;
 	TSharedPtr<SWidget> TravelLoadingScreenWidget;
 	TSharedPtr<SWidget> BootConsoleWidget;
+	// When the boot console finishes: true => reveal/show the main menu (Standalone boot); false => reveal
+	// gameplay and restore controls (cold launch straight into a level, e.g. the tutorial).
+	bool bBootConsoleForMenu = false;
 	TSharedPtr<SWindow> ClassroomBoardWindow;
 	UPROPERTY(Transient)
 	TObjectPtr<UAudioComponent> AmbientMusicComponent;
