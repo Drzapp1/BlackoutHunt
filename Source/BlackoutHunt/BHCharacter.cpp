@@ -2752,6 +2752,9 @@ void ABHCharacter::ResetRoleWarmupStateForRoundStart()
 	}
 
 	ExitLocker();
+	// Never let the tutorial-only capture shield survive into a live round (e.g. an abandoned tutorial whose pawn is
+	// reused) -- a round always starts with the student fully capturable.
+	bTutorialCaptureImmune = false;
 	EndInteractAuthority(CurrentServerInteractTarget);
 	CurrentInteractTarget = nullptr;
 	CurrentServerInteractTarget = nullptr;
@@ -3191,8 +3194,11 @@ void ABHCharacter::StartInteract()
 		return;
 	}
 
+	ABHPlayerController* BHPC = Cast<ABHPlayerController>(GetController());
+
 	if (bHiddenInLocker)
 	{
+		if (BHPC) { BHPC->PlayMenuSelectionSound(); }
 		ServerExitCurrentLocker();
 		return;
 	}
@@ -3200,6 +3206,9 @@ void ABHCharacter::StartInteract()
 	AActor* Target = nullptr;
 	TraceForInteractable(Target);
 	CurrentInteractTarget = Target;
+	// Local click feedback on any real interaction -- one chokepoint covers every interactable (tables, jukebox,
+	// switches, vending, doors, ...). Skipped when nothing is targeted so it doesn't click on empty air.
+	if (Target && BHPC) { BHPC->PlayMenuSelectionSound(); }
 	ServerBeginInteract(Target);
 }
 
@@ -3544,6 +3553,25 @@ void ABHCharacter::ClientGrantAchievement_Implementation(FName AchievementId, co
 		if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
 		{
 			Account->UnlockAchievement(AchievementId);
+		}
+	}
+	if (!ToastMessage.IsEmpty())
+	{
+		if (ABHPlayerController* BHPC = Cast<ABHPlayerController>(GetController()))
+		{
+			BHPC->ShowLocalStatusMessage(ToastMessage, 3.0f);
+		}
+	}
+}
+
+void ABHCharacter::ClientRecordCollectable_Implementation(FName CollectableId, const FString& ToastMessage)
+{
+	// Record the found relic on the owning client's (client-local) account; milestone/Collector rewards roll up there.
+	if (UWorld* World = GetWorld())
+	{
+		if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+		{
+			Account->RecordCollectableFound(CollectableId);
 		}
 	}
 	if (!ToastMessage.IsEmpty())
@@ -5717,7 +5745,7 @@ void ABHCharacter::ApplySeatedAvatar(bool bSeatedNow)
 	// sitting on the lobby stools (seat ~60cm) -- tune this single value if the pose sits high/low.
 	if (bRoleMeshStandCaptured)
 	{
-		const float SeatedDropZ = 32.0f;
+		const float SeatedDropZ = 44.0f;
 		RoleSkeletalMesh->SetRelativeLocation(bSeatedNow ? (RoleMeshStandOffset - FVector(0.0f, 0.0f, SeatedDropZ)) : RoleMeshStandOffset);
 	}
 }
@@ -5887,9 +5915,10 @@ void ABHCharacter::UpdateViewFeel(float DeltaSeconds)
 	const float StressTremor = (FMath::Sin(FlashlightPulseTime * 13.0f) + FMath::Sin(FlashlightPulseTime * 19.7f) * 0.45f)
 		* (FearPanicAlpha * 0.82f + DreadStrainAlpha * 0.34f);
 	const float CrouchOffset = bIsCrouched ? -14.0f : 0.0f;
-	// Functional sit lowers the first-person eye height to a seated level (no body animation needed). Smoothed
-	// into the camera via the interpolation below, so sitting/standing eases the view down/up.
-	const float SeatedOffset = bSeated ? -22.0f : 0.0f;
+	// Functional sit drops the first-person eye height substantially -- it should read as actually sinking down into
+	// the seat (comfort), not a token dip. Smoothed into the camera via the interpolation below, so sitting/standing
+	// eases the view down/up.
+	const float SeatedOffset = bSeated ? -46.0f : 0.0f;
 	const EBHMovementSpecialState VisualSpecialState = MovementSpecialState != EBHMovementSpecialState::None ? MovementSpecialState : CosmeticMovementSpecialState;
 	const float SpecialOffset = VisualSpecialState == EBHMovementSpecialState::Prone
 		? BHProneCameraOffsetZ
