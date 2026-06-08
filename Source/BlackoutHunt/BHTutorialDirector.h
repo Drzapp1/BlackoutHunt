@@ -280,6 +280,13 @@ protected:
 	// east to the nearest map locker. Zero until BuildMovementCourse spawns it.
 	FVector PracticeLockerLoc = FVector::ZeroVector;
 
+	// Survivor-phase Decoy step: the player's dropped decoy (cached + its lifespan extended so it outlasts the
+	// scripted Teacher's walk), and a one-shot guard for the misdirection reveal so the step waits for the Teacher to
+	// actually reach the decoy before advancing (it used to advance the instant the decoy dropped, so the demo never
+	// played). Both reset on Decoy step entry.
+	TWeakObjectPtr<class ABHNoiseDecoy> DemoDecoy;
+	bool bDecoyRevealPlayed = false;
+
 	FTimerHandle ActivateTimerHandle;
 	FTimerHandle EvalTimerHandle;
 	// Fast pre-activation timer that holds the intro input lock until the step machine starts.

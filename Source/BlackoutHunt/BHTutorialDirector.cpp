@@ -258,6 +258,8 @@ void ABHTutorialDirector::EnterStep(EStep NewStep)
 		Broadcast(TEXT("Hold LEFT CTRL to CROUCH - quieter and lower for sneaking. For the low CRAWL DUCT ahead (follow the marker) go all the way down: tap LEFT ALT for prone, then crawl in. A standing Teacher can't follow."), 16.0f);
 		break;
 	case EStep::Decoy:
+		DemoDecoy = nullptr;
+		bDecoyRevealPlayed = false;
 		Broadcast(TEXT("You can misdirect the Teacher too: press G to drop a NOISE DECOY. It fakes footsteps and breathing to pull them off you. Try it now."), 14.0f);
 		break;
 	case EStep::Breaker:
@@ -483,15 +485,50 @@ void ABHTutorialDirector::EvaluateStep()
 	}
 	case EStep::Decoy:
 	{
-		// Advance once the student has actually dropped a decoy (LastDecoyTime moves past step entry), or on
-		// the generous timeout so a student who can't find G is never stuck.
+		// The student drops a decoy (G), THEN we let the scripted Teacher walk over to it and commit to the wrong
+		// spot -- the whole point of the lesson. The step used to advance the instant the decoy dropped, so the demo
+		// never played; now it waits for the Teacher to actually reach the decoy (or a generous timeout).
 		const bool bDropped = Survivor && Survivor->GetLastDecoyTime() >= StepStartServerTime;
-		if (bDropped || Elapsed >= 18.0f)
+
+		// On the first drop: grab the player's decoy and extend its lifespan so it outlasts the Teacher's long walk
+		// from the far spawn (the default 9s expired mid-walk and killed the demo).
+		if (bDropped && !DemoDecoy.IsValid() && GetWorld())
 		{
-			if (bDropped)
+			ABHNoiseDecoy* Nearest = nullptr;
+			float BestSq = TNumericLimits<float>::Max();
+			for (TActorIterator<ABHNoiseDecoy> It(GetWorld()); It; ++It)
 			{
-				Broadcast(TEXT("Nice - the Teacher hears that and checks the wrong spot. Decoys buy you time to move."), 4.0f);
+				const float DSq = FVector::DistSquared2D(It->GetActorLocation(), Survivor->GetActorLocation());
+				if (DSq < BestSq) { BestSq = DSq; Nearest = *It; }
 			}
+			if (Nearest)
+			{
+				Nearest->RefreshLifeSpan(24.0f);
+				DemoDecoy = Nearest;
+				Broadcast(TEXT("Good - that fakes footsteps and breathing. Watch: the Teacher takes the bait and commits to it."), 5.0f);
+			}
+		}
+
+		// Reveal the payoff once the scripted Teacher reaches the decoy. The scan ability can't do this (the Teacher
+		// is driven with Flee and scan doesn't even detect decoys), so the director stages it: a one-shot caption when
+		// the Teacher gets to the lure.
+		if (bDropped && !bDecoyRevealPlayed && DemoDecoy.IsValid())
+		{
+			const ABHBotController* TeacherCtrl = TeacherBot.Get();
+			const APawn* TeacherPawn = TeacherCtrl ? TeacherCtrl->GetPawn() : nullptr;
+			if (TeacherPawn && FVector::Dist2D(TeacherPawn->GetActorLocation(), DemoDecoy->GetActorLocation()) <= 320.0f)
+			{
+				bDecoyRevealPlayed = true;
+				Broadcast(TEXT("See? It commits to the decoy and finds nothing - that bought you time to slip away. Decoys misdirect the Teacher."), 4.5f);
+			}
+		}
+
+		// Advance when the demo paid off (the Teacher reached the decoy) OR on the generous timeout so a student who
+		// never drops, or a Teacher that can't path, never leaves the player stuck.
+		if (bDecoyRevealPlayed || Elapsed >= 24.0f)
+		{
+			if (ABHNoiseDecoy* D = DemoDecoy.Get()) { D->Destroy(); }
+			DemoDecoy = nullptr;
 			EnterStep(EStep::Breaker);
 		}
 		break;
@@ -686,12 +723,17 @@ void ABHTutorialDirector::DriveScriptedCast()
 		{
 			// Climax: hand the bot back its brain so it pursues at full strength, and drive a real chase on top.
 			if (TeacherCtrl) { TeacherCtrl->SetScriptedHoldPosition(false); }
+			// The student is now fair game -- drop the teaching-half capture shield so the Encounter can actually catch.
+			if (ABHCharacter* EncStudent = FindTutorialSurvivor()) { EncStudent->SetTutorialCaptureImmune(false); }
 			DriveTeacherChase();
 		}
 		else
 		{
 			// Teaching half: brain off; the director scripts all motion so the Teacher behaves exactly as intended.
 			if (TeacherCtrl) { TeacherCtrl->SetScriptedHoldPosition(true); }
+			// Shield the student from ANY capture until the scripted Encounter (set on step entry, not gated on the
+			// bot's think timer) so a stray swing or the Loom spawn race can't grab them mid-lesson (e.g. during Decoy).
+			if (ABHCharacter* TeachStudent = FindTutorialSurvivor()) { TeachStudent->SetTutorialCaptureImmune(true); }
 			if (CurrentStep == EStep::Decoy)
 			{
 				// Misdirection demo: pull the loomed Teacher toward the dropped decoy so the trick is visibly proven.
@@ -823,36 +865,45 @@ void ABHTutorialDirector::DriveMonitorCast() const
 	ABHBotController* Teacher = TeacherBot.Get();
 	ABHCharacter* Student = FindStudentCharacter();
 
+	// Hold the Teacher's brain for the WHOLE Monitor teaching phase so it never autonomously hunts -- the director
+	// scripts every move. Without this the Teacher chased on its own the entire time, so the tools had no visible
+	// effect: the real hint "did nothing" because the Teacher was ALREADY chasing, and the false marker couldn't pull
+	// it off (the live brain overrode the scripted intent). A parked baseline + a scripted reaction PER TOOL gives a
+	// clear before/after. (A held bot still obeys scripted RunStateTreeIntent/DriveBotChase; only autonomous Think is
+	// suppressed.) MonitorToolConfirmServerTime is set in EvaluateMonitorStep the moment the step's tool fires.
+	if (Teacher) { Teacher->SetScriptedHoldPosition(true); }
+	DriveStudentBot();
+
 	switch (MonitorStep)
 	{
 	case EMonitorStep::Hint:
-		// (Q) The real hint reveals a live student to the Teacher. The solo Teacher is a BOT that never receives
-		// that ping, so turn it onto the student's actual position by hand -- a real "the Teacher turns onto a
-		// student". Let the student keep wandering so the Teacher is visibly homing on a moving target.
-		DriveStudentBot();
-		if (Student)
+		// (Q) Real hint: stay IDLE until the player sends the hint, THEN turn and run onto the student -- the visible
+		// "watch the Teacher react". Before that it looms in place so pressing Q is a clear change, not a no-op.
+		if (MonitorToolConfirmServerTime > 0.0f && Student)
 		{
 			DriveBotChase(Teacher, Student);
 		}
+		else if (Teacher)
+		{
+			Teacher->StopMovement();
+		}
 		break;
 	case EMonitorStep::Marker:
-		// (R) The false corridor marker should pull the Teacher off the students. Steer the AI Teacher to the
-		// marker location the player aimed at (captured when R fired) so the misdirection is visible; meanwhile the
-		// student roams free, exactly the point of the tool.
-		DriveStudentBot();
+		// (R) False marker: idle until it's dropped, then peel the Teacher OFF to the empty corridor (the marker
+		// spot) so the misdirection is visible. Held brain means the scripted intent now actually sticks.
 		if (Teacher && bMonitorMarkerActive)
 		{
 			Teacher->RunStateTreeIntent(EBHBotIntent::InvestigateLastSeen, nullptr, MonitorMarkerTarget, 160.0f);
 		}
-		else if (Student)
+		else if (Teacher)
 		{
-			DriveBotChase(Teacher, Student);
+			Teacher->StopMovement();
 		}
 		break;
 	case EMonitorStep::Trap:
-		// (G) Nudge the student bot across the spawned trap so it actually trips the alarm (the trap destroys
-		// itself on trip, so FindNearestAlarmTrap returns null afterward and the student resumes its loop). Keep
-		// the Teacher loosely chasing so the scene stays alive.
+		// (G) Nudge the student bot across the spawned trap so it actually trips the alarm (the trap destroys itself
+		// on trip, so FindNearestAlarmTrap returns null afterward and the student resumes wandering). The Teacher
+		// loosely chases (scripted) so the scene stays alive and the alarm "lights up" a real pursuit.
 		if (Student)
 		{
 			if (const ABHAlarmTrap* Trap = FindNearestAlarmTrap(Student->GetActorLocation()))
@@ -863,10 +914,6 @@ void ABHTutorialDirector::DriveMonitorCast() const
 					StudentCtrl->RunStateTreeIntent(EBHBotIntent::Flee, nullptr, Trap->GetActorLocation(), 60.0f);
 				}
 			}
-			else
-			{
-				DriveStudentBot();
-			}
 			DriveBotChase(Teacher, Student);
 		}
 		break;
@@ -875,12 +922,9 @@ void ABHTutorialDirector::DriveMonitorCast() const
 	case EMonitorStep::Exit:
 	case EMonitorStep::Done:
 	default:
-		// Ambient scene: student wanders/flees, Teacher hunts it, so the monitor always has something to watch.
-		DriveStudentBot();
-		if (Student)
-		{
-			DriveBotChase(Teacher, Student);
-		}
+		// Calm baseline: the student wanders and the Teacher LOOMS idle (not hunting), so each tool's reaction reads
+		// as a clear change rather than "it was already chasing".
+		if (Teacher) { Teacher->StopMovement(); }
 		break;
 	}
 }
@@ -1648,7 +1692,10 @@ void ABHTutorialDirector::DriveTeacherToDecoy() const
 		Bot->StopMovement();
 		return;
 	}
-	Bot->RunStateTreeIntent(EBHBotIntent::Flee, nullptr, Survivor->GetActorLocation(), 160.0f);
+	// Head for the DECOY's fixed drop spot (cached in EvaluateStep), not the student's CURRENT location -- otherwise
+	// the Teacher chases the moving player instead of committing to the lure, which is the opposite of the lesson.
+	const FVector DecoyTarget = DemoDecoy.IsValid() ? DemoDecoy->GetActorLocation() : Survivor->GetActorLocation();
+	Bot->RunStateTreeIntent(EBHBotIntent::Flee, nullptr, DecoyTarget, 160.0f);
 }
 
 void ABHTutorialDirector::PlayTeacherRevealCutscene(const FVector& TeacherFocusLocation) const

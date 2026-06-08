@@ -24,6 +24,10 @@ public:
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
+	// Override the default 9s lifespan (e.g. the guided tutorial extends the demo decoy so it outlasts the scripted
+	// Teacher's long walk over from the far spawn). Pass 0 to disable auto-expiry.
+	void RefreshLifeSpan(float NewLifeSeconds) { SetLifeSpan(NewLifeSeconds); }
+
 protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UStaticMeshComponent> Mesh;
