@@ -415,6 +415,10 @@ private:
 	float FlickerAlpha = 1.0f;      // ~0.78..1.0 failing-light multiplier (accent/title)
 	float GrainPhase = 0.0f;        // 0..1 grain shimmer phase
 	float VignettePulse = 1.0f;     // ~0.92..1.0 slow vignette "breath"
+	// Start-screen keyboard navigation: selected nav-row index + the per-row hover flags (shared with the
+	// NavItem widgets) so arrow keys highlight a row exactly like a mouse hover and Enter activates it.
+	int32 StartNavIndex = 0;
+	TArray<TSharedPtr<bool>> StartNavHovers;
 	// Progress through the Konami code (easter egg, cosmetic). See Docs/EASTER_EGGS.md.
 	int32 KonamiProgress = 0;
 	// Per-part recolour: which skin material slot (a BHColorableMaterialNames registry index) the swatches recolour.

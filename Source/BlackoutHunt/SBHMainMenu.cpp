@@ -3503,9 +3503,33 @@ FReply SBHMainMenu::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKe
 
 	if (bShowingStartScreen)
 	{
-		if (InKeyEvent.GetKey() == EKeys::Enter || InKeyEvent.GetKey() == EKeys::SpaceBar)
+		// Keyboard navigation over the vertical nav list (PLAY / HOW TO PLAY / CREDENTIALS / QUIT). Up/Down
+		// move the highlight (driving the same per-row hover flags the mouse uses); Enter activates the row.
+		const FKey StartKey = InKeyEvent.GetKey();
+		const int32 NavCount = StartNavHovers.Num() > 0 ? StartNavHovers.Num() : 4;
+		if (StartKey == EKeys::Up || StartKey == EKeys::Down)
 		{
-			return OnStartClicked();
+			StartNavIndex = (StartKey == EKeys::Up)
+				? (StartNavIndex + NavCount - 1) % NavCount
+				: (StartNavIndex + 1) % NavCount;
+			for (int32 NavIdx = 0; NavIdx < StartNavHovers.Num(); ++NavIdx)
+			{
+				if (StartNavHovers[NavIdx].IsValid())
+				{
+					*StartNavHovers[NavIdx] = (NavIdx == StartNavIndex);
+				}
+			}
+			return FReply::Handled();
+		}
+		if (StartKey == EKeys::Enter || StartKey == EKeys::SpaceBar)
+		{
+			switch (StartNavIndex)
+			{
+			case 1: return OnStartGuideClicked();
+			case 2: return OnToggleStartCredentialsClicked();
+			case 3: return OnQuitClicked();
+			default: return OnStartClicked();
+			}
 		}
 
 		if (InKeyEvent.GetKey() == EKeys::Escape && bShowStartCredentials)
@@ -5049,11 +5073,15 @@ int32 SBHMainMenu::GetRootWidgetIndex() const
 
 TSharedRef<SWidget> SBHMainMenu::BuildStartScreen()
 {
+	// Built once; reset the keyboard-nav hover registry so NavItem re-registers the rows in order.
+	StartNavHovers.Reset();
+
 	// Cinematic vertical primary-nav row: invisible idle, a left accent bar that widens + brightens on
 	// hover, and a label that flushes toward the ember accent. Each keeps its existing OnClicked handler.
 	auto NavItem = [this](const FString& Label, bool bPrimary, FOnClicked OnClick) -> TSharedRef<SWidget>
 	{
 		TSharedRef<bool> Hov = MakeShared<bool>(false);
+		StartNavHovers.Add(Hov);   // call order = nav index: PLAY, HOW TO PLAY, CREDENTIALS, QUIT
 		return SNew(SBHMenuButton)
 			.HAlign(HAlign_Left)
 			.ContentPadding(FMargin(0.0f, bPrimary ? 12.0f : 8.0f))
