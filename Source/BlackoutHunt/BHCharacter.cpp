@@ -2440,6 +2440,8 @@ void ABHCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCompone
 	PlayerInputComponent->BindAction(TEXT("ResetToTrain"), IE_Pressed, this, &ABHCharacter::RequestResetToTrainInterior);
 	// Functional sit toggle (C). Free key -- Crouch is LeftCtrl. Pressing a movement key stands you back up.
 	PlayerInputComponent->BindKey(EKeys::C, IE_Pressed, this, &ABHCharacter::ToggleSit);
+	// Social emote (X): cycles through a few text emotes shown over your head to nearby players.
+	PlayerInputComponent->BindKey(EKeys::X, IE_Pressed, this, &ABHCharacter::CycleEmote);
 	PlayerInputComponent->BindKey(EKeys::Tab, IE_Pressed, this, &ABHCharacter::ToggleQuestionCursor);
 	PlayerInputComponent->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &ABHCharacter::OnQuestionPointerDown);
 	PlayerInputComponent->BindKey(EKeys::LeftMouseButton, IE_Released, this, &ABHCharacter::OnQuestionPointerUp);
@@ -2472,6 +2474,8 @@ void ABHCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 	DOREPLIFETIME(ABHCharacter, bHiddenInLocker);
 	DOREPLIFETIME(ABHCharacter, bOutOfPlay);
 	DOREPLIFETIME(ABHCharacter, bSeated);
+	DOREPLIFETIME(ABHCharacter, EmoteId);
+	DOREPLIFETIME(ABHCharacter, EmoteStartServerTime);
 }
 
 void ABHCharacter::EnterLocker(ABHLocker* Locker)
@@ -3407,6 +3411,11 @@ void ABHCharacter::ClientSpecialMoveRejected_Implementation(EBHMovementSpecialSt
 		ClearCosmeticSpecialMove();
 	}
 	SetMovementFailureReason(Reason);
+}
+
+bool ABHCharacter::IsSpecialMoveWallBonk() const
+{
+	return bSpecialMoveHitWall;
 }
 
 void ABHCharacter::ClientNotifyPerfectChain_Implementation(int32 ChainCount)
@@ -7272,6 +7281,46 @@ void ABHCharacter::SetSeatedAuthority(bool bNewSeated)
 	{
 		SendStatusMessage(TEXT("Seated. Move to stand up."));
 	}
+}
+
+void ABHCharacter::CycleEmote()
+{
+	// Local input -> server. Cycle through the emote set; the server timestamps + replicates it.
+	ServerEmote(LocalEmoteCycle);
+	LocalEmoteCycle = (LocalEmoteCycle + 1) % 6;
+}
+
+void ABHCharacter::ServerEmote_Implementation(int32 InEmoteId)
+{
+	if (!CanAct())
+	{
+		return;
+	}
+	EmoteId = FMath::Clamp(InEmoteId, 0, 5);
+	const AGameStateBase* BHGS = GetWorld() ? GetWorld()->GetGameState() : nullptr;
+	EmoteStartServerTime = BHGS ? BHGS->GetServerWorldTimeSeconds() : (GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f);
+}
+
+FString ABHCharacter::GetEmoteLabel(int32 Id)
+{
+	static const TCHAR* Labels[6] = { TEXT("o/ HI!"), TEXT("GG!"), TEXT("<3"), TEXT("LOL"), TEXT("CHEERS!"), TEXT("\\o/ WOO") };
+	return Labels[FMath::Clamp(Id, 0, 5)];
+}
+
+bool ABHCharacter::GetActiveEmote(FString& OutLabel) const
+{
+	if (EmoteId < 0)
+	{
+		return false;
+	}
+	const AGameStateBase* BHGS = GetWorld() ? GetWorld()->GetGameState() : nullptr;
+	const float Now = BHGS ? BHGS->GetServerWorldTimeSeconds() : (GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f);
+	if (Now - EmoteStartServerTime > 3.5f)
+	{
+		return false;
+	}
+	OutLabel = GetEmoteLabel(EmoteId);
+	return true;
 }
 
 void ABHCharacter::ServerBeginInteract_Implementation(AActor* Target)

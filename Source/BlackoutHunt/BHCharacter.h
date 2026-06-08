@@ -125,6 +125,9 @@ public:
 	// uses), so the Sprint tutorial step detects from the real, map-scale-correct speed rather than a fixed cm/s.
 	static constexpr int32 TutorialActSprintBit = 1 << 9;
 	int32 GetTutorialActionMask() const { return TutorialActionMask; }
+	// Live count of consecutive sprint-speed hops (0 when not chaining). The Movement tutorial reads this for
+	// progress coaching (e.g. "2 in a row!") before the 3-hop TutorialActBhopBit latch trips.
+	int32 GetTutorialBhopChain() const { return TutorialBhopChain; }
 	void ResetTutorialActionMask() { TutorialActionMask = 0; TutorialBhopChain = 0; LastTutorialJumpServerTime = -999.0f; }
 	void MarkTutorialAction(int32 Bit) { TutorialActionMask |= Bit; }
 
@@ -160,6 +163,11 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Movement")
 	bool IsSpecialMoveActive() const;
+
+	// True while the active (or most-recently-finished, until the next move starts) roll/slide/dive clipped a wall
+	// (bSpecialMoveHitWall). The Movement tutorial reads this to coach clean spacing ("you clipped a wall").
+	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Movement")
+	bool IsSpecialMoveWallBonk() const;
 
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Movement")
 	EBHMovementSpecialState GetCosmeticMovementSpecialState() const;

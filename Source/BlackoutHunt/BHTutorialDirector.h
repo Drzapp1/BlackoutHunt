@@ -99,6 +99,11 @@ protected:
 	// Advanced-movement lesson step machine (EBHTutorialPhase::Movement).
 	void EnterMovementStep(EMovementStep NewStep);
 	void EvaluateMovementStep();
+	// Spawn the Movement lesson's practice course (cover wall + low overhang, a drop ledge, and a doorway chase
+	// dummy) in the clear western practice bay. Defined out-of-line in BHTutorialDirectorMovementCourse.cpp
+	// (mirroring how BHGameModeEasterEgg.cpp splits BuildEasterEggRoom). Idempotent (bMovementCourseBuilt);
+	// called once from Activate's Movement branch.
+	void BuildMovementCourse();
 
 	// Broadcast a guidance line to every player controller (solo in practice, but harmless for more).
 	void Broadcast(const FString& Message, float DurationSeconds) const;
@@ -260,6 +265,14 @@ protected:
 	// AI survivor "student" spawned for the Teacher/Monitor phases (the one the human hunts / misleads).
 	TWeakObjectPtr<ABHBotController> StudentBot;
 	TWeakObjectPtr<ABHBreaker> TutorialBreaker;
+
+	// Movement-lesson practice course (built by BuildMovementCourse). World locations of each prop so the per-step
+	// markers can point at the right one; bMovementCourseBuilt makes the spawn idempotent.
+	bool bMovementCourseBuilt = false;
+	FVector CoverWallLoc = FVector::ZeroVector;
+	FVector OverhangLoc = FVector::ZeroVector;
+	FVector DropLedgeLoc = FVector::ZeroVector;
+	FVector ChaseDummyLoc = FVector::ZeroVector;
 
 	FTimerHandle ActivateTimerHandle;
 	FTimerHandle EvalTimerHandle;

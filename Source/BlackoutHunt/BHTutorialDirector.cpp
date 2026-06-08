@@ -129,9 +129,11 @@ void ABHTutorialDirector::Activate()
 	switch (Phase)
 	{
 	case EBHTutorialPhase::Movement:
-		// Pure movement sandbox: no bots, no questions, no chase -- just the player and an open space to learn the
-		// links in. The exit gate is opened so the lesson can end on a run-to-exit beat after the final move.
+		// Pure movement sandbox: no bots, no questions, no chase -- just the player, an open space, and a small
+		// practice course (cover wall + overhang, drop ledge, doorway chase dummy) to learn the links against. The
+		// exit gate is opened so the lesson can end on a run-to-exit beat after the final move.
 		SetTutorialExitUnlocked();
+		BuildMovementCourse();
 		EnterMovementStep(EMovementStep::Intro);
 		break;
 	case EBHTutorialPhase::Teacher:
@@ -1069,13 +1071,53 @@ void ABHTutorialDirector::EvaluateMovementStep()
 		break;
 	}
 
-	// Re-broadcast the current step's prompt on a cadence so it stays visible while the player practises (the action
-	// steps have no marker to keep the instruction on screen). Intro/Walk/Complete manage their own messaging.
+	// Keep the current step's instruction on screen on a cadence (the action steps have no marker to keep it up), but
+	// make the line STATE-AWARE: read the live character state via the getters so the re-broadcast coaches the player
+	// on what they actually just did rather than dumbly repeating the prompt. Intro/Walk/Complete manage their own
+	// messaging. The timeout fallbacks above are untouched, so this can never hard-lock a stuck player.
 	if (Now >= NextMoveHintServerTime && !CurrentMovementPrompt.IsEmpty()
 		&& MovementStep != EMovementStep::Intro && MovementStep != EMovementStep::Walk && MovementStep != EMovementStep::Complete)
 	{
 		NextMoveHintServerTime = Now + 9.0f;
-		Broadcast(CurrentMovementPrompt, 10.0f);
+
+		// Build a short coaching line from live state; fall back to the plain prompt when there's nothing to react to.
+		FString Coach;
+		if (Survivor)
+		{
+			const EBHMovementSpecialState SpecState = Survivor->GetMovementSpecialState();
+			const bool bWallBonk = Survivor->IsSpecialMoveWallBonk();
+			switch (MovementStep)
+			{
+			case EMovementStep::BunnyHop:
+			{
+				const int32 Chain = Survivor->GetTutorialBhopChain();
+				if (Chain >= 2) { Coach = FString::Printf(TEXT("Nice -- %d in a row! Keep the rhythm: tap SPACE just before each landing. One more hop."), Chain); }
+				else if (Chain == 1) { Coach = TEXT("Good hop -- now KEEP holding SHIFT and tap SPACE again right before you land to chain it."); }
+				break;
+			}
+			case EMovementStep::Roll:
+			case EMovementStep::QuietRoll:
+				if (bWallBonk) { Coach = TEXT("You clipped a wall -- find open space, then roll (SHIFT then CTRL) cleanly through it. A clean roll is far quieter."); }
+				else if (SpecState == EBHMovementSpecialState::Sliding) { Coach = TEXT("That was a SLIDE (you held SHIFT). For a ROLL, tap CTRL (not ALT) while sprinting."); }
+				break;
+			case EMovementStep::Slide:
+			case EMovementStep::SlideStop:
+				if (bWallBonk) { Coach = TEXT("You bonked the cover -- line up the open gap and slide (SHIFT then ALT) straight through it."); }
+				else if (SpecState == EBHMovementSpecialState::Rolling) { Coach = TEXT("That was a ROLL. For a SLIDE, sprint then tap ALT (not CTRL) -- longer and lower, under the overhang."); }
+				break;
+			case EMovementStep::Dive:
+				if (SpecState == EBHMovementSpecialState::Sliding) { Coach = TEXT("That was a slide -- press ALT in the AIR, not on the ground, and let go of SHIFT as you do. Jump first, then ALT before you land."); }
+				else if (Survivor->IsProne()) { Coach = TEXT("Nice dive -- you ended flat in prone. Tap SPACE or CTRL to get back up."); }
+				break;
+			case EMovementStep::DropRoll:
+				if (bWallBonk) { Coach = TEXT("Clipped the edge -- step back, climb the ledge, then HOLD SHIFT+CTRL through the drop to roll out clean on landing."); }
+				break;
+			default:
+				break;
+			}
+		}
+
+		Broadcast(Coach.IsEmpty() ? CurrentMovementPrompt : Coach, 10.0f);
 	}
 }
 
@@ -1254,16 +1296,48 @@ void ABHTutorialDirector::PublishStepBeat() const
 	}
 	if (Phase == EBHTutorialPhase::Movement)
 	{
-		// The locker roll-out step needs the player at a locker, so point the marker at the nearest one; every other
-		// movement step teaches its link in place with no marker.
-		if (MovementStep == EMovementStep::LockerRoll)
+		// Point the marker at the course prop the current step practises against (when the course is built). The
+		// pure key-press steps (Walk/Crouch/Prone/Sprint/Jump/BunnyHop) and the intros teach in place with no marker.
+		switch (MovementStep)
 		{
+		case EMovementStep::Roll:
+		case EMovementStep::Slide:
+		case EMovementStep::QuietRoll:
+		case EMovementStep::SlideStop:
+			if (bMovementCourseBuilt)
+			{
+				SetSingleBeat(TEXT("Cover"), CoverWallLoc);
+				return;
+			}
+			break;
+		case EMovementStep::DropRoll:
+			if (bMovementCourseBuilt)
+			{
+				SetSingleBeat(TEXT("Ledge"), DropLedgeLoc);
+				return;
+			}
+			break;
+		case EMovementStep::Dive:
+		case EMovementStep::FlowChain:
+			if (bMovementCourseBuilt)
+			{
+				SetSingleBeat(TEXT("Dummy"), ChaseDummyLoc);
+				return;
+			}
+			break;
+		case EMovementStep::LockerRoll:
+		{
+			// The locker roll-out step needs the player at a locker, so point the marker at the nearest one.
 			const ABHCharacter* MoveSurvivor = FindTutorialSurvivor();
 			if (ABHLocker* Locker = FindNearestLocker(MoveSurvivor ? MoveSurvivor->GetActorLocation() : GetActorLocation()))
 			{
 				SetSingleBeat(TEXT("Locker"), Locker->GetActorLocation());
 				return;
 			}
+			break;
+		}
+		default:
+			break;
 		}
 		ClearBeats();
 		return;

@@ -11373,7 +11373,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 			.AutoWrapText(true)
 			.Font(MenuFont(12))
 			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
-			.Text(FText::FromString(TEXT("Warm up your role, answer orange stations with 1-4, hold E on solved work, respect CCTV/noise warnings, use train stops for bonus points and shop upgrades, then board the final escape.")))
+			.Text(FText::FromString(TEXT("You are a student. The Teacher hunts you. Win by: 1) Warm up your role. 2) Answer orange stations with 1-4, then hold E on the work. 3) Read threats - Teacher meter, CCTV, loud floors - and break sight before they spike. 4) At train stops, answer the bonus and buy upgrades. 5) Board the final escape before the route locks.")))
 		];
 
 	Panel->AddSlot()
@@ -11776,6 +11776,49 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 			]
 		];
 
+	// Canonical "Movement Kit" KEY->MOVE reference (six terse tiles) so the advanced kit lives in one place that
+	// matches the tutorial bindings, instead of being split across the controls grid and the expert prose.
+	TSharedRef<SGridPanel> MovementKitGrid = SNew(SGridPanel);
+	MovementKitGrid->AddSlot(0, 0).Padding(0.0f, 0.0f, 8.0f, 8.0f)
+		[ MenuGuideActionTile(FText::FromString(TEXT("Sprint+Ctrl")), FText::FromString(TEXT("ROLL")), FText::FromString(TEXT("Roll through capture timing and corner dodges. A clean roll stays quiet.")), FLinearColor(0.20f, 0.38f, 0.40f, 1.0f)) ];
+	MovementKitGrid->AddSlot(1, 0).Padding(0.0f, 0.0f, 8.0f, 8.0f)
+		[ MenuGuideActionTile(FText::FromString(TEXT("Sprint+Alt")), FText::FromString(TEXT("SLIDE")), FText::FromString(TEXT("Slide low and far. Hold Alt to end prone, release early to brake.")), FLinearColor(0.22f, 0.46f, 0.32f, 1.0f)) ];
+	MovementKitGrid->AddSlot(2, 0).Padding(0.0f, 0.0f, 0.0f, 8.0f)
+		[ MenuGuideActionTile(FText::FromString(TEXT("Space then Alt")), FText::FromString(TEXT("DIVE")), FText::FromString(TEXT("While moving, jump with Space then tap Alt in the air. Ends in prone.")), FLinearColor(0.42f, 0.30f, 0.12f, 1.0f)) ];
+	MovementKitGrid->AddSlot(0, 1).Padding(0.0f, 8.0f, 8.0f, 0.0f)
+		[ MenuGuideActionTile(FText::FromString(TEXT("Shift+Ctrl landing")), FText::FromString(TEXT("DROP-ROLL")), FText::FromString(TEXT("Hold Sprint+Crouch through a fall to roll out and kill landing noise.")), FLinearColor(0.42f, 0.40f, 0.20f, 1.0f)) ];
+	MovementKitGrid->AddSlot(1, 1).Padding(0.0f, 8.0f, 8.0f, 0.0f)
+		[ MenuGuideActionTile(FText::FromString(TEXT("Shift+E from locker")), FText::FromString(TEXT("LOCKER ROLL-OUT")), FText::FromString(TEXT("Hold Sprint, then tap E to leave a locker as a capture-immune roll.")), FLinearColor(0.30f, 0.30f, 0.42f, 1.0f)) ];
+	MovementKitGrid->AddSlot(2, 1).Padding(0.0f, 8.0f, 0.0f, 0.0f)
+		[ MenuGuideActionTile(FText::FromString(TEXT("Ctrl / Alt")), FText::FromString(TEXT("CROUCH / PRONE")), FText::FromString(TEXT("Tap Ctrl to crouch, Alt to go prone. Both are slow, low, and quiet.")), FLinearColor(0.36f, 0.18f, 0.18f, 1.0f)) ];
+
+	Panel->AddSlot()
+		.AutoHeight()
+		.Padding(0.0f, 0.0f, 0.0f, 14.0f)
+		[
+			SNew(SBorder)
+			.BorderImage(WhiteBrush())
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
+			.Padding(12.0f)
+			[
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					SNew(STextBlock)
+					.Font(MenuFont(13, FName(TEXT("Bold"))))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
+					.Text(FText::FromString(TEXT("Movement Kit")))
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.0f, 9.0f, 0.0f, 0.0f)
+				[
+					MovementKitGrid
+				]
+			]
+		];
+
 	TSharedRef<SHorizontalBox> FlowRow = SNew(SHorizontalBox);
 	FlowRow->AddSlot()
 		.FillWidth(1.0f)
@@ -11845,18 +11888,21 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 		];
 
 	const TArray<FText> SurvivorItems = {
+		FText::FromString(TEXT("\"Just keep answering. The bell never rings for us.\" - Stay calm, stay moving.")),
 		FText::FromString(TEXT("Answer stations with 1-4, then hold E for solved work, breakers, shutters, shops, and exits.")),
 		FText::FromString(TEXT("Use crouch, prone, slide, roll, dive, lockers, and door slams to break Teacher timing.")),
 		FText::FromString(TEXT("Aim flashlight during the Teacher swing window to stagger if you have battery.")),
 		FText::FromString(TEXT("Spend train shop points on stamina, sprint, light, hint, decoy, and door-rush powerups."))
 	};
 	const TArray<FText> TeacherItems = {
+		FText::FromString(TEXT("\"Class is in session. No one leaves until I say so.\" - You are the hunt.")),
 		FText::FromString(TEXT("Mouse1 starts an axe swing with windup and recovery; visible Survivors can dodge the timing.")),
 		FText::FromString(TEXT("Q scan points you toward Survivor pressure; R blackout drains comfort and route safety.")),
 		FText::FromString(TEXT("Security monitors turn CCTV motion into stronger temporary locks.")),
 		FText::FromString(TEXT("Capture points buy scan focus, blackout surge, and patrol intel upgrades at train stops."))
 	};
 	const TArray<FText> MonitorItems = {
+		FText::FromString(TEXT("\"You can't grab anyone - so lie, trap, and misdirect.\" - Bend the hunt your way.")),
 		FText::FromString(TEXT("You look scary, but cannot capture.")),
 		FText::FromString(TEXT("G drops traps after tools unlock; place them on chase exits and objective routes.")),
 		FText::FromString(TEXT("Q gives real hints; R aims false corridor markers to pull the Teacher off-route.")),
@@ -11923,15 +11969,22 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 		];
 
 	const TArray<FText> ExpertMovementItems = {
-		FText::FromString(TEXT("Bunny hop to travel: tap Shift to reach sprint speed, then chain jumps. Airborne the per-second sprint drain stops, so a clean chain holds top speed for less stamina than holding Shift, letting you outlast the chase.")),
-		FText::FromString(TEXT("Buffer each hop by tapping Space just before you land; miss the rhythm and the jumps only bleed stamina with no speed gain.")),
-		FText::FromString(TEXT("Air steering is limited: line up before takeoff, then strafe/look only for small corrections.")),
-		FText::FromString(TEXT("Sprint+Ctrl rolls through capture timing windows and fits corner/doorway dodges. A CLEAN roll (no wall bump) is quieter than one that bonks - good spacing keeps you stealthy.")),
-		FText::FromString(TEXT("Sprint+Alt slides farther and lower; HOLD Alt to finish prone, or RELEASE Alt early to brake into a quiet crouch. A full slide is loud, so the Teacher hears it.")),
-		FText::FromString(TEXT("Prone is slow, quiet, and low-visibility (tap Left Alt). DIVE is a committed escape: while moving, jump (Space) then tap Alt in the air. It ends flat in prone, so tap Space or Ctrl to get up.")),
-		FText::FromString(TEXT("Drop-roll: HOLD Shift+Ctrl together through a landing to roll out instead of thudding down - it kills the loud landing noise.")),
-		FText::FromString(TEXT("Leaving a locker with Shift held rolls you out - capture-immune and mobile - instead of the exposed standing pop.")),
-		FText::FromString(TEXT("Chaining roll/slide/dive frame-perfectly keeps your speed and stays quiet, but pushing the chain to its limit makes a loud overextension tell. New? Run the MOVEMENT TUTORIAL from Play."))
+		FText::FromString(TEXT("Bunny hop to travel: tap Shift to hit sprint speed, then chain jumps.")),
+		FText::FromString(TEXT("Airborne, sprint stamina drain stops, so a clean chain costs less than holding Shift.")),
+		FText::FromString(TEXT("Buffer each hop by tapping Space just before you land.")),
+		FText::FromString(TEXT("Miss the rhythm and the jumps only bleed stamina for no speed.")),
+		FText::FromString(TEXT("Air steering is limited: line up before takeoff, then nudge for small corrections.")),
+		FText::FromString(TEXT("Sprint+Ctrl rolls through capture timing and corner dodges.")),
+		FText::FromString(TEXT("A clean roll with no wall bump stays quiet; bonks give you away.")),
+		FText::FromString(TEXT("Sprint+Alt slides farther and lower; hold Alt to finish prone.")),
+		FText::FromString(TEXT("Release Alt early to brake the slide into a quiet crouch.")),
+		FText::FromString(TEXT("Prone is slow, quiet, and low (tap Alt); a full slide is loud.")),
+		FText::FromString(TEXT("DIVE is committed: while moving, jump (Space) then tap Alt in the air.")),
+		FText::FromString(TEXT("A dive ends flat in prone, so tap Space or Ctrl to stand.")),
+		FText::FromString(TEXT("Drop-roll: hold Shift+Ctrl through a landing to roll out and kill the thud.")),
+		FText::FromString(TEXT("Leave a locker with Shift held to roll out capture-immune, not pop exposed.")),
+		FText::FromString(TEXT("Chaining roll/slide/dive keeps speed, but overextending makes a loud tell.")),
+		FText::FromString(TEXT("New? Run the MOVEMENT TUTORIAL from Play."))
 	};
 	const TArray<FText> ExpertSoundItems = {
 		FText::FromString(TEXT("Running, repairs, hard landings, panic breathing, detention events, and glass are Teacher-readable clues.")),
