@@ -24,6 +24,14 @@ namespace BHPropVisuals
 	UMaterialInterface* WarningSignMaterial();
 	UMaterialInterface* ReadableTextMaterial();
 
+	// CC0 ambientCG comfort/games materials (imported via Tools/ImportTrainComfortMaterials.py). Each falls
+	// back to BasicMaterial() if the asset is missing, so callers are always safe.
+	UMaterialInterface* WoodMaterial();
+	UMaterialInterface* CarpetMaterial();
+	UMaterialInterface* FeltMaterial();
+	UMaterialInterface* LeatherMaterial();
+	UMaterialInterface* MarbleMaterial();
+
 	void ConfigurePart(
 		UStaticMeshComponent* Component,
 		UStaticMesh* MeshAsset,

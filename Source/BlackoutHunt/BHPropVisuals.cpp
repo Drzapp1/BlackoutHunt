@@ -79,6 +79,36 @@ UMaterialInterface* ReadableTextMaterial()
 	return Material;
 }
 
+UMaterialInterface* WoodMaterial()
+{
+	static UMaterialInterface* Material = LoadMaterial(TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_Wood.M_BH_Wood"));
+	return Material ? Material : BasicMaterial();
+}
+
+UMaterialInterface* CarpetMaterial()
+{
+	static UMaterialInterface* Material = LoadMaterial(TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_Carpet.M_BH_Carpet"));
+	return Material ? Material : BasicMaterial();
+}
+
+UMaterialInterface* FeltMaterial()
+{
+	static UMaterialInterface* Material = LoadMaterial(TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_Felt.M_BH_Felt"));
+	return Material ? Material : BasicMaterial();
+}
+
+UMaterialInterface* LeatherMaterial()
+{
+	static UMaterialInterface* Material = LoadMaterial(TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_Leather.M_BH_Leather"));
+	return Material ? Material : BasicMaterial();
+}
+
+UMaterialInterface* MarbleMaterial()
+{
+	static UMaterialInterface* Material = LoadMaterial(TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_Marble.M_BH_Marble"));
+	return Material ? Material : BasicMaterial();
+}
+
 void ConfigurePart(
 	UStaticMeshComponent* Component,
 	UStaticMesh* MeshAsset,

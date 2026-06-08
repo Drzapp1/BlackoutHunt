@@ -409,6 +409,12 @@ private:
 	EBHMainMenuTab ActiveMenuTab = EBHMainMenuTab::Play;
 	bool bShowingStartScreen = false;
 	bool bShowStartCredentials = false;
+	// --- atmospheric-horror animation state (UI-only; advanced in Tick, read by start-screen visuals via
+	// TAttribute lambdas). No gameplay/replication. ---
+	float HorrorTimeAccum = 0.0f;   // seconds the menu has been alive
+	float FlickerAlpha = 1.0f;      // ~0.78..1.0 failing-light multiplier (accent/title)
+	float GrainPhase = 0.0f;        // 0..1 grain shimmer phase
+	float VignettePulse = 1.0f;     // ~0.92..1.0 slow vignette "breath"
 	// Progress through the Konami code (easter egg, cosmetic). See Docs/EASTER_EGGS.md.
 	int32 KonamiProgress = 0;
 	// Per-part recolour: which skin material slot (a BHColorableMaterialNames registry index) the swatches recolour.

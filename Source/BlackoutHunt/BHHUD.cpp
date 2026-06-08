@@ -21,6 +21,8 @@
 #include "BHTrainBlackjackTable.h"
 #include "BHTrainChessTable.h"
 #include "BHTrainTicTacToeTable.h"
+#include "BHTrainConnectFourTable.h"
+#include "BHTrainSlotMachine.h"
 #include "BHTrainBonusQuestionTerminal.h"
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
@@ -1480,6 +1482,14 @@ void ABHHUD::DrawMinigameStatus(ABHCharacter* Character)
 	else if (ABHTrainTicTacToeTable* TicTacToe = Cast<ABHTrainTicTacToeTable>(Table))
 	{
 		TicTacToe->GetHudLinesForPlayer(BHPS->GetPlayerId(), Lines, Accent);
+	}
+	else if (ABHTrainConnectFourTable* ConnectFour = Cast<ABHTrainConnectFourTable>(Table))
+	{
+		ConnectFour->GetHudLinesForPlayer(BHPS->GetPlayerId(), Lines, Accent);
+	}
+	else if (ABHTrainSlotMachine* Slots = Cast<ABHTrainSlotMachine>(Table))
+	{
+		Slots->GetHudLinesForPlayer(BHPS->GetPlayerId(), Lines, Accent);
 	}
 	if (Lines.Num() == 0)
 	{

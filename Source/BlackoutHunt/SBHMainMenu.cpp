@@ -2688,6 +2688,20 @@ void SBHMainMenu::Tick(const FGeometry& AllottedGeometry, const double InCurrent
 {
 	SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
 	UpdateAvatarPreviewMesh();
+
+	// Drive the atmospheric-horror animation (UI-only; the start-screen overlays read these via attributes).
+	HorrorTimeAccum += InDeltaTime;
+	const float T = HorrorTimeAccum;
+	// Slow vignette "breath".
+	VignettePulse = 0.96f + 0.04f * FMath::Sin(T * 0.44f);
+	// Failing-fluorescent flicker: layered sines + a cheap hash for rare hard dips.
+	const float Slow = 0.5f + 0.5f * FMath::Sin(T * 2.3f);
+	const float Fast = 0.5f + 0.5f * FMath::Sin(T * 11.7f + 1.3f);
+	const float Hash = FMath::Frac(FMath::Sin(T * 97.13f) * 43758.5453f);
+	const float Dip = (Hash > 0.93f) ? 0.18f : 0.0f;
+	FlickerAlpha = FMath::Clamp(1.0f - 0.06f * Slow - 0.05f * Fast - Dip, 0.78f, 1.0f);
+	// Grain shimmer phase.
+	GrainPhase = FMath::Frac(GrainPhase + InDeltaTime * 1.7f);
 }
 
 void SBHMainMenu::Construct(const FArguments& InArgs)
