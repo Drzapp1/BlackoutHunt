@@ -4,6 +4,7 @@
 
 #include "BHTutorialDirector.h"
 
+#include "BHAlarmTrap.h"
 #include "BHBotController.h"
 #include "BHBreaker.h"
 #include "BHCharacter.h"
@@ -198,6 +199,26 @@ void ABHTutorialDirector::EnterStep(EStep NewStep)
 		ShowTutorialCard(TEXT("SURVIVOR TRAINING"), TEXT("You're a student. Learn to move, hide, crawl, and escape the Teacher."), 4.5f);
 		Broadcast(TEXT("Welcome to the Blackout Hunt tutorial. Watch for a moment - your controls unlock in a few seconds."), 5.0f);
 		break;
+	case EStep::Loom:
+		// Early-spawn the Teacher idle at the far Hunter spawn so it looms over the whole teaching half (it will NOT
+		// chase - DriveScriptedCast only chases in Encounter/Escape, and idles it elsewhere). SpawnScriptedTeacher()
+		// is idempotent, so the later Encounter call no-ops. Keep input locked for the brief reveal; Move hands back.
+		SetAllInputLocked(true);
+		if (!bTeacherLoomed)
+		{
+			SpawnScriptedTeacher();
+			bTeacherLoomed = true;
+		}
+		if (const ABHBotController* LoomBot = TeacherBot.Get())
+		{
+			if (LoomBot->GetPawn())
+			{
+				// A gentle, distant reveal (no FOV punch / hitstop - that is saved for the Encounter climax).
+				ShowTutorialCard(TEXT("THE TEACHER"), TEXT("That's the Teacher, watching from across the floor. Learn fast - soon it hunts."), 4.0f);
+			}
+		}
+		Broadcast(TEXT("See the TEACHER looming in the distance? It won't move yet - but everything you learn now is what keeps you alive when it does."), 5.0f);
+		break;
 	case EStep::Move:
 		SetAllInputLocked(false);
 		// Zero the WASD tally on entry so the prompt only clears once the student drives all four directions now.
@@ -227,7 +248,8 @@ void ABHTutorialDirector::EnterStep(EStep NewStep)
 		break;
 	case EStep::Hide:
 		bHideRegistered = false;
-		Broadcast(TEXT("Nice. Head to the LOCKER (follow the marker) and press E to hide. Inside, the Teacher CANNOT grab you - it's your panic button. You pop out a few steps away, so it can't camp the door."), 16.0f);
+		HideScareServerTime = 0.0f;
+		Broadcast(TEXT("The TEACHER is closing in - get to the LOCKER (follow the marker) and press E to hide! Inside, it CANNOT grab you - it'll search, then give up. You pop out a few steps away, so it can't camp the door."), 16.0f);
 		break;
 	case EStep::Crawl:
 		Broadcast(TEXT("Hold LEFT CTRL to CROUCH - quieter and lower for sneaking. For the low CRAWL DUCT ahead (follow the marker) go all the way down: tap LEFT ALT for prone, then crawl in. A standing Teacher can't follow."), 16.0f);
@@ -277,7 +299,11 @@ void ABHTutorialDirector::EnterStep(EStep NewStep)
 		if (ABHCharacter* RunSurvivor = FindTutorialSurvivor())
 		{
 			RunSurvivor->RecoverStamina(1000.0f);
+			// Encounter is now gated on the player actually moving (not a pure timer). Zero the WASD tally on entry
+			// so the gate measures movement made DURING the chase, and arm the re-nudge throttle for a frozen player.
+			RunSurvivor->ResetTutorialMovementMask();
 		}
+		EncounterNudgeServerTime = StepStartServerTime + 5.0f;
 		SetTutorialExitUnlocked();
 		SpawnScriptedTeacher();
 		if (ABHBotController* Teacher = TeacherBot.Get())
@@ -374,6 +400,14 @@ void ABHTutorialDirector::EvaluateStep()
 	case EStep::Intro:
 		if (Elapsed >= 5.0f)
 		{
+			EnterStep(EStep::Loom);
+		}
+		break;
+	case EStep::Loom:
+		// Brief reveal beat (the Teacher just appeared in the distance), then hand control back via Move. A short
+		// fixed floor only - there is nothing for the player to do here, so it can never hard-lock.
+		if (Elapsed >= 4.0f)
+		{
 			EnterStep(EStep::Move);
 		}
 		break;
@@ -410,12 +444,15 @@ void ABHTutorialDirector::EvaluateStep()
 		}
 		break;
 	case EStep::Hide:
-		// First register that the student actually hid; the next prompt must NOT fire while they are still
-		// inside the locker (they can't see or act on it), so only advance once they have climbed back out.
+		// Staged scare: the moment the student hides, record the time so the loomed Teacher (driven in
+		// DriveScriptedCast -> DriveTeacherToLocker) comes to SEARCH the locker for ~2s and then gives up via the
+		// DriveTeacherChase locker-retreat - proving the locker's capture-immunity with real stakes. The next prompt
+		// must NOT fire while they are still inside (they can't see/act on it), so advance only once they climb out.
 		if (!bHideRegistered && Survivor && Survivor->IsHiddenInLocker())
 		{
 			bHideRegistered = true;
-			Broadcast(TEXT("Good - you're hidden and the Teacher can't see you. When you climb out (press E) you reappear a few steps away from the locker, not at the door - so the Teacher can't corner you there."), 10.0f);
+			HideScareServerTime = GetWorld()->GetTimeSeconds();
+			Broadcast(TEXT("It's right outside - but it CAN'T reach you in here. Watch: it searches... and gives up. When you climb out (press E) you reappear a few steps from the locker, not at the door, so it can't corner you."), 12.0f);
 		}
 		if ((bHideRegistered && Survivor && !Survivor->IsHiddenInLocker()) || Elapsed >= 28.0f)
 		{
@@ -485,13 +522,26 @@ void ABHTutorialDirector::EvaluateStep()
 		break;
 	}
 	case EStep::Encounter:
-		// Brief dramatic beat while the Teacher engages, then straight into the run-to-exit (the chase keeps
-		// going through Escape via DriveTeacherChase, so it reads as one continuous pursuit).
-		if (Elapsed >= 5.0f)
+	{
+		// Gate on the player having actually MOVED/recovered from the reveal - not a pure 5s timer. The 5s is a floor
+		// (the reveal cutscene + caption need to land first); after it, advance the instant they drive any direction.
+		// A generous 20s hard fallback still guarantees the lesson can never hard-lock, and a frozen player is nudged.
+		const uint8 MoveMask = Survivor ? Survivor->GetTutorialMovementMask() : 0;
+		const bool bMoved = MoveMask != 0;
+		if ((Elapsed >= 5.0f && bMoved) || Elapsed >= 20.0f)
 		{
 			EnterStep(EStep::Escape);
+			break;
+		}
+		// Past the floor but still frozen: re-nudge on a throttle so a panicked new player knows to run.
+		const float Now = GetWorld()->GetTimeSeconds();
+		if (Elapsed >= 5.0f && !bMoved && Now >= EncounterNudgeServerTime)
+		{
+			EncounterNudgeServerTime = Now + 3.0f;
+			Broadcast(TEXT("MOVE! Use WASD and hold SHIFT to sprint for the GREEN EXIT - don't freeze!"), 3.0f);
 		}
 		break;
+	}
 	case EStep::Escape:
 	{
 		bool bReachedExit = false;
@@ -612,8 +662,21 @@ void ABHTutorialDirector::DriveScriptedCast()
 	case EBHTutorialPhase::Survivor:
 		if (CurrentStep == EStep::Encounter || CurrentStep == EStep::Escape)
 		{
+			// Climax: a real pursuit at the student's live position.
 			DriveTeacherChase();
 		}
+		else if (CurrentStep == EStep::Hide)
+		{
+			// Staged scare: drive the loomed Teacher to search the locker, then give up (no-ops if no Teacher yet).
+			DriveTeacherToLocker();
+		}
+		else if (CurrentStep == EStep::Decoy)
+		{
+			// Misdirection demo: pull the loomed Teacher toward the dropped decoy so the trick is visibly proven.
+			DriveTeacherToDecoy();
+		}
+		// All other survivor steps (Loom included): the Teacher receives no intent, so it simply looms in place -
+		// the intended distant menace during the teaching half.
 		break;
 	case EBHTutorialPhase::Teacher:
 		// The human is the Hunter; drive the AI student on a fixed scripted route (always moving, hides on cue)
@@ -621,9 +684,9 @@ void ABHTutorialDirector::DriveScriptedCast()
 		DriveScriptedTutorialStudent();
 		break;
 	case EBHTutorialPhase::Monitor:
-		// The AI student wanders; the AI teacher hunts it so the monitor has a live scene to mislead. If the
-		// teacher ever catches the student, revive it (like the human revive) so the scene never goes dead -
-		// the monitor lesson is ability/time gated, so this is purely to keep something to watch and mislead.
+		// Step-aware driving so the scene REACTS to each tool (see DriveMonitorCast). Revive the AI student here
+		// first (DriveScriptedCast is non-const, DriveMonitorCast is const) so the scene never goes dead -- the
+		// monitor lesson is ability/time gated, so this is purely to keep something to watch and mislead.
 		if (ABHBotController* StudentCtrl = StudentBot.Get())
 		{
 			ABHPlayerState* StudentPS = StudentCtrl->GetPlayerState<ABHPlayerState>();
@@ -636,11 +699,7 @@ void ABHTutorialDirector::DriveScriptedCast()
 				}
 			}
 		}
-		DriveStudentBot();
-		if (ABHCharacter* Student = FindStudentCharacter())
-		{
-			DriveBotChase(TeacherBot.Get(), Student);
-		}
+		DriveMonitorCast();
 		break;
 	default:
 		break;
@@ -694,6 +753,99 @@ void ABHTutorialDirector::DriveBotChase(ABHBotController* Bot, ABHCharacter* Tar
 	if (Bot && Target)
 	{
 		Bot->RunStateTreeIntent(EBHBotIntent::Chase, Target, Target->GetActorLocation(), 120.0f);
+	}
+}
+
+ABHAlarmTrap* ABHTutorialDirector::FindNearestAlarmTrap(const FVector& From) const
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return nullptr;
+	}
+	ABHAlarmTrap* Best = nullptr;
+	float BestDistSq = TNumericLimits<float>::Max();
+	for (TActorIterator<ABHAlarmTrap> It(World); It; ++It)
+	{
+		ABHAlarmTrap* Trap = *It;
+		if (!Trap || !IsValid(Trap))
+		{
+			continue;
+		}
+		const float DistSq = FVector::DistSquared(From, Trap->GetActorLocation());
+		if (DistSq < BestDistSq)
+		{
+			BestDistSq = DistSq;
+			Best = Trap;
+		}
+	}
+	return Best;
+}
+
+void ABHTutorialDirector::DriveMonitorCast() const
+{
+	ABHBotController* Teacher = TeacherBot.Get();
+	ABHCharacter* Student = FindStudentCharacter();
+
+	switch (MonitorStep)
+	{
+	case EMonitorStep::Hint:
+		// (Q) The real hint reveals a live student to the Teacher. The solo Teacher is a BOT that never receives
+		// that ping, so turn it onto the student's actual position by hand -- a real "the Teacher turns onto a
+		// student". Let the student keep wandering so the Teacher is visibly homing on a moving target.
+		DriveStudentBot();
+		if (Student)
+		{
+			DriveBotChase(Teacher, Student);
+		}
+		break;
+	case EMonitorStep::Marker:
+		// (R) The false corridor marker should pull the Teacher off the students. Steer the AI Teacher to the
+		// marker location the player aimed at (captured when R fired) so the misdirection is visible; meanwhile the
+		// student roams free, exactly the point of the tool.
+		DriveStudentBot();
+		if (Teacher && bMonitorMarkerActive)
+		{
+			Teacher->RunStateTreeIntent(EBHBotIntent::InvestigateLastSeen, nullptr, MonitorMarkerTarget, 160.0f);
+		}
+		else if (Student)
+		{
+			DriveBotChase(Teacher, Student);
+		}
+		break;
+	case EMonitorStep::Trap:
+		// (G) Nudge the student bot across the spawned trap so it actually trips the alarm (the trap destroys
+		// itself on trip, so FindNearestAlarmTrap returns null afterward and the student resumes its loop). Keep
+		// the Teacher loosely chasing so the scene stays alive.
+		if (Student)
+		{
+			if (const ABHAlarmTrap* Trap = FindNearestAlarmTrap(Student->GetActorLocation()))
+			{
+				if (ABHBotController* StudentCtrl = StudentBot.Get())
+				{
+					// Tight acceptance so the bot walks right onto the trigger sphere rather than stopping short.
+					StudentCtrl->RunStateTreeIntent(EBHBotIntent::Flee, nullptr, Trap->GetActorLocation(), 60.0f);
+				}
+			}
+			else
+			{
+				DriveStudentBot();
+			}
+			DriveBotChase(Teacher, Student);
+		}
+		break;
+	case EMonitorStep::Intro:
+	case EMonitorStep::Unlock:
+	case EMonitorStep::Exit:
+	case EMonitorStep::Done:
+	default:
+		// Ambient scene: student wanders/flees, Teacher hunts it, so the monitor always has something to watch.
+		DriveStudentBot();
+		if (Student)
+		{
+			DriveBotChase(Teacher, Student);
+		}
+		break;
 	}
 }
 
@@ -1063,7 +1215,23 @@ void ABHTutorialDirector::PublishStepBeat() const
 		{
 			if (const ABHCharacter* Student = FindStudentCharacter())
 			{
+				// Keep the marker honest: a student hidden in a locker drops off, so clear the beat while they are
+				// concealed (the signpost line in EvaluateMonitorStep explains why the marker just vanished).
+				if (Student->IsHiddenInLocker())
+				{
+					ClearBeats();
+					return;
+				}
 				SetSingleBeat(TEXT("Student"), Student->GetActorLocation());
+				return;
+			}
+		}
+		else if (MonitorStep == EMonitorStep::Marker)
+		{
+			// While misdirecting, pin the marker on the false-marker spot the Teacher is being lured to.
+			if (bMonitorMarkerActive)
+			{
+				SetSingleBeat(TEXT("Decoy marker"), MonitorMarkerTarget);
 				return;
 			}
 		}
@@ -1293,6 +1461,61 @@ void ABHTutorialDirector::DriveTeacherChase() const
 
 	// Tight acceptance radius so the bot keeps closing on the student's live position - a real pursuit.
 	Bot->RunStateTreeIntent(EBHBotIntent::Chase, Survivor, Survivor->GetActorLocation(), 100.0f);
+}
+
+void ABHTutorialDirector::DriveTeacherToLocker() const
+{
+	ABHBotController* Bot = TeacherBot.Get();
+	ABHCharacter* Survivor = FindTutorialSurvivor();
+	if (!Bot || !Survivor || !GetWorld())
+	{
+		return;
+	}
+
+	// Before the student hides there is nothing to search: keep the Teacher looming in place at its spawn so the
+	// scare lands fresh when they duck in. HideScareServerTime is set in EvaluateStep the instant they hide.
+	if (HideScareServerTime <= 0.0f || !Survivor->IsHiddenInLocker())
+	{
+		Bot->StopMovement();
+		return;
+	}
+
+	// Searched long enough (~2s): give up and walk away. Reuse DriveTeacherChase, whose locker-retreat branch fires
+	// while the student is hidden, so it heads back toward the Hunter spawn - the same "gives up" behaviour as the
+	// real chase, proving locker capture-immunity. (DriveTeacherChase's spawn-hold has long since elapsed by Hide.)
+	if (GetWorld()->GetTimeSeconds() - HideScareServerTime >= 2.0f)
+	{
+		DriveTeacherChase();
+		return;
+	}
+
+	// Searching: walk the Teacher up to the student's locker. Flee drives the bot toward the given location with a
+	// null target (the same pattern the locker-retreat + scripted-student loop use for a fixed destination).
+	if (const ABHLocker* Locker = FindNearestLocker(Survivor->GetActorLocation()))
+	{
+		Bot->RunStateTreeIntent(EBHBotIntent::Flee, nullptr, Locker->GetActorLocation(), 120.0f);
+	}
+}
+
+void ABHTutorialDirector::DriveTeacherToDecoy() const
+{
+	ABHBotController* Bot = TeacherBot.Get();
+	ABHCharacter* Survivor = FindTutorialSurvivor();
+	if (!Bot || !Survivor || !GetWorld())
+	{
+		return;
+	}
+
+	// Misdirection demo: once the student drops a decoy (LastDecoyTime advances past step entry), pull the loomed
+	// Teacher toward where the decoy landed so the student SEES it commit to the wrong spot. Before any decoy drops,
+	// the Teacher just looms in place. The decoy spawns ~140cm in front of the student (PlaceDemoDecoyNearStudent),
+	// so the student's position is a faithful stand-in for the lure, which reads correctly to the player.
+	if (Survivor->GetLastDecoyTime() < StepStartServerTime)
+	{
+		Bot->StopMovement();
+		return;
+	}
+	Bot->RunStateTreeIntent(EBHBotIntent::Flee, nullptr, Survivor->GetActorLocation(), 160.0f);
 }
 
 void ABHTutorialDirector::PlayTeacherRevealCutscene(const FVector& TeacherFocusLocation) const
@@ -1816,6 +2039,10 @@ void ABHTutorialDirector::EnterMonitorStep(EMonitorStep NewStep)
 	StepStartServerTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	// Each tool step re-arms its own confirmation hold (see EvaluateMonitorStep).
 	MonitorToolConfirmServerTime = 0.0f;
+	// Re-arm the per-step reaction state: no captured marker yet, and the locker-vanish signpost can fire once more.
+	bMonitorMarkerActive = false;
+	MonitorMarkerTarget = FVector::ZeroVector;
+	bMonitorLockerSignpostShown = false;
 
 	switch (NewStep)
 	{
@@ -1823,19 +2050,6 @@ void ABHTutorialDirector::EnterMonitorStep(EMonitorStep NewStep)
 		SetAllInputLocked(true);
 		ShowTutorialCard(TEXT("HALL MONITOR TRAINING"), TEXT("You can't catch anyone. Revise to unlock tools, then mislead the Teacher and slow the students."), 4.5f);
 		Broadcast(TEXT("Last lesson: the HALL MONITOR. You can't catch anyone - you mislead the Teacher and slow the students. Watch a moment..."), 5.0f);
-		break;
-	case EMonitorStep::Move:
-		SetAllInputLocked(false);
-		if (ABHCharacter* Human = FindHumanPlayer())
-		{
-			Human->ResetTutorialMovementMask();
-			BroadcastMoveHint(Human->GetTutorialMovementMask());
-		}
-		else
-		{
-			BroadcastMoveHint(0);
-		}
-		NextMoveHintServerTime = StepStartServerTime + 3.0f;
 		break;
 	case EMonitorStep::Unlock:
 		// First step after the (locked) intro now that the WASD lesson is skipped - hand back control here.
@@ -1852,13 +2066,13 @@ void ABHTutorialDirector::EnterMonitorStep(EMonitorStep NewStep)
 		Broadcast(TEXT("Monitors unlock their tools by REVISING. Walk to the lit STATION (follow the marker) and answer with 1-4 - that's it. You don't hold E to repair nodes; answering is your whole job here."), 14.0f);
 		break;
 	case EMonitorStep::Hint:
-		Broadcast(TEXT("Press Q to send a REAL hint - it tells the Teacher where a student actually is."), 16.0f);
+		Broadcast(TEXT("AIM at the student (follow the marker) and press Q to send a REAL hint. Watch - the Teacher turns onto a real student and goes after them."), 16.0f);
 		break;
 	case EMonitorStep::Marker:
-		Broadcast(TEXT("Press R to drop a FALSE corridor marker - it sends the Teacher chasing nothing."), 16.0f);
+		Broadcast(TEXT("Now AIM down an empty corridor and press R to drop a FALSE marker. Watch the Teacher peel off and chase the marker instead of the student."), 16.0f);
 		break;
 	case EMonitorStep::Trap:
-		Broadcast(TEXT("Press G to set a TRAP - students must spot and dodge it or trip the alarm."), 16.0f);
+		Broadcast(TEXT("Press G to set a TRAP on the floor. Watch - a student who doesn't dodge it walks right in and trips the alarm, lighting up their position."), 16.0f);
 		break;
 	case EMonitorStep::Exit:
 		// The Monitor never repairs a breaker, so force the gate green to match the "GREEN EXIT" prompt.
@@ -1900,22 +2114,6 @@ void ABHTutorialDirector::EvaluateMonitorStep()
 			EnterMonitorStep(EMonitorStep::Unlock);
 		}
 		break;
-	case EMonitorStep::Move:
-	{
-		const uint8 Mask = Human ? Human->GetTutorialMovementMask() : 0;
-		if ((Human && (Mask & ABHCharacter::TutorialMoveAllMask) == ABHCharacter::TutorialMoveAllMask) || Elapsed >= 60.0f)
-		{
-			EnterMonitorStep(EMonitorStep::Unlock);
-			break;
-		}
-		const float Now = GetWorld()->GetTimeSeconds();
-		if (Now >= NextMoveHintServerTime)
-		{
-			BroadcastMoveHint(Mask);
-			NextMoveHintServerTime = Now + 3.0f;
-		}
-		break;
-	}
 	case EMonitorStep::Unlock:
 	{
 		// Advance once they've actually answered the station's question (now permitted for monitors in tutorial
@@ -1929,13 +2127,26 @@ void ABHTutorialDirector::EvaluateMonitorStep()
 	}
 	case EMonitorStep::Hint:
 	{
+		// One-shot signpost for the marker-vanish moment: if the student ducks into a locker, the honest marker
+		// clears (see PublishStepBeat) - call that out so the player learns a hidden student drops off the read.
+		if (!bMonitorLockerSignpostShown)
+		{
+			if (const ABHCharacter* Student = FindStudentCharacter())
+			{
+				if (Student->IsHiddenInLocker())
+				{
+					bMonitorLockerSignpostShown = true;
+					Broadcast(TEXT("The student slipped into a LOCKER and the marker vanished - a hidden student drops off everyone's read until they climb back out."), 5.0f);
+				}
+			}
+		}
 		// Hold ~3s after the player sends the hint so a confirmation reads before the next prompt - the tool only
-		// pings human Teachers, so against the solo lesson's AI Teacher there is otherwise no visible result.
+		// pings human Teachers, so against the solo lesson's AI Teacher DriveMonitorCast turns it onto the student.
 		const bool bFired = Human && Human->GetLastScanTime() >= StepStartServerTime;
 		if (bFired && MonitorToolConfirmServerTime <= 0.0f)
 		{
 			MonitorToolConfirmServerTime = GetWorld()->GetTimeSeconds();
-			Broadcast(TEXT("Real hint sent - in a live round that pings the Teacher straight to a real student. Powerful, so spend it carefully."), 5.0f);
+			Broadcast(TEXT("Real hint sent - watch the Teacher turn onto a real student and pursue. Powerful, so spend it carefully."), 5.0f);
 		}
 		const bool bHeld = MonitorToolConfirmServerTime > 0.0f && (GetWorld()->GetTimeSeconds() - MonitorToolConfirmServerTime >= 3.0f);
 		if (bHeld || Elapsed >= 25.0f)
@@ -1950,7 +2161,20 @@ void ABHTutorialDirector::EvaluateMonitorStep()
 		if (bFired && MonitorToolConfirmServerTime <= 0.0f)
 		{
 			MonitorToolConfirmServerTime = GetWorld()->GetTimeSeconds();
-			Broadcast(TEXT("False marker dropped - that sends the Teacher chasing an empty corridor while the students slip past."), 5.0f);
+			// Capture where the marker resolved (same trace the tool uses) so DriveMonitorCast can steer the Teacher
+			// to it for the whole hold; fall back to a spot ahead of the player if the trace somehow fails.
+			FVector MarkerLoc = FVector::ZeroVector;
+			if (Human && Human->ResolveHallMonitorMarkerLocation(MarkerLoc))
+			{
+				MonitorMarkerTarget = MarkerLoc;
+				bMonitorMarkerActive = true;
+			}
+			else if (Human)
+			{
+				MonitorMarkerTarget = Human->GetActorLocation() + Human->GetActorForwardVector() * 1200.0f;
+				bMonitorMarkerActive = true;
+			}
+			Broadcast(TEXT("False marker dropped - watch the Teacher peel off and chase the empty corridor while the students slip past."), 5.0f);
 		}
 		const bool bHeld = MonitorToolConfirmServerTime > 0.0f && (GetWorld()->GetTimeSeconds() - MonitorToolConfirmServerTime >= 3.0f);
 		if (bHeld || Elapsed >= 25.0f)
@@ -1965,7 +2189,7 @@ void ABHTutorialDirector::EvaluateMonitorStep()
 		if (bFired && MonitorToolConfirmServerTime <= 0.0f)
 		{
 			MonitorToolConfirmServerTime = GetWorld()->GetTimeSeconds();
-			Broadcast(TEXT("Trap armed - a student who doesn't spot and dodge it trips the alarm and gives their position away."), 5.0f);
+			Broadcast(TEXT("Trap armed - watch: a student walks right into it, trips the alarm, and lights up their position."), 5.0f);
 		}
 		const bool bHeld = MonitorToolConfirmServerTime > 0.0f && (GetWorld()->GetTimeSeconds() - MonitorToolConfirmServerTime >= 3.0f);
 		if (bHeld || Elapsed >= 25.0f)

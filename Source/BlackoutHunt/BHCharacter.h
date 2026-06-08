@@ -56,6 +56,10 @@ public:
 	void ResetRoleWarmupStateForRoundStart();
 	void ApplyAvatarStyle();
 	ABHPlayerState* GetBHPlayerState() const;
+	// Social emotes: if this player played an emote within the last few seconds, returns true + its label so the
+	// HUD can draw a bubble over their head. GetEmoteLabel maps an emote id to its short text.
+	bool GetActiveEmote(FString& OutLabel) const;
+	static FString GetEmoteLabel(int32 Id);
 	float GetFlashlightTuningValue(FName ParameterName) const;
 	void SetFlashlightTuningValue(FName ParameterName, float Value);
 	bool BotBeginInteract(AActor* Target);
@@ -308,6 +312,9 @@ public:
 	// correct?) -> per-topic mastery + the Honor Roll / Polymath achievements. Cosmetic/local.
 	UFUNCTION(Client, Reliable)
 	void ClientRecordQuestionResult(uint8 TopicIndex, bool bCorrect);
+	// Public so the tutorial director can read where the hall-monitor false marker resolves (to steer the scripted
+	// Teacher toward it in the Monitor lesson). Pure read; returns false if no valid marker target is found.
+	bool ResolveHallMonitorMarkerLocation(FVector& OutLocation) const;
 protected:
 	void UsePowerupSlotOne();
 	void UsePowerupSlotTwo();
@@ -330,7 +337,6 @@ protected:
 	FString GetInteractionFailureReason(AActor* Target) const;
 	void SendStatusMessage(const FString& Message) const;
 	void SendFakeHunterHint(bool bRealHint);
-	bool ResolveHallMonitorMarkerLocation(FVector& OutLocation) const;
 	bool BeginInteractAuthority(AActor* Target, bool bUseViewFallback, bool bShowFailureMessages);
 	void EndInteractAuthority(AActor* Target);
 	// Server-side guard for hold-style interactions (objective stations, breakers): the worker is only
@@ -400,6 +406,8 @@ protected:
 	// server-side; pressing a movement key stands you back up. No body animation (the game is first-person).
 	void ToggleSit();
 	void SetSeatedAuthority(bool bNewSeated);
+	// Social emote: cycles through a small set of text emotes shown over your head to nearby players.
+	void CycleEmote();
 	// Cosmetic third-person seated pose (no sit animation needed): hide the leg bones and drop the torso to
 	// the seat so other players see a seated upper body instead of a standing-locked one.
 	void ApplySeatedAvatar(bool bSeatedNow);
@@ -441,6 +449,9 @@ protected:
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetSeated(bool bNewSeated);
+
+	UFUNCTION(Server, Reliable)
+	void ServerEmote(int32 InEmoteId);
 
 	UFUNCTION(Client, Reliable)
 	void ClientSpecialMoveRejected(EBHMovementSpecialState RejectedState, const FString& Reason);
@@ -769,6 +780,17 @@ protected:
 	bool bSeatedAvatarApplied = false;
 	bool bRoleMeshStandCaptured = false;
 	FVector RoleMeshStandOffset = FVector::ZeroVector;
+
+	// Social emotes: the last-played emote id + when (server time), replicated so the HUD can draw a short
+	// emote bubble over nearby players. -1 = none.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Social")
+	int32 EmoteId = -1;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Social")
+	float EmoteStartServerTime = 0.0f;
+
+	// Owning-client local cycle counter (not replicated).
+	int32 LocalEmoteCycle = 0;
 
 	UPROPERTY()
 	TObjectPtr<AActor> CurrentInteractTarget;

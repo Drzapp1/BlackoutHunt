@@ -16,6 +16,7 @@ class ABHBotController;
 class ABHLocker;
 class ABHCrawlSpaceVolume;
 class ABHBreaker;
+class ABHAlarmTrap;
 
 // Server-authoritative guided-tutorial driver. One instance is baked into the dedicated Tutorial map
 // (spawned by ABHGameMode::BuildTutorialLevel during the authored-level export), so it simply exists when
@@ -47,6 +48,9 @@ protected:
 	enum class EStep : uint8       // Survivor phase
 	{
 		Intro,
+		// Early-spawn the Teacher idle at the far Hunter spawn (it does NOT chase) so the whole teaching half has
+		// stakes - a menace looming in the distance while the student learns. Inserted right after Intro.
+		Loom,
 		Move,
 		Sprint,
 		Flashlight,
@@ -64,7 +68,8 @@ protected:
 	// Hunt (close to ~600u of the fleeing student) then Capture (land the grab). No Move step: the Survivor lesson
 	// already taught WASD and the Teacher Intro hands control straight to Sprint, so a Move step was unreachable.
 	enum class ETeacherStep : uint8 { Intro, Sprint, Scan, Noise, Axe, Counterplay, Hunt, Capture, Blackout, Exit, Done };
-	enum class EMonitorStep : uint8 { Intro, Move, Unlock, Hint, Marker, Trap, Exit, Done };
+	// No standalone Move step: the Survivor lesson already taught WASD, so Intro hands straight to Unlock.
+	enum class EMonitorStep : uint8 { Intro, Unlock, Hint, Marker, Trap, Exit, Done };
 	// Advanced-movement lesson (EBHTutorialPhase::Movement): each step teaches one link and auto-advances once the
 	// player performs it (detected from the character's live state + the tutorial action latches), with a generous
 	// timeout fallback so a stuck input can never hard-lock the lesson. Roll/Slide/Dive end the course.
@@ -137,6 +142,12 @@ protected:
 	// live position so it is a real pursuit - but stand still for ~1s after spawn, and fall back to patrol
 	// while the student is hidden in a locker (so it wanders off instead of camping the door).
 	void DriveTeacherChase() const;
+	// Hide step (staged scare): drive the loomed Teacher to the student's locker and let it "search" for ~2s, then
+	// hand off to the DriveTeacherChase locker-retreat so it visibly gives up - proving locker capture-immunity.
+	void DriveTeacherToLocker() const;
+	// Decoy step (misdirection): pull the loomed Teacher toward the dropped decoy so the student SEES the trick
+	// work; falls back to idling at the Hunter spawn before any decoy is dropped.
+	void DriveTeacherToDecoy() const;
 	// Phase-aware per-tick AI driving: Survivor -> teacher chase; Teacher -> the AI student wanders/flees the
 	// human Hunter; Monitor -> the AI student wanders while an AI teacher patrols.
 	void DriveScriptedCast();
@@ -144,6 +155,14 @@ protected:
 	void DriveStudentBot() const;
 	// Generic chase order for an arbitrary bot toward an arbitrary character (AI teacher -> AI student).
 	void DriveBotChase(ABHBotController* Bot, ABHCharacter* Target) const;
+	// Monitor phase per-tick AI driving, step-aware so the scene REACTS to each tool: Hint -> turn the Teacher onto
+	// the student's live position; Marker -> steer the Teacher to the false-marker spot; Trap -> walk the student
+	// across the spawned trap so it trips; otherwise the ambient chase. The hall-monitor tools only notify human
+	// Teachers, so against the solo lesson's AI Teacher this scripting IS what makes them read true.
+	void DriveMonitorCast() const;
+	// Nearest still-alive hall-monitor alarm trap to a point (the one the player just dropped); used to drive the
+	// student onto it during the Trap step. Returns null once it has been tripped (the trap destroys itself).
+	ABHAlarmTrap* FindNearestAlarmTrap(const FVector& From) const;
 	// A short "the Teacher appears" reveal the instant the bot spawns: snap the host's view to the Teacher,
 	// punch the FOV in (zoom), briefly lock input, and slam a centred caption - built on the horror-cue path.
 	void PlayTeacherRevealCutscene(const FVector& TeacherFocusLocation) const;
@@ -198,6 +217,15 @@ protected:
 	bool bTeacherSpawned = false;
 	// Hide lesson: set once the student has actually hidden, so the next prompt only fires after they climb out.
 	bool bHideRegistered = false;
+	// Survivor phase: set once the loomed Teacher has been spawned during the Loom step (so the staged Hide scare +
+	// Decoy misdirection have a live, idle Teacher to drive). Distinct from bTeacherSpawned, which gates the
+	// one-time SpawnScriptedTeacher() call itself.
+	bool bTeacherLoomed = false;
+	// Hide lesson (staged scare): server time the student actually hid, so the loomed Teacher searches the locker
+	// for ~2s before giving up (the DriveTeacherChase locker-retreat). 0 until they hide.
+	float HideScareServerTime = 0.0f;
+	// Encounter gate: throttle time for the "move!" re-nudge to a frozen player after the 5s floor.
+	float EncounterNudgeServerTime = 0.0f;
 	// Breaker lesson: true while the tutorial blackout is active (lights cut until the breaker is repaired). Reused
 	// by the Teacher Blackout step to flag the forced demonstration blackout (restored on entering Exit).
 	bool bTutorialBlackoutActive = false;
@@ -213,6 +241,13 @@ protected:
 	// few seconds showing a confirmation line before advancing - the hall-monitor tools only notify human Teachers,
 	// so against the solo lesson's AI Teacher the key-press would otherwise look like it did nothing.
 	float MonitorToolConfirmServerTime = 0.0f;
+	// Monitor phase (Marker step): the world location the false corridor marker resolved to when R fired, captured so
+	// the AI Teacher can be steered toward it for the whole confirmation hold (re-armed false each step entry).
+	FVector MonitorMarkerTarget = FVector::ZeroVector;
+	bool bMonitorMarkerActive = false;
+	// Monitor phase (Hint step): true once the one-shot "the marker vanishes while the student is hidden" signpost
+	// has fired, so it is shown at most once per Hint step.
+	bool bMonitorLockerSignpostShown = false;
 	// Teacher phase: deterministic patrol loop for the scripted student + the index it's currently heading to.
 	TArray<FVector> ScriptedWaypoints;
 	int32 ScriptedWaypointIndex = 0;
