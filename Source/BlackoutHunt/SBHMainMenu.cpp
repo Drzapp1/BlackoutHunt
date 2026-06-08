@@ -4995,6 +4995,59 @@ int32 SBHMainMenu::GetRootWidgetIndex() const
 
 TSharedRef<SWidget> SBHMainMenu::BuildStartScreen()
 {
+	// Cinematic vertical primary-nav row: invisible idle, a left accent bar that widens + brightens on
+	// hover, and a label that flushes toward the ember accent. Each keeps its existing OnClicked handler.
+	auto NavItem = [this](const FString& Label, bool bPrimary, FOnClicked OnClick) -> TSharedRef<SWidget>
+	{
+		TSharedRef<bool> Hov = MakeShared<bool>(false);
+		return SNew(SBHMenuButton)
+			.HAlign(HAlign_Left)
+			.ContentPadding(FMargin(0.0f, bPrimary ? 12.0f : 8.0f))
+			.ButtonColorAndOpacity(TAttribute<FSlateColor>::Create([Hov]() {
+				FLinearColor C = BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle);
+				C.A = *Hov ? 0.5f : 0.0f;
+				return FSlateColor(C);
+			}))
+			.OnClicked(OnClick)
+			.OnHovered(FSimpleDelegate::CreateLambda([Hov]() { *Hov = true; }))
+			.OnUnhovered(FSimpleDelegate::CreateLambda([Hov]() { *Hov = false; }))
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Fill)
+				[
+					SNew(SBox)
+					.WidthOverride_Lambda([Hov]() { return FOptionalSize(*Hov ? 7.0f : 3.0f); })
+					[
+						SNew(SBorder)
+						.BorderImage(WhiteBrush())
+						.Visibility(EVisibility::HitTestInvisible)
+						.BorderBackgroundColor(TAttribute<FSlateColor>::Create([Hov]() {
+							FLinearColor C = BHResolveActiveThemeColor(*Hov ? &FBHMenuTheme::AccentBright : &FBHMenuTheme::Accent);
+							C.A = *Hov ? 1.0f : 0.55f;
+							return FSlateColor(C);
+						}))
+					]
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(18.0f, 0.0f, 0.0f, 0.0f)
+				[
+					SNew(STextBlock)
+					.Font(MenuFont(bPrimary ? 27 : 16, FName(TEXT("Bold"))))
+					.Text(FText::FromString(Label))
+					.ColorAndOpacity(TAttribute<FSlateColor>::Create([Hov]() {
+						const FLinearColor Header = BHResolveActiveThemeColor(&FBHMenuTheme::Header);
+						const FLinearColor Dim = BHResolveActiveThemeColor(&FBHMenuTheme::TextDim);
+						const FLinearColor Ember = BHResolveActiveThemeColor(&FBHMenuTheme::AccentBright);
+						return FSlateColor(*Hov ? FMath::Lerp(Header, Ember, 0.45f) : Dim);
+					}))
+				]
+			];
+	};
+
 	return SNew(SOverlay)
 		+ SOverlay::Slot()
 		[
@@ -5006,10 +5059,10 @@ TSharedRef<SWidget> SBHMainMenu::BuildStartScreen()
 		[
 			SNew(SImage)
 			.Image(TAttribute<const FSlateBrush*>::Create(TAttribute<const FSlateBrush*>::FGetter::CreateSP(this, &SBHMainMenu::GetStartBackgroundBrush)))
-			// Moody, slightly desaturated hero that "browns out" on the light flicker.
+			// Crushed to a dim, cold silhouette of the scene; darkens further on the light flicker.
 			.ColorAndOpacity(TAttribute<FSlateColor>::Create([this]() {
-				const float D = 0.78f + 0.22f * FlickerAlpha;
-				return FSlateColor(FLinearColor(0.80f * D, 0.77f * D, 0.73f * D, 0.96f));
+				const float D = 0.34f + 0.16f * FlickerAlpha;
+				return FSlateColor(FLinearColor(0.62f * D, 0.66f * D, 0.74f * D, 1.0f));
 			}))
 		]
 		// Deep, slowly "breathing" scrim that crushes the backdrop toward black for the horror mood.
@@ -5062,7 +5115,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildStartScreen()
 			[
 				SNew(SBorder)
 				.BorderImage(WhiteBrush())
-				.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.720f))
+				.BorderBackgroundColor(FLinearColor(0.0f, 0.0f, 0.0f, 0.9f))
 			]
 		]
 		+ SOverlay::Slot()
@@ -5129,53 +5182,48 @@ TSharedRef<SWidget> SBHMainMenu::BuildStartScreen()
 				.Text(FText::FromString(TEXT("The lights are out. Something is listening.")))
 			]
 			+ SVerticalBox::Slot()
-			.AutoHeight()
-			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.Padding(0.0f, 0.0f, 12.0f, 0.0f)
+				.AutoHeight()
+				.Padding(3.0f, 0.0f, 0.0f, 0.0f)
 				[
-					SNew(SBHMenuButton)
-					.ButtonColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Danger))
-					.ContentPadding(FMargin(30.0f, 15.0f))
-					.OnClicked(this, &SBHMainMenu::OnStartClicked)
+					SNew(STextBlock)
+					.Font(MenuFont(10, FName(TEXT("Bold"))))
+					.ColorAndOpacity(TAttribute<FSlateColor>::Create([this]() {
+						const FLinearColor Dim = BHResolveActiveThemeColor(&FBHMenuTheme::TextDim);
+						const FLinearColor Danger = BHResolveActiveThemeColor(&FBHMenuTheme::Danger);
+						return FSlateColor(FMath::Lerp(Danger, Dim, FlickerAlpha));
+					}))
+					.Text(FText::FromString(TEXT("BUILD 0.8.1      //      SIGNAL: UNSECURED      //      POWER: FAILING")))
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.0f, 30.0f, 0.0f, 0.0f)
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot()
+					.AutoHeight()
 					[
-						SNew(STextBlock)
-						.Font(MenuFont(22, FName(TEXT("Bold"))))
-						.Text(FText::FromString(TEXT("START")))
+						NavItem(TEXT("PLAY"), true, FOnClicked::CreateSP(this, &SBHMainMenu::OnStartClicked))
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 4.0f, 0.0f, 0.0f)
+					[
+						NavItem(TEXT("HOW TO PLAY"), false, FOnClicked::CreateSP(this, &SBHMainMenu::OnStartGuideClicked))
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 4.0f, 0.0f, 0.0f)
+					[
+						NavItem(TEXT("CREDENTIALS"), false, FOnClicked::CreateSP(this, &SBHMainMenu::OnToggleStartCredentialsClicked))
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 4.0f, 0.0f, 0.0f)
+					[
+						NavItem(TEXT("QUIT"), false, FOnClicked::CreateSP(this, &SBHMainMenu::OnQuitClicked))
 					]
 				]
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.Padding(0.0f, 0.0f, 12.0f, 0.0f)
-					[
-						SNew(SBHMenuButton)
-						.ButtonColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Accent, 0.980f))
-						.ContentPadding(FMargin(22.0f, 13.0f))
-						.OnClicked(this, &SBHMainMenu::OnStartGuideClicked)
-						[
-							SNew(STextBlock)
-							.Font(MenuFont(13, FName(TEXT("Bold"))))
-							.Text(FText::FromString(TEXT("HOW TO PLAY")))
-						]
-					]
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.Padding(0.0f, 0.0f, 12.0f, 0.0f)
-				[
-					SNew(SBHMenuButton)
-					.ButtonColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::ButtonIdle, 0.960f))
-					.ContentPadding(FMargin(18.0f, 13.0f))
-					.OnClicked(this, &SBHMainMenu::OnToggleStartCredentialsClicked)
-					[
-						SNew(STextBlock)
-						.Font(MenuFont(13, FName(TEXT("Bold"))))
-						.Text(FText::FromString(TEXT("CREDENTIALS")))
-					]
-				]
-			]
-			+ SVerticalBox::Slot()
+				+ SVerticalBox::Slot()
 			.AutoHeight()
 			.Padding(0.0f, 18.0f, 0.0f, 0.0f)
 			[
