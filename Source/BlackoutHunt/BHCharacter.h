@@ -455,6 +455,11 @@ protected:
 	UFUNCTION(Server, Reliable)
 	void ServerSetProneInputHeld(bool bHeld);
 
+	// Mirror crouch-held intent to the server so the authority-side drop-roll (Landed: bSprintInputHeld &&
+	// bCrouchInputHeld) fires for remote clients, not just the listen-server host.
+	UFUNCTION(Server, Reliable)
+	void ServerSetCrouchInputHeld(bool bHeld);
+
 	UFUNCTION(Server, Reliable)
 	void ServerSetSeated(bool bNewSeated);
 

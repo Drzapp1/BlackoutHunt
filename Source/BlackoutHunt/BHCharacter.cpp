@@ -2554,7 +2554,20 @@ static FVector ResolveLockerExitLocation(UWorld* World, const FVector& Origin, c
 		}
 	}
 
-	return Origin + Forward * 120.0f;
+	// Every fanned candidate was blocked (a very tight alcove). Returning an UNTESTED offset here is what caused the
+	// roll-out soft-lock: a standing capsule teleported into a wall can't depenetrate and jams in place. Probe straight
+	// out the door at shrinking distances and return the first that actually fits; the farthest is the least-bad last
+	// resort (the caller teleports with TeleportPhysics, which resolves a shallow overlap rather than wedging).
+	for (const float Dist : { 240.0f, 190.0f, 140.0f, 100.0f })
+	{
+		const FVector Probe = Origin + Forward * Dist;
+		if (World && !World->OverlapBlockingTestByChannel(Probe, FQuat::Identity, ECC_Pawn, Capsule))
+		{
+			return Probe;
+		}
+	}
+
+	return Origin + Forward * 240.0f;
 }
 
 void ABHCharacter::ExitLocker(bool bAllowMovementExit)
@@ -2564,14 +2577,17 @@ void ABHCharacter::ExitLocker(bool bAllowMovementExit)
 		return;
 	}
 
+	FVector LockerExitDir = FVector::ZeroVector;
 	if (CurrentLocker)
 	{
 		CurrentLocker->ClearOccupant(this);
-		const FVector ExitLocation = ResolveLockerExitLocation(
-			GetWorld(),
-			CurrentLocker->GetActorLocation(),
-			CurrentLocker->GetActorForwardVector());
-		SetActorLocation(ExitLocation);
+		// Exit through the DOORS: panels/vents are on the locker's local -Y face, so the outward door normal is
+		// -RightVector (Right = +Y). The old code passed ForwardVector (+X) -- the locker's SIDE -- and since lockers
+		// stand flush against walls that ejected the player INTO the wall; a non-swept SetActorLocation then embedded
+		// the standing capsule in geometry (CharacterMovement can't depenetrate -> the "no space" + can't-move soft-lock).
+		LockerExitDir = (-CurrentLocker->GetActorRightVector()).GetSafeNormal2D();
+		const FVector ExitLocation = ResolveLockerExitLocation(GetWorld(), CurrentLocker->GetActorLocation(), LockerExitDir);
+		SetActorLocation(ExitLocation, false, nullptr, ETeleportType::TeleportPhysics);
 		CurrentLocker = nullptr;
 
 		const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
@@ -2604,6 +2620,15 @@ void ABHCharacter::ExitLocker(bool bAllowMovementExit)
 		&& !IsProne() && !IsSpecialMoveActive() && CanAct()
 		&& GetCharacterMovement() && GetCharacterMovement()->IsMovingOnGround())
 	{
+		// Orient OUT the door before the roll. The player was facing INTO the locker (they looked at it to open it),
+		// so without this the roll would dash back toward the locker/wall and get rejected for space. Turning the pawn
+		// sets the roll direction (SpecialMoveDirection = actor forward, captured in TryStartSpecialMoveAuthority) so
+		// "roll out" actually carries them away from the locker. Authority-only here, so it replicates to clients; the
+		// pawn orients to movement (not controller yaw) so this turns the body without snapping the player's camera.
+		if (!LockerExitDir.IsNearlyZero())
+		{
+			SetActorRotation(FRotator(0.0f, LockerExitDir.Rotation().Yaw, 0.0f));
+		}
 		if (TryStartSpecialMoveAuthority(EBHMovementSpecialState::Rolling, false, false))
 		{
 			MarkTutorialAction(TutorialActLockerRollBit); // movement-tutorial: a roll-out-of-locker specifically fired
@@ -3329,6 +3354,7 @@ void ABHCharacter::StopSprint()
 void ABHCharacter::StartCrouch()
 {
 	bCrouchInputHeld = true; // tracked so a drop-roll can fire on landing while Sprint+Crouch are held through a fall
+	ServerSetCrouchInputHeld(true); // ...and the SERVER needs it too: Landed()/the drop-roll runs on authority only
 
 	if (IsSpecialMoveActive())
 	{
@@ -3357,6 +3383,7 @@ void ABHCharacter::StartCrouch()
 void ABHCharacter::StopCrouch()
 {
 	bCrouchInputHeld = false;
+	ServerSetCrouchInputHeld(false);
 	if (!IsProne())
 	{
 		UnCrouch();
@@ -7612,6 +7639,16 @@ void ABHCharacter::ServerSetProneInputHeld_Implementation(bool bHeld)
 			}
 		}
 	}
+}
+
+void ABHCharacter::ServerSetCrouchInputHeld_Implementation(bool bHeld)
+{
+	// Same local-only-flag bug class as bProneInputHeld above: bCrouchInputHeld is otherwise only set by the owning
+	// client's StartCrouch/StopCrouch, so on the server it is permanently false for every remote client. Landed()
+	// runs ONLY on authority (HasAuthority gate) and decides the drop-roll via (bSprintInputHeld && bCrouchInputHeld);
+	// bSprintInputHeld is mirrored by ServerSetSprinting but the crouch half was missing -- so the "HOLD Shift+Ctrl
+	// through the landing" drop-roll never fired for anyone but the listen-server host. Mirror the intent here.
+	bCrouchInputHeld = bHeld;
 }
 
 void ABHCharacter::ServerTryCapture_Implementation()

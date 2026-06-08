@@ -85,10 +85,12 @@ void ABHTutorialDirector::BuildMovementCourse()
 	SpawnProp(FVector(Door.X, Door.Y, CourseCenterZForBottom(0.0f, 1.85f)), FVector(0.55f, 0.55f, 1.85f), DummyTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal); // the dummy (non-colliding)
 	ChaseDummyLoc = FVector(Door.X, Door.Y, 120.0f);
 
-	// --- (a4) A practice LOCKER in the bay (north-east corner) for the LockerRoll step, so the marker points at a
-	// nearby locker instead of yanking the player two rooms east to the nearest map locker. Spawned the same way the
-	// game mode spawns tutorial lockers (Z=95). Its location is cached so PublishStepBeat's LockerRoll beat uses it.
-	if (ABHLocker* Locker = World->SpawnActor<ABHLocker>(FVector(1150.0f, 600.0f, 95.0f), FRotator(0.0f, 180.0f, 0.0f)))
+	// --- (a4) A practice LOCKER in the bay for the LockerRoll step, so the marker points at a nearby locker instead of
+	// yanking the player two rooms east to the nearest map locker. Spawned the same way the game mode spawns tutorial
+	// lockers (Z=95). Its location is cached so PublishStepBeat's LockerRoll beat uses it. Yaw -90 faces its DOORS west
+	// (-X) down the open running lane, and it sits at Y=150 -- clear of the low overhang (Y 250..650) so the tall locker
+	// doesn't clip the roof and the roll-OUT has a long clear runway west (the exit/roll fire along the door normal).
+	if (ABHLocker* Locker = World->SpawnActor<ABHLocker>(FVector(1150.0f, 150.0f, 95.0f), FRotator(0.0f, -90.0f, 0.0f)))
 	{
 		PracticeLockerLoc = Locker->GetActorLocation();
 	}
