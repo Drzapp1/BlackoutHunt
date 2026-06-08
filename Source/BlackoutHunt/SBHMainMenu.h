@@ -180,6 +180,13 @@ private:
 	TSharedRef<SWidget> BuildThemeSection();
 	FSlateColor GetThemeBackgroundColor() const;
 	FSlateColor GetThemePanelColor() const;
+	// Theme unlock-gating UI helpers (mirror IsCosmeticUnlockedForMenu / GetCosmeticButtonText / GetCosmeticButtonColor).
+	bool IsThemeUnlockedForMenu(int32 ThemeIndex) const;
+	FText GetThemeButtonText(int32 ThemeIndex) const;
+	FSlateColor GetThemeSwatchColor(int32 ThemeIndex) const;
+	// Theme STRENGTH presets (faint/normal/strong): set the active global + persist, like OnThemeClicked.
+	FReply OnThemeStrengthClicked(float Strength);
+	FSlateColor GetThemeStrengthButtonColor(float Strength) const;
 	FReply OnAvatarTitleClicked(int32 TitleIndex);
 	FReply OnAvatarEmblemClicked(int32 EmblemIndex);
 	FReply OnMenuTabClicked(EBHMainMenuTab NewTab);
@@ -202,6 +209,8 @@ private:
 	FReply OnResolutionClicked(int32 Width, int32 Height, bool bFullscreen);
 	FReply OnFrameRateClicked(int32 FrameRateLimit);
 	FReply OnComfortOptionClicked(FName OptionName, bool bEnabled);
+	// Dodge-roll camera intensity (motion sickness): 0=Off,1=Subtle,2=Dip,3=Full. Persists [BlackoutHunt.Comfort] RollCamStyle.
+	FReply OnRollCamStyleClicked(int32 Style);
 	FReply OnRevisionTopicsClicked(int32 TopicMask);
 	FReply OnRevisionDifficultyClicked(EBHRevisionDifficultyMix DifficultyMix);
 	FReply OnRevisionThresholdClicked(int32 ClassPercent, int32 IndividualPercent);
@@ -270,6 +279,7 @@ private:
 	FText GetUiVolumeText() const;
 	FText GetGraphicsSummaryText() const;
 	FSlateColor GetComfortBoolOptionButtonColor(FName OptionName, bool bValue) const;
+	FSlateColor GetRollCamStyleButtonColor(int32 Style) const;
 	EVisibility GetStartCredentialsVisibility() const;
 	const FSlateBrush* GetStartBackgroundBrush() const;
 	const FSlateBrush* GetGuideHudBrush() const;

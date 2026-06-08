@@ -67,13 +67,34 @@ namespace
 
 	constexpr int32 MenuDefaultGamePort = 7777;
 	constexpr float MenuAvatarPreviewModelScale = 0.66f;
-	constexpr float MenuAvatarPreviewCameraDistance = 150.0f;
-	constexpr float MenuAvatarPreviewCameraHeight = 46.0f;
-	constexpr float MenuAvatarPreviewCameraFov = 34.0f;
+	// Framed for the enlarged 340x510 preview: pull the camera back, raise it to the avatar's vertical midpoint, and
+	// widen the FOV so a full ~0..135-unit avatar (head/headwear to feet) sits inside the frame with margin instead
+	// of clipping the top. The distance increase fixes clipping regardless of which axis the FOV is applied to.
+	constexpr float MenuAvatarPreviewCameraDistance = 215.0f; // was 150.0f
+	constexpr float MenuAvatarPreviewCameraHeight = 67.0f;    // was 46.0f (vertical midpoint of the avatar)
+	constexpr float MenuAvatarPreviewCameraFov = 42.0f;       // was 34.0f
 
 	const FSlateBrush* WhiteBrush()
 	{
 		return FCoreStyle::Get().GetBrush(TEXT("GenericWhiteBox"));
+	}
+
+	// Live theme colour, bound by role (a pointer-to-member of FBHMenuTheme). The returned attribute re-reads
+	// BHActiveMenuTheme() every repaint, so switching the UI theme restyles the whole menu instantly -- no widget
+	// rebuild needed. AlphaOverride (>= 0) keeps a site's original opacity (scrims, translucent cards) while still
+	// theming its hue; pass -1 to use the theme colour's own alpha. Works in member and file-local builders alike
+	// (it captures nothing but the role pointer and calls the free BHActiveMenuTheme()).
+	TAttribute<FSlateColor> BHThemeColorAttr(FLinearColor FBHMenuTheme::* Role, float AlphaOverride = -1.0f)
+	{
+		return TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateLambda([Role, AlphaOverride]()
+		{
+			FLinearColor Color = BHResolveActiveThemeColor(Role);
+			if (AlphaOverride >= 0.0f)
+			{
+				Color.A = AlphaOverride;
+			}
+			return FSlateColor(Color);
+		}));
 	}
 
 	FString MenuSpectatorRolePreferenceName(EBHPlayerRole Role)
@@ -591,7 +612,7 @@ namespace
 	{
 		return SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateLambda([]() { return FSlateColor(BHActiveMenuTheme().Panel); })))
+			.BorderBackgroundColor(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateLambda([]() { return FSlateColor(BHResolveActiveThemeColor(&FBHMenuTheme::Panel)); })))
 			.Padding(FMargin(9.0f, 7.0f))
 			[
 				SNew(SHorizontalBox)
@@ -605,7 +626,7 @@ namespace
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(10, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.88f, 0.96f, 0.92f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 						.Text(Label)
 					]
 				]
@@ -616,7 +637,7 @@ namespace
 				[
 					SNew(SBorder)
 					.BorderImage(WhiteBrush())
-					.BorderBackgroundColor(FLinearColor(0.070f, 0.088f, 0.094f, 1.0f))
+					.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel))
 					.Padding(FMargin(8.0f, 4.0f))
 					[
 						SNew(SBox)
@@ -624,7 +645,7 @@ namespace
 						[
 							SNew(STextBlock)
 							.Font(MenuFont(9, FName(TEXT("Bold"))))
-							.ColorAndOpacity(FLinearColor(0.92f, 0.98f, 0.94f, 1.0f))
+							.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 							.Text(FText::FromString(Keys))
 						]
 					]
@@ -636,7 +657,7 @@ namespace
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(10))
-					.ColorAndOpacity(FLinearColor(0.64f, 0.74f, 0.73f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 					.Text(Detail)
 				]
 			];
@@ -736,7 +757,7 @@ namespace
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(10))
-					.ColorAndOpacity(FLinearColor(0.76f, 0.84f, 0.82f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 					.Text(Description)
 				];
 		}
@@ -761,7 +782,7 @@ namespace
 			.InitiallyCollapsed(true)
 			.AllowAnimatedTransition(true)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.040f, 0.048f, 0.056f, 0.98f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.980f))
 			.BodyBorderImage(WhiteBrush())
 			.BodyBorderBackgroundColor(FLinearColor(0.018f, 0.022f, 0.026f, 0.98f))
 			.HeaderPadding(FMargin(12.0f, 8.0f))
@@ -791,7 +812,7 @@ namespace
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(13, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.92f, 0.98f, 0.94f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 						.Text(Label)
 					]
 					+ SVerticalBox::Slot()
@@ -801,7 +822,7 @@ namespace
 						SNew(STextBlock)
 						.AutoWrapText(true)
 						.Font(MenuFont(10))
-						.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.70f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 						.Text(Summary)
 					]
 				]
@@ -831,7 +852,7 @@ namespace
 	{
 		return SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.030f, 0.037f, 0.043f, 0.96f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.960f))
 			.Padding(10.0f)
 			[
 				SNew(SVerticalBox)
@@ -859,7 +880,7 @@ namespace
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(12, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.90f, 0.98f, 0.94f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 						.Text(Label)
 					]
 				]
@@ -870,7 +891,7 @@ namespace
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(10))
-					.ColorAndOpacity(FLinearColor(0.66f, 0.76f, 0.75f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 					.Text(Body)
 				]
 			];
@@ -880,7 +901,7 @@ namespace
 	{
 		return SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.024f, 0.030f, 0.036f, 0.94f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.940f))
 			.Padding(FMargin(8.0f, 6.0f))
 			[
 				SNew(SHorizontalBox)
@@ -896,7 +917,7 @@ namespace
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(9, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.96f, 1.0f, 0.96f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 						.Text(Key)
 					]
 				]
@@ -907,7 +928,7 @@ namespace
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(10))
-					.ColorAndOpacity(FLinearColor(0.68f, 0.78f, 0.77f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 					.Text(Body)
 				]
 			];
@@ -917,7 +938,7 @@ namespace
 	{
 		return SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.018f, 0.024f, 0.030f, 0.96f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.960f))
 			.Padding(9.0f)
 			[
 				SNew(SVerticalBox)
@@ -936,7 +957,7 @@ namespace
 						[
 							SNew(STextBlock)
 							.Font(MenuFont(10, FName(TEXT("Bold"))))
-							.ColorAndOpacity(FLinearColor(0.98f, 1.0f, 0.96f, 1.0f))
+							.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 							.Text(Key)
 						]
 					]
@@ -946,7 +967,7 @@ namespace
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(11, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.92f, 0.98f, 0.95f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 						.Text(Label)
 					]
 				]
@@ -957,7 +978,7 @@ namespace
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(9))
-					.ColorAndOpacity(FLinearColor(0.62f, 0.72f, 0.72f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 					.Text(Detail)
 				]
 			];
@@ -967,7 +988,7 @@ namespace
 	{
 		return SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateLambda([]() { return FSlateColor(BHActiveMenuTheme().Background); })))
+			.BorderBackgroundColor(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateLambda([]() { return FSlateColor(BHResolveActiveThemeColor(&FBHMenuTheme::Background)); })))
 			.Padding(FMargin(9.0f, 7.0f))
 			[
 				SNew(SVerticalBox)
@@ -986,7 +1007,7 @@ namespace
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(8))
-					.ColorAndOpacity(FLinearColor(0.72f, 0.80f, 0.78f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 					.Text(Body)
 				]
 			];
@@ -1005,7 +1026,7 @@ namespace
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(7, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.68f, 0.76f, 0.74f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 					.Text(Label)
 				]
 				+ SHorizontalBox::Slot()
@@ -1030,7 +1051,7 @@ namespace
 					[
 						SNew(SBorder)
 						.BorderImage(WhiteBrush())
-						.BorderBackgroundColor(FLinearColor(0.018f, 0.022f, 0.024f, 1.0f))
+						.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel))
 					]
 				]
 				+ SOverlay::Slot()
@@ -1052,7 +1073,7 @@ namespace
 	{
 		return SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.022f, 0.030f, 0.035f, 0.96f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.960f))
 			.Padding(10.0f)
 			[
 				SNew(SVerticalBox)
@@ -1071,7 +1092,7 @@ namespace
 						[
 							SNew(STextBlock)
 							.Font(MenuFont(11, FName(TEXT("Bold"))))
-							.ColorAndOpacity(FLinearColor(0.98f, 1.0f, 0.96f, 1.0f))
+							.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 							.Text(FText::FromString(FString::Printf(TEXT("%d"), Step)))
 						]
 					]
@@ -1081,7 +1102,7 @@ namespace
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(11, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.92f, 0.98f, 0.94f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 						.Text(Label)
 					]
 				]
@@ -1092,7 +1113,7 @@ namespace
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(9))
-					.ColorAndOpacity(FLinearColor(0.66f, 0.76f, 0.74f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 					.Text(Detail)
 				]
 			];
@@ -1113,7 +1134,7 @@ namespace
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(8, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.98f, 1.0f, 0.96f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 					.Text(FText::FromString(TEXT(">")))
 				]
 			]
@@ -1123,7 +1144,7 @@ namespace
 				SNew(STextBlock)
 				.AutoWrapText(true)
 				.Font(MenuFont(9))
-				.ColorAndOpacity(FLinearColor(0.70f, 0.80f, 0.78f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 				.Text(Text)
 			];
 	}
@@ -1143,7 +1164,7 @@ namespace
 
 		return SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.020f, 0.026f, 0.032f, 0.96f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.960f))
 			.Padding(11.0f)
 			[
 				SNew(SVerticalBox)
@@ -1156,7 +1177,7 @@ namespace
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(13, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.94f, 0.99f, 0.95f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 						.Text(Label)
 					]
 					+ SHorizontalBox::Slot()
@@ -1204,7 +1225,7 @@ namespace
 			[
 				SNew(SBorder)
 				.BorderImage(WhiteBrush())
-				.BorderBackgroundColor(FLinearColor(0.012f, 0.016f, 0.018f, 1.0f))
+				.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel))
 			]
 			+ SOverlay::Slot()
 			.HAlign(HAlign_Left)
@@ -1357,7 +1378,7 @@ namespace
 	{
 		return SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.018f, 0.024f, 0.028f, 0.96f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.960f))
 			.Padding(9.0f)
 			[
 				SNew(SVerticalBox)
@@ -1372,7 +1393,7 @@ namespace
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(11, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.93f, 0.98f, 0.95f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 					.Text(Label)
 				]
 				+ SVerticalBox::Slot()
@@ -1382,7 +1403,7 @@ namespace
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(8))
-					.ColorAndOpacity(FLinearColor(0.64f, 0.74f, 0.72f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 					.Text(Detail)
 				]
 			];
@@ -1395,7 +1416,7 @@ namespace
 			[
 				SNew(SBorder)
 				.BorderImage(WhiteBrush())
-				.BorderBackgroundColor(FLinearColor(0.010f, 0.014f, 0.017f, 1.0f))
+				.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel))
 			];
 
 		auto AddPart = [&Render](float X, float Y, float W, float H, const FLinearColor& Color)
@@ -1473,7 +1494,7 @@ namespace
 				[
 					SNew(SBorder)
 					.BorderImage(WhiteBrush())
-					.BorderBackgroundColor(FLinearColor(0.018f, 0.024f, 0.028f, 0.96f))
+					.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.960f))
 					.Padding(FMargin(7.0f, 5.0f))
 					[
 						SNew(SVerticalBox)
@@ -1493,7 +1514,7 @@ namespace
 							SNew(STextBlock)
 							.AutoWrapText(true)
 							.Font(MenuFont(8))
-							.ColorAndOpacity(FLinearColor(0.82f, 0.90f, 0.86f, 1.0f))
+							.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 							.Text(Prompt)
 						]
 						+ SVerticalBox::Slot()
@@ -1503,7 +1524,7 @@ namespace
 							SNew(STextBlock)
 							.AutoWrapText(true)
 							.Font(MenuFont(7, FName(TEXT("Bold"))))
-							.ColorAndOpacity(FLinearColor(0.96f, 0.86f, 0.62f, 1.0f))
+							.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 							.Text(Footer)
 						]
 					]
@@ -1521,7 +1542,7 @@ namespace
 	{
 		return SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.018f, 0.024f, 0.028f, 0.96f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.960f))
 			.Padding(9.0f)
 			[
 				SNew(SVerticalBox)
@@ -1537,7 +1558,7 @@ namespace
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(11, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.93f, 0.98f, 0.95f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 					.Text(Label)
 				]
 				+ SVerticalBox::Slot()
@@ -1547,7 +1568,7 @@ namespace
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(8))
-					.ColorAndOpacity(FLinearColor(0.64f, 0.74f, 0.72f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 					.Text(Detail)
 				]
 			];
@@ -1565,22 +1586,22 @@ namespace
 			[
 				SNew(SBorder)
 				.BorderImage(WhiteBrush())
-				.BorderBackgroundColor(FLinearColor(0.006f, 0.008f, 0.010f, 1.0f))
+				.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Background))
 			]
 			+ SOverlay::Slot()
 			[
 				SNew(SVerticalBox)
 				+ SVerticalBox::Slot().FillHeight(0.28f)
 				[
-					SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(FLinearColor(0.020f, 0.025f, 0.028f, 1.0f))
+					SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel))
 				]
 				+ SVerticalBox::Slot().FillHeight(0.42f)
 				[
-					SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(FLinearColor(0.012f, 0.015f, 0.017f, 1.0f))
+					SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel))
 				]
 				+ SVerticalBox::Slot().FillHeight(0.30f)
 				[
-					SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(FLinearColor(0.045f, 0.042f, 0.035f, 1.0f))
+					SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel))
 				]
 			];
 
@@ -1621,7 +1642,7 @@ namespace
 					[
 						SNew(SBorder)
 						.BorderImage(WhiteBrush())
-						.BorderBackgroundColor(FLinearColor(0.020f, 0.020f, 0.022f, 0.94f))
+						.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.940f))
 						.Padding(FMargin(7.0f, 5.0f))
 						[
 							SNew(STextBlock)
@@ -1796,7 +1817,7 @@ namespace
 			[
 				SNew(SBorder)
 				.BorderImage(WhiteBrush())
-				.BorderBackgroundColor(FLinearColor(0.014f, 0.020f, 0.024f, 0.98f))
+				.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.980f))
 				.Padding(10.0f)
 				[
 					SNew(SVerticalBox)
@@ -1815,7 +1836,7 @@ namespace
 						[
 							SNew(STextBlock)
 							.Font(MenuFont(12, FName(TEXT("Bold"))))
-							.ColorAndOpacity(FLinearColor(0.93f, 0.98f, 0.95f, 1.0f))
+							.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 							.Text(Label)
 						]
 						+ SHorizontalBox::Slot()
@@ -1840,7 +1861,7 @@ namespace
 						SNew(STextBlock)
 						.AutoWrapText(true)
 						.Font(MenuFont(9))
-						.ColorAndOpacity(FLinearColor(0.68f, 0.78f, 0.76f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 						.Text(Body)
 					]
 				]
@@ -1950,7 +1971,7 @@ namespace
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(9, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.98f, 0.94f, 0.74f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 				.Text(Label)
 			];
 	}
@@ -1964,7 +1985,7 @@ namespace
 
 		return SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.009f, 0.012f, 0.016f, 0.98f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Background, 0.980f))
 			.Padding(10.0f)
 			[
 				SNew(SBox)
@@ -1975,7 +1996,7 @@ namespace
 					[
 						SNew(SBorder)
 						.BorderImage(WhiteBrush())
-						.BorderBackgroundColor(FLinearColor(0.018f, 0.022f, 0.026f, 1.0f))
+						.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel))
 					]
 					+ SOverlay::Slot()
 					[
@@ -1985,21 +2006,21 @@ namespace
 						[
 							SNew(SBorder)
 							.BorderImage(WhiteBrush())
-							.BorderBackgroundColor(FLinearColor(0.032f, 0.038f, 0.043f, 1.0f))
+							.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel))
 						]
 						+ SVerticalBox::Slot()
 						.FillHeight(0.25f)
 						[
 							SNew(SBorder)
 							.BorderImage(WhiteBrush())
-							.BorderBackgroundColor(FLinearColor(0.024f, 0.030f, 0.034f, 1.0f))
+							.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel))
 						]
 						+ SVerticalBox::Slot()
 						.FillHeight(0.53f)
 						[
 							SNew(SBorder)
 							.BorderImage(WhiteBrush())
-							.BorderBackgroundColor(FLinearColor(0.014f, 0.018f, 0.020f, 1.0f))
+							.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel))
 						]
 					]
 					+ SOverlay::Slot()
@@ -2012,7 +2033,7 @@ namespace
 						[
 							SNew(SBorder)
 							.BorderImage(WhiteBrush())
-							.BorderBackgroundColor(FLinearColor(0.005f, 0.008f, 0.010f, 0.76f))
+							.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Background, 0.760f))
 							.Padding(9.0f)
 							[
 								SNew(SVerticalBox)
@@ -2064,7 +2085,7 @@ namespace
 						[
 							SNew(SBorder)
 							.BorderImage(WhiteBrush())
-							.BorderBackgroundColor(FLinearColor(0.040f, 0.034f, 0.024f, 0.96f))
+							.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.960f))
 							.Padding(12.0f)
 							[
 								SNew(SVerticalBox)
@@ -2135,7 +2156,7 @@ namespace
 						[
 							SNew(SBorder)
 							.BorderImage(WhiteBrush())
-							.BorderBackgroundColor(FLinearColor(0.06f, 0.08f, 0.08f, 0.82f))
+							.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.820f))
 							.Padding(FMargin(11.0f, 6.0f))
 							[
 								SNew(STextBlock)
@@ -2156,7 +2177,7 @@ namespace
 						[
 							SNew(SBorder)
 							.BorderImage(WhiteBrush())
-							.BorderBackgroundColor(FLinearColor(0.010f, 0.014f, 0.014f, 0.88f))
+							.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Background, 0.880f))
 							.Padding(10.0f)
 							[
 								SNew(SVerticalBox)
@@ -2177,7 +2198,7 @@ namespace
 									[
 										SNew(SBorder)
 										.BorderImage(WhiteBrush())
-										.BorderBackgroundColor(FLinearColor(0.018f, 0.022f, 0.020f, 1.0f))
+										.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel))
 									]
 									+ SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Center)
 									[
@@ -2201,7 +2222,7 @@ namespace
 								[
 									SNew(STextBlock)
 									.Font(MenuFont(8))
-									.ColorAndOpacity(FLinearColor(0.66f, 0.74f, 0.76f, 1.0f))
+									.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 									.Text(FText::FromString(TEXT("Orange station. Green exit. Red threat.")))
 								]
 							]
@@ -2217,7 +2238,7 @@ namespace
 						[
 							SNew(SBorder)
 							.BorderImage(WhiteBrush())
-							.BorderBackgroundColor(FLinearColor(0.004f, 0.006f, 0.008f, 0.78f))
+							.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Background, 0.780f))
 							.Padding(8.0f)
 							[
 								SNew(SVerticalBox)
@@ -2298,7 +2319,7 @@ namespace
 	{
 		return SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.008f, 0.012f, 0.014f, 0.98f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Background, 0.980f))
 			.Padding(8.0f)
 			[
 				SNew(SBox)
@@ -2328,7 +2349,20 @@ namespace
 			FLinearColor(0.52f, 0.44f, 0.86f, 1.0f),
 			FLinearColor(0.84f, 0.75f, 0.24f, 1.0f),
 			FLinearColor(0.28f, 0.68f, 0.62f, 1.0f),
-			FLinearColor(0.76f, 0.76f, 0.80f, 1.0f)
+			FLinearColor(0.76f, 0.76f, 0.80f, 1.0f),
+			// Indices 8..18 kept in lockstep with BHCharacter/BHGameMode/BHPlayerController so the recolour PREVIEW
+			// resolves prestige and black slot colours correctly instead of wrapping via modulo to a base colour.
+			FLinearColor(0.86f, 0.90f, 0.82f, 1.0f), // Chalk
+			FLinearColor(0.95f, 0.22f, 0.62f, 1.0f), // Arcade
+			FLinearColor(0.18f, 0.92f, 0.45f, 1.0f), // Exit Sign
+			FLinearColor(0.42f, 0.86f, 1.00f, 1.0f), // Afterimage
+			FLinearColor(0.64f, 0.44f, 0.22f, 1.0f), // Veteran
+			FLinearColor(0.40f, 0.12f, 0.20f, 1.0f), // Faculty
+			FLinearColor(0.55f, 0.86f, 0.92f, 1.0f), // Slipstream
+			FLinearColor(0.80f, 0.20f, 0.18f, 1.0f), // Detention
+			FLinearColor(0.52f, 0.10f, 0.14f, 1.0f), // Apex
+			FLinearColor(0.40f, 0.54f, 0.56f, 1.0f), // Commuter
+			FLinearColor(0.02f, 0.02f, 0.02f, 1.0f)  // Black
 		};
 
 		return Palette[FMath::Abs(Index) % UE_ARRAY_COUNT(Palette)];
@@ -2491,8 +2525,16 @@ namespace
 			TEXT("/Game/BlackoutHunt/Art/Characters/Quaternius/Meshes/Purple.Purple"),
 			TEXT("/Game/BlackoutHunt/Art/Characters/Quaternius/Meshes/Gold.Gold"),
 			TEXT("/Game/BlackoutHunt/Art/Characters/Quaternius/Meshes/LightGreen.LightGreen"),
-			TEXT("/Game/BlackoutHunt/Art/Characters/Quaternius/Meshes/White.White")
+			TEXT("/Game/BlackoutHunt/Art/Characters/Quaternius/Meshes/White.White"),
+			TEXT("/Game/BlackoutHunt/Art/Characters/Quaternius/Meshes/Black.Black")
 		};
+
+		// Black has no near match among the 8 base palette colours, so route near-black recolours straight to the
+		// dedicated Black material (mirrors BHQuaterniusPaletteMaterial; the nearest-of-8 scan never returns it).
+		if (Color.R < 0.08f && Color.G < 0.08f && Color.B < 0.08f)
+		{
+			return LoadObject<UMaterialInterface>(nullptr, MaterialPaths[UE_ARRAY_COUNT(MaterialPaths) - 1]);
+		}
 
 		return LoadObject<UMaterialInterface>(nullptr, MaterialPaths[MenuNearestAvatarColorIndex(Color) % UE_ARRAY_COUNT(MaterialPaths)]);
 	}
@@ -2652,6 +2694,20 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 {
 	PlayerController = InArgs._PlayerController;
 	GMenuButtonSoundController = PlayerController;
+
+	// Apply the player's saved UI theme before building any widgets so the whole menu renders in it from frame one.
+	if (ABHPlayerController* ThemePC = PlayerController.Get())
+	{
+		if (UGameInstance* ThemeGI = ThemePC->GetGameInstance())
+		{
+			if (const UBHAccountSubsystem* ThemeAccount = ThemeGI->GetSubsystem<UBHAccountSubsystem>())
+			{
+				BHSetActiveMenuThemeIndex(ThemeAccount->GetProgress().SelectedThemeIndex);
+				BHSetActiveMenuThemeStrength(ThemeAccount->GetProgress().SelectedThemeStrength);
+			}
+		}
+	}
+
 	SuggestedAddress = ResolvePreferredAddress();
 	StatusText = FText::FromString(TEXT("Choose a map, join a host, or browse online lobbies."));
 
@@ -2773,7 +2829,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 		[
 			SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.010f, 0.012f, 0.016f, 0.98f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Background, 0.980f))
 		]
 		+ SOverlay::Slot()
 		.HAlign(HAlign_Fill)
@@ -2784,7 +2840,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 			[
 				SNew(SBorder)
 				.BorderImage(WhiteBrush())
-				.BorderBackgroundColor(FLinearColor(0.22f, 0.82f, 0.74f, 0.75f))
+				.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Accent, 0.750f))
 			]
 		]
 		+ SOverlay::Slot()
@@ -2796,7 +2852,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 			[
 				SNew(SBorder)
 				.BorderImage(WhiteBrush())
-				.BorderBackgroundColor(FLinearColor(0.95f, 0.46f, 0.24f, 0.42f))
+				.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Danger, 0.420f))
 			]
 		]
 		+ SOverlay::Slot()
@@ -2810,7 +2866,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(40, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.80f, 1.0f, 0.94f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Accent))
 				.ShadowOffset(FVector2D(2.0f, 2.0f))
 				.ShadowColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, 0.8f))
 				.Text(FText::FromString(TEXT("BLACKOUT HUNT")))
@@ -2821,7 +2877,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(13))
-				.ColorAndOpacity(FLinearColor(0.72f, 0.80f, 0.78f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 				.Text(FText::FromString(TEXT("Survive the blackout. Hunt the signal.")))
 			]
 			+ SVerticalBox::Slot()
@@ -2862,6 +2918,12 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 					.Padding(0.0f, 0.0f, 8.0f, 0.0f)
 					[
 						BuildMenuTabButton(EBHMainMenuTab::Achievements, FText::FromString(TEXT("Awards")))
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+					[
+						BuildMenuTabButton(EBHMainMenuTab::Mastery, FText::FromString(TEXT("Mastery")))
 					]
 					+ SHorizontalBox::Slot()
 					.AutoWidth()
@@ -2908,7 +2970,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 					[
 						SNew(SBorder)
 						.BorderImage(WhiteBrush())
-						.BorderBackgroundColor(FLinearColor(0.020f, 0.024f, 0.030f, 0.96f))
+						.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.960f))
 						.Padding(16.0f)
 						[
 							SNew(SVerticalBox)
@@ -2917,7 +2979,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 							[
 								SNew(STextBlock)
 								.Font(MenuFont(18, FName(TEXT("Bold"))))
-								.ColorAndOpacity(FLinearColor(0.96f, 0.92f, 0.82f, 1.0f))
+								.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 								.Text(bInGame ? FText::FromString(TEXT("Current Game")) : FText::FromString(TEXT("Play")))
 							]
 							+ SVerticalBox::Slot()
@@ -2927,7 +2989,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 								SNew(STextBlock)
 								.AutoWrapText(true)
 								.Font(MenuFont(12))
-								.ColorAndOpacity(FLinearColor(0.58f, 0.66f, 0.66f, 1.0f))
+								.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 								.Text(bInGame
 									? FText::FromString(TEXT("Session actions grouped by section."))
 									: FText::FromString(TEXT("Game modes, hosting, online, and join controls grouped by section.")))
@@ -2953,7 +3015,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 					[
 						SNew(SBorder)
 						.BorderImage(WhiteBrush())
-						.BorderBackgroundColor(FLinearColor(0.026f, 0.032f, 0.038f, 0.94f))
+						.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.940f))
 						.Padding(16.0f)
 						[
 							SNew(SScrollBox)
@@ -2978,7 +3040,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 					[
 						SNew(SBorder)
 						.BorderImage(WhiteBrush())
-						.BorderBackgroundColor(FLinearColor(0.026f, 0.032f, 0.038f, 0.94f))
+						.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.940f))
 						.Padding(16.0f)
 						[
 							SNew(SScrollBox)
@@ -2992,7 +3054,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 					[
 						SNew(SBorder)
 						.BorderImage(WhiteBrush())
-						.BorderBackgroundColor(FLinearColor(0.026f, 0.032f, 0.038f, 0.94f))
+						.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.940f))
 						.Padding(16.0f)
 						[
 							SNew(SScrollBox)
@@ -3017,7 +3079,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 					[
 						SNew(SBorder)
 						.BorderImage(WhiteBrush())
-						.BorderBackgroundColor(FLinearColor(0.026f, 0.032f, 0.038f, 0.94f))
+						.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.940f))
 						.Padding(16.0f)
 						[
 							SNew(SScrollBox)
@@ -3036,13 +3098,13 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 									SNew(SBorder)
 									.Visibility(bInGame ? EVisibility::Visible : EVisibility::Collapsed)
 									.BorderImage(WhiteBrush())
-									.BorderBackgroundColor(FLinearColor(0.036f, 0.043f, 0.050f, 0.95f))
+									.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 									.Padding(12.0f)
 									[
 										SNew(STextBlock)
 										.AutoWrapText(true)
 										.Font(MenuFont(12))
-										.ColorAndOpacity(FLinearColor(0.70f, 0.82f, 0.82f, 1.0f))
+										.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 										.Text(this, &SBHMainMenu::GetPlayerIdentityText)
 									]
 								]
@@ -3059,7 +3121,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 					[
 						SNew(SBorder)
 						.BorderImage(WhiteBrush())
-						.BorderBackgroundColor(FLinearColor(0.026f, 0.032f, 0.038f, 0.94f))
+						.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.940f))
 						.Padding(16.0f)
 						[
 							SNew(SScrollBox)
@@ -3071,7 +3133,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 								[
 									SNew(STextBlock)
 									.Font(MenuFont(18, FName(TEXT("Bold"))))
-									.ColorAndOpacity(FLinearColor(0.90f, 0.95f, 0.93f, 1.0f))
+									.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 									.Text(bInGame ? FText::FromString(TEXT("Round")) : FText::FromString(TEXT("Match Setup")))
 								]
 								+ SVerticalBox::Slot()
@@ -3087,7 +3149,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 									SNew(STextBlock)
 									.AutoWrapText(true)
 									.Font(MenuFont(12))
-									.ColorAndOpacity(FLinearColor(0.73f, 0.80f, 0.80f, 1.0f))
+									.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 									.Text(bInGame
 										? FText::FromString(TEXT("Review round state, practice tools, and host-only role assignment."))
 										: FText::FromString(TEXT("Round options become active after hosting or joining.")))
@@ -3109,13 +3171,13 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 									SNew(SBorder)
 									.Visibility(bInGame ? EVisibility::Visible : EVisibility::Collapsed)
 									.BorderImage(WhiteBrush())
-									.BorderBackgroundColor(FLinearColor(0.030f, 0.038f, 0.044f, 0.95f))
+									.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 									.Padding(12.0f)
 									[
 										SNew(STextBlock)
 										.AutoWrapText(true)
 										.Font(MenuFont(12))
-										.ColorAndOpacity(FLinearColor(0.74f, 0.82f, 0.78f, 1.0f))
+										.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 										.Text(this, &SBHMainMenu::GetRoundDirectorText)
 									]
 								]
@@ -3147,7 +3209,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 					[
 						SNew(SBorder)
 						.BorderImage(WhiteBrush())
-						.BorderBackgroundColor(FLinearColor(0.026f, 0.032f, 0.038f, 0.94f))
+						.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.940f))
 						.Padding(16.0f)
 						[
 							SNew(SScrollBox)
@@ -3161,7 +3223,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 					[
 						SNew(SBorder)
 						.BorderImage(WhiteBrush())
-						.BorderBackgroundColor(FLinearColor(0.026f, 0.032f, 0.038f, 0.94f))
+						.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.940f))
 						.Padding(16.0f)
 						[
 							SNew(SScrollBox)
@@ -3186,7 +3248,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 					[
 						SNew(SBorder)
 						.BorderImage(WhiteBrush())
-						.BorderBackgroundColor(FLinearColor(0.026f, 0.032f, 0.038f, 0.94f))
+						.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.940f))
 						.Padding(16.0f)
 						[
 							SNew(SScrollBox)
@@ -3211,7 +3273,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 					[
 						SNew(SBorder)
 						.BorderImage(WhiteBrush())
-						.BorderBackgroundColor(FLinearColor(0.026f, 0.032f, 0.038f, 0.94f))
+						.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.940f))
 						.Padding(16.0f)
 						[
 							SNew(SScrollBox)
@@ -3225,7 +3287,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 					[
 						SNew(SBorder)
 						.BorderImage(WhiteBrush())
-						.BorderBackgroundColor(FLinearColor(0.026f, 0.032f, 0.038f, 0.94f))
+						.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.940f))
 						.Padding(16.0f)
 						[
 							SNew(SScrollBox)
@@ -3235,6 +3297,20 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 								[
 									BuildAchievementsPanel()
 								]
+							]
+						]
+					]
+					+ SWidgetSwitcher::Slot()
+					[
+						SNew(SBorder)
+						.BorderImage(WhiteBrush())
+						.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.940f))
+						.Padding(16.0f)
+						[
+							SNew(SScrollBox)
+							+ SScrollBox::Slot()
+							[
+								BuildMasteryPanel()
 							]
 						]
 					]
@@ -3397,7 +3473,7 @@ void SBHMainMenu::RefreshLessonPresetList()
 				SNew(STextBlock)
 				.AutoWrapText(true)
 				.Font(MenuFont(9))
-				.ColorAndOpacity(FLinearColor(0.86f, 0.62f, 0.40f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 				.Text(FText::FromString(Message.IsEmpty() ? TEXT("Only built-in lesson presets are available.") : Message))
 			];
 	}
@@ -3447,7 +3523,7 @@ void SBHMainMenu::RefreshLessonPresetList()
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(9))
-					.ColorAndOpacity(FLinearColor(0.58f, 0.68f, 0.68f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 					.Text(FText::FromString(Detail))
 				]
 			];
@@ -3621,10 +3697,10 @@ FSlateColor SBHMainMenu::GetMenuTabColor(EBHMainMenuTab Tab) const
 {
 	if (ActiveMenuTab == Tab)
 	{
-		return FSlateColor(FLinearColor(0.10f, 0.34f, 0.31f, 1.0f));
+		return FSlateColor(BHResolveActiveThemeColor(&FBHMenuTheme::Accent));
 	}
 
-	return FSlateColor(FLinearColor(0.045f, 0.052f, 0.060f, 0.96f));
+	return FSlateColor(BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle));
 }
 
 FText SBHMainMenu::GetMenuTabLabel(EBHMainMenuTab Tab, FText BaseLabel) const
@@ -3646,8 +3722,8 @@ FText SBHMainMenu::GetMenuTabLabel(EBHMainMenuTab Tab, FText BaseLabel) const
 FSlateColor SBHMainMenu::GetMenuTabTextColor(EBHMainMenuTab Tab) const
 {
 	return ActiveMenuTab == Tab
-		? FSlateColor(FLinearColor(0.90f, 1.0f, 0.96f, 1.0f))
-		: FSlateColor(FLinearColor(0.62f, 0.70f, 0.70f, 1.0f));
+		? FSlateColor(BHResolveActiveThemeColor(&FBHMenuTheme::Header))
+		: FSlateColor(BHResolveActiveThemeColor(&FBHMenuTheme::TextDim));
 }
 
 int32 SBHMainMenu::MenuTabToWidgetIndex(EBHMainMenuTab Tab)
@@ -3683,36 +3759,29 @@ int32 SBHMainMenu::MenuTabToWidgetIndex(EBHMainMenuTab Tab)
 	}
 }
 
-namespace
-{
-	const FLinearColor BHFeedbackSelectedColor(0.10f, 0.34f, 0.31f, 1.0f);
-	const FLinearColor BHFeedbackRatingColor(0.42f, 0.34f, 0.10f, 1.0f);
-	const FLinearColor BHFeedbackUnselectedColor(0.045f, 0.052f, 0.060f, 0.96f);
-}
-
 FSlateColor SBHMainMenu::GetFeedbackKindButtonColor(EBHFeedbackKind Kind) const
 {
-	return FSlateColor(PendingFeedbackKind == Kind ? BHFeedbackSelectedColor : BHFeedbackUnselectedColor);
+	return FSlateColor(PendingFeedbackKind == Kind ? BHResolveActiveThemeColor(&FBHMenuTheme::Accent) : BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle));
 }
 
 FSlateColor SBHMainMenu::GetFeedbackRatingButtonColor(int32 Rating) const
 {
-	return FSlateColor((PendingFeedbackRating > 0 && Rating <= PendingFeedbackRating) ? BHFeedbackRatingColor : BHFeedbackUnselectedColor);
+	return FSlateColor((PendingFeedbackRating > 0 && Rating <= PendingFeedbackRating) ? BHResolveActiveThemeColor(&FBHMenuTheme::AccentBright) : BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle));
 }
 
 FSlateColor SBHMainMenu::GetSurveyOverallButtonColor(int32 Overall) const
 {
-	return FSlateColor((SurveyOverallRating > 0 && Overall <= SurveyOverallRating) ? BHFeedbackRatingColor : BHFeedbackUnselectedColor);
+	return FSlateColor((SurveyOverallRating > 0 && Overall <= SurveyOverallRating) ? BHResolveActiveThemeColor(&FBHMenuTheme::AccentBright) : BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle));
 }
 
 FSlateColor SBHMainMenu::GetSurveyDifficultyButtonColor(FString Difficulty) const
 {
-	return FSlateColor(SurveyDifficulty.Equals(Difficulty) ? BHFeedbackSelectedColor : BHFeedbackUnselectedColor);
+	return FSlateColor(SurveyDifficulty.Equals(Difficulty) ? BHResolveActiveThemeColor(&FBHMenuTheme::Accent) : BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle));
 }
 
 FSlateColor SBHMainMenu::GetSurveyRecommendButtonColor(bool bRecommend) const
 {
-	return FSlateColor(bSurveyWouldRecommend == bRecommend ? BHFeedbackSelectedColor : BHFeedbackUnselectedColor);
+	return FSlateColor(bSurveyWouldRecommend == bRecommend ? BHResolveActiveThemeColor(&FBHMenuTheme::Accent) : BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle));
 }
 
 FText SBHMainMenu::GetFeedbackStatusText() const
@@ -3839,7 +3908,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildEndOfRoundSurveyPanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(12, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.96f, 0.92f, 0.70f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 				.Text(FText::AsNumber(Overall))
 			];
 	};
@@ -3853,7 +3922,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildEndOfRoundSurveyPanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(11, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.92f, 0.95f, 0.95f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 				.Text(Label)
 			];
 	};
@@ -3867,7 +3936,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildEndOfRoundSurveyPanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(11, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.92f, 0.95f, 0.95f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 				.Text(Label)
 			];
 	};
@@ -3880,7 +3949,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildEndOfRoundSurveyPanel()
 
 	return SNew(SBorder)
 		.BorderImage(WhiteBrush())
-		.BorderBackgroundColor(FLinearColor(0.05f, 0.10f, 0.14f, 0.96f))
+		.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::PanelBorder, 0.960f))
 		.Padding(14.0f)
 		[
 			SNew(SVerticalBox)
@@ -3889,7 +3958,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildEndOfRoundSurveyPanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(16, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.80f, 0.92f, 1.0f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Accent))
 				.Text(FText::FromString(TEXT("Quick survey - how was that round?")))
 			]
 			+ SVerticalBox::Slot()
@@ -3899,7 +3968,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildEndOfRoundSurveyPanel()
 				SNew(STextBlock)
 				.AutoWrapText(true)
 				.Font(MenuFont(11))
-				.ColorAndOpacity(FLinearColor(0.62f, 0.74f, 0.80f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 				.Text(FText::FromString(TEXT("Takes about 20 seconds. It helps tune difficulty and fix problems.")))
 			]
 			+ SVerticalBox::Slot()
@@ -3908,7 +3977,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildEndOfRoundSurveyPanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(10, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.72f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 				.Text(FText::FromString(TEXT("OVERALL (1-5)")))
 			]
 			+ SVerticalBox::Slot()
@@ -3923,7 +3992,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildEndOfRoundSurveyPanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(10, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.72f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 				.Text(FText::FromString(TEXT("DIFFICULTY")))
 			]
 			+ SVerticalBox::Slot()
@@ -3941,7 +4010,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildEndOfRoundSurveyPanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(10, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.72f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 				.Text(FText::FromString(TEXT("WOULD YOU PLAY AGAIN?")))
 			]
 			+ SVerticalBox::Slot()
@@ -3978,7 +4047,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildEndOfRoundSurveyPanel()
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(12, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.95f, 1.0f, 0.97f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 						.Text(FText::FromString(TEXT("SEND SURVEY")))
 					]
 				]
@@ -3992,7 +4061,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildEndOfRoundSurveyPanel()
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(12, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.70f, 0.74f, 0.76f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 						.Text(FText::FromString(TEXT("NO THANKS")))
 					]
 				]
@@ -4166,7 +4235,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 						SNew(STextBlock)
 						.AutoWrapText(true)
 						.Font(MenuFont(9))
-						.ColorAndOpacity(FLinearColor(0.66f, 0.70f, 0.74f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 						.Text(FText::FromString(DescStr))
 					]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f, 0.0f, 0.0f)
@@ -4174,7 +4243,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 						SNew(STextBlock)
 						.Visibility(RewardStr.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible)
 						.Font(MenuFont(9, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.70f, 0.82f, 0.74f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 						.Text(FText::FromString(RewardStr))
 					]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f, 0.0f, 0.0f)
@@ -4194,13 +4263,13 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 									]
 									+ SHorizontalBox::Slot().FillWidth(FMath::Max(1.0f - ProgressPct, 0.0001f))
 									[
-										SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(FLinearColor(0.13f, 0.14f, 0.16f, 1.0f))
+										SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::PanelBorder))
 									]
 								]
 							]
 							+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 							[
-								SNew(STextBlock).Font(MenuFont(8)).ColorAndOpacity(FLinearColor(0.62f, 0.66f, 0.70f, 1.0f)).Text(FText::FromString(ProgressStr))
+								SNew(STextBlock).Font(MenuFont(8)).ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim)).Text(FText::FromString(ProgressStr))
 							]
 						]
 					]
@@ -4248,7 +4317,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 			[
 				SNew(SBox).WidthOverride(108.0f)
 				[
-					SNew(STextBlock).Font(MenuFont(9, FName(TEXT("Bold")))).ColorAndOpacity(FLinearColor(0.78f, 0.82f, 0.86f, 1.0f)).Text(FText::FromString(BHTopicNames[TopicIdx]))
+					SNew(STextBlock).Font(MenuFont(9, FName(TEXT("Bold")))).ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary)).Text(FText::FromString(BHTopicNames[TopicIdx]))
 				]
 			]
 			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center).Padding(6.0f, 0.0f, 6.0f, 0.0f)
@@ -4262,7 +4331,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 					]
 					+ SHorizontalBox::Slot().FillWidth(FMath::Max(1.0f - TopicPct, 0.0001f))
 					[
-						SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(FLinearColor(0.13f, 0.14f, 0.16f, 1.0f))
+						SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::PanelBorder))
 					]
 				]
 			]
@@ -4270,7 +4339,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 			[
 				SNew(SBox).WidthOverride(70.0f)
 				[
-					SNew(STextBlock).Font(MenuFont(9)).ColorAndOpacity(FLinearColor(0.70f, 0.74f, 0.78f, 1.0f)).Text(FText::FromString(TopicStat))
+					SNew(STextBlock).Font(MenuFont(9)).ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim)).Text(FText::FromString(TopicStat))
 				]
 			]
 		];
@@ -4294,7 +4363,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 
 	return SNew(SBorder)
 		.BorderImage(WhiteBrush())
-		.BorderBackgroundColor(FLinearColor(0.034f, 0.034f, 0.044f, 0.95f))
+		.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 		.Padding(10.0f)
 		[
 			SNew(SVerticalBox)
@@ -4302,7 +4371,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 			[
 				SNew(SBorder)
 				.BorderImage(WhiteBrush())
-				.BorderBackgroundColor(FLinearColor(0.06f, 0.07f, 0.085f, 0.95f))
+				.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 				.Padding(9.0f)
 				[
 					SNew(SVerticalBox)
@@ -4311,11 +4380,11 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 						SNew(SHorizontalBox)
 						+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
 						[
-							SNew(STextBlock).Font(MenuFont(15, FName(TEXT("Bold")))).ColorAndOpacity(FLinearColor(0.95f, 0.86f, 0.55f, 1.0f)).Text(FText::FromString(RankName))
+							SNew(STextBlock).Font(MenuFont(15, FName(TEXT("Bold")))).ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header)).Text(FText::FromString(RankName))
 						]
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 						[
-							SNew(STextBlock).Font(MenuFont(9)).ColorAndOpacity(FLinearColor(0.70f, 0.74f, 0.78f, 1.0f)).Text(FText::FromString(RankXpStr))
+							SNew(STextBlock).Font(MenuFont(9)).ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim)).Text(FText::FromString(RankXpStr))
 						]
 					]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 5.0f, 0.0f, 6.0f)
@@ -4325,17 +4394,17 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 							SNew(SHorizontalBox)
 							+ SHorizontalBox::Slot().FillWidth(FMath::Max(RankPct, 0.0001f))
 							[
-								SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(FLinearColor(0.42f, 0.66f, 0.92f, 1.0f))
+								SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Accent))
 							]
 							+ SHorizontalBox::Slot().FillWidth(FMath::Max(1.0f - RankPct, 0.0001f))
 							[
-								SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(FLinearColor(0.13f, 0.14f, 0.16f, 1.0f))
+								SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::PanelBorder))
 							]
 						]
 					]
 					+ SVerticalBox::Slot().AutoHeight()
 					[
-						SNew(STextBlock).AutoWrapText(true).Font(MenuFont(9)).ColorAndOpacity(FLinearColor(0.68f, 0.72f, 0.76f, 1.0f)).Text(FText::FromString(StatsStr))
+						SNew(STextBlock).AutoWrapText(true).Font(MenuFont(9)).ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim)).Text(FText::FromString(StatsStr))
 					]
 				]
 			]
@@ -4343,7 +4412,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(13, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.92f, 0.88f, 0.74f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 				.Text(FText::FromString(TEXT("Achievements")))
 			]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 5.0f, 0.0f, 9.0f)
@@ -4351,14 +4420,14 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 				SNew(STextBlock)
 				.AutoWrapText(true)
 				.Font(MenuFont(10))
-				.ColorAndOpacity(FLinearColor(0.66f, 0.72f, 0.78f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 				.Text(FText::FromString(FString::Printf(TEXT("Earned %d of %d. Each badge shows its difficulty (more pips = harder, colour-coded by tier) and the cosmetic it unlocks. Hidden badges stay secret until you find them."), Earned, Total)))
 			]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 4.0f)
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(11, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.82f, 0.88f, 0.80f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 				.Text(FText::FromString(TEXT("Your physics mastery (from in-round answers)")))
 			]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 11.0f)
@@ -4370,13 +4439,13 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 				SNew(SBorder)
 				.Visibility(FocusStr.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible)
 				.BorderImage(WhiteBrush())
-				.BorderBackgroundColor(FLinearColor(0.07f, 0.09f, 0.08f, 0.95f))
+				.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 				.Padding(7.0f)
 				[
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(10, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.74f, 0.90f, 0.78f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 					.Text(FText::FromString(FocusStr))
 				]
 			]
@@ -4419,7 +4488,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildMasteryPanel()
 		[
 			SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.040f, 0.044f, 0.052f, 0.95f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 			.Padding(9.0f)
 			[
 				SNew(SHorizontalBox)
@@ -4427,14 +4496,14 @@ TSharedRef<SWidget> SBHMainMenu::BuildMasteryPanel()
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(11, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.90f, 0.92f, 0.84f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 					.Text(FText::FromString(TopicName))
 				]
 				+ SHorizontalBox::Slot().FillWidth(0.46f).VAlign(VAlign_Center).Padding(8.0f, 0.0f, 8.0f, 0.0f)
 				[
 					SNew(SBorder)
 					.BorderImage(WhiteBrush())
-					.BorderBackgroundColor(FLinearColor(0.12f, 0.13f, 0.15f, 1.0f))
+					.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::PanelBorder))
 					.Padding(2.0f)
 					[
 						SNew(SBox).HeightOverride(12.0f)
@@ -4476,7 +4545,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildMasteryPanel()
 		[
 			SNew(STextBlock)
 			.Font(MenuFont(13, FName(TEXT("Bold"))))
-			.ColorAndOpacity(FLinearColor(0.62f, 0.80f, 0.92f, 1.0f))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Accent))
 			.Text(FText::FromString(FBHRevisionQuestionBank::TopicToString(Topic)))
 		];
 		for (int32 LevelIdx = 0; LevelIdx < 3; ++LevelIdx)
@@ -4515,7 +4584,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildMasteryPanel()
 			[
 				SNew(SBorder)
 				.BorderImage(WhiteBrush())
-				.BorderBackgroundColor(FLinearColor(0.045f, 0.050f, 0.058f, 0.95f))
+				.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 				.Padding(9.0f)
 				[
 					SNew(SVerticalBox)
@@ -4523,7 +4592,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildMasteryPanel()
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(9, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.70f, 0.74f, 0.50f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 						.Text(FText::FromString(FString(StageLabels[LevelIdx])))
 					]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 3.0f, 0.0f, 0.0f)
@@ -4531,7 +4600,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildMasteryPanel()
 						SNew(STextBlock)
 						.AutoWrapText(true)
 						.Font(MenuFont(11))
-						.ColorAndOpacity(FLinearColor(0.92f, 0.93f, 0.88f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 						.Text(FText::FromString(Example->Prompt))
 					]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f, 0.0f, 0.0f)
@@ -4547,7 +4616,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildMasteryPanel()
 						SNew(STextBlock)
 						.AutoWrapText(true)
 						.Font(MenuFont(9))
-						.ColorAndOpacity(FLinearColor(0.66f, 0.70f, 0.74f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 						.Text(FText::FromString(Example->Explanation))
 					]
 				]
@@ -4560,14 +4629,14 @@ TSharedRef<SWidget> SBHMainMenu::BuildMasteryPanel()
 		[
 			SNew(STextBlock)
 			.Font(MenuFont(15, FName(TEXT("Bold"))))
-			.ColorAndOpacity(FLinearColor(0.94f, 0.92f, 0.80f, 1.0f))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 			.Text(FText::FromString(TEXT("YOUR MASTERY")))
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 8.0f)
 		[
 			SNew(STextBlock)
 			.Font(MenuFont(10))
-			.ColorAndOpacity(FLinearColor(0.66f, 0.70f, 0.74f, 1.0f))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 			.Text(FText::FromString(FString::Printf(TEXT("Lifetime accuracy on this device  -  overall %.0f%% (%d / %d correct)"), OverallPct, TotalCorrect, TotalAnswers)))
 		]
 		+ SVerticalBox::Slot().AutoHeight()
@@ -4578,7 +4647,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildMasteryPanel()
 		[
 			SNew(STextBlock)
 			.Font(MenuFont(15, FName(TEXT("Bold"))))
-			.ColorAndOpacity(FLinearColor(0.94f, 0.92f, 0.80f, 1.0f))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 			.Text(FText::FromString(TEXT("EXAMPLE QUESTIONS BY TOPIC & LEVEL")))
 		]
 		+ SVerticalBox::Slot().AutoHeight()
@@ -4598,7 +4667,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildFeedbackPanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(11, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.92f, 0.95f, 0.95f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 				.Text(Label)
 			];
 	};
@@ -4612,7 +4681,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildFeedbackPanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(12, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.96f, 0.92f, 0.70f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 				.Text(FText::AsNumber(Rating))
 			];
 	};
@@ -4635,7 +4704,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildFeedbackPanel()
 		[
 			SNew(STextBlock)
 			.Font(MenuFont(18, FName(TEXT("Bold"))))
-			.ColorAndOpacity(FLinearColor(0.96f, 0.92f, 0.82f, 1.0f))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 			.Text(FText::FromString(TEXT("Feedback")))
 		]
 		+ SVerticalBox::Slot()
@@ -4645,7 +4714,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildFeedbackPanel()
 			SNew(STextBlock)
 			.AutoWrapText(true)
 			.Font(MenuFont(12))
-			.ColorAndOpacity(FLinearColor(0.58f, 0.66f, 0.66f, 1.0f))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 			.Text(FText::FromString(TEXT("Report a bug, suggest an idea, or tell us what you liked. It goes straight to the developer.")))
 		]
 		// End-of-round survey: shown after a round, hidden once sent or dismissed.
@@ -4669,7 +4738,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildFeedbackPanel()
 		[
 			SNew(STextBlock)
 			.Font(MenuFont(10, FName(TEXT("Bold"))))
-			.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.72f, 1.0f))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 			.Text(FText::FromString(TEXT("WHAT'S THIS ABOUT?")))
 		]
 		+ SVerticalBox::Slot()
@@ -4684,7 +4753,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildFeedbackPanel()
 		[
 			SNew(STextBlock)
 			.Font(MenuFont(10, FName(TEXT("Bold"))))
-			.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.72f, 1.0f))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 			.Text(FText::FromString(TEXT("YOUR MESSAGE")))
 		]
 		+ SVerticalBox::Slot()
@@ -4710,7 +4779,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildFeedbackPanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(10, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.72f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 				.Text(FText::FromString(TEXT("RATING (OPTIONAL)")))
 			]
 			+ SHorizontalBox::Slot()
@@ -4725,7 +4794,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildFeedbackPanel()
 		[
 			SNew(STextBlock)
 			.Font(MenuFont(10, FName(TEXT("Bold"))))
-			.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.72f, 1.0f))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 			.Text(FText::FromString(TEXT("CONTACT (OPTIONAL, IF YOU WANT A REPLY)")))
 		]
 		+ SVerticalBox::Slot()
@@ -4745,7 +4814,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildFeedbackPanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(11))
-				.ColorAndOpacity(FLinearColor(0.80f, 0.86f, 0.86f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 				.Text(FText::FromString(TEXT("Include diagnostics (frame-rate stats, recent log lines, PC specs)")))
 			]
 		]
@@ -4756,7 +4825,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildFeedbackPanel()
 			SNew(STextBlock)
 			.AutoWrapText(true)
 			.Font(MenuFont(10))
-			.ColorAndOpacity(FLinearColor(0.52f, 0.58f, 0.60f, 1.0f))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 			.Text(TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateLambda([this]()
 			{
 				if (const ABHPlayerController* PC = PlayerController.Get())
@@ -4778,7 +4847,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildFeedbackPanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(13, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.95f, 1.0f, 0.97f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 				.Text(FText::FromString(TEXT("SEND FEEDBACK")))
 			]
 		]
@@ -4787,13 +4856,13 @@ TSharedRef<SWidget> SBHMainMenu::BuildFeedbackPanel()
 		[
 			SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.030f, 0.038f, 0.044f, 0.95f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 			.Padding(12.0f)
 			[
 				SNew(STextBlock)
 				.AutoWrapText(true)
 				.Font(MenuFont(11))
-				.ColorAndOpacity(FLinearColor(0.74f, 0.82f, 0.78f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 				.Text(this, &SBHMainMenu::GetFeedbackStatusText)
 			]
 		];
@@ -4881,19 +4950,19 @@ TSharedRef<SWidget> SBHMainMenu::BuildStartScreen()
 		[
 			SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.006f, 0.005f, 0.006f, 1.0f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Background))
 		]
 		+ SOverlay::Slot()
 		[
 			SNew(SImage)
 			.Image(TAttribute<const FSlateBrush*>::Create(TAttribute<const FSlateBrush*>::FGetter::CreateSP(this, &SBHMainMenu::GetStartBackgroundBrush)))
-			.ColorAndOpacity(FLinearColor(0.94f, 0.91f, 0.88f, 0.96f))
+			.ColorAndOpacity(FLinearColor(0.94f, 0.91f, 0.88f, 0.960f))
 		]
 		+ SOverlay::Slot()
 		[
 			SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.0f, 0.0f, 0.0f, 0.24f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Background, 0.240f))
 		]
 		+ SOverlay::Slot()
 		.HAlign(HAlign_Fill)
@@ -4904,7 +4973,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildStartScreen()
 			[
 				SNew(SBorder)
 				.BorderImage(WhiteBrush())
-				.BorderBackgroundColor(FLinearColor(0.62f, 0.02f, 0.015f, 0.80f))
+				.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Danger, 0.800f))
 			]
 		]
 		+ SOverlay::Slot()
@@ -4916,7 +4985,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildStartScreen()
 			[
 				SNew(SBorder)
 				.BorderImage(WhiteBrush())
-				.BorderBackgroundColor(FLinearColor(0.05f, 0.0f, 0.0f, 0.72f))
+				.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.720f))
 			]
 		]
 		+ SOverlay::Slot()
@@ -4935,7 +5004,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildStartScreen()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(52, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.93f, 0.86f, 0.78f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 				.ShadowOffset(FVector2D(3.0f, 3.0f))
 				.ShadowColorAndOpacity(FLinearColor(0.35f, 0.0f, 0.0f, 1.0f))
 				.Text(FText::FromString(TEXT("BLACKOUT HUNT")))
@@ -4946,7 +5015,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildStartScreen()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(15))
-				.ColorAndOpacity(FLinearColor(0.78f, 0.64f, 0.56f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 				.Text(FText::FromString(TEXT("The lights are out. Something is listening.")))
 			]
 			+ SVerticalBox::Slot()
@@ -4958,7 +5027,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildStartScreen()
 				.Padding(0.0f, 0.0f, 12.0f, 0.0f)
 				[
 					SNew(SBHMenuButton)
-					.ButtonColorAndOpacity(FLinearColor(0.42f, 0.03f, 0.025f, 1.0f))
+					.ButtonColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Danger))
 					.ContentPadding(FMargin(30.0f, 15.0f))
 					.OnClicked(this, &SBHMainMenu::OnStartClicked)
 					[
@@ -4972,7 +5041,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildStartScreen()
 				.Padding(0.0f, 0.0f, 12.0f, 0.0f)
 					[
 						SNew(SBHMenuButton)
-						.ButtonColorAndOpacity(FLinearColor(0.12f, 0.25f, 0.24f, 0.98f))
+						.ButtonColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Accent, 0.980f))
 						.ContentPadding(FMargin(22.0f, 13.0f))
 						.OnClicked(this, &SBHMainMenu::OnStartGuideClicked)
 						[
@@ -4986,7 +5055,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildStartScreen()
 				.Padding(0.0f, 0.0f, 12.0f, 0.0f)
 				[
 					SNew(SBHMenuButton)
-					.ButtonColorAndOpacity(FLinearColor(0.070f, 0.075f, 0.080f, 0.96f))
+					.ButtonColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::ButtonIdle, 0.960f))
 					.ContentPadding(FMargin(18.0f, 13.0f))
 					.OnClicked(this, &SBHMainMenu::OnToggleStartCredentialsClicked)
 					[
@@ -5006,7 +5075,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildStartScreen()
 				[
 					SNew(SBorder)
 					.BorderImage(WhiteBrush())
-					.BorderBackgroundColor(FLinearColor(0.018f, 0.020f, 0.022f, 0.94f))
+					.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.940f))
 					.Padding(14.0f)
 					[
 						BuildLocalCredentialPanel(true)
@@ -5056,7 +5125,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildPlayJoinAddressPanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(10, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.72f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 				.Text(FText::FromString(TEXT("YOUR LOBBY NAME")))
 			]
 			+ SVerticalBox::Slot()
@@ -5085,7 +5154,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildPlayJoinAddressPanel()
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(10, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.72f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 					.Text(FText::FromString(TEXT("LAN HOST / IP / CODE")))
 				]
 				+ SVerticalBox::Slot()
@@ -5111,7 +5180,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildPlayJoinAddressPanel()
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(10, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.72f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 						.Text(FText::FromString(TEXT("PORT")))
 					]
 					+ SVerticalBox::Slot()
@@ -5174,7 +5243,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomJoinListPanel()
 		[
 			SNew(STextBlock)
 			.Font(MenuFont(10, FName(TEXT("Bold"))))
-			.ColorAndOpacity(FLinearColor(0.70f, 0.82f, 0.80f, 1.0f))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 			.Text(FText::FromString(TEXT("CLASSROOM JOIN LIST")))
 		];
 
@@ -5191,7 +5260,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomJoinListPanel()
 				SNew(STextBlock)
 				.AutoWrapText(true)
 				.Font(MenuFont(10))
-				.ColorAndOpacity(FLinearColor(0.58f, 0.66f, 0.67f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 				.Text(FText::FromString(TEXT("No saved classroom endpoints are configured.")))
 			];
 		return List;
@@ -6915,6 +6984,19 @@ FReply SBHMainMenu::OnComfortOptionClicked(FName OptionName, bool bEnabled)
 	return FReply::Handled();
 }
 
+FReply SBHMainMenu::OnRollCamStyleClicked(int32 Style)
+{
+	const int32 Clamped = FMath::Clamp(Style, 0, 3);
+	if (GConfig)
+	{
+		GConfig->SetInt(TEXT("BlackoutHunt.Comfort"), TEXT("RollCamStyle"), Clamped, GGameUserSettingsIni);
+		GConfig->Flush(false, GGameUserSettingsIni);
+	}
+	static const TCHAR* StyleNames[] = { TEXT("Off"), TEXT("Subtle dip"), TEXT("Dip"), TEXT("Full somersault") };
+	StatusText = FText::FromString(FString::Printf(TEXT("Roll camera set to %s."), StyleNames[Clamped]));
+	return FReply::Handled();
+}
+
 FReply SBHMainMenu::OnRevisionTopicsClicked(int32 TopicMask)
 {
 	if (ABHPlayerController* PC = PlayerController.Get())
@@ -7213,7 +7295,7 @@ FSlateColor SBHMainMenu::GetHudSizePresetButtonColor(FName OptionName, int32 Per
 	const ABHPlayerController* PC = PlayerController.Get();
 	const float Current = PC ? PC->GetHudScalarOptionForMenu(OptionName) : 1.0f;
 	const bool bSelected = FMath::RoundToInt(Current * 100.0f) == Percent;
-	return FSlateColor(bSelected ? FLinearColor(0.18f, 0.44f, 0.38f, 1.0f) : FLinearColor(0.12f, 0.15f, 0.17f, 1.0f));
+	return FSlateColor(bSelected ? BHResolveActiveThemeColor(&FBHMenuTheme::Accent) : BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle));
 }
 
 float SBHMainMenu::GetHudPanelOpacityValue() const
@@ -7590,7 +7672,7 @@ FSlateColor SBHMainMenu::GetCosmeticButtonColor(EBHCosmeticCategory Category, in
 		return FSlateColor(FLinearColor(0.055f, 0.060f, 0.066f, 1.0f));
 	}
 
-	return FSlateColor(bSelected ? FLinearColor(0.18f, 0.44f, 0.38f, 1.0f) : FLinearColor(0.12f, 0.15f, 0.17f, 1.0f));
+	return FSlateColor(bSelected ? BHResolveActiveThemeColor(&FBHMenuTheme::Accent) : BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle));
 }
 
 FText SBHMainMenu::GetAvatarSummaryText() const
@@ -8024,8 +8106,8 @@ FSlateColor SBHMainMenu::GetLiveClassroomMapButtonColor(FString LevelName) const
 	const FString NormalizedLevel = MenuNormalizeClassroomMapName(LevelName);
 	const FString SelectedLevel = MenuNormalizeClassroomMapName(SelectedLiveClassroomMap);
 	return FSlateColor(NormalizedLevel.Equals(SelectedLevel, ESearchCase::CaseSensitive)
-		? FLinearColor(0.18f, 0.44f, 0.38f, 1.0f)
-		: FLinearColor(0.12f, 0.15f, 0.17f, 1.0f));
+		? BHResolveActiveThemeColor(&FBHMenuTheme::Accent)
+		: BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle));
 }
 
 EVisibility SBHMainMenu::GetClassroomHostOnlyVisibility() const
@@ -8349,7 +8431,7 @@ FSlateColor SBHMainMenu::GetRevisionTopicButtonColor(int32 TopicMask) const
 	const int32 CurrentTopicMask = BHGS ? BHGS->RevisionTopicMask : AllTopicsMask;
 	const bool bAllSelected = (CurrentTopicMask & AllTopicsMask) == AllTopicsMask;
 	const bool bSelected = TopicMask == AllTopicsMask ? bAllSelected : ((CurrentTopicMask & TopicMask) != 0 && !bAllSelected);
-	return FSlateColor(bSelected ? FLinearColor(0.18f, 0.44f, 0.38f, 1.0f) : FLinearColor(0.12f, 0.15f, 0.17f, 1.0f));
+	return FSlateColor(bSelected ? BHResolveActiveThemeColor(&FBHMenuTheme::Accent) : BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle));
 }
 
 FSlateColor SBHMainMenu::GetRevisionDifficultyButtonColor(EBHRevisionDifficultyMix DifficultyMix) const
@@ -8358,7 +8440,7 @@ FSlateColor SBHMainMenu::GetRevisionDifficultyButtonColor(EBHRevisionDifficultyM
 	const UWorld* World = PC ? PC->GetWorld() : nullptr;
 	const ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
 	const EBHRevisionDifficultyMix CurrentDifficultyMix = BHGS ? BHGS->RevisionDifficultyMix : EBHRevisionDifficultyMix::Adaptive;
-	return FSlateColor(CurrentDifficultyMix == DifficultyMix ? FLinearColor(0.18f, 0.44f, 0.38f, 1.0f) : FLinearColor(0.12f, 0.15f, 0.17f, 1.0f));
+	return FSlateColor(CurrentDifficultyMix == DifficultyMix ? BHResolveActiveThemeColor(&FBHMenuTheme::Accent) : BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle));
 }
 
 FSlateColor SBHMainMenu::GetRevisionThresholdButtonColor(int32 ClassPercent, int32 IndividualPercent) const
@@ -8369,7 +8451,7 @@ FSlateColor SBHMainMenu::GetRevisionThresholdButtonColor(int32 ClassPercent, int
 	const int32 CurrentClassThreshold = FMath::RoundToInt(BHGS ? BHGS->RevisionClassThreshold : 70.0f);
 	const int32 CurrentIndividualThreshold = FMath::RoundToInt(BHGS ? BHGS->RevisionIndividualThreshold : 50.0f);
 	const bool bSelected = CurrentClassThreshold == ClassPercent && CurrentIndividualThreshold == IndividualPercent;
-	return FSlateColor(bSelected ? FLinearColor(0.18f, 0.44f, 0.38f, 1.0f) : FLinearColor(0.12f, 0.15f, 0.17f, 1.0f));
+	return FSlateColor(bSelected ? BHResolveActiveThemeColor(&FBHMenuTheme::Accent) : BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle));
 }
 
 FSlateColor SBHMainMenu::GetRevisionScareButtonColor(int32 Intensity) const
@@ -8378,7 +8460,7 @@ FSlateColor SBHMainMenu::GetRevisionScareButtonColor(int32 Intensity) const
 	const UWorld* World = PC ? PC->GetWorld() : nullptr;
 	const ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
 	const int32 CurrentScareIntensity = BHGS ? BHGS->RevisionScareIntensity : 2;
-	return FSlateColor(CurrentScareIntensity == Intensity ? FLinearColor(0.18f, 0.44f, 0.38f, 1.0f) : FLinearColor(0.12f, 0.15f, 0.17f, 1.0f));
+	return FSlateColor(CurrentScareIntensity == Intensity ? BHResolveActiveThemeColor(&FBHMenuTheme::Accent) : BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle));
 }
 
 EVisibility SBHMainMenu::GetLessonPresetPanelVisibility() const
@@ -8417,8 +8499,8 @@ FSlateColor SBHMainMenu::GetLessonPresetButtonColor(FString PresetId) const
 	const ABHPlayerController* PC = PlayerController.Get();
 	const FString SelectedId = PC ? PC->GetSelectedLessonPresetIdForMenu() : FString();
 	return FSlateColor(SelectedId.Equals(PresetId, ESearchCase::IgnoreCase)
-		? FLinearColor(0.18f, 0.44f, 0.38f, 1.0f)
-		: FLinearColor(0.12f, 0.15f, 0.17f, 1.0f));
+		? BHResolveActiveThemeColor(&FBHMenuTheme::Accent)
+		: BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle));
 }
 
 FSlateColor SBHMainMenu::GetGraphicsBoolOptionButtonColor(FName OptionName, bool bValue) const
@@ -8437,14 +8519,25 @@ FSlateColor SBHMainMenu::GetGraphicsBoolOptionButtonColor(FName OptionName, bool
 		}
 	}
 
-	return FSlateColor(bSelected ? FLinearColor(0.18f, 0.44f, 0.38f, 1.0f) : FLinearColor(0.12f, 0.15f, 0.17f, 1.0f));
+	return FSlateColor(bSelected ? BHResolveActiveThemeColor(&FBHMenuTheme::Accent) : BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle));
 }
 
 FSlateColor SBHMainMenu::GetComfortBoolOptionButtonColor(FName OptionName, bool bValue) const
 {
 	const ABHPlayerController* PC = PlayerController.Get();
 	const bool bSelected = PC && PC->IsComfortOptionEnabledForMenu(OptionName) == bValue;
-	return FSlateColor(bSelected ? FLinearColor(0.18f, 0.44f, 0.38f, 1.0f) : FLinearColor(0.12f, 0.15f, 0.17f, 1.0f));
+	return FSlateColor(bSelected ? BHResolveActiveThemeColor(&FBHMenuTheme::Accent) : BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle));
+}
+
+FSlateColor SBHMainMenu::GetRollCamStyleButtonColor(int32 Style) const
+{
+	int32 Current = static_cast<int32>(EBHRollCamStyle::Dip); // default matches ResolveRollCamStyle
+	if (GConfig)
+	{
+		GConfig->GetInt(TEXT("BlackoutHunt.Comfort"), TEXT("RollCamStyle"), Current, GGameUserSettingsIni);
+	}
+	const bool bSelected = (Current == Style);
+	return FSlateColor(bSelected ? BHResolveActiveThemeColor(&FBHMenuTheme::Accent) : BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle));
 }
 
 FSlateColor SBHMainMenu::GetGraphicsOptionButtonColor(FName OptionName, int32 Value) const
@@ -8483,14 +8576,14 @@ FSlateColor SBHMainMenu::GetGraphicsOptionButtonColor(FName OptionName, int32 Va
 		}
 	}
 
-	return FSlateColor(bSelected ? FLinearColor(0.18f, 0.44f, 0.38f, 1.0f) : FLinearColor(0.12f, 0.15f, 0.17f, 1.0f));
+	return FSlateColor(bSelected ? BHResolveActiveThemeColor(&FBHMenuTheme::Accent) : BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle));
 }
 
 FSlateColor SBHMainMenu::GetGraphicsResolutionButtonColor(int32 Width, int32 Height, bool bFullscreen) const
 {
 	const ABHPlayerController* PC = PlayerController.Get();
 	const bool bSelected = PC && PC->IsGraphicsResolutionSelectedForMenu(Width, Height, bFullscreen);
-	return FSlateColor(bSelected ? FLinearColor(0.18f, 0.44f, 0.38f, 1.0f) : FLinearColor(0.12f, 0.15f, 0.17f, 1.0f));
+	return FSlateColor(bSelected ? BHResolveActiveThemeColor(&FBHMenuTheme::Accent) : BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle));
 }
 
 void SBHMainMenu::EnsureAvatarPreviewScene()
@@ -8761,7 +8854,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildAccountPanel()
 {
 	return SNew(SBorder)
 		.BorderImage(WhiteBrush())
-		.BorderBackgroundColor(FLinearColor(0.038f, 0.046f, 0.052f, 0.95f))
+		.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 		.Padding(12.0f)
 		[
 			SNew(SVerticalBox)
@@ -8770,7 +8863,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildAccountPanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(13, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.84f, 0.92f, 0.89f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 				.Text(FText::FromString(TEXT("Account")))
 			]
 			+ SVerticalBox::Slot()
@@ -8780,7 +8873,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildAccountPanel()
 				SNew(STextBlock)
 				.AutoWrapText(true)
 				.Font(MenuFont(10))
-				.ColorAndOpacity(FLinearColor(0.67f, 0.75f, 0.76f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 				.Text(this, &SBHMainMenu::GetAccountText)
 			]
 			+ SVerticalBox::Slot()
@@ -8877,7 +8970,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildLocalCredentialPanel(bool bForStartScreen)
 		[
 			SNew(STextBlock)
 			.Font(MenuFont(bForStartScreen ? 14 : 13, FName(TEXT("Bold"))))
-			.ColorAndOpacity(FLinearColor(0.90f, 0.83f, 0.74f, 1.0f))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 			.Text(FText::FromString(TEXT("Local Credentials")))
 		]
 		+ SVerticalBox::Slot()
@@ -8887,7 +8980,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildLocalCredentialPanel(bool bForStartScreen)
 			SNew(STextBlock)
 			.AutoWrapText(true)
 			.Font(MenuFont(10))
-			.ColorAndOpacity(FLinearColor(0.68f, 0.72f, 0.72f, 1.0f))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 			.Text(this, &SBHMainMenu::GetLocalCredentialStatusText)
 		]
 		+ SVerticalBox::Slot()
@@ -8900,7 +8993,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildLocalCredentialPanel(bool bForStartScreen)
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(10, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.64f, 0.70f, 0.70f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 				.Text(FText::FromString(TEXT("USERNAME")))
 			]
 			+ SVerticalBox::Slot()
@@ -8923,7 +9016,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildLocalCredentialPanel(bool bForStartScreen)
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(10, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.64f, 0.70f, 0.70f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 				.Text(FText::FromString(TEXT("PASSWORD")))
 			]
 			+ SVerticalBox::Slot()
@@ -8946,7 +9039,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildLocalCredentialPanel(bool bForStartScreen)
 			.Padding(0.0f, 0.0f, 6.0f, 0.0f)
 			[
 				SNew(SBHMenuButton)
-				.ButtonColorAndOpacity(FLinearColor(0.16f, 0.30f, 0.24f, 1.0f))
+				.ButtonColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Accent))
 				.ContentPadding(FMargin(8.0f, 5.0f))
 				.OnClicked(this, &SBHMainMenu::OnLoginLocalCredentialClicked, bForStartScreen)
 				[
@@ -9010,7 +9103,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildNetworkPanel()
 			SNew(SBorder)
 			.Visibility(!bInGame ? EVisibility::Visible : EVisibility::Collapsed)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.036f, 0.044f, 0.052f, 0.95f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 			.Padding(12.0f)
 			[
 				SNew(SVerticalBox)
@@ -9019,7 +9112,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildNetworkPanel()
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(13, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.84f, 0.92f, 0.89f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 					.Text(this, &SBHMainMenu::GetSuggestedAddressText)
 				]
 				+ SVerticalBox::Slot()
@@ -9029,7 +9122,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildNetworkPanel()
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(11))
-					.ColorAndOpacity(FLinearColor(0.58f, 0.66f, 0.67f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 					.Text(FText::FromString(TEXT("Best path: online sessions through EOS or Steam relay. Fallback: start an internet tunnel and share its allocation address. Direct IP still works when UDP 7777 reaches the host.")))
 				]
 			]
@@ -9041,7 +9134,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildNetworkPanel()
 			SNew(SBorder)
 			.Visibility(!bInGame ? EVisibility::Visible : EVisibility::Collapsed)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.040f, 0.049f, 0.058f, 0.95f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 			.Padding(14.0f)
 			[
 				SNew(SVerticalBox)
@@ -9050,7 +9143,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildNetworkPanel()
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(15, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.84f, 0.92f, 0.89f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 					.Text(FText::FromString(TEXT("Online Session Browser")))
 				]
 				+ SVerticalBox::Slot()
@@ -9060,7 +9153,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildNetworkPanel()
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(12))
-					.ColorAndOpacity(FLinearColor(0.66f, 0.74f, 0.75f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 					.Text(this, &SBHMainMenu::GetOnlineSessionBrowserText)
 				]
 			]
@@ -9076,13 +9169,13 @@ TSharedRef<SWidget> SBHMainMenu::BuildStatusPanel()
 {
 	return SNew(SBorder)
 		.BorderImage(WhiteBrush())
-		.BorderBackgroundColor(FLinearColor(0.08f, 0.09f, 0.10f, 0.95f))
+		.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 		.Padding(14.0f)
 		[
 			SNew(STextBlock)
 			.AutoWrapText(true)
 			.Font(MenuFont(13))
-			.ColorAndOpacity(FLinearColor(0.70f, 0.82f, 0.82f, 1.0f))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 			.Text(this, &SBHMainMenu::GetStatusText)
 		];
 }
@@ -9092,13 +9185,15 @@ TSharedRef<SWidget> SBHMainMenu::BuildAvatarPreview()
 	EnsureAvatarPreviewScene();
 	UpdateAvatarPreviewMesh();
 
+	// Sized to the 512x768 (2:3) preview render target, kept just under native so the avatar stays crisp. This is
+	// the big preview window (was 190x272) -- the character reads clearly and the left column carries real weight.
 	return SNew(SBox)
-		.WidthOverride(190.0f)
-		.HeightOverride(272.0f)
+		.WidthOverride(340.0f)
+		.HeightOverride(510.0f)
 		[
 			SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.018f, 0.022f, 0.026f, 1.0f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel))
 			.Padding(8.0f)
 			[
 				SNew(SVerticalBox)
@@ -9113,7 +9208,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildAvatarPreview()
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(10, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.98f, 1.0f, 0.96f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 						.Text(this, &SBHMainMenu::GetAvatarModelNameText)
 					]
 				]
@@ -9122,7 +9217,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildAvatarPreview()
 				[
 					SNew(SBorder)
 					.BorderImage(WhiteBrush())
-					.BorderBackgroundColor(FLinearColor(0.010f, 0.013f, 0.016f, 1.0f))
+					.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Background))
 					.Padding(0.0f)
 					[
 						SNew(SScaleBox)
@@ -9246,6 +9341,27 @@ static FLinearColor MenuColorablePartColor(FName MaterialName)
 
 FReply SBHMainMenu::OnThemeClicked(int32 ThemeIndex)
 {
+	UBHAccountSubsystem* Account = nullptr;
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		if (UGameInstance* GI = PC->GetGameInstance())
+		{
+			Account = GI->GetSubsystem<UBHAccountSubsystem>();
+		}
+	}
+
+	// Enforce the unlock gate (XP / achievements). Locked -> reject with a status message and no live change. The
+	// checked setter also persists the choice on success (survives restart; UI-only, never replicated).
+	if (Account)
+	{
+		FString Message;
+		if (!Account->SetSelectedThemeIndexChecked(ThemeIndex, Message))
+		{
+			StatusText = FText::FromString(Message);
+			return FReply::Handled();
+		}
+	}
+
 	BHSetActiveMenuThemeIndex(ThemeIndex);
 	StatusText = FText::FromString(FString::Printf(TEXT("UI theme: %s"), BHMenuThemeName(ThemeIndex)));
 	return FReply::Handled();
@@ -9253,12 +9369,76 @@ FReply SBHMainMenu::OnThemeClicked(int32 ThemeIndex)
 
 FSlateColor SBHMainMenu::GetThemeBackgroundColor() const
 {
-	return FSlateColor(BHActiveMenuTheme().Background);
+	return FSlateColor(BHResolveActiveThemeColor(&FBHMenuTheme::Background));
 }
 
 FSlateColor SBHMainMenu::GetThemePanelColor() const
 {
-	return FSlateColor(BHActiveMenuTheme().Panel);
+	return FSlateColor(BHResolveActiveThemeColor(&FBHMenuTheme::Panel));
+}
+
+bool SBHMainMenu::IsThemeUnlockedForMenu(int32 ThemeIndex) const
+{
+	const ABHPlayerController* PC = PlayerController.Get();
+	const UGameInstance* GI = PC ? PC->GetGameInstance() : nullptr;
+	const UBHAccountSubsystem* Account = GI ? GI->GetSubsystem<UBHAccountSubsystem>() : nullptr;
+	if (!Account)
+	{
+		return true;
+	}
+	const FBHAccountProgress& Prog = Account->GetProgress();
+	return BHMenuThemeIsUnlocked(ThemeIndex, Prog.XP, &Prog.UnlockedAchievements);
+}
+
+FText SBHMainMenu::GetThemeButtonText(int32 ThemeIndex) const
+{
+	const FString Name = BHMenuThemeName(ThemeIndex);
+	if (IsThemeUnlockedForMenu(ThemeIndex))
+	{
+		return FText::FromString(Name);
+	}
+	const TCHAR* Ach = BHMenuThemeRequiredAchievement(ThemeIndex);
+	if (Ach && Ach[0] != TEXT('\0'))
+	{
+		return FText::FromString(FString::Printf(TEXT("%s (Locked)"), *Name));
+	}
+	return FText::FromString(FString::Printf(TEXT("%s (%d XP)"), *Name, BHMenuThemeRequiredXP(ThemeIndex)));
+}
+
+FSlateColor SBHMainMenu::GetThemeSwatchColor(int32 ThemeIndex) const
+{
+	// The swatch advertises the theme itself, so it shows that theme's own Accent (not the active theme/strength).
+	// Dimmed when locked.
+	FLinearColor Accent = BHMenuThemeAt(ThemeIndex).Accent;
+	if (!IsThemeUnlockedForMenu(ThemeIndex))
+	{
+		Accent *= 0.35f;
+		Accent.A = 1.0f;
+	}
+	return FSlateColor(Accent);
+}
+
+FReply SBHMainMenu::OnThemeStrengthClicked(float Strength)
+{
+	BHSetActiveMenuThemeStrength(Strength);
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		if (UGameInstance* GI = PC->GetGameInstance())
+		{
+			if (UBHAccountSubsystem* Account = GI->GetSubsystem<UBHAccountSubsystem>())
+			{
+				Account->SetSelectedThemeStrength(BHActiveMenuThemeStrength());
+			}
+		}
+	}
+	StatusText = FText::FromString(FString::Printf(TEXT("UI theme strength: %d%%"), FMath::RoundToInt(BHActiveMenuThemeStrength() * 100.0f)));
+	return FReply::Handled();
+}
+
+FSlateColor SBHMainMenu::GetThemeStrengthButtonColor(float Strength) const
+{
+	const bool bSelected = FMath::IsNearlyEqual(BHActiveMenuThemeStrength(), Strength, 0.01f);
+	return FSlateColor(BHResolveActiveThemeColor(bSelected ? &FBHMenuTheme::Accent : &FBHMenuTheme::ButtonIdle));
 }
 
 TSharedRef<SWidget> SBHMainMenu::BuildThemeSection()
@@ -9266,12 +9446,12 @@ TSharedRef<SWidget> SBHMainMenu::BuildThemeSection()
 	TSharedRef<SHorizontalBox> ThemeButtons = SNew(SHorizontalBox);
 	for (int32 Index = 0; Index < BHMenuThemeCount(); ++Index)
 	{
-		const FBHMenuTheme& Theme = BHMenuThemeAt(Index);
 		ThemeButtons->AddSlot()
 			.AutoWidth()
 			.Padding(0.0f, 0.0f, 6.0f, 0.0f)
 			[
 				SNew(SBHMenuButton)
+				.IsEnabled(this, &SBHMainMenu::IsThemeUnlockedForMenu, Index)
 				.ContentPadding(FMargin(7.0f, 4.0f))
 				.OnClicked(this, &SBHMainMenu::OnThemeClicked, Index)
 				[
@@ -9287,7 +9467,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildThemeSection()
 						[
 							SNew(SBorder)
 							.BorderImage(WhiteBrush())
-							.BorderBackgroundColor(Theme.Accent)
+							.BorderBackgroundColor(this, &SBHMainMenu::GetThemeSwatchColor, Index)
 						]
 					]
 					+ SHorizontalBox::Slot()
@@ -9296,8 +9476,31 @@ TSharedRef<SWidget> SBHMainMenu::BuildThemeSection()
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(8, FName(TEXT("Bold"))))
-						.Text(FText::FromString(BHMenuThemeName(Index)))
+						.Text(this, &SBHMainMenu::GetThemeButtonText, Index)
 					]
+				]
+			];
+	}
+
+	// Theme strength presets (Faint/Normal/Strong) blend the theme toward the neutral Classic baseline.
+	TSharedRef<SHorizontalBox> StrengthButtons = SNew(SHorizontalBox);
+	const TArray<TPair<FString, float>> StrengthPresets = { { TEXT("Faint"), 0.35f }, { TEXT("Normal"), 0.70f }, { TEXT("Strong"), 1.0f } };
+	for (const TPair<FString, float>& Preset : StrengthPresets)
+	{
+		const float Strength = Preset.Value;
+		StrengthButtons->AddSlot()
+			.AutoWidth()
+			.Padding(0.0f, 0.0f, 6.0f, 0.0f)
+			[
+				SNew(SBHMenuButton)
+				.ContentPadding(FMargin(9.0f, 4.0f))
+				.ButtonColorAndOpacity(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateSP(this, &SBHMainMenu::GetThemeStrengthButtonColor, Strength)))
+				.OnClicked(this, &SBHMainMenu::OnThemeStrengthClicked, Strength)
+				[
+					SNew(STextBlock)
+					.Font(MenuFont(8, FName(TEXT("Bold"))))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
+					.Text(FText::FromString(Preset.Key))
 				]
 			];
 	}
@@ -9309,7 +9512,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildThemeSection()
 		[
 			SNew(STextBlock)
 			.Font(MenuFont(10, FName(TEXT("Bold"))))
-			.ColorAndOpacity(FLinearColor(0.78f, 0.84f, 0.88f, 1.0f))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 			.Text(FText::FromString(TEXT("UI Theme")))
 		]
 		+ SVerticalBox::Slot()
@@ -9317,6 +9520,21 @@ TSharedRef<SWidget> SBHMainMenu::BuildThemeSection()
 		.Padding(0.0f, 5.0f, 0.0f, 0.0f)
 		[
 			ThemeButtons
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 12.0f, 0.0f, 0.0f)
+		[
+			SNew(STextBlock)
+			.Font(MenuFont(10, FName(TEXT("Bold"))))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
+			.Text(FText::FromString(TEXT("Theme Strength")))
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 5.0f, 0.0f, 0.0f)
+		[
+			StrengthButtons
 		];
 }
 
@@ -9399,7 +9617,9 @@ TSharedRef<SWidget> SBHMainMenu::BuildRecolorSection()
 				SNew(STextBlock).Font(MenuFont(8)).Text(FText::FromString(TEXT("Default")))
 			]
 		];
-	for (int32 Index = 0; Index < 8; ++Index)
+	// Base 8 recolour colours + Black (palette index 18). OnRecolorSwatchClicked clamps + unlock-gates each.
+	static const int32 SwatchIndices[] = { 0, 1, 2, 3, 4, 5, 6, 7, 18 };
+	for (const int32 Index : SwatchIndices)
 	{
 		const FLinearColor Color = MenuAvatarPaletteColor(Index);
 		SwatchRow->AddSlot()
@@ -9430,7 +9650,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRecolorSection()
 		[
 			SNew(STextBlock)
 			.Font(MenuFont(10, FName(TEXT("Bold"))))
-			.ColorAndOpacity(FLinearColor(0.78f, 0.84f, 0.88f, 1.0f))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 			.Text(FText::FromString(TEXT("Recolour Parts")))
 		]
 		+ SVerticalBox::Slot()
@@ -9452,7 +9672,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 	TSharedRef<SGridPanel> LookButtons = SNew(SGridPanel);
 	for (int32 Index = 0; Index <= BHCosmeticMaxIndex(EBHCosmeticCategory::Outfit); ++Index)
 	{
-		LookButtons->AddSlot(Index % 2, Index / 2)
+		LookButtons->AddSlot(Index % 3, Index / 3)
 			.Padding(0.0f, 0.0f, 6.0f, 6.0f)
 			[
 				SNew(SBox)
@@ -9508,7 +9728,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 		{
 			continue;
 		}
-		HeadwearButtons->AddSlot(Index % 2, Index / 2)
+		HeadwearButtons->AddSlot(Index % 3, Index / 3)
 			.Padding(0.0f, 0.0f, 6.0f, 6.0f)
 			[
 				SNew(SBox)
@@ -9556,7 +9776,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 	TSharedRef<SGridPanel> EmblemButtons = SNew(SGridPanel);
 	for (int32 Index = 0; Index <= BHCosmeticMaxIndex(EBHCosmeticCategory::Emblem); ++Index)
 	{
-		EmblemButtons->AddSlot(Index % 2, Index / 2)
+		EmblemButtons->AddSlot(Index % 3, Index / 3)
 			.Padding(0.0f, 0.0f, 6.0f, 6.0f)
 			[
 				SNew(SBox)
@@ -9579,7 +9799,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 
 	return SNew(SBorder)
 		.BorderImage(WhiteBrush())
-		.BorderBackgroundColor(FLinearColor(0.034f, 0.034f, 0.044f, 0.95f))
+		.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 		.Padding(10.0f)
 		[
 			SNew(SVerticalBox)
@@ -9588,7 +9808,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(13, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.88f, 0.86f, 0.98f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 				.Text(FText::FromString(TEXT("Character")))
 			]
 			+ SVerticalBox::Slot()
@@ -9598,7 +9818,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 				SNew(STextBlock)
 				.AutoWrapText(true)
 				.Font(MenuFont(10))
-				.ColorAndOpacity(FLinearColor(0.68f, 0.72f, 0.80f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 				.Text(this, &SBHMainMenu::GetAvatarSummaryText)
 			]
 			+ SVerticalBox::Slot()
@@ -9608,7 +9828,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 				SNew(STextBlock)
 				.AutoWrapText(true)
 				.Font(MenuFont(9))
-				.ColorAndOpacity(FLinearColor(0.62f, 0.74f, 0.72f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 				.Text(this, &SBHMainMenu::GetCosmeticProgressText)
 			]
 			+ SVerticalBox::Slot()
@@ -9618,7 +9838,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 				SNew(STextBlock)
 				.AutoWrapText(true)
 				.Font(MenuFont(11, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.82f, 0.90f, 0.88f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 				.Text(this, &SBHMainMenu::GetAvatarModelNameText)
 			]
 			+ SVerticalBox::Slot()
@@ -9640,7 +9860,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(10, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.78f, 0.84f, 0.88f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 						.Text(FText::FromString(TEXT("Outfit")))
 					]
 					+ SVerticalBox::Slot()
@@ -9654,7 +9874,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(10, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.78f, 0.84f, 0.88f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 						.Text(FText::FromString(TEXT("Nameplate")))
 					]
 					+ SVerticalBox::Slot()
@@ -9682,7 +9902,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(10, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.78f, 0.84f, 0.88f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 						.Text(FText::FromString(TEXT("Headwear")))
 					]
 					+ SVerticalBox::Slot()
@@ -9697,7 +9917,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(10, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.86f, 0.80f, 0.60f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 						.Text(FText::FromString(TEXT("Title (shown on your nameplate)")))
 					]
 					+ SVerticalBox::Slot()
@@ -9711,7 +9931,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(10, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.86f, 0.80f, 0.60f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 						.Text(FText::FromString(TEXT("Emblem (nameplate badge)")))
 					]
 					+ SVerticalBox::Slot()
@@ -9762,7 +9982,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoundOptionsPanel()
 	{
 		return SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.035f, 0.043f, 0.050f, 0.95f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 			.Padding(10.0f)
 			[
 				SNew(SVerticalBox)
@@ -9771,7 +9991,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoundOptionsPanel()
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(13, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.84f, 0.92f, 0.89f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 					.Text(FText::FromString(TEXT("Round Status")))
 				]
 				+ SVerticalBox::Slot()
@@ -9781,7 +10001,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoundOptionsPanel()
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(10))
-					.ColorAndOpacity(FLinearColor(0.66f, 0.74f, 0.75f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 					.Text(FText::FromString(OptionsText))
 				]
 				+ SVerticalBox::Slot()
@@ -9791,7 +10011,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoundOptionsPanel()
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(9))
-					.ColorAndOpacity(FLinearColor(0.58f, 0.68f, 0.68f, 0.92f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim, 0.920f))
 					.Text(FText::FromString(FString::Printf(TEXT("Modifier effect: %s"), *ModifierHint)))
 				]
 				+ SVerticalBox::Slot()
@@ -9839,7 +10059,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoundOptionsPanel()
 
 	return SNew(SBorder)
 		.BorderImage(WhiteBrush())
-		.BorderBackgroundColor(FLinearColor(0.035f, 0.043f, 0.050f, 0.95f))
+		.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 		.Padding(10.0f)
 		[
 			SNew(SVerticalBox)
@@ -9848,7 +10068,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoundOptionsPanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(13, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.84f, 0.92f, 0.89f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 				.Text(FText::FromString(TEXT("Round Options")))
 			]
 			+ SVerticalBox::Slot()
@@ -9858,7 +10078,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoundOptionsPanel()
 				SNew(STextBlock)
 				.AutoWrapText(true)
 				.Font(MenuFont(10))
-				.ColorAndOpacity(FLinearColor(0.66f, 0.74f, 0.75f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 				.Text(FText::FromString(OptionsText))
 			]
 			+ SVerticalBox::Slot()
@@ -9868,7 +10088,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoundOptionsPanel()
 				SNew(STextBlock)
 				.AutoWrapText(true)
 				.Font(MenuFont(9))
-				.ColorAndOpacity(FLinearColor(0.58f, 0.68f, 0.68f, 0.92f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim, 0.920f))
 				.Text(FText::FromString(FString::Printf(TEXT("Modifier effect: %s"), *ModifierHint)))
 			]
 			+ SVerticalBox::Slot()
@@ -9956,7 +10176,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoundOptionsPanel()
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(10, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.72f, 0.80f, 0.80f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 					.Text(FText::FromString(TEXT("Fog Vote")))
 				]
 				+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 4.0f, 0.0f)
@@ -9986,7 +10206,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoundOptionsPanel()
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(10, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.72f, 0.80f, 0.80f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 					.Text(FText::FromString(TEXT("Host Fog")))
 				]
 				+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 4.0f, 0.0f)
@@ -10029,7 +10249,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoundOptionsPanel()
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(10, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.72f, 0.80f, 0.80f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 					.Text(FText::FromString(TEXT("Teachers")))
 				]
 				+ SHorizontalBox::Slot()
@@ -10065,7 +10285,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoundOptionsPanel()
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(10, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.72f, 0.80f, 0.80f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 					.Text(FText::FromString(TEXT("Objectives")))
 				]
 				+ SHorizontalBox::Slot()
@@ -10115,7 +10335,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoundOptionsPanel()
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(10, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.72f, 0.80f, 0.80f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 					.Text_Lambda([this]() -> FText
 					{
 						int32 Count = 0;
@@ -10211,7 +10431,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildLessonPresetPanel()
 		[
 			SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.032f, 0.044f, 0.050f, 0.95f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 			.Padding(10.0f)
 			[
 				SNew(SVerticalBox)
@@ -10220,7 +10440,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildLessonPresetPanel()
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(13, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.84f, 0.94f, 0.90f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 					.Text(FText::FromString(TEXT("Lesson Presets")))
 				]
 				+ SVerticalBox::Slot()
@@ -10259,7 +10479,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildLessonPresetPanel()
 					[
 						SNew(SBHMenuButton)
 						.IsEnabled(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &SBHMainMenu::CanManageLessonPresets)))
-						.ButtonColorAndOpacity(FLinearColor(0.16f, 0.38f, 0.34f, 1.0f))
+						.ButtonColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Accent))
 						.ContentPadding(FMargin(9.0f, 5.0f))
 						.OnClicked(this, &SBHMainMenu::OnSaveLessonPresetClicked)
 						[
@@ -10274,7 +10494,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildLessonPresetPanel()
 					[
 						SNew(SBHMenuButton)
 						.IsEnabled(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &SBHMainMenu::CanManageLessonPresets)))
-						.ButtonColorAndOpacity(FLinearColor(0.14f, 0.27f, 0.40f, 1.0f))
+						.ButtonColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Accent))
 						.ContentPadding(FMargin(9.0f, 5.0f))
 						.OnClicked(this, &SBHMainMenu::OnGenerateManualQuestionSetClicked)
 						[
@@ -10290,7 +10510,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildLessonPresetPanel()
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(8))
-					.ColorAndOpacity(FLinearColor(0.48f, 0.58f, 0.58f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 					.Text(FText::FromString(FString::Printf(TEXT("Local file: %s"), *StoragePath)))
 				]
 			]
@@ -10349,14 +10569,14 @@ TSharedRef<SWidget> SBHMainMenu::BuildRevisionControlsPanel()
 	AddOptionButton(ScareRow, TEXT("Chaos"), TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateSP(this, &SBHMainMenu::GetRevisionScareButtonColor, 3)), FOnClicked::CreateSP(this, &SBHMainMenu::OnRevisionScareIntensityClicked, 3));
 
 	TSharedRef<SHorizontalBox> AdminRow = SNew(SHorizontalBox);
-	AddOptionButton(AdminRow, TEXT("Show Status"), TAttribute<FSlateColor>(FSlateColor(FLinearColor(0.12f, 0.15f, 0.17f, 1.0f))), FOnClicked::CreateSP(this, &SBHMainMenu::OnRevisionStatusClicked));
-	AddOptionButton(AdminRow, TEXT("Force 60s Review"), TAttribute<FSlateColor>(FSlateColor(FLinearColor(0.12f, 0.15f, 0.17f, 1.0f))), FOnClicked::CreateSP(this, &SBHMainMenu::OnForceReviewClicked));
-	AddOptionButton(AdminRow, TEXT("Export Report"), TAttribute<FSlateColor>(FSlateColor(FLinearColor(0.12f, 0.15f, 0.17f, 1.0f))), FOnClicked::CreateSP(this, &SBHMainMenu::OnExportRevisionReportClicked));
-	AddOptionButton(AdminRow, TEXT("Export Heatmap"), TAttribute<FSlateColor>(FSlateColor(FLinearColor(0.12f, 0.15f, 0.17f, 1.0f))), FOnClicked::CreateSP(this, &SBHMainMenu::OnExportPlaytestTelemetryClicked));
+	AddOptionButton(AdminRow, TEXT("Show Status"), TAttribute<FSlateColor>(FSlateColor(BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle))), FOnClicked::CreateSP(this, &SBHMainMenu::OnRevisionStatusClicked));
+	AddOptionButton(AdminRow, TEXT("Force 60s Review"), TAttribute<FSlateColor>(FSlateColor(BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle))), FOnClicked::CreateSP(this, &SBHMainMenu::OnForceReviewClicked));
+	AddOptionButton(AdminRow, TEXT("Export Report"), TAttribute<FSlateColor>(FSlateColor(BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle))), FOnClicked::CreateSP(this, &SBHMainMenu::OnExportRevisionReportClicked));
+	AddOptionButton(AdminRow, TEXT("Export Heatmap"), TAttribute<FSlateColor>(FSlateColor(BHResolveActiveThemeColor(&FBHMenuTheme::ButtonIdle))), FOnClicked::CreateSP(this, &SBHMainMenu::OnExportPlaytestTelemetryClicked));
 
 	return SNew(SBorder)
 		.BorderImage(WhiteBrush())
-		.BorderBackgroundColor(FLinearColor(0.032f, 0.044f, 0.050f, 0.95f))
+		.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 		.Padding(10.0f)
 		[
 			SNew(SVerticalBox)
@@ -10365,7 +10585,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRevisionControlsPanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(13, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.84f, 0.94f, 0.90f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 				.Text(FText::FromString(TEXT("Question Controls")))
 			]
 			+ SVerticalBox::Slot()
@@ -10382,7 +10602,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRevisionControlsPanel()
 			.AutoHeight()
 			.Padding(0.0f, 0.0f, 0.0f, 7.0f)
 			[
-				SNew(STextBlock).Font(MenuFont(9, FName(TEXT("Bold")))).ColorAndOpacity(FLinearColor(0.70f, 0.82f, 0.80f, 1.0f)).Text(FText::FromString(TEXT("Focus")))
+				SNew(STextBlock).Font(MenuFont(9, FName(TEXT("Bold")))).ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary)).Text(FText::FromString(TEXT("Focus")))
 			]
 			+ SVerticalBox::Slot()
 			.AutoHeight()
@@ -10394,7 +10614,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRevisionControlsPanel()
 			.AutoHeight()
 			.Padding(0.0f, 0.0f, 0.0f, 7.0f)
 			[
-				SNew(STextBlock).Font(MenuFont(9, FName(TEXT("Bold")))).ColorAndOpacity(FLinearColor(0.70f, 0.82f, 0.80f, 1.0f)).Text(FText::FromString(TEXT("Complexity")))
+				SNew(STextBlock).Font(MenuFont(9, FName(TEXT("Bold")))).ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary)).Text(FText::FromString(TEXT("Complexity")))
 			]
 			+ SVerticalBox::Slot()
 			.AutoHeight()
@@ -10406,7 +10626,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRevisionControlsPanel()
 			.AutoHeight()
 			.Padding(0.0f, 0.0f, 0.0f, 7.0f)
 			[
-				SNew(STextBlock).Font(MenuFont(9, FName(TEXT("Bold")))).ColorAndOpacity(FLinearColor(0.70f, 0.82f, 0.80f, 1.0f)).Text(FText::FromString(TEXT("Targets")))
+				SNew(STextBlock).Font(MenuFont(9, FName(TEXT("Bold")))).ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary)).Text(FText::FromString(TEXT("Targets")))
 			]
 			+ SVerticalBox::Slot()
 			.AutoHeight()
@@ -10418,7 +10638,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRevisionControlsPanel()
 			.AutoHeight()
 			.Padding(0.0f, 0.0f, 0.0f, 7.0f)
 			[
-				SNew(STextBlock).Font(MenuFont(9, FName(TEXT("Bold")))).ColorAndOpacity(FLinearColor(0.70f, 0.82f, 0.80f, 1.0f)).Text(FText::FromString(TEXT("Scare")))
+				SNew(STextBlock).Font(MenuFont(9, FName(TEXT("Bold")))).ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary)).Text(FText::FromString(TEXT("Scare")))
 			]
 			+ SVerticalBox::Slot()
 			.AutoHeight()
@@ -10484,7 +10704,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomPreflightPanel()
 		[
 			SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.026f, 0.038f, 0.044f, 0.96f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.960f))
 			.Padding(10.0f)
 			[
 				SNew(SVerticalBox)
@@ -10498,7 +10718,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomPreflightPanel()
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(13, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.84f, 0.94f, 0.90f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 						.Text(FText::FromString(TEXT("Host Preflight")))
 					]
 					+ SHorizontalBox::Slot()
@@ -10529,7 +10749,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomPreflightPanel()
 							SNew(STextBlock)
 							.AutoWrapText(true)
 							.Font(MenuFont(9))
-							.ColorAndOpacity(FLinearColor(0.66f, 0.76f, 0.75f, 1.0f))
+							.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 							.Text(TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &SBHMainMenu::GetClassroomPreflightText)))
 						]
 					]
@@ -10560,7 +10780,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomRunbookStep(int32 StepNumber, EBH
 					SNew(STextBlock)
 					.Justification(ETextJustify::Center)
 					.Font(MenuFont(9, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.88f, 0.96f, 0.92f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 					.Text(FText::FromString(FString::Printf(TEXT("%02d"), FMath::Max(1, StepNumber))))
 				]
 			]
@@ -10576,7 +10796,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomRunbookStep(int32 StepNumber, EBH
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(10, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.84f, 0.94f, 0.90f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 				.Text(Title)
 			]
 			+ SVerticalBox::Slot()
@@ -10600,7 +10820,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomRunbookStep(int32 StepNumber, EBH
 			[
 				SNew(SBHMenuButton)
 				.IsEnabled(ActionEnabled)
-				.ButtonColorAndOpacity(FLinearColor(0.14f, 0.29f, 0.29f, 1.0f))
+				.ButtonColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Accent))
 				.ContentPadding(FMargin(8.0f, 5.0f))
 				.OnClicked(OnClicked)
 				[
@@ -10613,7 +10833,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomRunbookStep(int32 StepNumber, EBH
 
 	return SNew(SBorder)
 		.BorderImage(WhiteBrush())
-		.BorderBackgroundColor(FLinearColor(0.026f, 0.036f, 0.040f, 0.96f))
+		.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.960f))
 		.Padding(FMargin(8.0f, 7.0f))
 		[
 			Row
@@ -10662,7 +10882,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomRunbookPanel()
 		[
 			SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.028f, 0.044f, 0.046f, 0.96f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.960f))
 			.Padding(10.0f)
 			[
 				SNew(SVerticalBox)
@@ -10676,7 +10896,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomRunbookPanel()
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(13, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.84f, 0.94f, 0.90f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 						.Text(FText::FromString(TEXT("Run Class")))
 					]
 					+ SHorizontalBox::Slot()
@@ -10685,7 +10905,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomRunbookPanel()
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(9, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.58f, 0.72f, 0.70f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 						.Text(FText::FromString(TEXT("Host checklist")))
 					]
 				]
@@ -10754,7 +10974,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomPanel()
 		[
 			SNew(STextBlock)
 			.Font(MenuFont(18, FName(TEXT("Bold"))))
-			.ColorAndOpacity(FLinearColor(0.90f, 0.98f, 0.94f, 1.0f))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 			.Text(FText::FromString(TEXT("Classroom")))
 		]
 		+ SVerticalBox::Slot()
@@ -10764,7 +10984,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomPanel()
 			SNew(STextBlock)
 			.AutoWrapText(true)
 			.Font(MenuFont(12))
-			.ColorAndOpacity(FLinearColor(0.70f, 0.80f, 0.80f, 1.0f))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 			.Text(FText::FromString(TEXT("Projector-ready session status for live classes.")))
 		]
 		+ SVerticalBox::Slot()
@@ -10785,7 +11005,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomPanel()
 		[
 			SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.030f, 0.050f, 0.048f, 0.95f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 			.Padding(10.0f)
 			[
 				SNew(SVerticalBox)
@@ -10794,7 +11014,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomPanel()
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(12, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.82f, 0.94f, 0.88f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 					.Text(FText::FromString(TEXT("Live Setup")))
 				]
 				+ SVerticalBox::Slot()
@@ -10804,7 +11024,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomPanel()
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(10))
-					.ColorAndOpacity(FLinearColor(0.64f, 0.76f, 0.74f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 					.Text(FText::FromString(TEXT("Live Classroom uses the configured Playit tunnel first. LAN hosting stays under Host LAN.")))
 				]
 				+ SVerticalBox::Slot()
@@ -10813,7 +11033,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomPanel()
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(10, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.70f, 0.82f, 0.80f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 					.Text(TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &SBHMainMenu::GetLiveClassroomMapText)))
 				]
 				+ SVerticalBox::Slot()
@@ -10828,7 +11048,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomPanel()
 				[
 					SNew(SBHMenuButton)
 					.IsEnabled(this, &SBHMainMenu::CanUseClassroomHostControls)
-					.ButtonColorAndOpacity(FLinearColor(0.16f, 0.42f, 0.37f, 1.0f))
+					.ButtonColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Accent))
 					.ContentPadding(FMargin(10.0f, 6.0f))
 					.OnClicked(this, &SBHMainMenu::OnHostSelectedLiveClassroomClicked)
 					[
@@ -10850,7 +11070,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomPanel()
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(10))
-					.ColorAndOpacity(FLinearColor(0.64f, 0.76f, 0.74f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 					.Text(FText::FromString(TEXT("For school PCs, ask students to choose Low 4GB or 720p Windowed if needed.")))
 				]
 				+ SVerticalBox::Slot()
@@ -10912,7 +11132,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomPanel()
 			[
 				SNew(SBHMenuButton)
 				.IsEnabled(this, &SBHMainMenu::CanOpenClassroomBoard)
-				.ButtonColorAndOpacity(FLinearColor(0.12f, 0.36f, 0.32f, 1.0f))
+				.ButtonColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Accent))
 				.ContentPadding(FMargin(12.0f, 7.0f))
 				.OnClicked(this, &SBHMainMenu::OnOpenClassroomBoardClicked)
 				[
@@ -10927,7 +11147,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildClassroomPanel()
 			[
 				SNew(SBHMenuButton)
 				.IsEnabled(this, &SBHMainMenu::CanUseClassroomHostControls)
-				.ButtonColorAndOpacity(FLinearColor(0.18f, 0.26f, 0.34f, 1.0f))
+				.ButtonColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Accent))
 				.ContentPadding(FMargin(12.0f, 7.0f))
 				.OnClicked(this, &SBHMainMenu::OnOpenClassroomSupportFolderClicked)
 				[
@@ -10993,7 +11213,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(19, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.92f, 0.98f, 0.94f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 				.Text(FText::FromString(TEXT("How To Survive Your First Round")))
 			]
 			+ SHorizontalBox::Slot()
@@ -11001,12 +11221,12 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 			[
 				SNew(SBorder)
 				.BorderImage(WhiteBrush())
-				.BorderBackgroundColor(FLinearColor(0.12f, 0.31f, 0.29f, 1.0f))
+				.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Accent))
 				.Padding(FMargin(9.0f, 4.0f))
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(9, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.95f, 1.0f, 0.96f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 					.Text(FText::FromString(TEXT("60 SECOND GUIDE")))
 				]
 			]
@@ -11019,7 +11239,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 			SNew(STextBlock)
 			.AutoWrapText(true)
 			.Font(MenuFont(12))
-			.ColorAndOpacity(FLinearColor(0.70f, 0.80f, 0.80f, 1.0f))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 			.Text(FText::FromString(TEXT("Warm up your role, answer orange stations with 1-4, hold E on solved work, respect CCTV/noise warnings, use train stops for bonus points and shop upgrades, then board the final escape.")))
 		];
 
@@ -11029,7 +11249,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 		[
 			SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.024f, 0.032f, 0.038f, 0.96f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.960f))
 			.Padding(12.0f)
 			[
 				SNew(SVerticalBox)
@@ -11038,7 +11258,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(13, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.96f, 0.86f, 0.62f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 					.Text(FText::FromString(TEXT("Actual annotated HUD screenshot")))
 				]
 				+ SVerticalBox::Slot()
@@ -11054,7 +11274,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(9))
-					.ColorAndOpacity(FLinearColor(0.64f, 0.74f, 0.72f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 					.Text(FText::FromString(TEXT("Real packaged screenshot with callouts. The examples below stay readable in menus while matching the same HUD cues.")))
 				]
 			]
@@ -11066,7 +11286,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 		[
 			SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.024f, 0.032f, 0.038f, 0.96f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.960f))
 			.Padding(12.0f)
 			[
 				SNew(SVerticalBox)
@@ -11075,7 +11295,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(13, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.96f, 0.86f, 0.62f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 					.Text(FText::FromString(TEXT("Field screenshot examples")))
 				]
 				+ SVerticalBox::Slot()
@@ -11085,7 +11305,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(10))
-					.ColorAndOpacity(FLinearColor(0.68f, 0.78f, 0.76f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 					.Text(FText::FromString(TEXT("These cards mirror the important cues from current field screenshots: lockers, path detection, Teacher sight, decoys, CCTV, Hall Monitors, tasks, questions, train stops, batteries, cosmetics, and final escape.")))
 				]
 				+ SVerticalBox::Slot()
@@ -11219,7 +11439,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 		[
 			SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.026f, 0.034f, 0.040f, 0.95f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 			.Padding(12.0f)
 			[
 				SNew(SVerticalBox)
@@ -11228,7 +11448,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(13, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.88f, 0.96f, 0.92f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 					.Text(FText::FromString(TEXT("Spot these in the room")))
 				]
 				+ SVerticalBox::Slot()
@@ -11319,7 +11539,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 		[
 			SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.024f, 0.030f, 0.036f, 0.96f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.960f))
 			.Padding(12.0f)
 			[
 				SNew(SVerticalBox)
@@ -11328,7 +11548,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(13, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.96f, 0.86f, 0.62f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 					.Text(FText::FromString(TEXT("Question node examples")))
 				]
 				+ SVerticalBox::Slot()
@@ -11338,7 +11558,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(9))
-					.ColorAndOpacity(FLinearColor(0.68f, 0.78f, 0.76f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 					.Text(FText::FromString(TEXT("These compact renders are based on the real question-node props and states: answer prompt, solved hold-E work, team revision progress, train bonus, completion, and feedback.")))
 				]
 				+ SVerticalBox::Slot()
@@ -11364,7 +11584,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 	KeyGrid->AddSlot(2, 0)
 		.Padding(0.0f, 0.0f, 0.0f, 8.0f)
 		[
-			MenuGuideActionTile(FText::FromString(TEXT("Ctrl / Alt")), FText::FromString(TEXT("Low Moves")), FText::FromString(TEXT("Ctrl crouches or sprint-rolls. Alt toggles prone or sprint-slides; Alt+Space dives.")), FLinearColor(0.42f, 0.30f, 0.12f, 1.0f))
+			MenuGuideActionTile(FText::FromString(TEXT("Ctrl / Alt")), FText::FromString(TEXT("Low Moves")), FText::FromString(TEXT("Ctrl: crouch, or Sprint+Ctrl to ROLL. Alt: prone, or Sprint+Alt to SLIDE. DIVE = jump (Space) THEN Alt in the air.")), FLinearColor(0.42f, 0.30f, 0.12f, 1.0f))
 		];
 	KeyGrid->AddSlot(0, 1)
 		.Padding(0.0f, 0.0f, 8.0f, 0.0f)
@@ -11402,7 +11622,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 		[
 			SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.026f, 0.034f, 0.040f, 0.95f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 			.Padding(12.0f)
 			[
 				SNew(SVerticalBox)
@@ -11411,7 +11631,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(13, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.88f, 0.96f, 0.92f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 					.Text(FText::FromString(TEXT("Buttons that matter first")))
 				]
 				+ SVerticalBox::Slot()
@@ -11470,7 +11690,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 		[
 			SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.024f, 0.032f, 0.038f, 0.96f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.960f))
 			.Padding(12.0f)
 			[
 				SNew(SVerticalBox)
@@ -11479,7 +11699,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(13, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.96f, 0.86f, 0.62f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 					.Text(FText::FromString(TEXT("The loop")))
 				]
 				+ SVerticalBox::Slot()
@@ -11548,7 +11768,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 		[
 			SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.026f, 0.034f, 0.040f, 0.95f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 			.Padding(12.0f)
 			[
 				SNew(SVerticalBox)
@@ -11557,7 +11777,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(13, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.88f, 0.96f, 0.92f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 					.Text(FText::FromString(TEXT("Pick up your role fast")))
 				]
 				+ SVerticalBox::Slot()
@@ -11575,8 +11795,8 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 		FText::FromString(TEXT("Air steering is limited: line up before takeoff, then strafe/look only for small corrections.")),
 		FText::FromString(TEXT("Sprint+Ctrl rolls through capture timing windows and fits corner/doorway dodges. A CLEAN roll (no wall bump) is quieter than one that bonks - good spacing keeps you stealthy.")),
 		FText::FromString(TEXT("Sprint+Alt slides farther and lower; HOLD Alt to finish prone, or RELEASE Alt early to brake into a quiet crouch. A full slide is loud, so the Teacher hears it.")),
-		FText::FromString(TEXT("Prone is slow, quiet, and low-visibility (tap Left Alt); hold Alt then tap Space while moving to commit to a dive escape - it ends flat in prone, so tap Space or Ctrl to get up.")),
-		FText::FromString(TEXT("Drop-roll: hold Shift and tap Ctrl just before you land to roll out instead of thudding down - it kills the loud landing noise.")),
+		FText::FromString(TEXT("Prone is slow, quiet, and low-visibility (tap Left Alt). DIVE is a committed escape: while moving, jump (Space) then tap Alt in the air. It ends flat in prone, so tap Space or Ctrl to get up.")),
+		FText::FromString(TEXT("Drop-roll: HOLD Shift+Ctrl together through a landing to roll out instead of thudding down - it kills the loud landing noise.")),
 		FText::FromString(TEXT("Leaving a locker with Shift held rolls you out - capture-immune and mobile - instead of the exposed standing pop.")),
 		FText::FromString(TEXT("Chaining roll/slide/dive frame-perfectly keeps your speed and stays quiet, but pushing the chain to its limit makes a loud overextension tell. New? Run the MOVEMENT TUTORIAL from Play."))
 	};
@@ -11738,7 +11958,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 		[
 			SNew(SBorder)
 			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(FLinearColor(0.036f, 0.040f, 0.046f, 0.94f))
+			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.940f))
 			.Padding(12.0f)
 			[
 				SNew(SVerticalBox)
@@ -11747,7 +11967,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 				[
 					SNew(STextBlock)
 					.Font(MenuFont(13, FName(TEXT("Bold"))))
-					.ColorAndOpacity(FLinearColor(0.96f, 0.92f, 0.76f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 					.Text(FText::FromString(TEXT("Best first round")))
 				]
 				+ SVerticalBox::Slot()
@@ -11757,7 +11977,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Font(MenuFont(11))
-					.ColorAndOpacity(FLinearColor(0.70f, 0.78f, 0.76f, 1.0f))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 					.Text(FText::FromString(TEXT("Start with Practice Lab or Role Warmup so everyone tries movement, powers, answers, and captures safely. Then use Bot Facility for pressure; in live classroom, run Preflight and apply the lesson preset before ready-up.")))
 				]
 			]
@@ -11765,7 +11985,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 
 	return SNew(SBorder)
 		.BorderImage(WhiteBrush())
-		.BorderBackgroundColor(FLinearColor(0.034f, 0.040f, 0.048f, 0.95f))
+		.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 		.Padding(10.0f)
 		[
 			Panel
@@ -11788,7 +12008,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildControlsPanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(13, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.84f, 0.92f, 0.89f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 				.Text(FText::FromString(Title))
 			];
 	};
@@ -11808,7 +12028,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildControlsPanel()
 		[
 			SNew(STextBlock)
 			.Font(MenuFont(18, FName(TEXT("Bold"))))
-			.ColorAndOpacity(FLinearColor(0.90f, 0.98f, 0.94f, 1.0f))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 			.Text(FText::FromString(TEXT("Controls")))
 		];
 
@@ -11819,7 +12039,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildControlsPanel()
 			SNew(STextBlock)
 			.AutoWrapText(true)
 			.Font(MenuFont(12))
-			.ColorAndOpacity(FLinearColor(0.70f, 0.80f, 0.80f, 1.0f))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 			.Text(FText::FromString(TEXT("Current keyboard and mouse bindings, including role, shop, spectator, and host-only controls.")))
 		];
 
@@ -11833,7 +12053,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildControlsPanel()
 	AddControl(TEXT("Sprint"), MenuDescribeActionBinding(FName(TEXT("Sprint")), TEXT("Left Shift")), TEXT("Hold while moving; faster, louder, and stamina-limited."));
 	AddControl(TEXT("Crouch / Roll"), MenuDescribeActionBinding(FName(TEXT("Crouch")), TEXT("Left Ctrl")), TEXT("Crouch normally; press while sprinting to roll through timing windows."));
 	AddControl(TEXT("Prone / Slide"), MenuDescribeActionBinding(FName(TEXT("Prone")), TEXT("Left Alt")), TEXT("Tap to toggle prone; hold while sprinting to slide, and keep held to end low."));
-	AddControl(TEXT("Dive"), FString::Printf(TEXT("%s + %s"), *MenuDescribeActionBinding(FName(TEXT("Jump")), TEXT("Space")), *MenuDescribeActionBinding(FName(TEXT("Prone")), TEXT("Left Alt"))), TEXT("Hold prone, move, then press jump to dive; costs stamina and cooldown."));
+	AddControl(TEXT("Dive"), FString::Printf(TEXT("%s, then %s"), *MenuDescribeActionBinding(FName(TEXT("Jump")), TEXT("Space")), *MenuDescribeActionBinding(FName(TEXT("Prone")), TEXT("Left Alt"))), TEXT("While moving, JUMP (Space) then tap Alt in the air to dive. Costs stamina + cooldown. (A dive from prone is a quieter crawl-gap dash.)"));
 
 	AddSectionTitle(TEXT("Survivor And Tools"));
 	AddControl(TEXT("Interact"), MenuDescribeActionBinding(FName(TEXT("Interact")), TEXT("E")), TEXT("Use doors, lockers, breakers, shutters, exits, shops, monitors, glass, and stations."));
@@ -11865,7 +12085,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildControlsPanel()
 
 	return SNew(SBorder)
 		.BorderImage(WhiteBrush())
-		.BorderBackgroundColor(FLinearColor(0.034f, 0.040f, 0.048f, 0.95f))
+		.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 		.Padding(10.0f)
 		[
 			Panel
@@ -11885,7 +12105,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGraphicsPanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(13, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.84f, 0.92f, 0.89f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 				.Text(FText::FromString(Title))
 			];
 		bHasGraphicsPanelTitle = true;
@@ -11924,7 +12144,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGraphicsPanel()
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(9, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.74f, 0.82f, 0.80f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 						.Text(FText::FromString(Label))
 					]
 				]
@@ -11950,7 +12170,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGraphicsPanel()
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(9, FName(TEXT("Bold"))))
-						.ColorAndOpacity(FLinearColor(0.74f, 0.82f, 0.80f, 1.0f))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 						.Text(Label)
 					]
 				]
@@ -12013,6 +12233,18 @@ TSharedRef<SWidget> SBHMainMenu::BuildGraphicsPanel()
 	TSharedRef<SHorizontalBox> ShakeComfortRow = AddButtonRow(TEXT("Shake"));
 	AddButton(ShakeComfortRow, TEXT("Reduced"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("ReducedCameraShake")), true), ComfortBoolColor(TEXT("ReducedCameraShake"), true));
 	AddButton(ShakeComfortRow, TEXT("Full"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("ReducedCameraShake")), false), ComfortBoolColor(TEXT("ReducedCameraShake"), false));
+
+	// Dodge-roll camera intensity (motion sickness). The roll camera always pitches forward (down -> up); this picks
+	// how far: Off / Subtle dip / strong Dip / Full forward somersault. Persisted in [BlackoutHunt.Comfort] RollCamStyle.
+	auto RollCamColor = [this](int32 Style)
+	{
+		return TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateSP(this, &SBHMainMenu::GetRollCamStyleButtonColor, Style));
+	};
+	TSharedRef<SHorizontalBox> RollCamComfortRow = AddButtonRow(TEXT("Roll Cam"));
+	AddButton(RollCamComfortRow, TEXT("Off"), FOnClicked::CreateSP(this, &SBHMainMenu::OnRollCamStyleClicked, 0), RollCamColor(0));
+	AddButton(RollCamComfortRow, TEXT("Subtle"), FOnClicked::CreateSP(this, &SBHMainMenu::OnRollCamStyleClicked, 1), RollCamColor(1));
+	AddButton(RollCamComfortRow, TEXT("Dip"), FOnClicked::CreateSP(this, &SBHMainMenu::OnRollCamStyleClicked, 2), RollCamColor(2));
+	AddButton(RollCamComfortRow, TEXT("Full"), FOnClicked::CreateSP(this, &SBHMainMenu::OnRollCamStyleClicked, 3), RollCamColor(3));
 
 	// Hide players who crowd right against your camera (e.g. everyone bunched around the same node/breaker) so
 	// they don't block your view. Local cosmetic only; the Hunter is never hidden.
@@ -12104,7 +12336,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGraphicsPanel()
 			SNew(STextBlock)
 			.AutoWrapText(true)
 			.Font(MenuFont(10))
-			.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.70f, 1.0f))
+			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 			.Text(this, &SBHMainMenu::GetGraphicsSummaryText)
 		];
 
@@ -12168,7 +12400,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGraphicsPanel()
 
 	return SNew(SBorder)
 		.BorderImage(WhiteBrush())
-		.BorderBackgroundColor(FLinearColor(0.034f, 0.040f, 0.048f, 0.95f))
+		.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 		.Padding(10.0f)
 		[
 			Panel
@@ -12374,7 +12606,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildTestCommandPanel()
 		.InitiallyCollapsed(false)
 		.AllowAnimatedTransition(true)
 		.BorderImage(WhiteBrush())
-		.BorderBackgroundColor(FLinearColor(0.036f, 0.044f, 0.050f, 0.98f))
+		.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.980f))
 		.BodyBorderImage(WhiteBrush())
 		.BodyBorderBackgroundColor(FLinearColor(0.014f, 0.018f, 0.022f, 0.98f))
 		.HeaderPadding(FMargin(12.0f, 8.0f))
@@ -12387,7 +12619,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildTestCommandPanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(13, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.92f, 0.98f, 0.94f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 				.Text(FText::FromString(TEXT("Test Commands")))
 			]
 			+ SVerticalBox::Slot()
@@ -12397,7 +12629,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildTestCommandPanel()
 				SNew(STextBlock)
 				.AutoWrapText(true)
 				.Font(MenuFont(10))
-				.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.70f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 				.Text(FText::FromString(TEXT("Expandable, scrollable replacement for console-only tester commands.")))
 			]
 		]
@@ -12436,7 +12668,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildPracticePanel()
 
 	return SNew(SBorder)
 		.BorderImage(WhiteBrush())
-		.BorderBackgroundColor(FLinearColor(0.050f, 0.056f, 0.034f, 0.95f))
+		.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 		.Padding(10.0f)
 		[
 			SNew(SVerticalBox)
@@ -12445,7 +12677,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildPracticePanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(13, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.94f, 0.90f, 0.58f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 				.Text(FText::FromString(bTestMode ? TEXT("Test Round") : TEXT("Practice Lab")))
 			]
 			+ SVerticalBox::Slot()
@@ -12455,7 +12687,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildPracticePanel()
 				SNew(STextBlock)
 				.AutoWrapText(true)
 				.Font(MenuFont(10))
-				.ColorAndOpacity(FLinearColor(0.78f, 0.80f, 0.66f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
 				.Text(FText::FromString(bTestMode
 					? FString::Printf(TEXT("Role %s | All mechanics | Timer locked open"), *RoleName)
 					: FString::Printf(TEXT("Role %s | Modifier %s | Timer locked open"), *RoleName, *ModifierName)))
@@ -12467,7 +12699,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildPracticePanel()
 				SNew(STextBlock)
 				.AutoWrapText(true)
 				.Font(MenuFont(9))
-				.ColorAndOpacity(FLinearColor(0.68f, 0.72f, 0.58f, 0.92f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header, 0.920f))
 				.Text(FText::FromString(ModifierHint))
 			]
 			+ SVerticalBox::Slot()
@@ -12565,7 +12797,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildPracticePanel()
 				+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 6.0f, 0.0f)
 				[
 					SNew(SBHMenuButton)
-					.ButtonColorAndOpacity(FLinearColor(0.20f, 0.30f, 0.17f, 1.0f))
+					.ButtonColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Accent))
 					.ContentPadding(FMargin(8.0f, 5.0f))
 					.OnClicked(this, &SBHMainMenu::OnPracticeRefreshClicked)
 					[
@@ -12575,7 +12807,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildPracticePanel()
 				+ SHorizontalBox::Slot().AutoWidth()
 				[
 					SNew(SBHMenuButton)
-					.ButtonColorAndOpacity(FLinearColor(0.36f, 0.12f, 0.10f, 1.0f))
+					.ButtonColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Danger))
 					.ContentPadding(FMargin(8.0f, 5.0f))
 					.OnClicked(this, &SBHMainMenu::OnPracticeJumpscareClicked)
 					[
@@ -12729,7 +12961,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoleAssignmentPanel()
 							[
 								SNew(SBHMenuButton)
 								.Visibility(bCanKickPlayer ? EVisibility::Visible : EVisibility::Collapsed)
-								.ButtonColorAndOpacity(FLinearColor(0.44f, 0.12f, 0.10f, 1.0f))
+								.ButtonColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Danger))
 								.ContentPadding(FMargin(7.0f, 4.0f))
 								.OnClicked(this, &SBHMainMenu::OnKickPlayerClicked, WeakPS)
 								[
@@ -12743,7 +12975,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoleAssignmentPanel()
 							[
 								SNew(SBHMenuButton)
 								.IsEnabled(bCanTargetScare)
-								.ButtonColorAndOpacity(FLinearColor(0.34f, 0.10f, 0.12f, 1.0f))
+								.ButtonColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Danger))
 								.ContentPadding(FMargin(7.0f, 4.0f))
 								.OnClicked(this, &SBHMainMenu::OnTargetScareClicked, WeakPS)
 								[
@@ -12761,7 +12993,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoleAssignmentPanel()
 
 	return SNew(SBorder)
 		.BorderImage(WhiteBrush())
-		.BorderBackgroundColor(FLinearColor(0.035f, 0.043f, 0.046f, 0.95f))
+		.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.950f))
 		.Padding(10.0f)
 		[
 			SNew(SVerticalBox)
@@ -12770,7 +13002,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoleAssignmentPanel()
 			[
 				SNew(STextBlock)
 				.Font(MenuFont(13, FName(TEXT("Bold"))))
-				.ColorAndOpacity(FLinearColor(0.84f, 0.92f, 0.89f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
 				.Text(FText::FromString(TEXT("Lobby Role Assignment")))
 			]
 			+ SVerticalBox::Slot()
@@ -12780,7 +13012,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoleAssignmentPanel()
 				SNew(STextBlock)
 				.AutoWrapText(true)
 				.Font(MenuFont(10))
-				.ColorAndOpacity(FLinearColor(0.62f, 0.70f, 0.70f, 1.0f))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
 				.Text(bCanEditRoles
 					? FText::FromString(TEXT("Host can queue roles while the lobby is open. Every connected player must ready; kick blockers from this roster if needed. If nobody is Teacher, the first player becomes Teacher."))
 					: FText::FromString(TEXT("Only the host machine can edit roles, and only while the round is in the lobby.")))

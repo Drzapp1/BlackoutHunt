@@ -196,16 +196,25 @@ void ABHTutorialDirector::EnterStep(EStep NewStep)
 		}
 		NextMoveHintServerTime = StepStartServerTime + 3.0f;
 		break;
+	case EStep::Sprint:
+		// Teach the chase's prerequisite up front: a survivor-only player otherwise meets the climax never having
+		// been told how to run or that stamina is a managed resource. Detected via the sprint latch.
+		if (ABHCharacter* SprintSurvivor = FindTutorialSurvivor())
+		{
+			SprintSurvivor->ResetTutorialActionMask();
+		}
+		Broadcast(TEXT("Hold LEFT SHIFT to SPRINT - fast, but it drains your STAMINA bar and you run LOUD. Get up to full speed, then let it refill before you really need it."), 14.0f);
+		break;
 	case EStep::Flashlight:
 		SetAllInputLocked(false);
-		Broadcast(TEXT("Good. Now press F to switch on your flashlight."), 12.0f);
+		Broadcast(TEXT("Good. Press F for your FLASHLIGHT - but the battery DRAINS and dies if you leave it on, so flick it off when you don't need it. Aimed at the Teacher's face it briefly STAGGERS them - emergencies only."), 14.0f);
 		break;
 	case EStep::Hide:
 		bHideRegistered = false;
-		Broadcast(TEXT("Nice. Head to the LOCKER (follow the marker) and press E to hide inside - this is how you avoid the Teacher."), 14.0f);
+		Broadcast(TEXT("Nice. Head to the LOCKER (follow the marker) and press E to hide. Inside, the Teacher CANNOT grab you - it's your panic button. You pop out a few steps away, so it can't camp the door."), 16.0f);
 		break;
 	case EStep::Crawl:
-		Broadcast(TEXT("Good. Now the low CRAWL DUCT (follow the marker): press LEFT ALT to go prone, then crawl in. A standing Teacher can't follow."), 16.0f);
+		Broadcast(TEXT("Hold LEFT CTRL to CROUCH - quieter and lower for sneaking. For the low CRAWL DUCT ahead (follow the marker) go all the way down: tap LEFT ALT for prone, then crawl in. A standing Teacher can't follow."), 16.0f);
 		break;
 	case EStep::Decoy:
 		Broadcast(TEXT("You can misdirect the Teacher too: press G to drop a NOISE DECOY. It fakes footsteps and breathing to pull them off you. Try it now."), 14.0f);
@@ -262,7 +271,7 @@ void ABHTutorialDirector::EnterStep(EStep NewStep)
 				PlayTeacherRevealCutscene(TeacherPawn->GetActorLocation() + FVector(0.0f, 0.0f, 60.0f));
 			}
 		}
-		Broadcast(TEXT("The TEACHER is hunting you - RUN! Use lockers, the crawl duct, and corners to break line of sight, and get to the GREEN EXIT."), 8.0f);
+		Broadcast(TEXT("The TEACHER is hunting you - RUN! Hold SHIFT to sprint (watch your stamina). Use lockers, the crawl duct, and corners to break line of sight, and reach the GREEN EXIT."), 8.0f);
 		break;
 	case EStep::Escape:
 		Broadcast(TEXT("Keep moving - reach the GREEN EXIT door (follow the marker) to finish. Duck into a locker if the Teacher gets close."), 10.0f);
@@ -283,6 +292,10 @@ void ABHTutorialDirector::EnterStep(EStep NewStep)
 		if (GetWorld())
 		{
 			GetWorldTimerManager().ClearTimer(EvalTimerHandle);
+			if (ABHCharacter* Human = FindHumanPlayer())
+			{
+				Human->ClientGrantAchievement(FName(TEXT("tutorial_survivor")), TEXT("Survivor tutorial complete!"));
+			}
 			// Brief beat so the student reads the line, then ServerTravel to the next tutorial phase.
 			GetWorldTimerManager().SetTimer(ActivateTimerHandle, this, &ABHTutorialDirector::FinishTutorialPhase, 3.0f, false);
 		}
@@ -350,7 +363,7 @@ void ABHTutorialDirector::EvaluateStep()
 		// A very generous fallback (a stuck gamepad / no keyboard) so a brand-new student can never hard-lock.
 		if (bPressedAll || Elapsed >= 60.0f)
 		{
-			EnterStep(EStep::Flashlight);
+			EnterStep(EStep::Sprint);
 			break;
 		}
 		const float Now = GetWorld()->GetTimeSeconds();
@@ -361,6 +374,13 @@ void ABHTutorialDirector::EvaluateStep()
 		}
 		break;
 	}
+	case EStep::Sprint:
+		// Advance once the student has actually reached sprint speed (latch), with a generous timeout fallback.
+		if ((Survivor && (Survivor->GetTutorialActionMask() & ABHCharacter::TutorialActSprintBit) != 0) || Elapsed >= 25.0f)
+		{
+			EnterStep(EStep::Flashlight);
+		}
+		break;
 	case EStep::Flashlight:
 		if ((Survivor && Survivor->IsFlashlightOn()) || Elapsed >= 14.0f)
 		{
@@ -673,14 +693,19 @@ void ABHTutorialDirector::EnterMovementStep(EMovementStep NewStep)
 	ABHCharacter* Survivor = FindTutorialSurvivor();
 	ClearBeats(); // the movement sandbox teaches each link in place; no objective markers to follow
 
-	// Each special-move step starts from a clean slate: full stamina (so cooldown/stamina never blocks practice) and
-	// a reset action latch (so a move done earlier doesn't auto-skip this step). WASD/sprint/crouch/prone/jump are
-	// detected from live state, so they don't need the latch reset.
+	// Reset the action latch on EVERY step entry so each step's detection requires a FRESH action (a move performed
+	// during an earlier step can never auto-skip a later one), and so the latch-based steps (Sprint + the transient
+	// and advanced moves) are robust regardless of step order.
+	if (Survivor)
+	{
+		Survivor->ResetTutorialActionMask();
+	}
+
+	// The transient/advanced steps additionally top up stamina so cooldown/stamina never blocks practice.
 	auto PrimeForPractice = [&]()
 	{
 		if (Survivor)
 		{
-			Survivor->ResetTutorialActionMask();
 			Survivor->RecoverStamina(1000.0f);
 		}
 	};
@@ -705,11 +730,11 @@ void ABHTutorialDirector::EnterMovementStep(EMovementStep NewStep)
 		}
 		break;
 	case EMovementStep::Sprint:
-		CurrentMovementPrompt = TEXT("Hold LEFT SHIFT to SPRINT. Get up to full speed - it's fast but louder, and it drains your stamina bar.");
+		CurrentMovementPrompt = TEXT("Hold LEFT SHIFT to SPRINT - fast, but LOUD and it drains the stamina bar at the bottom of the screen. Notice how much noisier you are than walking. Let it refill before a chase.");
 		Broadcast(CurrentMovementPrompt, 10.0f);
 		break;
 	case EMovementStep::Crouch:
-		CurrentMovementPrompt = TEXT("Tap LEFT CTRL to CROUCH - slower, lower, and much quieter. Tap it again to stand back up.");
+		CurrentMovementPrompt = TEXT("Hold LEFT CTRL to CROUCH - slower, lower, and much quieter for sneaking. Release to stand. (Don't hold Shift while you do - Shift+Ctrl is a Roll, taught soon.)");
 		Broadcast(CurrentMovementPrompt, 10.0f);
 		break;
 	case EMovementStep::Prone:
@@ -722,7 +747,7 @@ void ABHTutorialDirector::EnterMovementStep(EMovementStep NewStep)
 		break;
 	case EMovementStep::BunnyHop:
 		PrimeForPractice();
-		CurrentMovementPrompt = TEXT("BUNNY-HOP: tap SHIFT to reach sprint speed, then chain SPACE jumps (buffer each just before you land). In the air the sprint drain stops, so a clean chain holds top speed cheaper than holding Shift. Chain three hops.");
+		CurrentMovementPrompt = TEXT("BUNNY-HOP: KEEP holding SHIFT to run, then chain SPACE jumps - tap Space again just before each landing. In the air your sprint stamina stops draining, so a clean chain travels cheaper than just running. Chain three hops.");
 		Broadcast(CurrentMovementPrompt, 12.0f);
 		break;
 	case EMovementStep::Roll:
@@ -737,17 +762,52 @@ void ABHTutorialDirector::EnterMovementStep(EMovementStep NewStep)
 		break;
 	case EMovementStep::Dive:
 		PrimeForPractice();
-		CurrentMovementPrompt = TEXT("DIVE: hold ALT, then tap SPACE while moving forward. A committed escape lunge that ends flat in prone - your last-ditch dodge.");
+		CurrentMovementPrompt = TEXT("DIVE - your last-ditch lunge. While running forward, tap SPACE to leap, then ALT in the AIR before you land. Let go of Shift as you press Alt, or you'll SLIDE instead. Ends flat in prone.");
 		Broadcast(CurrentMovementPrompt, 12.0f);
+		break;
+	case EMovementStep::AdvancedIntro:
+		// Core kit done; the rest is optional polish. A card marks the shift so a player who only wanted the basics
+		// knows they've "passed" -- the advanced steps all time out generously if they can't land them.
+		ShowTutorialCard(TEXT("ADVANCED TECHNIQUES"), TEXT("You've got the essentials. These last few are pro moves - give each a try, or just wait to finish."), 4.5f);
+		Broadcast(TEXT("Nice - you have the core kit. Now a few advanced techniques. Each is optional: try it, or wait a bit and we'll move on."), 5.0f);
+		break;
+	case EMovementStep::QuietRoll:
+		PrimeForPractice();
+		CurrentMovementPrompt = TEXT("QUIET ROLL: roll (Shift+Ctrl) through OPEN space without bumping a wall. A clean roll is much quieter than one that bonks - good spacing keeps you stealthy.");
+		Broadcast(CurrentMovementPrompt, 12.0f);
+		break;
+	case EMovementStep::DropRoll:
+		PrimeForPractice();
+		CurrentMovementPrompt = TEXT("DROP-ROLL: jump, then HOLD Shift+Ctrl together through the landing. You roll out on touchdown and the loud landing thud is silenced - a quiet drop.");
+		Broadcast(CurrentMovementPrompt, 12.0f);
+		break;
+	case EMovementStep::SlideStop:
+		PrimeForPractice();
+		CurrentMovementPrompt = TEXT("SILENT SLIDE-STOP: start a slide (Shift+Alt), then RELEASE Alt early to brake into a quiet crouch instead of a loud full slide - trade distance for silence.");
+		Broadcast(CurrentMovementPrompt, 12.0f);
+		break;
+	case EMovementStep::LockerRoll:
+		PrimeForPractice();
+		CurrentMovementPrompt = TEXT("LOCKER ROLL-OUT: go to the LOCKER (follow the marker), press E to hide inside, then HOLD Shift and press E again to roll out - fast and capture-immune instead of stepping out exposed.");
+		Broadcast(CurrentMovementPrompt, 14.0f);
+		break;
+	case EMovementStep::FlowChain:
+		PrimeForPractice();
+		CurrentMovementPrompt = TEXT("FLOW-CHAIN (hardest): right as one move ENDS, immediately start another (e.g. roll, then roll again) to keep your speed. The timing is tight - a few tries, or wait to finish.");
+		Broadcast(CurrentMovementPrompt, 14.0f);
 		break;
 	case EMovementStep::Complete:
 		SetAllInputLocked(false);
 		ClearBeats();
 		ShowTutorialCard(TEXT("MOVEMENT TRAINING COMPLETE"), TEXT("You've got the whole kit. Returning to the menu..."), 3.2f);
-		Broadcast(TEXT("That's the full movement kit - sprint, crouch, prone, bunny-hop, roll, slide, dive. Nice work! Returning to the menu..."), 6.0f);
+		Broadcast(TEXT("That's everything - the core kit plus drop-roll, slide-stop, quiet rolls, locker roll-outs, and flow-chaining. Nice work! Returning to the menu..."), 6.0f);
 		if (GetWorld())
 		{
 			GetWorldTimerManager().ClearTimer(EvalTimerHandle);
+			if (ABHCharacter* Human = FindHumanPlayer())
+			{
+				Human->ClientGrantAchievement(FName(TEXT("tutorial_movement")), TEXT("Movement tutorial complete!"));
+			}
 			GetWorldTimerManager().SetTimer(ActivateTimerHandle, this, &ABHTutorialDirector::FinishTutorialPhase, 3.0f, false);
 		}
 		break;
@@ -780,7 +840,7 @@ void ABHTutorialDirector::EvaluateMovementStep()
 	{
 		const uint8 Mask = Survivor ? Survivor->GetTutorialMovementMask() : 0;
 		const bool bAll = Survivor && (Mask & ABHCharacter::TutorialMoveAllMask) == ABHCharacter::TutorialMoveAllMask;
-		if (bAll || Elapsed >= 60.0f) { EnterMovementStep(EMovementStep::Sprint); break; }
+		if (bAll || Elapsed >= 60.0f) { EnterMovementStep(EMovementStep::Crouch); break; }
 		if (Now >= NextMoveHintServerTime)
 		{
 			NextMoveHintServerTime = Now + 4.0f;
@@ -788,14 +848,14 @@ void ABHTutorialDirector::EvaluateMovementStep()
 		}
 		return; // Walk handles its own re-prompt above
 	}
-	case EMovementStep::Sprint:
-		if ((Survivor && Survivor->GetVelocity().Size2D() >= 750.0f) || Elapsed >= 45.0f) { EnterMovementStep(EMovementStep::Crouch); }
-		break;
 	case EMovementStep::Crouch:
 		if ((Move && Move->IsCrouching()) || Elapsed >= 45.0f) { EnterMovementStep(EMovementStep::Prone); }
 		break;
 	case EMovementStep::Prone:
-		if ((Survivor && Survivor->IsProne()) || Elapsed >= 45.0f) { EnterMovementStep(EMovementStep::Jump); }
+		if ((Survivor && Survivor->IsProne()) || Elapsed >= 45.0f) { EnterMovementStep(EMovementStep::Sprint); }
+		break;
+	case EMovementStep::Sprint:
+		if ((ActionMask & ABHCharacter::TutorialActSprintBit) != 0 || Elapsed >= 45.0f) { EnterMovementStep(EMovementStep::Jump); }
 		break;
 	case EMovementStep::Jump:
 		if ((Move && Move->IsFalling()) || Elapsed >= 45.0f) { EnterMovementStep(EMovementStep::BunnyHop); }
@@ -810,7 +870,25 @@ void ABHTutorialDirector::EvaluateMovementStep()
 		if ((ActionMask & ABHCharacter::TutorialActSlideBit) != 0 || Elapsed >= 60.0f) { EnterMovementStep(EMovementStep::Dive); }
 		break;
 	case EMovementStep::Dive:
-		if ((ActionMask & ABHCharacter::TutorialActDiveBit) != 0 || Elapsed >= 60.0f) { EnterMovementStep(EMovementStep::Complete); }
+		if ((ActionMask & ABHCharacter::TutorialActDiveBit) != 0 || Elapsed >= 60.0f) { EnterMovementStep(EMovementStep::AdvancedIntro); }
+		break;
+	case EMovementStep::AdvancedIntro:
+		if (Elapsed >= 5.0f) { EnterMovementStep(EMovementStep::QuietRoll); }
+		break;
+	case EMovementStep::QuietRoll:
+		if ((ActionMask & ABHCharacter::TutorialActQuietRollBit) != 0 || Elapsed >= 60.0f) { EnterMovementStep(EMovementStep::DropRoll); }
+		break;
+	case EMovementStep::DropRoll:
+		if ((ActionMask & ABHCharacter::TutorialActDropRollBit) != 0 || Elapsed >= 75.0f) { EnterMovementStep(EMovementStep::SlideStop); }
+		break;
+	case EMovementStep::SlideStop:
+		if ((ActionMask & ABHCharacter::TutorialActSlideStopBit) != 0 || Elapsed >= 75.0f) { EnterMovementStep(EMovementStep::LockerRoll); }
+		break;
+	case EMovementStep::LockerRoll:
+		if ((ActionMask & ABHCharacter::TutorialActLockerRollBit) != 0 || Elapsed >= 90.0f) { EnterMovementStep(EMovementStep::FlowChain); }
+		break;
+	case EMovementStep::FlowChain:
+		if ((ActionMask & ABHCharacter::TutorialActFlowChainBit) != 0 || Elapsed >= 90.0f) { EnterMovementStep(EMovementStep::Complete); }
 		break;
 	case EMovementStep::Complete:
 	default:
@@ -979,7 +1057,17 @@ void ABHTutorialDirector::PublishStepBeat() const
 	}
 	if (Phase == EBHTutorialPhase::Movement)
 	{
-		// The movement sandbox teaches each link in place; there are no objective markers to point at.
+		// The locker roll-out step needs the player at a locker, so point the marker at the nearest one; every other
+		// movement step teaches its link in place with no marker.
+		if (MovementStep == EMovementStep::LockerRoll)
+		{
+			const ABHCharacter* MoveSurvivor = FindTutorialSurvivor();
+			if (ABHLocker* Locker = FindNearestLocker(MoveSurvivor ? MoveSurvivor->GetActorLocation() : GetActorLocation()))
+			{
+				SetSingleBeat(TEXT("Locker"), Locker->GetActorLocation());
+				return;
+			}
+		}
 		ClearBeats();
 		return;
 	}
@@ -1524,6 +1612,10 @@ void ABHTutorialDirector::EnterTeacherStep(ETeacherStep NewStep)
 		if (GetWorld())
 		{
 			GetWorldTimerManager().ClearTimer(EvalTimerHandle);
+			if (ABHCharacter* Human = FindHumanPlayer())
+			{
+				Human->ClientGrantAchievement(FName(TEXT("tutorial_teacher")), TEXT("Teacher tutorial complete!"));
+			}
 			GetWorldTimerManager().SetTimer(ActivateTimerHandle, this, &ABHTutorialDirector::FinishTutorialPhase, 3.0f, false);
 		}
 		break;
@@ -1571,8 +1663,8 @@ void ABHTutorialDirector::EvaluateTeacherStep()
 		break;
 	}
 	case ETeacherStep::Sprint:
-		// Quick informational movement tip; hold long enough to read it, then on to the axe.
-		if (Elapsed >= 8.0f)
+		// Hold long enough to actually read the ~14s tip before Axe overwrites it (was 8s, cutting the line short).
+		if (Elapsed >= 13.0f)
 		{
 			EnterTeacherStep(ETeacherStep::Axe);
 		}
@@ -1623,10 +1715,21 @@ void ABHTutorialDirector::EvaluateTeacherStep()
 			const ABHPlayerState* StudentPS = Student->GetPlayerState<ABHPlayerState>();
 			bCaptured = StudentPS && StudentPS->LifeState == EBHPlayerLifeState::Captured;
 		}
-		const bool bSwung = Human && Human->IsTeacherCaptureAttackActive();
-		if (bCaptured || bSwung || Elapsed >= 60.0f)
+		// The marquee Teacher skill is closing distance and LANDING the grab -- a swing at empty air must NOT pass.
+		if (bCaptured || Elapsed >= 60.0f)
 		{
 			EnterTeacherStep(ETeacherStep::Blackout);
+			break;
+		}
+		const bool bSwung = Human && Human->IsTeacherCaptureAttackActive();
+		if (bSwung)
+		{
+			const float Now = GetWorld()->GetTimeSeconds();
+			if (Now - ScanDemoServerTime > 3.0f) // throttle the coaching nudge (ScanDemoServerTime is free by Capture)
+			{
+				ScanDemoServerTime = Now;
+				Broadcast(TEXT("Too far - SPRINT to close the gap, THEN swing. You have to be right on the student to grab them."), 3.0f);
+			}
 		}
 		break;
 	}
@@ -1734,6 +1837,10 @@ void ABHTutorialDirector::EnterMonitorStep(EMonitorStep NewStep)
 		if (GetWorld())
 		{
 			GetWorldTimerManager().ClearTimer(EvalTimerHandle);
+			if (ABHCharacter* Human = FindHumanPlayer())
+			{
+				Human->ClientGrantAchievement(FName(TEXT("tutorial_monitor")), TEXT("Hall Monitor tutorial complete!"));
+			}
 			GetWorldTimerManager().SetTimer(ActivateTimerHandle, this, &ABHTutorialDirector::FinishTutorialPhase, 4.0f, false);
 		}
 		break;

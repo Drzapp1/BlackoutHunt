@@ -48,6 +48,7 @@ protected:
 	{
 		Intro,
 		Move,
+		Sprint,
 		Flashlight,
 		Hide,
 		Crawl,
@@ -64,7 +65,16 @@ protected:
 	// Advanced-movement lesson (EBHTutorialPhase::Movement): each step teaches one link and auto-advances once the
 	// player performs it (detected from the character's live state + the tutorial action latches), with a generous
 	// timeout fallback so a stuck input can never hard-lock the lesson. Roll/Slide/Dive end the course.
-	enum class EMovementStep : uint8 { Intro, Walk, Sprint, Crouch, Prone, Jump, BunnyHop, Roll, Slide, Dive, Complete };
+	// Order is deliberate: the bare-key stances (Crouch=Ctrl, Prone=Alt) are taught BEFORE Sprint so a held Shift
+	// never turns the tap into a Roll/Slide combo, and Jump comes after Sprint so the player is already standing.
+	// After the core kit (through Dive) an optional advanced tail teaches the micro-techniques; every advanced step
+	// has a long timeout fallback so a player who can't land the harder ones still finishes.
+	enum class EMovementStep : uint8
+	{
+		Intro, Walk, Crouch, Prone, Sprint, Jump, BunnyHop, Roll, Slide, Dive,
+		AdvancedIntro, QuietRoll, DropRoll, SlideStop, LockerRoll, FlowChain,
+		Complete
+	};
 
 	// Defer activation a beat so the host pawn/player state exist, then run the step machine on a timer.
 	void Activate();

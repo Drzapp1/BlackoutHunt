@@ -62,6 +62,8 @@
 #include "BHTrainBlackjackTable.h"
 #include "BHTrainChessTable.h"
 #include "BHTrainTicTacToeTable.h"
+#include "BHTrainConnectFourTable.h"
+#include "BHTrainSlotMachine.h"
 #include "BHTrainTunnelMotionActor.h"
 #include "Components/BoxComponent.h"
 #include "Components/BrushComponent.h"
@@ -8482,7 +8484,7 @@ void ABHGameMode::BuildTrainLobbyLevel()
 
 		// Spawn points along the aisle. The two GAME cars (CarIndex 2 & 4) carry a centred feature table, so skip
 		// their centre spawn to avoid materialising a player on top of the table; the side spawns stay clear.
-		const bool bGameCar = (CarIndex == 2 || CarIndex == 3 || CarIndex == 4 || CarIndex == 5 || CarIndex == 6);
+		const bool bGameCar = (CarIndex >= 1 && CarIndex <= 7);
 		if (!bGameCar)
 		{
 			SurvivorSpawns.Add(FVector(CenterX, 0.0f, 124.0f));
@@ -8539,6 +8541,23 @@ void ABHGameMode::BuildTrainLobbyLevel()
 		SpawnBlock(FVector(TX, 150.0f, 40.0f), FVector(0.42f, 0.42f, 0.40f), CarAccents[2], FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
 	};
 
+	// Connect Four: an upright board with stools either side.
+	auto AddConnectFourTable = [&](float TX)
+	{
+		GetWorld()->SpawnActor<ABHTrainConnectFourTable>(FVector(TX, 0.0f, 0.0f), FRotator::ZeroRotator);
+		SpawnBlock(FVector(TX, -150.0f, 40.0f), FVector(0.42f, 0.42f, 0.40f), CarAccents[4], FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+		SpawnBlock(FVector(TX, 150.0f, 40.0f), FVector(0.42f, 0.42f, 0.40f), CarAccents[4], FRotator::ZeroRotator, true, EBHBlockMaterial::Tiles);
+	};
+
+	// A little casino corner: a row of slot machines players approach from the -Y aisle side.
+	auto AddSlotsCar = [&](float TX)
+	{
+		for (float SX : {-220.0f, 0.0f, 220.0f})
+		{
+			GetWorld()->SpawnActor<ABHTrainSlotMachine>(FVector(TX + SX, 0.0f, 0.0f), FRotator::ZeroRotator);
+		}
+	};
+
 	for (int32 LoungeCar = 1; LoungeCar <= NumCars - 2; ++LoungeCar)
 	{
 		const float CenterX = TubeMinX + 750.0f + LoungeCar * 1500.0f;
@@ -8558,6 +8577,16 @@ void ABHGameMode::BuildTrainLobbyLevel()
 		if (LoungeCar == 5)
 		{
 			AddTicTacToeTable(CenterX);
+			continue;
+		}
+		if (LoungeCar == 1)
+		{
+			AddConnectFourTable(CenterX);
+			continue;
+		}
+		if (LoungeCar == 7)
+		{
+			AddSlotsCar(CenterX);
 			continue;
 		}
 
