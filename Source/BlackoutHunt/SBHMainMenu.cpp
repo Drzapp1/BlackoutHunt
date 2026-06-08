@@ -2866,6 +2866,28 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 			.BorderImage(WhiteBrush())
 			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Background, 0.980f))
 		]
+			// Subtle depth over the flat in-menu backdrop: faint animated grain + a slow emergency-red breath.
+			+ SOverlay::Slot()
+			[
+				SNew(SBorder)
+				.Visibility(EVisibility::HitTestInvisible)
+				.BorderImage(WhiteBrush())
+				.BorderBackgroundColor(TAttribute<FSlateColor>::Create([this]() {
+					const float A = 0.020f + 0.013f * FMath::Sin(GrainPhase * 6.2831853f);
+					return FSlateColor(FLinearColor(0.05f, 0.045f, 0.040f, A));
+				}))
+			]
+			+ SOverlay::Slot()
+			[
+				SNew(SBorder)
+				.Visibility(EVisibility::HitTestInvisible)
+				.BorderImage(WhiteBrush())
+				.BorderBackgroundColor(TAttribute<FSlateColor>::Create([this]() {
+					FLinearColor C = BHResolveActiveThemeColor(&FBHMenuTheme::Danger);
+					C.A = 0.010f + 0.016f * (0.5f + 0.5f * FMath::Sin(HorrorTimeAccum * 0.6f));
+					return FSlateColor(C);
+				}))
+			]
 		+ SOverlay::Slot()
 		.HAlign(HAlign_Fill)
 		.VAlign(VAlign_Top)

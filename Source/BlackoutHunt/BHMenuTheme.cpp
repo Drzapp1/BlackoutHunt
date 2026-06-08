@@ -51,10 +51,10 @@ namespace
 			// "Dread" -- atmospheric horror: near-black, oppressively low contrast, a single restrained
 			// dried-blood accent. The default menu look (see GActiveMenuThemeIndex).
 			{ TEXT("Dread"),
-				FLinearColor(0.009f, 0.010f, 0.011f, 1.0f), FLinearColor(0.026f, 0.027f, 0.029f, 1.0f), FLinearColor(0.130f, 0.115f, 0.100f, 1.0f),
-				FLinearColor(0.640f, 0.615f, 0.575f, 1.0f), FLinearColor(0.730f, 0.705f, 0.665f, 1.0f), FLinearColor(0.430f, 0.410f, 0.385f, 1.0f),
-				FLinearColor(0.500f, 0.150f, 0.130f, 1.0f), FLinearColor(0.820f, 0.260f, 0.200f, 1.0f),
-				FLinearColor(0.040f, 0.037f, 0.035f, 1.0f), FLinearColor(0.150f, 0.090f, 0.080f, 1.0f), FLinearColor(0.900f, 0.170f, 0.120f, 1.0f) },
+				FLinearColor(0.009f, 0.010f, 0.011f, 1.0f), FLinearColor(0.072f, 0.076f, 0.084f, 1.0f), FLinearColor(0.250f, 0.225f, 0.200f, 1.0f),
+				FLinearColor(0.660f, 0.635f, 0.595f, 1.0f), FLinearColor(0.780f, 0.755f, 0.715f, 1.0f), FLinearColor(0.470f, 0.450f, 0.420f, 1.0f),
+				FLinearColor(0.520f, 0.155f, 0.135f, 1.0f), FLinearColor(0.840f, 0.270f, 0.210f, 1.0f),
+				FLinearColor(0.060f, 0.058f, 0.056f, 1.0f), FLinearColor(0.175f, 0.105f, 0.092f, 1.0f), FLinearColor(0.920f, 0.180f, 0.130f, 1.0f) },
 		};
 		return Themes;
 	}
