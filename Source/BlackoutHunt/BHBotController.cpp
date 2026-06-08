@@ -770,6 +770,14 @@ void ABHBotController::Think()
 		return;
 	}
 
+	if (bScriptedHoldPosition)
+	{
+		// Park/scripted mode for the tutorial director. Suppress the autonomous brain so this bot never roams or
+		// chases on its own; the director drives ALL of its motion explicitly (StopMovement to loom in place, or
+		// RunStateTreeIntent to script a move), which now persists because Think no longer competes with it.
+		return;
+	}
+
 	if (!bPersonalityChosen)
 	{
 		Personality = ChoosePersonality(BotPS);

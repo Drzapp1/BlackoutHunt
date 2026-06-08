@@ -40,6 +40,10 @@ public:
 	bool RunStateTreeIntent(EBHBotIntent Intent, AActor* Target, const FVector& Location, float AcceptanceRadius);
 	bool HasRecentStateTreeStimulus(EBHBotStimulusType Type, float MaxAgeSeconds, FVector& OutLocation) const;
 	void ReportStateTreeDebugState(const FString& InStateName);
+	// Tutorial director hook: when set, the autonomous Think() brain is suppressed and the bot holds position
+	// (StopMovement each tick). Used to park a loomed / idle scripted Teacher so it menaces in place instead of
+	// roaming and chasing. The director clears it to resume scripted control (chase / search / decoy intents).
+	void SetScriptedHoldPosition(bool bHold) { bScriptedHoldPosition = bHold; }
 
 private:
 	ABHCharacter* GetBHCharacter() const;
@@ -101,6 +105,9 @@ private:
 	void HandleStationAnswer(ABHCharacter* BotCharacter, ABHObjectiveStation* Station);
 	float GetCorrectAnswerChance() const;
 	int32 ChooseAnswerIndex(ABHObjectiveStation* Station) const;
+
+	// Tutorial-director park flag (see SetScriptedHoldPosition): suppresses Think() so the bot holds position.
+	bool bScriptedHoldPosition = false;
 
 	float ThinkInterval;
 	float SightRange;

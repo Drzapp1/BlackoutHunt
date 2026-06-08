@@ -662,23 +662,46 @@ void ABHTutorialDirector::DriveScriptedCast()
 	switch (Phase)
 	{
 	case EBHTutorialPhase::Survivor:
+	{
+		// The loomed Teacher must NOT roam/chase on its own during the teaching half (its autonomous brain would
+		// otherwise hunt the student and churn the lesson). Park it (brain suppressed) and script every move here.
+		ABHBotController* TeacherCtrl = TeacherBot.Get();
 		if (CurrentStep == EStep::Encounter || CurrentStep == EStep::Escape)
 		{
-			// Climax: a real pursuit at the student's live position.
+			// Climax: hand the bot back its brain so it pursues at full strength, and drive a real chase on top.
+			if (TeacherCtrl) { TeacherCtrl->SetScriptedHoldPosition(false); }
 			DriveTeacherChase();
 		}
-		else if (CurrentStep == EStep::Hide)
+		else
 		{
-			// Staged scare: drive the loomed Teacher to search the locker, then give up (no-ops if no Teacher yet).
-			DriveTeacherToLocker();
+			// Teaching half: brain off; the director scripts all motion so the Teacher behaves exactly as intended.
+			if (TeacherCtrl) { TeacherCtrl->SetScriptedHoldPosition(true); }
+			if (CurrentStep == EStep::Hide)
+			{
+				// Staged scare: drive the loomed Teacher to search the locker, then give up (no-ops if no Teacher).
+				DriveTeacherToLocker();
+			}
+			else if (CurrentStep == EStep::Decoy)
+			{
+				// Misdirection demo: pull the loomed Teacher toward the dropped decoy so the trick is visibly proven.
+				DriveTeacherToDecoy();
+			}
+			else if (TeacherCtrl)
+			{
+				// Loom + the other teaching steps: hold at the far spawn as a distant, motionless menace.
+				TeacherCtrl->StopMovement();
+			}
 		}
-		else if (CurrentStep == EStep::Decoy)
+		break;
+	}
+	case EBHTutorialPhase::EasterEgg:
+		// Hidden HUB: keep the parked practice Teacher motionless in the teacher-evasion room (brain off) so it
+		// menaces in place instead of roaming the gallery and hunting the player while they read the plaques.
+		if (ABHBotController* EggTeacher = TeacherBot.Get())
 		{
-			// Misdirection demo: pull the loomed Teacher toward the dropped decoy so the trick is visibly proven.
-			DriveTeacherToDecoy();
+			EggTeacher->SetScriptedHoldPosition(true);
+			EggTeacher->StopMovement();
 		}
-		// All other survivor steps (Loom included): the Teacher receives no intent, so it simply looms in place -
-		// the intended distant menace during the teaching half.
 		break;
 	case EBHTutorialPhase::Teacher:
 		// The human is the Hunter; drive the AI student on a fixed scripted route (always moving, hides on cue)
