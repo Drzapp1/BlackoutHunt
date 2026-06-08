@@ -17,6 +17,10 @@ public:
 	ABHLocker();
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	// Low-rate tick (0.5s) used only to re-apply the occupied indicator when the LOCAL viewer's hunter status flips
+	// (e.g. a survivor who was seeing occupied lockers is reassigned to Hunter mid-round) -- OnRep_Occupant alone
+	// wouldn't catch that, leaving the across-room red tell visible to the now-Teacher.
+	virtual void Tick(float DeltaSeconds) override;
 	virtual bool CanInteract_Implementation(ABHCharacter* Character) const override;
 	virtual void BeginInteract_Implementation(ABHCharacter* Character) override;
 	virtual FText GetInteractionLabel_Implementation(ABHCharacter* Character) const override;
@@ -57,4 +61,8 @@ protected:
 
 	UPROPERTY(ReplicatedUsing = OnRep_Occupant)
 	TObjectPtr<ABHCharacter> Occupant;
+
+	// Cached "the local viewer was an alive Hunter" the last time ApplyLockerVisuals ran, so Tick can detect a flip
+	// and re-apply (closing the role-reassignment hole in the occupied-indicator gate).
+	bool bLastAppliedViewerIsHunter = false;
 };

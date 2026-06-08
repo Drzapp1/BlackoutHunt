@@ -4069,6 +4069,9 @@ void ABHCharacter::FinishSpecialMoveAuthority()
 	const FVector ExitDir = SpecialMoveDirection.GetSafeNormal2D();
 	const float ExitDuration = FMath::Max(0.05f, SpecialMoveEndTime - SpecialMoveStartTime);
 	const float ExitSpeed = SpecialMoveDistanceTravelled / ExitDuration;
+	// A move that ended because it BONKED a wall has no forward clearance, so don't re-inject velocity into the wall
+	// it just hit (it would shove the player into/along the obstacle). A clean move keeps its momentum below.
+	const bool bHitWallExit = bSpecialMoveHitWall;
 
 	const bool bShouldEndProne = bSpecialMoveEndsProne && (!bSpecialMoveEndProneRequiresInput || bProneInputHeld);
 	const bool bShouldEndCrouched = bSpecialMoveEarlyBrake && !bShouldEndProne; // silent slide-stop
@@ -4094,7 +4097,7 @@ void ABHCharacter::FinishSpecialMoveAuthority()
 	// Re-inject the captured momentum so the move flows into a run instead of dead-stopping. Skip when ending prone
 	// or braking to a crouch (those intentionally stop). Cap at the player's current MaxWalkSpeed (which reflects
 	// sprint state) so the exit never exceeds normal speed -- the swept move already validated this much clearance.
-	if (MovementSpecialState == EBHMovementSpecialState::None && !bShouldEndCrouched && !ExitDir.IsNearlyZero())
+	if (MovementSpecialState == EBHMovementSpecialState::None && !bShouldEndCrouched && !bHitWallExit && !ExitDir.IsNearlyZero())
 	{
 		if (UCharacterMovementComponent* ExitMove = GetCharacterMovement())
 		{
@@ -5986,7 +5989,10 @@ void ABHCharacter::UpdatePOVAnimation(float DeltaSeconds)
 	}
 	else if (!FMath::IsNearlyZero(ViewRollOffsetDeg, 0.5f))
 	{
-		const float SettleTarget = ViewRollOffsetDeg > 180.0f ? 360.0f : 0.0f;
+		// A Full somersault is a monotonic 0..360, so finish it FORWARD to 360 (upright) even if cut short before the
+		// midpoint -- easing back to 0 would visibly reverse the flip. The Dip/Subtle bells never exceed ~110, so
+		// they always settle to 0 (the way they came), which matches their shape.
+		const float SettleTarget = (ResolveRollCamStyle() == EBHRollCamStyle::Full) ? 360.0f : 0.0f;
 		ViewRollOffsetDeg = FMath::FInterpTo(ViewRollOffsetDeg, SettleTarget, DeltaSeconds, 12.0f);
 		if (FMath::Abs(ViewRollOffsetDeg - SettleTarget) < 0.5f)
 		{

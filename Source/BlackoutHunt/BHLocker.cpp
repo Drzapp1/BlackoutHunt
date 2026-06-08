@@ -29,6 +29,11 @@ ABHLocker::ABHLocker()
 	SetActorScale3D(FVector::OneVector);
 	Occupant = nullptr;
 
+	// Tick at a low rate (0.5s) purely to re-evaluate the occupied indicator's per-viewer visibility when the local
+	// player's hunter status changes without an occupancy change (role reassignment). Cheap; early-outs when empty.
+	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.TickInterval = 0.5f;
+
 	LeftDoorPanel = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("LeftDoorPanel"));
 	LeftDoorPanel->SetupAttachment(RootComponent);
 	RightDoorPanel = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("RightDoorPanel"));
@@ -248,6 +253,25 @@ void ABHLocker::OnRep_Occupant()
 	ApplyLockerVisuals();
 }
 
+void ABHLocker::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+	// Only matters while occupied (that's when the gated red indicator is shown). Re-apply if the local viewer's
+	// hunter status flipped since the last apply (role reassignment) so a survivor-turned-Teacher stops seeing the
+	// across-room "occupied" glow that OnRep_Occupant set while they were still a survivor.
+	if (Occupant == nullptr)
+	{
+		return;
+	}
+	const APlayerController* LocalPC = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
+	const ABHPlayerState* LocalPS = LocalPC ? LocalPC->GetPlayerState<ABHPlayerState>() : nullptr;
+	const bool bNowHunter = LocalPS && LocalPS->IsAliveHunter();
+	if (bNowHunter != bLastAppliedViewerIsHunter)
+	{
+		ApplyLockerVisuals();
+	}
+}
+
 void ABHLocker::ApplyLockerVisuals()
 {
 	const bool bOccupied = Occupant != nullptr;
@@ -259,6 +283,7 @@ void ABHLocker::ApplyLockerVisuals()
 	const APlayerController* LocalPC = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
 	const ABHPlayerState* LocalPS = LocalPC ? LocalPC->GetPlayerState<ABHPlayerState>() : nullptr;
 	const bool bLocalIsAliveHunter = LocalPS && LocalPS->IsAliveHunter();
+	bLastAppliedViewerIsHunter = bLocalIsAliveHunter; // so Tick can detect a later role flip and re-apply
 	const bool bRevealOccupied = bOccupied && !bLocalIsAliveHunter;
 
 	const FLinearColor DoorColor = bRevealOccupied ? FLinearColor(0.13f, 0.16f, 0.17f, 1.0f) : FLinearColor(0.18f, 0.24f, 0.27f, 1.0f);
