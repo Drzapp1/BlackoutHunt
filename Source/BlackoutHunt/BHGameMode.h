@@ -502,8 +502,16 @@ protected:
 	void StartHuntPhase();
 	void AssignRoles();
 	// --- Prop Hunt (opt-in, reversible). All gated by bPropHuntMode; defined in BHGameModePropHunt.cpp. ----------
-	// Seed the taunt clock + send the role-tailored intro at the moment the live Hunt starts.
+	// Destroy the classroom objective actors (question stations, breakers, exit gates, escape managers) the level
+	// builders / authored maps spawned, so a prop-hunt arena has no tasks and no exit to run to. Called after the
+	// level is built; no-op when prop hunt is off.
+	void StripPropHuntObjectives();
+	// HIDE phase (rides Prep): freeze + screen-black the seeker, let props disguise. The Prep->Hunt timer is the release.
+	void BeginPropHuntHidePhase();
+	// SEEK phase (rides Hunt): release the seeker + start the seek clock + taunts. Called from StartHuntPhase.
 	void BeginPropHuntHunt();
+	// A caught prop joins the seekers (infection); the last caught prop ends the round as a seeker win.
+	void HandlePropHuntCapture(ABHCharacter* Survivor, ABHCharacter* CapturingHunter);
 	// Once-per-second service (called from TickRoundTimer's Hunt branch): drives the forced-taunt cadence and the
 	// replicated "props left / total" HUD counters.
 	void TickPropHunt();

@@ -16,8 +16,12 @@
 
 #include "BHGameMode.h"
 
+#include "BHBreaker.h"
 #include "BHCharacter.h"
+#include "BHEscapeStationManager.h"
+#include "BHExitGate.h"
 #include "BHGameState.h"
+#include "BHObjectiveStation.h"
 #include "BHPlayerController.h"
 #include "BHPlayerState.h"
 #include "BHPropHuntLibrary.h"
@@ -47,6 +51,18 @@ static TAutoConsoleVariable<float> CVarBHPropHuntTauntMin(
 	TEXT("Prop Hunt: seconds between forced prop taunts at the END of the Hunt (tightest cadence)."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarBHPropHuntHideSeconds(
+	TEXT("bh.PropHuntHideSeconds"),
+	30,
+	TEXT("Prop Hunt: length of the HIDE phase (the seeker is frozen + screen-blacked while props disguise)."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarBHPropHuntSeekSeconds(
+	TEXT("bh.PropHuntSeekSeconds"),
+	240,
+	TEXT("Prop Hunt: length of the SEEK phase (the seeker hunts; props survive the clock to win)."),
+	ECVF_Default);
+
 // Free accessor so BuildRuntimeFacility (in BHGameMode.cpp) can fold the cvar into the parsed bPropHuntMode without
 // the cvar object leaking out of this translation unit. Declared in BHGameMode.h.
 bool BHIsPropHuntCVarEnabled()
@@ -57,6 +73,42 @@ bool BHIsPropHuntCVarEnabled()
 bool ABHGameMode::IsPropHuntMode() const
 {
 	return bPropHuntMode;
+}
+
+void ABHGameMode::StripPropHuntObjectives()
+{
+	if (!bPropHuntMode)
+	{
+		return;
+	}
+
+	int32 Destroyed = 0;
+	auto DestroyAll = [&Destroyed](auto& Array)
+	{
+		for (const auto& Ptr : Array)
+		{
+			if (AActor* Actor = Ptr.Get())
+			{
+				Actor->Destroy();
+				++Destroyed;
+			}
+		}
+		Array.Reset();
+	};
+	DestroyAll(ObjectiveStations);
+	DestroyAll(BreakerActors);
+	DestroyAll(ExitGates);
+	DestroyAll(EscapeStationManagers);
+
+	ActiveBreakerCount = 0;
+	ActiveSideObjectiveCount = 0;
+	if (ABHGameState* BHGS = GetGameState<ABHGameState>())
+	{
+		BHGS->SetBreakerCounts(0, 0);
+		BHGS->SetSideObjectiveCounts(0, 0);
+		BHGS->SetExitUnlocked(false);
+	}
+	UE_LOG(LogTemp, Log, TEXT("BlackoutHunt PropHunt: stripped %d classroom objective actor(s) from the arena."), Destroyed);
 }
 
 // Count the props (role == Survivor) and how many are still hidden (alive). The Hall-Monitor conversion is suppressed
@@ -105,14 +157,61 @@ void ABHGameMode::RefreshPropHuntGameState()
 	BHGS->SetPropHuntState(true, Remaining, Total, NextTaunt);
 }
 
+// HIDE phase (rides the base Prep phase). The seeker is frozen + (client-side) screen-blacked; props (Survivors) move
+// freely and disguise; capture is off for everyone. The base Prep->Hunt timer transition (RemainingTime<=0 ->
+// StartHuntPhase) is the hide->seek release.
+void ABHGameMode::BeginPropHuntHidePhase()
+{
+	if (!bPropHuntMode)
+	{
+		return;
+	}
+	ABHGameState* BHGS = GetGameState<ABHGameState>();
+	if (BHGS)
+	{
+		// bHunterInputFrozen freezes the seeker AND blocks their capture (BHCharacter.cpp); props stay free.
+		BHGS->SetIntermissionLocks(/*bCaptureDisabled*/true, /*bPlayerInputFrozen*/false, /*bHunterInputFrozen*/true);
+		BHGS->SetRemainingTime(FMath::Max(3, CVarBHPropHuntHideSeconds.GetValueOnGameThread()));
+	}
+	// Suppress taunts during hide (TickPropHunt only runs in the seek/Hunt phase anyway; this is belt-and-suspenders).
+	PropHuntLastTauntServerTime = 1.0e9f;
+	RefreshPropHuntGameState();
+
+	const int32 HideSeconds = BHGS ? BHGS->RemainingTime : CVarBHPropHuntHideSeconds.GetValueOnGameThread();
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get());
+		const ABHPlayerState* BHPS = PC ? PC->GetPlayerState<ABHPlayerState>() : nullptr;
+		if (!PC || !BHPS)
+		{
+			continue;
+		}
+		if (BHPS->PlayerRole == EBHPlayerRole::Hunter)
+		{
+			PC->ClientShowStatusMessage(FString::Printf(TEXT("PROP HUNT. You are the SEEKER - eyes closed for %ds while the props hide..."), HideSeconds), 6.0f);
+		}
+		else if (BHPS->PlayerRole == EBHPlayerRole::Survivor)
+		{
+			PC->ClientShowStatusMessage(FString::Printf(TEXT("HIDE! Look at a prop and press Z to become it. The seeker is blind for %ds. [ and ] rotate, middle-mouse locks."), HideSeconds), 6.0f);
+		}
+	}
+}
+
+// SEEK phase (rides the base Hunt phase). Called from StartHuntPhase: release the seeker + start the seek clock + taunts.
 void ABHGameMode::BeginPropHuntHunt()
 {
 	if (!bPropHuntMode)
 	{
 		return;
 	}
+	ABHGameState* BHGS = GetGameState<ABHGameState>();
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
-	// Seed the first taunt one full (loose) interval into the Hunt so props get a beat to settle first.
+	if (BHGS)
+	{
+		// Release everyone: seeker un-frozen, capture on.
+		BHGS->SetIntermissionLocks(false, false, false);
+		BHGS->SetRemainingTime(FMath::Max(10, CVarBHPropHuntSeekSeconds.GetValueOnGameThread()));
+	}
 	PropHuntLastTauntServerTime = Now;
 	RefreshPropHuntGameState();
 
@@ -126,13 +225,52 @@ void ABHGameMode::BeginPropHuntHunt()
 		}
 		if (BHPS->PlayerRole == EBHPlayerRole::Hunter)
 		{
-			PC->ClientShowStatusMessage(TEXT("PROP HUNT. You are the SEEKER - find every disguised prop before time runs out. Q scans, Mouse1 swings."), 6.0f);
+			PC->ClientShowStatusMessage(TEXT("SEEK! Hunt down every disguised prop. Q scans, Mouse1 swings."), 5.0f);
 		}
 		else if (BHPS->PlayerRole == EBHPlayerRole::Survivor)
 		{
-			PC->ClientShowStatusMessage(TEXT("PROP HUNT. Look at a prop and press Z to become it. Middle-mouse locks you still, [ and ] rotate. Survive the timer!"), 6.0f);
+			PC->ClientShowStatusMessage(TEXT("The seeker is loose! Hold still and survive the timer."), 5.0f);
 		}
 	}
+}
+
+// A caught prop joins the seekers (infection). Called from NotifySurvivorCaptured's prop-hunt branch. If this was the
+// LAST hidden prop, the seekers win the round instead.
+void ABHGameMode::HandlePropHuntCapture(ABHCharacter* Survivor, ABHCharacter* CapturingHunter)
+{
+	ABHPlayerState* PS = Survivor ? Survivor->GetPlayerState<ABHPlayerState>() : nullptr;
+	AController* Ctrl = Survivor ? Survivor->GetController() : nullptr;
+	if (!PS)
+	{
+		return;
+	}
+	const FVector Loc = Survivor->GetActorLocation();
+	ABHPlayerState* CatcherPS = CapturingHunter ? CapturingHunter->GetPlayerState<ABHPlayerState>() : nullptr;
+	RecordPlaytestTelemetryMarker(TEXT("ph_catch"), Loc, TEXT("prophunt"), CatcherPS, PS);
+
+	if (ABHPlayerController* CatcherPC = Cast<ABHPlayerController>(CapturingHunter ? CapturingHunter->GetController() : nullptr))
+	{
+		CatcherPC->ClientShowStatusMessage(TEXT("Caught a prop!"), 2.5f);
+	}
+
+	Survivor->MarkCaptured(); // drops the disguise + any lock, sets Captured/out-of-play/hidden
+	ApplyPresenceSpike(Loc, 60.0f, TEXT("A prop was found."));
+	BroadcastStatus(FString::Printf(TEXT("%s was found!"), *PS->GetPlayerName()), 3.0f);
+
+	// Infection: props remain -> the caught prop joins the seeker team. Otherwise that was the last prop -> seekers win.
+	if (CountAliveSurvivors() > 0 && Ctrl)
+	{
+		PS->SetRole(EBHPlayerRole::Hunter);
+		PS->SetLifeState(EBHPlayerLifeState::Alive);
+		PS->SetHiddenInLocker(false);
+		BroadcastStatus(FString::Printf(TEXT("%s joined the hunt!"), *PS->GetPlayerName()), 3.0f);
+		RestartPlayer(Ctrl);
+	}
+	else
+	{
+		EndRound(EBHRoundPhase::HunterWin);
+	}
+	RefreshPropHuntGameState();
 }
 
 // Drives the taunt cadence + the replicated HUD counters. Called once per second from TickRoundTimer's Hunt branch,

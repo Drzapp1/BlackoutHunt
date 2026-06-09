@@ -1051,12 +1051,14 @@ void ABHHUD::DrawHUD()
 	const float TextScale = HudTextScale;
 	const float WidgetScale = HudWidgetScale;
 	const float ReadoutW = FMath::Clamp(Canvas->ClipX * 0.38f, 280.0f, 560.0f) * TextScale;
-	if (BHGS && BHGS->bTutorialMode)
+	if (BHGS && (BHGS->bTutorialMode || BHGS->bPropHuntMode))
 	{
 		// Tutorial: the DrawTutorialPrompt banner is the sole instruction channel, so suppress the generic match
 		// telemetry (timer/exit pill + action/detail/aux lines). It otherwise contradicts the guided lesson - e.g.
 		// "FIND A LIVE BREAKER / HOLD E" during the flashlight step, or "EXIT OPEN" while the lesson is still at a
 		// station. The taught vitals stack (battery/stamina/fear/dread) is drawn separately and stays.
+		// Prop Hunt: likewise suppressed -- there are no breakers/stations/exits, and DrawPropHuntOverlay owns the
+		// top-of-screen readout (mode title, props-left, taunt countdown, role prompt). "EXIT LOCKED" would be nonsense.
 	}
 	else if (BHGS)
 	{
@@ -1543,7 +1545,23 @@ void ABHHUD::DrawPropHuntOverlay(const ABHGameState* GameState, const ABHPlayerS
 	const float TextScale = HudTextScale;
 	const UFont* Font = GEngine->GetSmallFont();
 	const float CenterX = Canvas->ClipX * 0.5f;
-	float Y = FMath::Max(20.0f, Canvas->ClipY * 0.045f);
+
+	// Hide rides the base Prep phase; Seek rides Hunt; RoundEnd is the win phases. (No separate prop-hunt enum needed.)
+	const EBHRoundPhase Phase = GameState->RoundPhase;
+	const bool bHiding = (Phase == EBHRoundPhase::Prep);
+	const bool bSeeking = (Phase == EBHRoundPhase::Hunt);
+	const bool bRoundEnd = (Phase == EBHRoundPhase::SurvivorsWin || Phase == EBHRoundPhase::HunterWin);
+	const EBHPlayerRole PropRole = PlayerState ? PlayerState->PlayerRole : EBHPlayerRole::Unassigned;
+	const bool bLocalSeeker = (PropRole == EBHPlayerRole::Hunter);
+
+	// Classic blind hide: black out the seeker's screen while the props hide (they're frozen server-side too). Drawn
+	// first so the countdown reads on top. Near-opaque so they genuinely can't peek where anyone hides.
+	if (bHiding && bLocalSeeker)
+	{
+		DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, 0.96f), 0.0f, 0.0f, Canvas->ClipX, Canvas->ClipY);
+	}
+
+	float Y = FMath::Max(20.0f, Canvas->ClipY * ((bHiding && bLocalSeeker) ? 0.40f : 0.045f));
 
 	auto DrawCentered = [this, Font](const FString& Text, float CenterXIn, float YIn, const FLinearColor& Color, float Scale) -> float
 	{
@@ -1556,35 +1574,62 @@ void ABHHUD::DrawPropHuntOverlay(const ABHGameState* GameState, const ABHPlayerS
 		return H;
 	};
 
-	// Mode title.
-	Y += DrawCentered(TEXT("PROP HUNT"), CenterX, Y, FLinearColor(0.98f, 0.78f, 0.30f, 1.0f), 0.92f * TextScale) + 4.0f * TextScale;
+	// Title.
+	FString Title = TEXT("PROP HUNT");
+	FLinearColor TitleColor(0.98f, 0.78f, 0.30f, 1.0f);
+	if (bHiding)
+	{
+		Title = TEXT("PROP HUNT - HIDE!");
+	}
+	else if (bRoundEnd)
+	{
+		const bool bPropsWon = (Phase == EBHRoundPhase::SurvivorsWin);
+		Title = bPropsWon ? TEXT("PROPS WIN!") : TEXT("SEEKERS WIN!");
+		TitleColor = bPropsWon ? ActivePalette.Good : ActivePalette.Bad;
+	}
+	Y += DrawCentered(Title, CenterX, Y, TitleColor, 0.95f * TextScale) + 4.0f * TextScale;
 
-	// Props-left counter.
-	const FString CountText = FString::Printf(TEXT("PROPS LEFT  %d / %d"), GameState->PropHuntPropsRemaining, GameState->PropHuntPropsTotal);
-	Y += DrawCentered(CountText, CenterX, Y, MainText(), 0.74f * TextScale) + 3.0f * TextScale;
+	// Big countdown during hide / seek.
+	if (bHiding || bSeeking)
+	{
+		const int32 T = FMath::Max(0, GameState->RemainingTime);
+		const FString Clock = FString::Printf(TEXT("%d:%02d"), T / 60, T % 60);
+		const FString CountLine = bHiding
+			? (bLocalSeeker ? FString::Printf(TEXT("RELEASED IN %s"), *Clock) : FString::Printf(TEXT("HIDE!  %s"), *Clock))
+			: FString::Printf(TEXT("SEEK  %s"), *Clock);
+		Y += DrawCentered(CountLine, CenterX, Y, bHiding ? ActivePalette.Good : ActivePalette.Bad, 0.82f * TextScale) + 3.0f * TextScale;
+	}
 
-	// Taunt countdown (Hunt only).
+	// Props-left counter (seek + round end).
+	if (bSeeking || bRoundEnd)
+	{
+		const FString CountText = FString::Printf(TEXT("PROPS LEFT  %d / %d"), GameState->PropHuntPropsRemaining, GameState->PropHuntPropsTotal);
+		Y += DrawCentered(CountText, CenterX, Y, MainText(), 0.74f * TextScale) + 3.0f * TextScale;
+	}
+
+	// Taunt countdown (seek only).
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
-	if (GameState->RoundPhase == EBHRoundPhase::Hunt && GameState->PropHuntNextTauntServerTime > Now)
+	if (bSeeking && GameState->PropHuntNextTauntServerTime > Now)
 	{
 		const int32 TauntIn = FMath::CeilToInt(GameState->PropHuntNextTauntServerTime - Now);
 		Y += DrawCentered(FString::Printf(TEXT("TAUNT IN  %ds"), TauntIn), CenterX, Y, ActivePalette.Bad, 0.62f * TextScale) + 3.0f * TextScale;
 	}
 
 	// Role-specific prompt.
-	const EBHPlayerRole PropRole = PlayerState ? PlayerState->PlayerRole : EBHPlayerRole::Unassigned;
 	FString RoleLine;
 	FLinearColor RoleColor = MutedText();
-	if (PropRole == EBHPlayerRole::Hunter)
+	if (bLocalSeeker)
 	{
-		RoleLine = TEXT("YOU ARE THE SEEKER - find every disguised prop. Q scans, Mouse1 swings.");
+		RoleLine = bHiding
+			? TEXT("Eyes closed - the props are hiding. You're released when the timer hits zero.")
+			: TEXT("YOU ARE A SEEKER - find every disguised prop. Q scans, Mouse1 swings.");
 		RoleColor = ActivePalette.Bad;
 	}
 	else if (PropRole == EBHPlayerRole::Survivor)
 	{
 		if (PlayerState && PlayerState->LifeState != EBHPlayerLifeState::Alive)
 		{
-			RoleLine = TEXT("FOUND - spectating. Better luck next round!");
+			RoleLine = TEXT("FOUND - watch the rest play out.");
 		}
 		else if (Character && Character->IsDisguisedAsProp())
 		{
@@ -1595,7 +1640,9 @@ void ABHHUD::DrawPropHuntOverlay(const ABHGameState* GameState, const ABHPlayerS
 		}
 		else
 		{
-			RoleLine = TEXT("YOU ARE A PROP - look at a prop and press Z to become it. Survive the timer!");
+			RoleLine = bHiding
+				? TEXT("HIDE! Look at a prop and press Z to become it.")
+				: TEXT("Look at a prop and press Z to become it - survive the timer!");
 			RoleColor = ActivePalette.Good;
 		}
 	}

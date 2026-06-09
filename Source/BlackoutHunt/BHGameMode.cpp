@@ -1055,6 +1055,11 @@ void ABHGameMode::BeginPlay()
 
 	BuildRuntimeFacility();
 
+	// Prop Hunt: a hide-and-seek prop game has no classroom objectives. Strip the question stations, breakers, exit
+	// gates and escape managers the builders/authored maps spawned, so props win by SURVIVING, not by tasks, and a
+	// prop can't run to an exit instead of hiding. No-op (and the game is unchanged) when prop hunt is off.
+	StripPropHuntObjectives();
+
 	if (HasAuthority() && GetWorld())
 	{
 		GetWorldTimerManager().SetTimer(VoidRecoveryTimerHandle, this, &ABHGameMode::RecoverPlayersFromVoid, 0.5f, true, 0.5f);
@@ -1678,9 +1683,15 @@ void ABHGameMode::NotifySurvivorCaptured(ABHCharacter* Survivor, ABHCharacter* C
 		return;
 	}
 
-	// Prop Hunt: a "found" prop is OUT (spectating), never a returning Hall Monitor -- suppress the conversion so the
-	// seeker's win condition (all props caught) resolves cleanly and "props found" math stays exact.
-	const bool bCanReturnAsFakeHunter = !bPropHuntMode && BHGS && BHGS->RoundPhase == EBHRoundPhase::Hunt && SurvivorPS && SurvivorPS->IsAliveSurvivor() && SurvivorController;
+	// Prop Hunt: a caught prop JOINS the seekers (infection) -- a wholly different flow from the classroom capture
+	// below (no question-point penalty, no Hall-Monitor tools). Handle it and return before any of that runs.
+	if (bPropHuntMode)
+	{
+		HandlePropHuntCapture(Survivor, CapturingHunter);
+		return;
+	}
+
+	const bool bCanReturnAsFakeHunter = BHGS && BHGS->RoundPhase == EBHRoundPhase::Hunt && SurvivorPS && SurvivorPS->IsAliveSurvivor() && SurvivorController;
 	const FVector CaptureLocation = Survivor->GetActorLocation();
 	const int32 LostQuestionPoints = SurvivorPS ? SurvivorPS->ApplyCaughtQuestionPointPenalty(0.25f) : 0;
 	RecordPlaytestTelemetryMarker(TEXT("capture"), CaptureLocation, bCanReturnAsFakeHunter ? TEXT("hall_monitor_return") : TEXT("eliminated"), CapturingHunterPS, SurvivorPS);
@@ -11686,7 +11697,9 @@ void ABHGameMode::TickDirector()
 	// (press F, answer a question, learn the axe) is never interrupted by an unscripted jumpscare - and so the
 	// jolt can't fire on the human player while they're learning to BE the Teacher. Presence still updates above,
 	// so the dread vignette reads normally.
-	if (bTutorialMode)
+	// Prop Hunt is a casual hide-and-seek game, not horror: a jumpscare on a hidden prop makes no sense. Suppress every
+	// random director scare / cold call / "scare a Hunter" jolt for prop hunt (presence above still ticks, harmlessly).
+	if (bTutorialMode || bPropHuntMode)
 	{
 		return;
 	}
@@ -14462,19 +14475,24 @@ void ABHGameMode::StartPrepPhase()
 		UpdateDirectorGameState(TEXT("Role warmup: try flashlight, lockers, questions, decoys, scans, captures, and Hall Monitor tools. The live Hunt resets everyone."));
 	}
 
-	// Prop Hunt: publish the props-left/total readout during warmup so the HUD reflects the mode before the Hunt.
+	// Prop Hunt: the Prep phase IS the HIDE window. Freeze + screen-black the seeker, set the hide clock, let props
+	// disguise. The standard Prep->Hunt timer transition releases them into the SEEK phase (StartHuntPhase).
 	if (bPropHuntMode)
 	{
-		RefreshPropHuntGameState();
+		BeginPropHuntHidePhase();
 	}
 
 	GetWorldTimerManager().SetTimer(RoundTimerHandle, this, &ABHGameMode::TickRoundTimer, 1.0f, true);
 
-	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	// Classroom warmup coaching -- not for prop hunt (it owns its own hide-phase messaging).
+	if (!bPropHuntMode)
 	{
-		if (ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get()))
+		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
 		{
-			PC->ClientShowStatusMessage(TEXT("Role warmup started. Try your controls safely; host can press F10 or the menu button to start Hunt now."), 5.0f);
+			if (ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get()))
+			{
+				PC->ClientShowStatusMessage(TEXT("Role warmup started. Try your controls safely; host can press F10 or the menu button to start Hunt now."), 5.0f);
+			}
 		}
 	}
 }
