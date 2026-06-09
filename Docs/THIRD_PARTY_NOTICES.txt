@@ -23,6 +23,16 @@ KayKit / Kay Lousberg
 - License: Creative Commons CC0 1.0 Universal.
 - Courtesy credit: KayKit by Kay Lousberg, www.kaylousberg.com.
 
+Kenney
+- Use: CC0 prop meshes and materials. Space Kit supplies the train-roof
+  stargazing props (telescope, satellite dish / antenna, rocks, meteor, deck
+  stool) cooked under Content/BlackoutHunt/Art/Roof. Nature Kit supplies the
+  optional Foggrounds outdoor dressing.
+- License: Creative Commons CC0 1.0 Universal.
+- Courtesy credit: Assets by Kenney (kenney.nl).
+- Source pages: https://kenney.nl/assets/space-kit and
+  https://kenney.nl/assets/nature-kit
+
 OpenGameArt CC0 scream sources
 - Use: processed audio layer imported as
   Content/BlackoutHunt/Audio/SW_TerrifiedScreamFaint.uasset.

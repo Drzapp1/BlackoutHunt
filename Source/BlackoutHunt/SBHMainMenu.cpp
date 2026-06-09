@@ -800,33 +800,103 @@ namespace
 		const FLinearColor& AccentColor,
 		const TSharedRef<SWidget>& MenuContent)
 	{
-		return SNew(SExpandableArea)
-			.InitiallyCollapsed(true)
-			.AllowAnimatedTransition(true)
-			.BorderImage(WhiteBrush())
-			.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.980f))
-			.BodyBorderImage(WhiteBrush())
-			.BodyBorderBackgroundColor(FLinearColor(0.018f, 0.022f, 0.026f, 0.98f))
-			.HeaderPadding(FMargin(12.0f, 8.0f))
-			.Padding(FMargin(10.0f, 8.0f, 10.0f, 10.0f))
-			.HeaderContent()
+		// Per-section identity, derived from the (dark, muted) AccentColor so each card reads apart by HUE
+		// and by VALUE on the near-black page. One shared "Grade" (accent-luma smoothstep) drives every
+		// shade: bright accents brighten; the danger reds grade toward 0 and stay oppressively dim.
+		const FLinearColor A = AccentColor;
+		const float AL = 0.2126f * A.R + 0.7152f * A.G + 0.0722f * A.B;
+		const float Gt = FMath::Clamp((AL - 0.12f) / (0.30f - 0.12f), 0.0f, 1.0f);
+		const float Grade = Gt * Gt * (3.0f - 2.0f * Gt);
+
+		// Title -- the strongest tell-apart lever: a dim, desaturated grimy tint (low chroma, low value).
+		const FLinearColor TitleSat(
+			FMath::Clamp(AL + (A.R - AL) * 0.42f, 0.0f, 1.0f),
+			FMath::Clamp(AL + (A.G - AL) * 0.42f, 0.0f, 1.0f),
+			FMath::Clamp(AL + (A.B - AL) * 0.42f, 0.0f, 1.0f), 1.0f);
+		const float TitlePeak = FMath::Lerp(0.44f, 0.58f, Grade);
+		const float TitleK = TitlePeak / FMath::Max(FMath::Max3(TitleSat.R, TitleSat.G, TitleSat.B), 1e-4f);
+		const FLinearColor TitleColor(
+			FMath::Clamp(TitleSat.R * TitleK, 0.0f, 1.0f),
+			FMath::Clamp(TitleSat.G * TitleK, 0.0f, 1.0f),
+			FMath::Clamp(TitleSat.B * TitleK, 0.0f, 1.0f), 1.0f);
+
+		// Rail -- the dominant left-edge separator: muted -- slightly more chroma than the title, never glowing.
+		const FLinearColor RailSat(
+			FMath::Clamp(AL + (A.R - AL) * 0.58f, 0.0f, 1.0f),
+			FMath::Clamp(AL + (A.G - AL) * 0.58f, 0.0f, 1.0f),
+			FMath::Clamp(AL + (A.B - AL) * 0.58f, 0.0f, 1.0f), 1.0f);
+		const float RailPeak = FMath::Lerp(0.32f, 0.50f, Grade);
+		const float RailK = RailPeak / FMath::Max(FMath::Max3(RailSat.R, RailSat.G, RailSat.B), 1e-4f);
+		const FLinearColor RailColor(
+			FMath::Clamp(RailSat.R * RailK, 0.0f, 1.0f),
+			FMath::Clamp(RailSat.G * RailK, 0.0f, 1.0f),
+			FMath::Clamp(RailSat.B * RailK, 0.0f, 1.0f), 1.0f);
+		const FLinearColor RailCap = FMath::Lerp(RailColor, FLinearColor::White, 0.15f);
+
+		// Header fill -- a value-graded hue stain that REPLACES the one shared gray. Desaturate hard toward
+		// the accent's own luma, rescale to a graded dark target, add a neutral panel floor (never pure
+		// black or pure hue). The danger reds (Grade < 0.20) take a faint warm nudge so they feel sicklier.
+		const FLinearColor PanelBase(0.072f, 0.076f, 0.084f, 1.0f);
+		const FLinearColor HdrDesat(
+			FMath::Lerp(A.R, AL, 0.62f), FMath::Lerp(A.G, AL, 0.62f), FMath::Lerp(A.B, AL, 0.62f), 1.0f);
+		const float DG = 0.2126f * HdrDesat.R + 0.7152f * HdrDesat.G + 0.0722f * HdrDesat.B;
+		const float HdrK = FMath::Lerp(0.018f, 0.050f, Grade) / FMath::Max(DG, 1e-4f);
+		const float HdrWarmR = (Grade < 0.20f) ? 0.012f : 0.0f;
+		const FLinearColor HeaderTint(
+			FMath::Clamp(HdrDesat.R * HdrK + PanelBase.R * 0.55f + HdrWarmR, 0.0f, 1.0f),
+			FMath::Clamp(HdrDesat.G * HdrK + PanelBase.G * 0.55f, 0.0f, 1.0f),
+			FMath::Clamp(HdrDesat.B * HdrK + PanelBase.B * 0.55f, 0.0f, 1.0f), 0.985f);
+
+		// Summary -- stays in the dim band but leans toward the section hue so the whole card coheres.
+		const FLinearColor DimNeutral(0.470f, 0.450f, 0.420f, 1.0f);
+		const FLinearColor SummaryColor(
+			FMath::Lerp(DimNeutral.R, TitleColor.R, 0.26f),
+			FMath::Lerp(DimNeutral.G, TitleColor.G, 0.26f),
+			FMath::Lerp(DimNeutral.B, TitleColor.B, 0.26f), 1.0f);
+
+		// ADJUSTABLE CONTRAST: every per-section colour is a LIVE blend neutral <-> bold by BHMenuSectionContrast(),
+		// re-read each repaint so the contrast slider restyles all cards instantly. At 0 the header/title/summary
+		// collapse to the neutral theme baseline (near-monotone) and only the muted accent rail differentiates; at 1
+		// the full bold identity shows. The neutral theme roles resolve live, so the theme dial still applies on top.
+		const FLinearColor NeutralRail = A;
+		TAttribute<FSlateColor> HeaderAttr = TAttribute<FSlateColor>::Create([HeaderTint]()
+		{
+			FLinearColor N = BHResolveActiveThemeColor(&FBHMenuTheme::Panel);
+			N.A = 0.980f;
+			return FSlateColor(FMath::Lerp(N, HeaderTint, BHMenuSectionContrast()));
+		});
+		TAttribute<FSlateColor> TitleAttr = TAttribute<FSlateColor>::Create([TitleColor]()
+		{
+			return FSlateColor(FMath::Lerp(BHResolveActiveThemeColor(&FBHMenuTheme::TextPrimary), TitleColor, BHMenuSectionContrast()));
+		});
+		TAttribute<FSlateColor> SummaryAttr = TAttribute<FSlateColor>::Create([SummaryColor]()
+		{
+			return FSlateColor(FMath::Lerp(BHResolveActiveThemeColor(&FBHMenuTheme::TextDim), SummaryColor, BHMenuSectionContrast()));
+		});
+		TAttribute<FSlateColor> RailAttr = TAttribute<FSlateColor>::Create([NeutralRail, RailColor]()
+		{
+			return FSlateColor(FMath::Lerp(NeutralRail, RailColor, BHMenuSectionContrast()));
+		});
+		TAttribute<FSlateColor> RailCapAttr = TAttribute<FSlateColor>::Create([NeutralRail, RailCap]()
+		{
+			return FSlateColor(FMath::Lerp(NeutralRail, RailCap, BHMenuSectionContrast()));
+		});
+
+		// SOverlay wrap: the rail (slot 2, painted on top) spans the WHOLE card -- collapsed or expanded --
+		// so the section is bounded by a bright saturated edge that never waits on expansion.
+		return SNew(SOverlay)
+			+ SOverlay::Slot()
 			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.Padding(0.0f, 0.0f, 10.0f, 0.0f)
-				[
-					SNew(SBox)
-					.WidthOverride(5.0f)
-					.HeightOverride(34.0f)
-					[
-						SNew(SBorder)
-						.BorderImage(WhiteBrush())
-						.BorderBackgroundColor(AccentColor)
-					]
-				]
-				+ SHorizontalBox::Slot()
-				.FillWidth(1.0f)
+				SNew(SExpandableArea)
+				.InitiallyCollapsed(true)
+				.AllowAnimatedTransition(true)
+				.BorderImage(WhiteBrush())
+				.BorderBackgroundColor(HeaderAttr)
+				.BodyBorderImage(WhiteBrush())
+				.BodyBorderBackgroundColor(FLinearColor(0.014f, 0.018f, 0.024f, 0.985f))
+				.HeaderPadding(FMargin(16.0f, 8.0f))
+				.Padding(FMargin(14.0f, 8.0f, 10.0f, 10.0f))
+				.HeaderContent()
 				[
 					SNew(SVerticalBox)
 					+ SVerticalBox::Slot()
@@ -834,7 +904,7 @@ namespace
 					[
 						SNew(STextBlock)
 						.Font(MenuFont(13, FName(TEXT("Bold"))))
-						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
+						.ColorAndOpacity(TitleAttr)
 						.Text(Label)
 					]
 					+ SVerticalBox::Slot()
@@ -844,14 +914,41 @@ namespace
 						SNew(STextBlock)
 						.AutoWrapText(true)
 						.Font(MenuFont(10))
-						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
+						.ColorAndOpacity(SummaryAttr)
 						.Text(Summary)
 					]
 				]
+				.BodyContent()
+				[
+					MenuContent
+				]
 			]
-			.BodyContent()
+			+ SOverlay::Slot()
+			.HAlign(HAlign_Left)
+			.VAlign(VAlign_Fill)
 			[
-				MenuContent
+				SNew(SBox)
+				.WidthOverride(6.0f)
+				[
+					SNew(SOverlay)
+					+ SOverlay::Slot()
+					[
+						SNew(SBorder)
+						.BorderImage(WhiteBrush())
+						.BorderBackgroundColor(RailAttr)
+					]
+					+ SOverlay::Slot()
+					.VAlign(VAlign_Top)
+					[
+						SNew(SBox)
+						.HeightOverride(2.0f)
+						[
+							SNew(SBorder)
+							.BorderImage(WhiteBrush())
+							.BorderBackgroundColor(RailCapAttr)
+						]
+					]
+				]
 			];
 	}
 
@@ -864,7 +961,7 @@ namespace
 	{
 		ActionList->AddSlot()
 			.AutoHeight()
-			.Padding(0.0f, 0.0f, 0.0f, 8.0f)
+			.Padding(0.0f, 0.0f, 0.0f, 12.0f)
 			[
 				MenuPlayDropdownSection(Label, Summary, AccentColor, MenuContent)
 			];
@@ -2724,6 +2821,16 @@ void SBHMainMenu::Tick(const FGeometry& AllottedGeometry, const double InCurrent
 	FlickerAlpha = FMath::Clamp(1.0f - 0.06f * Slow - 0.05f * Fast - Dip, 0.78f, 1.0f);
 	// Grain shimmer phase.
 	GrainPhase = FMath::Frac(GrainPhase + InDeltaTime * 1.7f);
+
+	// Sticky character preview: translate the preview box down by the Character tab's scroll offset so it follows
+	// the view (stays on-screen) as the cosmetics list scrolls, instead of scrolling away or sitting fixed in the
+	// middle of the column. Render-transform only (no layout reflow); identity when not scrolled. Harmless on other
+	// tabs (the preview isn't drawn there).
+	if (CharacterTabScrollBox.IsValid() && AvatarPreviewStickyBox.IsValid())
+	{
+		const float ScrollY = FMath::Max(0.0f, static_cast<float>(CharacterTabScrollBox->GetScrollOffset()));
+		AvatarPreviewStickyBox->SetRenderTransform(FSlateRenderTransform(FVector2D(0.0f, ScrollY)));
+	}
 }
 
 void SBHMainMenu::Construct(const FArguments& InArgs)
@@ -2740,6 +2847,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 			{
 				BHSetActiveMenuThemeIndex(ThemeAccount->GetProgress().SelectedThemeIndex);
 				BHSetActiveMenuThemeStrength(ThemeAccount->GetProgress().SelectedThemeStrength);
+				BHSetMenuSectionContrast(ThemeAccount->GetProgress().SelectedSectionContrast);
 			}
 		}
 	}
@@ -3172,7 +3280,7 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 						.BorderBackgroundColor(BHThemeColorAttr(&FBHMenuTheme::Panel, 0.940f))
 						.Padding(16.0f)
 						[
-							SNew(SScrollBox)
+							SAssignNew(CharacterTabScrollBox, SScrollBox)
 							+ SScrollBox::Slot()
 							[
 								SNew(SVerticalBox)
@@ -3441,13 +3549,125 @@ FReply SBHMainMenu::OnToggleStartCredentialsClicked()
 	return FReply::Handled();
 }
 
+#if !UE_BUILD_SHIPPING || BH_DEV_UNLOCK
+// Maps a key to its character for the dev-unlock password (digits + '-' only, which is all "23-89" needs).
+// Returns "" for any other key, so non-password keys append nothing to the buffer.
+static FString BHPasswordCharForKey(const FKey& Key)
+{
+	if (Key == EKeys::Hyphen || Key == EKeys::Subtract)
+	{
+		return TEXT("-");
+	}
+	static const FKey TopRow[10] = { EKeys::Zero, EKeys::One, EKeys::Two, EKeys::Three, EKeys::Four,
+		EKeys::Five, EKeys::Six, EKeys::Seven, EKeys::Eight, EKeys::Nine };
+	static const FKey NumPad[10] = { EKeys::NumPadZero, EKeys::NumPadOne, EKeys::NumPadTwo, EKeys::NumPadThree, EKeys::NumPadFour,
+		EKeys::NumPadFive, EKeys::NumPadSix, EKeys::NumPadSeven, EKeys::NumPadEight, EKeys::NumPadNine };
+	for (int32 Digit = 0; Digit < 10; ++Digit)
+	{
+		if (Key == TopRow[Digit] || Key == NumPad[Digit])
+		{
+			return FString::FromInt(Digit);
+		}
+	}
+	return FString();
+}
+#endif
+
 bool SBHMainMenu::SupportsKeyboardFocus() const
 {
 	return true;
 }
 
+FReply SBHMainMenu::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+{
+	// Attack-rebind capture (Controls tab): while listening, a mouse button (Right Mouse, side buttons, etc.) can
+	// be bound to ATTACK. The event bubbles up here from a non-interactive menu area; ignored otherwise.
+	if (bListeningForCaptureRebind)
+	{
+		const FKey Button = MouseEvent.GetEffectingButton();
+		if (Button.IsValid())
+		{
+			if (ABHPlayerController* RebindPC = PlayerController.Get())
+			{
+				RebindPC->SaveCaptureKeyBinding(Button);
+			}
+			bListeningForCaptureRebind = false;
+			StatusText = FText::FromString(FString::Printf(TEXT("Attack bound to %s."), *MenuKeyDisplayName(Button)));
+			return FReply::Handled();
+		}
+	}
+	return FReply::Unhandled();
+}
+
 FReply SBHMainMenu::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
 {
+	// Attack-rebind capture (Controls tab): while listening for a new ATTACK key, the next key is bound here and
+	// consumed so it never leaks to menu nav / the easter-egg trackers. Esc cancels; modifier-only keys are ignored.
+	if (bListeningForCaptureRebind)
+	{
+		const FKey RebindKey = InKeyEvent.GetKey();
+		if (RebindKey == EKeys::Escape)
+		{
+			bListeningForCaptureRebind = false;
+			StatusText = FText::FromString(TEXT("Rebind cancelled."));
+			return FReply::Handled();
+		}
+		if (RebindKey != EKeys::LeftControl && RebindKey != EKeys::RightControl
+			&& RebindKey != EKeys::LeftAlt && RebindKey != EKeys::RightAlt
+			&& RebindKey != EKeys::LeftShift && RebindKey != EKeys::RightShift)
+		{
+			if (ABHPlayerController* RebindPC = PlayerController.Get())
+			{
+				RebindPC->SaveCaptureKeyBinding(RebindKey);
+			}
+			bListeningForCaptureRebind = false;
+			StatusText = FText::FromString(FString::Printf(TEXT("Attack bound to %s."), *MenuKeyDisplayName(RebindKey)));
+		}
+		return FReply::Handled();
+	}
+
+#if !UE_BUILD_SHIPPING || BH_DEV_UNLOCK
+	// Dev-unlock first-time password capture (developer account only). While awaiting, consume keys here so the
+	// typed password never feeds the Konami/gravity trackers or menu nav. Digits and '-' build the buffer; Enter
+	// submits, Esc cancels, Backspace edits.
+	if (bDevAwaitingPassword)
+	{
+		const FKey AwaitKey = InKeyEvent.GetKey();
+		if (AwaitKey == EKeys::Enter)
+		{
+			ABHPlayerController* AuthPC = PlayerController.Get();
+			if (AuthPC && AuthPC->TryAuthorizeDevUnlock(DevPasswordBuffer) && AuthPC->PerformDevUnlock())
+			{
+				StatusText = FText::FromString(TEXT("[DEV] Password accepted -- unlocked all cosmetics. Pick an outfit / title / emblem in the Character tab."));
+			}
+			else
+			{
+				StatusText = FText::FromString(TEXT("[DEV] Wrong dev password."));
+			}
+			bDevAwaitingPassword = false;
+			DevPasswordBuffer.Reset();
+			return FReply::Handled();
+		}
+		if (AwaitKey == EKeys::Escape)
+		{
+			bDevAwaitingPassword = false;
+			DevPasswordBuffer.Reset();
+			StatusText = FText::FromString(TEXT("Dev unlock cancelled."));
+			return FReply::Handled();
+		}
+		if (AwaitKey == EKeys::BackSpace)
+		{
+			if (DevPasswordBuffer.Len() > 0)
+			{
+				DevPasswordBuffer = DevPasswordBuffer.LeftChop(1);
+			}
+			return FReply::Handled();
+		}
+		DevPasswordBuffer += BHPasswordCharForKey(AwaitKey); // appends "" for non-password keys
+		return FReply::Handled();
+	}
+#endif
+
 	// Easter egg: the Konami code. Tracked on every key without consuming it (so normal menu nav still
 	// works); only the final key is consumed, to reveal a hidden line. Cosmetic; gated by bh.EasterEggs.
 	if (BHAreEasterEggsEnabled())
@@ -3506,34 +3726,34 @@ FReply SBHMainMenu::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKe
 		}
 	}
 
-#if !UE_BUILD_SHIPPING
-	// Developer-only: F9 unlocks every cosmetic for playtesting. The main menu runs in UI-only input mode, so the
-	// engine console key never reaches the viewport here -- but the menu receives key events directly (this
-	// handler), so a hotkey is the reliable path. Compiled out of Shipping. Undo: AccountResetLocalClassroomData.
+#if !UE_BUILD_SHIPPING || BH_DEV_UNLOCK
+	// Developer-only: Ctrl+Alt+U unlocks every cosmetic for playtesting. F9 (plain and Ctrl+Alt+F9) is already the
+	// tester train-phase shortcut, so the unlock has its own collision-proof chord that matches the in-game bind
+	// (ABHPlayerController::DevUnlockEverything). The main menu runs in UI-only input mode, so the engine console key
+	// never reaches the viewport here -- but the menu receives key events directly (this handler), so a hotkey is the
+	// reliable path. Compiled out of Shipping. Undo: AccountResetLocalClassroomData.
 	//
-	// Gated on a DEV CREDENTIAL marker on the machine so a shared dev/test build doesn't hand the unlock to whoever
-	// runs it: set environment variable BH_DEV=1, or drop an empty file at Saved/.bhdev. Without the marker, F9 no-ops
-	// (with a hint). The marker is local-only and never ships (Saved/ is excluded from packages).
-	if (InKeyEvent.GetKey() == EKeys::F9)
+	// Restricted to the developer account ("Adam") with a one-time password (first use only, then persisted).
+	// The password itself is captured by the bDevAwaitingPassword branch at the top of this handler.
+	if (InKeyEvent.GetKey() == EKeys::U && InKeyEvent.IsControlDown() && InKeyEvent.IsAltDown())
 	{
-		const bool bHasDevCredential =
-			FPlatformMisc::GetEnvironmentVariable(TEXT("BH_DEV")) == TEXT("1")
-			|| FPaths::FileExists(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT(".bhdev")));
-		if (!bHasDevCredential)
+		ABHPlayerController* DevPC = PlayerController.Get();
+		if (!DevPC || !DevPC->IsLocalDevUser())
 		{
-			StatusText = FText::FromString(TEXT("F9 dev unlock requires dev credentials (set BH_DEV=1 or add Saved/.bhdev)."));
+			StatusText = FText::FromString(TEXT("Dev unlock is restricted to the developer account."));
 			return FReply::Handled();
 		}
-		if (ABHPlayerController* DevPC = PlayerController.Get())
+		if (DevPC->IsDevUnlockAuthorized())
 		{
-			if (UGameInstance* DevGI = DevPC->GetGameInstance())
-			{
-				if (UBHAccountSubsystem* DevAccount = DevGI->GetSubsystem<UBHAccountSubsystem>())
-				{
-					DevAccount->BHUnlockAllCosmetics();
-					StatusText = FText::FromString(TEXT("[DEV] F9: unlocked all cosmetics -- pick an outfit / title / emblem in the Character tab."));
-				}
-			}
+			DevPC->PerformDevUnlock();
+			StatusText = FText::FromString(TEXT("[DEV] Unlocked all cosmetics -- pick an outfit / title / emblem in the Character tab."));
+		}
+		else
+		{
+			// First use: ask for the one-time password (captured by the bDevAwaitingPassword branch above).
+			bDevAwaitingPassword = true;
+			DevPasswordBuffer.Reset();
+			StatusText = FText::FromString(TEXT("[DEV] Enter dev password, then press Enter (Esc to cancel)."));
 		}
 		return FReply::Handled();
 	}
@@ -4331,7 +4551,9 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 	const FString RankName = BHRankForXP(XP, RankCurrent, RankNext);
 	const float RankPct = (RankNext > RankCurrent) ? FMath::Clamp(static_cast<float>(XP - RankCurrent) / static_cast<float>(RankNext - RankCurrent), 0.0f, 1.0f) : 1.0f;
 	const FString RankXpStr = (RankNext > RankCurrent) ? FString::Printf(TEXT("%d / %d XP"), XP, RankNext) : FString::Printf(TEXT("%d XP  (max rank)"), XP);
-	const FString StatsStr = FString::Printf(TEXT("%d rounds  -  %d wins (%dT / %dS)  -  %d escapes  -  best streak %d  -  %d/%d awards"), Rounds, HunterWins + SurvivorWins, HunterWins, SurvivorWins, Escapes, BestStreak, Earned, Total);
+	const int32 RelicsFound = AccountSubsystem ? AccountSubsystem->GetCollectableFoundCount() : 0;
+	const int32 RelicsTotal = AccountSubsystem ? AccountSubsystem->GetTotalCollectables() : 0;
+	const FString StatsStr = FString::Printf(TEXT("%d rounds  -  %d wins (%dT / %dS)  -  %d escapes  -  best streak %d  -  %d/%d awards  -  %d/%d relics"), Rounds, HunterWins + SurvivorWins, HunterWins, SurvivorWins, Escapes, BestStreak, Earned, Total, RelicsFound, RelicsTotal);
 
 	// Easiest-first so the list reads as a difficulty ramp; within a tier, earned badges float up.
 	Achievements.Sort([](const FBHAchievementDisplay& A, const FBHAchievementDisplay& B)
@@ -4365,7 +4587,11 @@ TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
 		}
 
 		const FString TitleStr = bSecret ? FString(TEXT("??? (hidden)")) : Ach.Title;
-		const FString DescStr = bSecret ? FString(TEXT("A secret achievement. Keep playing to discover it.")) : Ach.Description;
+		// A still-hidden secret shows its cryptic hint (a rough nudge, never the steps) if it has one, so "???" feels
+		// chase-able rather than blank; otherwise the generic secret line. Earned/non-secret show the real description.
+		const FString DescStr = bSecret
+			? (Ach.Hint.IsEmpty() ? FString(TEXT("A secret achievement. Keep playing to discover it.")) : Ach.Hint)
+			: Ach.Description;
 		const FString RewardStr = Ach.RewardLabel.IsEmpty() ? FString() : (FString(TEXT("Reward: ")) + Ach.RewardLabel);
 		const FString StateStr = Ach.bUnlocked ? (Ach.bIsNew ? FString(TEXT("NEW!")) : FString(TEXT("EARNED"))) : (bSecret ? FString(TEXT("???")) : BHAchievementTierName(Ach.Difficulty));
 		const FLinearColor StateColor = Ach.bUnlocked ? (Ach.bIsNew ? FLinearColor(1.0f, 0.86f, 0.30f, 1.0f) : FLinearColor(0.40f, 0.86f, 0.52f, 1.0f)) : TierColor;
@@ -5322,7 +5548,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildStartScreen()
 						const FLinearColor Danger = BHResolveActiveThemeColor(&FBHMenuTheme::Danger);
 						return FSlateColor(FMath::Lerp(Danger, Dim, FlickerAlpha));
 					}))
-					.Text(FText::FromString(TEXT("BUILD 0.8.1      //      SIGNAL: UNSECURED      //      POWER: FAILING")))
+					.Text(FText::FromString(TEXT("BUILD 0.9.1      //      SIGNAL: UNSECURED      //      POWER: FAILING")))
 				]
 				+ SVerticalBox::Slot()
 				.AutoHeight()
@@ -7248,6 +7474,18 @@ FReply SBHMainMenu::OnTextureQualityClicked(int32 Quality)
 	return FReply::Handled();
 }
 
+FReply SBHMainMenu::OnTexturePreloadClicked(int32 Mode)
+{
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		FString Message;
+		PC->ApplyTexturePreloadForMenu(Mode, Message);
+		StatusText = FText::FromString(Message);
+	}
+
+	return FReply::Handled();
+}
+
 FReply SBHMainMenu::OnShadowQualityClicked(int32 Quality)
 {
 	if (ABHPlayerController* PC = PlayerController.Get())
@@ -8513,10 +8751,27 @@ FText SBHMainMenu::GetClassroomRunbookStepStatusText(EBHClassroomRunbookStep Ste
 		return FText::FromString(TEXT("Optional backup from selected preset"));
 	case EBHClassroomRunbookStep::Tunnel:
 	{
-		const FString Address = BHGI ? BHGI->GetPreferredClassroomJoinAddress(MenuDefaultGamePort) : FString();
-		return FText::FromString(Address.IsEmpty()
-			? FString(TEXT("No join endpoint yet"))
-			: FString::Printf(TEXT("Endpoint ready: %s"), *Address));
+		const FString TunnelAddress = BHGI ? BHGI->GetConfiguredClassroomJoinAddress(MenuDefaultGamePort) : FString();
+		const FString LanAddress = ResolveLocalAddress();
+		const bool bHasLan = !LanAddress.IsEmpty() && !LanAddress.StartsWith(TEXT("127."));
+		if (TunnelAddress.IsEmpty() && !bHasLan)
+		{
+			return FText::FromString(TEXT("No join endpoint yet. Start the Playit agent or connect to a network."));
+		}
+		FString Lines;
+		if (!TunnelAddress.IsEmpty())
+		{
+			Lines += FString::Printf(TEXT("Playit: %s"), *TunnelAddress);
+		}
+		if (bHasLan)
+		{
+			if (!Lines.IsEmpty())
+			{
+				Lines += TEXT("\n");
+			}
+			Lines += FString::Printf(TEXT("LAN:    %s  (same hotspot / network)"), *LanAddress);
+		}
+		return FText::FromString(Lines);
 	}
 	case EBHClassroomRunbookStep::Students:
 		if (!BHGS)
@@ -8889,6 +9144,10 @@ FSlateColor SBHMainMenu::GetGraphicsOptionButtonColor(FName OptionName, int32 Va
 		else if (OptionName == TEXT("Texture"))
 		{
 			bSelected = PC->GetGraphicsTextureQualityForMenu() == Value;
+		}
+		else if (OptionName == TEXT("Preload"))
+		{
+			bSelected = PC->GetGraphicsTexturePreloadForMenu() == Value;
 		}
 		else if (OptionName == TEXT("Shadow"))
 		{
@@ -9768,6 +10027,32 @@ FSlateColor SBHMainMenu::GetThemeStrengthButtonColor(float Strength) const
 	return FSlateColor(BHResolveActiveThemeColor(bSelected ? &FBHMenuTheme::Accent : &FBHMenuTheme::ButtonIdle));
 }
 
+void SBHMainMenu::OnSectionContrastChanged(float NewContrast)
+{
+	BHSetMenuSectionContrast(NewContrast);
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		if (UGameInstance* GI = PC->GetGameInstance())
+		{
+			if (UBHAccountSubsystem* Account = GI->GetSubsystem<UBHAccountSubsystem>())
+			{
+				Account->SetSelectedSectionContrast(BHMenuSectionContrast());
+			}
+		}
+	}
+	StatusText = FText::FromString(FString::Printf(TEXT("Section contrast: %d%%"), FMath::RoundToInt(BHMenuSectionContrast() * 100.0f)));
+}
+
+float SBHMainMenu::GetSectionContrastValue() const
+{
+	return BHMenuSectionContrast();
+}
+
+FText SBHMainMenu::GetSectionContrastLabel() const
+{
+	return FText::FromString(FString::Printf(TEXT("Contrast %d%%"), FMath::RoundToInt(BHMenuSectionContrast() * 100.0f)));
+}
+
 TSharedRef<SWidget> SBHMainMenu::BuildThemeSection()
 {
 	TSharedRef<SHorizontalBox> ThemeButtons = SNew(SHorizontalBox);
@@ -10146,9 +10431,10 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
-				.Padding(0.0f, 0.0f, 12.0f, 0.0f)
+				.VAlign(VAlign_Top)
+					.Padding(0.0f, 0.0f, 12.0f, 0.0f)
 				[
-					BuildAvatarPreview()
+					SAssignNew(AvatarPreviewStickyBox, SBox)[ BuildAvatarPreview() ]
 				]
 				+ SHorizontalBox::Slot()
 				.FillWidth(1.0f)
@@ -11524,7 +11810,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 			.AutoWrapText(true)
 			.Font(MenuFont(12))
 			.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
-			.Text(FText::FromString(TEXT("You are a student. The Teacher hunts you. Win by: 1) Warm up your role. 2) Answer orange stations with 1-4, then hold E on the work. 3) Read threats - Teacher meter, CCTV, loud floors - and break sight before they spike. 4) At train stops, answer the bonus and buy upgrades. 5) Board the final escape before the route locks.")))
+			.Text(FText::FromString(TEXT("You are a student. The Teacher hunts you. Survive by reading the room and keeping your hands busy. Warm up your role first, then answer orange stations (press 1-4, then hold E), watch the Teacher signal bar for proximity, and break line of sight before pressure spikes. At each train stop, answer the bonus terminal and buy upgrades. When the final escape opens, board fast - the Teacher is released a moment behind you.")))
 		];
 
 	Panel->AddSlot()
@@ -11543,7 +11829,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 					SNew(STextBlock)
 					.Font(MenuFont(13, FName(TEXT("Bold"))))
 					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
-					.Text(FText::FromString(TEXT("Actual annotated HUD screenshot")))
+					.Text(FText::FromString(TEXT("Read the HUD")))
 				]
 				+ SVerticalBox::Slot()
 				.AutoHeight()
@@ -11618,6 +11904,15 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 				FText::FromString(TEXT("Dread is strain")),
 				FText::FromString(TEXT("High dread slows movement, tightens your flashlight reach, shakes control, and can make hiding or camping too long betray you.")),
 				FLinearColor(0.78f, 0.18f, 0.14f, 1.0f))
+		];
+	PressureRow->AddSlot()
+		.FillWidth(1.0f)
+		.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+		[
+			MenuGuideCallout(
+				FText::FromString(TEXT("Presence is the room's heat")),
+				FText::FromString(TEXT("Presence (HUD top-left) rises as the Teacher hunts. High presence intensifies scares, triggers ambient horror, and is visible to everyone - lower it by completing tasks or reaching the exit.")),
+				FLinearColor(0.62f, 0.36f, 0.84f, 1.0f))
 		];
 	PressureRow->AddSlot()
 		.FillWidth(1.0f)
@@ -11705,7 +12000,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 			MenuGuideObjectCard(
 				FName(TEXT("Train")),
 				FText::FromString(TEXT("Train Shop")),
-				FText::FromString(TEXT("Intermission stop. Read recap, answer the bonus terminal, buy upgrades, then board before departure.")),
+				FText::FromString(TEXT("Intermission stop. Read recap boards, answer the bonus terminal (1-4), then buy upgrades in the shop carriage. Optional social car minigames (blackjack, chess, slots, darts) award small bonuses. Board before departure.")),
 				FLinearColor(0.60f, 0.82f, 0.92f, 1.0f))
 		];
 	ObjectGrid->AddSlot(2, 2)
@@ -11885,19 +12180,33 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 			MenuGuideActionTile(FText::FromString(TEXT("F / F1-F6")), FText::FromString(TEXT("Light / Powerups")), FText::FromString(TEXT("F toggles light. F1-F6 spend shop powerups: stamina, sprint, light, hint, decoy, door rush.")), FLinearColor(0.36f, 0.18f, 0.18f, 1.0f))
 		];
 	KeyGrid->AddSlot(0, 2)
-		.Padding(0.0f, 8.0f, 8.0f, 0.0f)
+		.Padding(0.0f, 8.0f, 8.0f, 8.0f)
 		[
 			MenuGuideActionTile(FText::FromString(TEXT("G")), FText::FromString(TEXT("Fake Trail")), FText::FromString(TEXT("Survivor decoy or Hall Monitor trap, depending on role and unlocks.")), FLinearColor(0.30f, 0.30f, 0.42f, 1.0f))
 		];
 	KeyGrid->AddSlot(1, 2)
-		.Padding(0.0f, 8.0f, 8.0f, 0.0f)
+		.Padding(0.0f, 8.0f, 8.0f, 8.0f)
 		[
 			MenuGuideActionTile(FText::FromString(TEXT("Q / R")), FText::FromString(TEXT("Role Powers")), FText::FromString(TEXT("Teacher scan/blackout. Hall Monitor real hint, aimed false marker, and CCTV spoof.")), FLinearColor(0.36f, 0.18f, 0.18f, 1.0f))
 		];
 	KeyGrid->AddSlot(2, 2)
-		.Padding(0.0f, 8.0f, 0.0f, 0.0f)
+		.Padding(0.0f, 8.0f, 0.0f, 8.0f)
 		[
-			MenuGuideActionTile(FText::FromString(TEXT("B / H / T-Y-U")), FText::FromString(TEXT("Class Tools")), FText::FromString(TEXT("B host board. H sends spectator support; T/Y/U queue next-round role requests.")), FLinearColor(0.22f, 0.32f, 0.44f, 1.0f))
+			MenuGuideActionTile(FText::FromString(TEXT("B / H / T-Y-U / X")), FText::FromString(TEXT("Class + Social")), FText::FromString(TEXT("B host board. H spectator support. T/Y/U queue next-round role. Hold X for the emote wheel -- aim with the mouse, release to send.")), FLinearColor(0.22f, 0.32f, 0.44f, 1.0f))
+		];
+	KeyGrid->AddSlot(0, 3)
+		.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+		[
+			MenuGuideActionTile(FText::FromString(TEXT("N")), FText::FromString(TEXT("Node Marker")), FText::FromString(TEXT("Pin a waypoint arrow to the nearest active task for 8 seconds. Use it to guide teammates or remind yourself which node to hit next.")), FLinearColor(0.26f, 0.46f, 0.50f, 1.0f))
+		];
+	KeyGrid->AddSlot(1, 3)
+		.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+		[
+			MenuGuideActionTile(FText::FromString(TEXT("Tab")), FText::FromString(TEXT("Station Cursor")), FText::FromString(TEXT("While working a station, Tab switches to a mouse cursor so you can click answers. Useful for drag-and-drop interactive questions.")), FLinearColor(0.26f, 0.40f, 0.36f, 1.0f))
+		];
+	KeyGrid->AddSlot(2, 3)
+		[
+			MenuGuideActionTile(FText::FromString(TEXT("M / I")), FText::FromString(TEXT("Map")), FText::FromString(TEXT("Raise and lower the HUD minimap. Track objectives, CCTV coverage, and exit gates without breaking stride.")), FLinearColor(0.32f, 0.28f, 0.44f, 1.0f))
 		];
 
 	Panel->AddSlot()
@@ -12027,7 +12336,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 					SNew(STextBlock)
 					.Font(MenuFont(13, FName(TEXT("Bold"))))
 					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
-					.Text(FText::FromString(TEXT("The loop")))
+					.Text(FText::FromString(TEXT("How a round flows")))
 				]
 				+ SVerticalBox::Slot()
 				.AutoHeight()
@@ -12038,27 +12347,110 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 			]
 		];
 
+	// Round Modifiers reference. Hosts can apply one modifier per round; survivors and the Teacher both
+	// need to adjust their play. Displayed as a compact dropdown so it doesn't bury new players in the
+	// main scroll but is one tap away for anyone who hits a round with an unfamiliar condition.
+	TSharedRef<SHorizontalBox> ModifierTopRow = SNew(SHorizontalBox);
+	ModifierTopRow->AddSlot()
+		.FillWidth(1.0f)
+		.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+		[
+			MenuGuideCallout(
+				FText::FromString(TEXT("Lights Out")),
+				FText::FromString(TEXT("Permanent darkness. Flashlight is essential - manage battery carefully or you're completely blind. Teacher's scan radius is unchanged.")),
+				FLinearColor(0.32f, 0.32f, 0.56f, 1.0f))
+		];
+	ModifierTopRow->AddSlot()
+		.FillWidth(1.0f)
+		.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+		[
+			MenuGuideCallout(
+				FText::FromString(TEXT("Loud Footing")),
+				FText::FromString(TEXT("Every footstep is louder than normal. Crouch, prone, or pause to control sound. Decoys and false markers become more effective distractions.")),
+				FLinearColor(0.72f, 0.42f, 0.14f, 1.0f))
+		];
+	ModifierTopRow->AddSlot()
+		.FillWidth(1.0f)
+		[
+			MenuGuideCallout(
+				FText::FromString(TEXT("Jammed Doors")),
+				FText::FromString(TEXT("Doors open slowly and resist force. Allow extra time to pass through and do not sprint-vault when the Teacher is close - you will be slowed at the worst moment.")),
+				FLinearColor(0.56f, 0.50f, 0.24f, 1.0f))
+		];
+
+	TSharedRef<SHorizontalBox> ModifierBottomRow = SNew(SHorizontalBox);
+	ModifierBottomRow->AddSlot()
+		.FillWidth(1.0f)
+		.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+		[
+			MenuGuideCallout(
+				FText::FromString(TEXT("Dead CCTV")),
+				FText::FromString(TEXT("All cameras are offline. Teacher loses CCTV pressure reads; Hall Monitor cannot spoof false pings. Survivors can move more freely on camera routes.")),
+				FLinearColor(0.28f, 0.56f, 0.62f, 1.0f))
+		];
+	ModifierBottomRow->AddSlot()
+		.FillWidth(1.0f)
+		.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+		[
+			MenuGuideCallout(
+				FText::FromString(TEXT("Panic Surge")),
+				FText::FromString(TEXT("Fear and dread build faster than normal. Avoid long sprints near the Teacher, rotate between tasks to break exposure, and use lockers before pressure spikes instead of after.")),
+				FLinearColor(0.80f, 0.22f, 0.22f, 1.0f))
+		];
+	ModifierBottomRow->AddSlot()
+		.FillWidth(1.0f)
+		[
+			MenuGuideAnnotation(
+				FText::FromString(TEXT("No Modifier")),
+				FText::FromString(TEXT("Most rounds run with no modifier. The host picks one before ready-up; it is announced on the HUD detail line when the round is live.")),
+				FLinearColor(0.44f, 0.44f, 0.44f, 1.0f))
+		];
+
+	TSharedRef<SVerticalBox> ModifierContent = SNew(SVerticalBox)
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		[
+			ModifierTopRow
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 8.0f, 0.0f, 0.0f)
+		[
+			ModifierBottomRow
+		];
+
+	Panel->AddSlot()
+		.AutoHeight()
+		.Padding(0.0f, 0.0f, 0.0f, 14.0f)
+		[
+			MenuPlayDropdownSection(
+				FText::FromString(TEXT("Round Modifiers")),
+				FText::FromString(TEXT("Optional per-round conditions the host can apply. Lights Out, Loud Footing, Jammed Doors, Dead CCTV, and Panic Surge each change the pressure balance between roles.")),
+				FLinearColor(0.50f, 0.44f, 0.72f, 1.0f),
+				ModifierContent)
+		];
+
 	const TArray<FText> SurvivorItems = {
 		FText::FromString(TEXT("\"Just keep answering. The bell never rings for us.\" - Stay calm, stay moving.")),
 		FText::FromString(TEXT("Answer stations with 1-4, then hold E for solved work, breakers, shutters, shops, and exits.")),
 		FText::FromString(TEXT("Use crouch, prone, slide, roll, dive, lockers, and door slams to break Teacher timing.")),
-		FText::FromString(TEXT("Aim flashlight during the Teacher swing window to stagger if you have battery.")),
-		FText::FromString(TEXT("Spend train shop points on stamina, sprint, light, hint, decoy, and door-rush powerups."))
+		FText::FromString(TEXT("Aim your flashlight directly at the Teacher during their axe windup to stagger them. It costs battery but buys recovery time and can break a grab.")),
+		FText::FromString(TEXT("Spend train shop points on stamina, sprint, light, hint, decoy, and door-rush powerups. Sprint Burst and Door Rush together are a strong final-escape combo."))
 	};
 	const TArray<FText> TeacherItems = {
 		FText::FromString(TEXT("\"Class is in session. No one leaves until I say so.\" - You are the hunt.")),
-		FText::FromString(TEXT("Mouse1 starts an axe swing with windup and recovery; visible Survivors can dodge the timing.")),
-		FText::FromString(TEXT("Q scan points you toward Survivor pressure; R blackout drains comfort and route safety.")),
-		FText::FromString(TEXT("Security monitors turn CCTV motion into stronger temporary locks.")),
-		FText::FromString(TEXT("Capture points buy scan focus, blackout surge, and patrol intel upgrades at train stops."))
+		FText::FromString(TEXT("Mouse1 starts an axe swing with windup and recovery; visible Survivors can dodge, flash, or slam a door into the timing window.")),
+		FText::FromString(TEXT("Q scan points toward the nearest Survivor. A heartbeat that suddenly goes cold means they ducked into a locker - watch the door, not the direction.")),
+		FText::FromString(TEXT("Hold E on a security monitor to watch the camera feed and flag motion. Hall Monitors can spoof the feed, so cross-reference with a scan before committing.")),
+		FText::FromString(TEXT("Capture points buy scan focus, blackout surge, and patrol intel upgrades at train stops. Stack at least two before the final route."))
 	};
 	const TArray<FText> MonitorItems = {
 		FText::FromString(TEXT("\"You can't grab anyone - so lie, trap, and misdirect.\" - Bend the hunt your way.")),
-		FText::FromString(TEXT("You look scary, but cannot capture.")),
-		FText::FromString(TEXT("G drops traps after tools unlock; place them on chase exits and objective routes.")),
-		FText::FromString(TEXT("Q gives real hints; R aims false corridor markers to pull the Teacher off-route.")),
-		FText::FromString(TEXT("Use security monitors to spoof false CCTV motion when contribution unlocks it.")),
-		FText::FromString(TEXT("In classroom rounds, answer-team work unlocks stronger support tools."))
+		FText::FromString(TEXT("You look scary, but cannot capture. Your job is timing, misdirection, and route denial.")),
+		FText::FromString(TEXT("G drops traps after tools unlock; place them on chase exits and objective approach routes, not open space.")),
+		FText::FromString(TEXT("Q gives real hints to direct the Teacher onto a live student. R drops a false marker down an empty corridor - time it for when the Teacher is between objectives.")),
+		FText::FromString(TEXT("Hold E on a security monitor to spoof false CCTV motion after your contribution count unlocks it.")),
+		FText::FromString(TEXT("Answer at stations alongside survivors. Your tools scale with contribution count, so joining the revision effort directly upgrades your effectiveness."))
 	};
 
 	TSharedRef<SHorizontalBox> RoleCards = SNew(SHorizontalBox);
@@ -12120,22 +12512,14 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 		];
 
 	const TArray<FText> ExpertMovementItems = {
-		FText::FromString(TEXT("Bunny hop to travel: tap Shift to hit sprint speed, then chain jumps.")),
-		FText::FromString(TEXT("Airborne, sprint stamina drain stops, so a clean chain costs less than holding Shift.")),
-		FText::FromString(TEXT("Buffer each hop by tapping Space just before you land.")),
-		FText::FromString(TEXT("Miss the rhythm and the jumps only bleed stamina for no speed.")),
-		FText::FromString(TEXT("Air steering is limited: line up before takeoff, then nudge for small corrections.")),
-		FText::FromString(TEXT("Sprint+Ctrl rolls through capture timing and corner dodges.")),
-		FText::FromString(TEXT("A clean roll with no wall bump stays quiet; bonks give you away.")),
-		FText::FromString(TEXT("Sprint+Alt slides farther and lower; hold Alt to finish prone.")),
-		FText::FromString(TEXT("Release Alt early to brake the slide into a quiet crouch.")),
-		FText::FromString(TEXT("Prone is slow, quiet, and low (tap Alt); a full slide is loud.")),
-		FText::FromString(TEXT("DIVE is committed: while moving, jump (Space) then tap Alt in the air.")),
-		FText::FromString(TEXT("A dive ends flat in prone, so tap Space or Ctrl to stand.")),
-		FText::FromString(TEXT("Drop-roll: hold Shift+Ctrl through a landing to roll out and kill the thud.")),
-		FText::FromString(TEXT("Leave a locker with Shift held to roll out capture-immune, not pop exposed.")),
-		FText::FromString(TEXT("Chaining roll/slide/dive keeps speed, but overextending makes a loud tell.")),
-		FText::FromString(TEXT("New? Run the MOVEMENT TUTORIAL from Play."))
+		FText::FromString(TEXT("Bunny hop: tap Shift to hit sprint speed, then chain Space just before each landing — stamina drains less in the air, so clean rhythm beats holding Shift.")),
+		FText::FromString(TEXT("Air steering is limited. Line up before takeoff; late nudges barely correct your path.")),
+		FText::FromString(TEXT("Sprint+Ctrl rolls through capture timing and corners. Stay off walls to keep it quiet.")),
+		FText::FromString(TEXT("Sprint+Alt slides low and far. Release Alt early to brake into a crouch; hold it to finish prone.")),
+		FText::FromString(TEXT("DIVE: while moving, Space then Alt in the air — ends flat in prone. Tap Space or Ctrl to stand.")),
+		FText::FromString(TEXT("Drop-roll: hold Shift+Ctrl through any fall to convert the landing into a roll and kill the thud.")),
+		FText::FromString(TEXT("Leave a locker with Shift held to exit as a capture-immune roll instead of standing exposed.")),
+		FText::FromString(TEXT("Chaining roll → slide → dive keeps speed, but overextending with nowhere to go is a loud tell.")),
 	};
 	const TArray<FText> ExpertSoundItems = {
 		FText::FromString(TEXT("Running, repairs, hard landings, panic breathing, detention events, and glass are Teacher-readable clues.")),
@@ -12147,26 +12531,27 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 		FText::FromString(TEXT("Counter CCTV by breaking line of sight, going prone, opening shutters, or baiting a false route.")),
 		FText::FromString(TEXT("Cornered? Duck into a locker and pop straight back out: for about 2 seconds after you leave one the Teacher cannot capture you, and you exit at an unpredictable spot to break the chase.")),
 		FText::FromString(TEXT("Commit to hold-E work only after checking sound, CCTV, and Teacher meter pressure.")),
-		FText::FromString(TEXT("Flashlight stagger, door slam, roll, slide, prone, and dive all matter during axe timing.")),
+		FText::FromString(TEXT("During Teacher windup: aim flashlight straight at them to stagger (costs battery, needs clear sight), slam a door in their face, or use any movement — all add Teacher recovery time.")),
 		FText::FromString(TEXT("At final escape the Teacher is slowed, so a straight sprint to the train usually beats them; drop optional pickups and use Door Rush or Sprint Burst to board."))
 	};
 	const TArray<FText> ExpertTeacherItems = {
-		FText::FromString(TEXT("Swing when survivors are committed to work, doors, ladders, slides, or bad landings.")),
-		FText::FromString(TEXT("Use Q scan and security monitor locks to pick a lane before sprinting into a chase.")),
-		FText::FromString(TEXT("Use R blackout to make survivors spend battery, stamina, and nerve before contact.")),
-		FText::FromString(TEXT("Train upgrades stack: scan focus, blackout surge, and patrol intel improve pressure reads."))
+		FText::FromString(TEXT("Swing when survivors are committed to work, doors, ladders, slides, or bad landings - those moments cut their dodge window to near zero.")),
+		FText::FromString(TEXT("Use Q scan before sprinting into a chase. A heartbeat that suddenly goes cold mid-chase means a locker nearby; check the doors instead of running through.")),
+		FText::FromString(TEXT("Use R blackout to drain battery, spike fear, and break route confidence before making contact - the first swing in the dark lands more often.")),
+		FText::FromString(TEXT("Train upgrades stack: scan focus, blackout surge, and patrol intel are high-priority buys. Two upgrades before the final route changes the outcome of a close board race."))
 	};
 	const TArray<FText> ExpertMonitorItems = {
-		FText::FromString(TEXT("Place traps at exits from safe rooms, not in the middle of open space.")),
-		FText::FromString(TEXT("Send real hints when the Teacher is nearby; aim false markers down routes to pull pressure off teammates.")),
-		FText::FromString(TEXT("Spoof CCTV from monitors to make the Teacher chase a fake motion ping.")),
-		FText::FromString(TEXT("You cannot capture, so your job is timing, misdirection, and route denial."))
+		FText::FromString(TEXT("Place traps on choke-points: exits from breaker rooms, station approach paths, and the corridor before the exit gate. Open space traps are visible and skipped.")),
+		FText::FromString(TEXT("Time false markers for when the Teacher is between objectives. A marker dropped behind them pulls nothing - drop it down the route they'd take NEXT.")),
+		FText::FromString(TEXT("Send real hints when the Teacher has lost their read. Sending one while the Teacher is already on the student wastes it and alerts the class.")),
+		FText::FromString(TEXT("Spoof CCTV from monitors to create a ghost ping the Teacher chases while survivors slip past. Combine with a false marker for a two-beat misdirection.")),
+		FText::FromString(TEXT("Your contribution count is your power ceiling. Answering at stations with survivors is not optional - it directly unlocks better tools."))
 	};
 	const TArray<FText> ExpertClassroomItems = {
-		FText::FromString(TEXT("Lesson Presets set topic, difficulty, map, bots, mastery goals, duration, and comfort defaults.")),
-		FText::FromString(TEXT("Train recap and bonus questions are where teams convert knowledge into shop points.")),
-		FText::FromString(TEXT("Spectators use H for safe support and T/Y/U to request next-round roles.")),
-		FText::FromString(TEXT("Fast escape still needs mastery progress, so split tasks and questions deliberately."))
+		FText::FromString(TEXT("Lesson Presets set topic, difficulty, map, bots, mastery goals, duration, and comfort defaults. Apply them before ready-up.")),
+		FText::FromString(TEXT("Train recap and bonus questions convert knowledge into shop points. A team that answers the bonus terminal together arrives at the final route better equipped.")),
+		FText::FromString(TEXT("Spectators use H for safe encouragement and T/Y/U to request a specific role next round. The host approves assignments.")),
+		FText::FromString(TEXT("Exit speed and mastery progress are linked: a class that splits tasks and questions reaches escape condition faster than one that clusters on a single station."))
 	};
 
 	TSharedRef<SGridPanel> ExpertGrid = SNew(SGridPanel);
@@ -12290,6 +12675,34 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 				HostGuideGrid)
 		];
 
+	{
+		TSharedRef<SHorizontalBox> MicroRow = SNew(SHorizontalBox);
+		MicroRow->AddSlot()
+			.FillWidth(1.0f)
+			.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+			[
+				MenuGuideCallout(
+					FText::FromString(TEXT("Flashlight stagger")),
+					FText::FromString(TEXT("Aim your flashlight directly at the Teacher during their axe windup and fire (F). Clear sight and battery required. It staggers them and adds recovery time — it won't stop a committed grab, but it lengthens the window to dodge, slam a door, or break sight.")),
+					FLinearColor(0.92f, 0.86f, 0.32f, 1.0f))
+			];
+		MicroRow->AddSlot()
+			.FillWidth(1.0f)
+			[
+				MenuGuideCallout(
+					FText::FromString(TEXT("Locker roll-out")),
+					FText::FromString(TEXT("Hold Sprint (Shift) and tap E to exit a locker as a capture-immune roll instead of standing exposed at the door. The roll exits at an unpredictable angle and the immunity window lasts about 2 seconds — use it when you hear the Teacher close.")),
+					FLinearColor(0.56f, 0.70f, 0.94f, 1.0f))
+			];
+
+		Panel->AddSlot()
+			.AutoHeight()
+			.Padding(0.0f, 0.0f, 0.0f, 14.0f)
+			[
+				MicroRow
+			];
+	}
+
 	Panel->AddSlot()
 		.AutoHeight()
 		[
@@ -12326,6 +12739,96 @@ TSharedRef<SWidget> SBHMainMenu::BuildGuidePanel()
 		.Padding(10.0f)
 		[
 			Panel
+		];
+}
+
+FText SBHMainMenu::GetCaptureRebindButtonText() const
+{
+	if (bListeningForCaptureRebind)
+	{
+		return FText::FromString(TEXT("Press a key / button..."));
+	}
+	return FText::FromString(MenuDescribeActionBinding(FName(TEXT("Capture")), TEXT("Left Mouse Button")));
+}
+
+FReply SBHMainMenu::OnCaptureRebindClicked()
+{
+	bListeningForCaptureRebind = true;
+	StatusText = FText::FromString(TEXT("Press any key or mouse button to bind ATTACK (Esc to cancel)."));
+	// Return user focus to the menu so the next key/mouse press is captured by OnKeyDown / OnMouseButtonDown.
+	return FReply::Handled().SetUserFocus(SharedThis(this), EFocusCause::SetDirectly);
+}
+
+FReply SBHMainMenu::OnCaptureRebindResetClicked()
+{
+	if (ABHPlayerController* RebindPC = PlayerController.Get())
+	{
+		RebindPC->SaveCaptureKeyBinding(EKeys::LeftMouseButton);
+	}
+	bListeningForCaptureRebind = false;
+	StatusText = FText::FromString(TEXT("Attack reset to Left Mouse Button."));
+	return FReply::Handled();
+}
+
+TSharedRef<SWidget> SBHMainMenu::BuildCaptureRebindRow()
+{
+	return SNew(SBorder)
+		.BorderImage(WhiteBrush())
+		.BorderBackgroundColor(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateLambda([]() { return FSlateColor(BHResolveActiveThemeColor(&FBHMenuTheme::Panel)); })))
+		.Padding(FMargin(9.0f, 7.0f))
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Font(MenuFont(12, FName(TEXT("Bold"))))
+					.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextPrimary))
+					.Text(FText::FromString(TEXT("Capture / Attack")))
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(6.0f, 0.0f)
+				[
+					SNew(SButton)
+					.OnClicked(this, &SBHMainMenu::OnCaptureRebindClicked)
+					[
+						SNew(STextBlock)
+						.Font(MenuFont(12, FName(TEXT("Bold"))))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::Header))
+						.Text(TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &SBHMainMenu::GetCaptureRebindButtonText)))
+					]
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				[
+					SNew(SButton)
+					.OnClicked(this, &SBHMainMenu::OnCaptureRebindResetClicked)
+					[
+						SNew(STextBlock)
+						.Font(MenuFont(11))
+						.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
+						.Text(FText::FromString(TEXT("Reset")))
+					]
+				]
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 4.0f, 0.0f, 0.0f)
+			[
+				SNew(STextBlock)
+				.AutoWrapText(true)
+				.Font(MenuFont(11))
+				.ColorAndOpacity(BHThemeColorAttr(&FBHMenuTheme::TextDim))
+				.Text(FText::FromString(TEXT("The attack / axe-swing button. Click the binding, then press any key or mouse button to rebind it. Reset restores Left Mouse Button.")))
+			]
 		];
 }
 
@@ -12403,9 +12906,16 @@ TSharedRef<SWidget> SBHMainMenu::BuildControlsPanel()
 	AddControl(TEXT("Map"), MenuDescribeActionBinding(FName(TEXT("Map")), TEXT("M / I")), TEXT("Raise or lower the HUD map."));
 	AddControl(TEXT("Answer Choice"), TEXT("1-4 / Numpad 1-4"), TEXT("Submit classroom station and train bonus answers."));
 	AddControl(TEXT("Node Marker"), MenuDescribeActionBinding(FName(TEXT("NodeMarker")), TEXT("N")), TEXT("Pin a routing marker to the nearest active question node for 8 seconds."));
+	AddControl(TEXT("Question Cursor"), TEXT("Tab"), TEXT("Toggle a mouse cursor at stations to click answers with the mouse instead of number keys."));
 
 	AddSectionTitle(TEXT("Teacher, Spectator, And Host"));
-	AddControl(TEXT("Capture"), MenuDescribeActionBinding(FName(TEXT("Capture")), TEXT("Left Mouse Button")), TEXT("Start a close axe swing; survivors can dodge, blind, slam doors, or use timed special moves."));
+	// Capture (attack) is rebindable -- a live key-capture row instead of a static line.
+	Panel->AddSlot()
+		.AutoHeight()
+		.Padding(0.0f, 0.0f, 0.0f, 6.0f)
+		[
+			BuildCaptureRebindRow()
+		];
 	AddControl(TEXT("Ready"), MenuDescribeActionBinding(FName(TEXT("Ready")), TEXT("Enter")), TEXT("Toggle lobby readiness."));
 	AddControl(TEXT("Menu"), MenuDescribeActionBinding(FName(TEXT("Menu")), TEXT("Escape")), TEXT("Open or close this menu."));
 	AddControl(TEXT("Classroom Board"), MenuDescribeActionBinding(FName(TEXT("ClassroomBoard")), TEXT("B")), TEXT("Open the projector board on the host."));
@@ -12419,6 +12929,10 @@ TSharedRef<SWidget> SBHMainMenu::BuildControlsPanel()
 	AddControl(TEXT("Tester Train"), TEXT("Home / Numpad 6"), TEXT("Open the train intermission in Test Round."));
 	AddControl(TEXT("Tester Final Station"), TEXT("End / Numpad 8"), TEXT("Load the Foggrounds final-station route in Test Round."));
 	AddControl(TEXT("Tester Final Escape"), TEXT("PageDown / Numpad 9"), TEXT("Trigger final subway escape in Test Round."));
+
+	AddSectionTitle(TEXT("Social"));
+	AddControl(TEXT("Emote Wheel"), TEXT("Hold X"), TEXT("Open the emote wheel, aim a wedge with the mouse, release to play it above your head for nearby players (HI, GG, <3, LOL, CHEERS, WOO, FAHHH, SHEEESH, RATIO...)."));
+	AddControl(TEXT("Sit"), TEXT("C"), TEXT("Toggle a seated idle pose. Any movement key stands you back up."));
 
 	return SNew(SBorder)
 		.BorderImage(WhiteBrush())
@@ -12637,6 +13151,12 @@ TSharedRef<SWidget> SBHMainMenu::BuildGraphicsPanel()
 		TAttribute<float>::Create(TAttribute<float>::FGetter::CreateSP(this, &SBHMainMenu::GetHudPanelOpacityValue)),
 		FOnFloatValueChanged::CreateSP(this, &SBHMainMenu::OnHudPanelOpacityChanged));
 
+	AddTitle(TEXT("Menu"));
+	AddSliderRow(
+		TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &SBHMainMenu::GetSectionContrastLabel)),
+		TAttribute<float>::Create(TAttribute<float>::FGetter::CreateSP(this, &SBHMainMenu::GetSectionContrastValue)),
+		FOnFloatValueChanged::CreateSP(this, &SBHMainMenu::OnSectionContrastChanged));
+
 	TSharedRef<SHorizontalBox> ColorblindRow = AddButtonRow(TEXT("Colorblind"));
 	AddButton(ColorblindRow, TEXT("On"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("ColorblindHud")), true), ComfortBoolColor(TEXT("ColorblindHud"), true));
 	AddButton(ColorblindRow, TEXT("Off"), FOnClicked::CreateSP(this, &SBHMainMenu::OnComfortOptionClicked, FName(TEXT("ColorblindHud")), false), ComfortBoolColor(TEXT("ColorblindHud"), false));
@@ -12722,6 +13242,14 @@ TSharedRef<SWidget> SBHMainMenu::BuildGraphicsPanel()
 	AddButton(TextureRow, TEXT("Med"), FOnClicked::CreateSP(this, &SBHMainMenu::OnTextureQualityClicked, 1), OptionColor(TEXT("Texture"), 1));
 	AddButton(TextureRow, TEXT("High"), FOnClicked::CreateSP(this, &SBHMainMenu::OnTextureQualityClicked, 2), OptionColor(TEXT("Texture"), 2));
 	AddButton(TextureRow, TEXT("Ultra"), FOnClicked::CreateSP(this, &SBHMainMenu::OnTextureQualityClicked, 3), OptionColor(TEXT("Texture"), 3));
+
+	// Asset preload: trade load time + memory for a smoother round (textures loaded up front behind the loading
+	// screen instead of streaming in during play). Stream = lowest memory (safe on 4GB integrated laptops),
+	// Balanced = preload used textures VRAM-capped, Full = preload everything for strong GPUs.
+	TSharedRef<SHorizontalBox> PreloadRow = AddButtonRow(TEXT("Asset Preload"));
+	AddButton(PreloadRow, TEXT("Stream"), FOnClicked::CreateSP(this, &SBHMainMenu::OnTexturePreloadClicked, 0), OptionColor(TEXT("Preload"), 0));
+	AddButton(PreloadRow, TEXT("Balanced"), FOnClicked::CreateSP(this, &SBHMainMenu::OnTexturePreloadClicked, 1), OptionColor(TEXT("Preload"), 1));
+	AddButton(PreloadRow, TEXT("Full"), FOnClicked::CreateSP(this, &SBHMainMenu::OnTexturePreloadClicked, 2), OptionColor(TEXT("Preload"), 2));
 
 	TSharedRef<SHorizontalBox> ShadowRow = AddButtonRow(TEXT("Shadows"));
 	AddButton(ShadowRow, TEXT("Low"), FOnClicked::CreateSP(this, &SBHMainMenu::OnShadowQualityClicked, 0), OptionColor(TEXT("Shadow"), 0));

@@ -11,6 +11,7 @@
 class UStaticMeshComponent;
 class UTextRenderComponent;
 class UPointLightComponent;
+class ABHPlayerState;
 
 // Playable Connect-4 (7x6 upright board) for the train lobby. Solo vs AI (alpha-beta minimax) or human PvP.
 // Look at a COLUMN on the standing board and TAP to drop your disc; first to four-in-a-row wins. Same
@@ -42,6 +43,7 @@ protected:
 	float GetServerTimeSeconds() const;
 	int32 ColumnUnderView(const ABHCharacter* Character) const;   // -1 if not looking at the board
 	void HandleSeating(ABHCharacter* Character, bool bHold);
+	void PruneSeats();   // server: free a seat whose player disconnected / walked away, reopening the table
 	void HandlePlayClick(ABHCharacter* Character, int32 Column);
 	void StartNewGame(bool bAgainstAI);
 	void DropDisc(int32 Column, int32 Side);
@@ -74,6 +76,13 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UTextRenderComponent> StatusTextRender;
+
+	// Back-facing duplicates so the player on the far side reads the title/status the right way round.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UTextRenderComponent> TitleTextBack;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UTextRenderComponent> StatusTextBack;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPointLightComponent> TableLight;
@@ -112,4 +121,8 @@ protected:
 	FLinearColor StatusAccent = FLinearColor(0.60f, 0.80f, 1.0f, 1.0f);
 
 	TMap<int32, float> PressTimeByPlayerId;
+
+	// Server-only seat owners (mirror the replicated ids) so a disconnected / departed player frees their seat.
+	TWeakObjectPtr<ABHPlayerState> RedOwner;
+	TWeakObjectPtr<ABHPlayerState> YellowOwner;
 };

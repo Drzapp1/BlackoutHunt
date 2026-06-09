@@ -767,6 +767,33 @@ FText SBHClassroomBoard::GetRevisionText() const
 		Text += FString::Printf(TEXT("  review %ds"), GameState->RevisionReviewTimeRemaining);
 	}
 
+	// Hall-monitor revision specifically (the part the owner wants on the big board): how many monitors have hit the
+	// per-round contribution target, plus -- when all survivors are caught -- the grace countdown before the
+	// unfinished-revision point dock (mirrors the everyone-visible HUD "REVISION T-" timer).
+	int32 Monitors = 0;
+	int32 MonitorsDone = 0;
+	for (APlayerState* Raw : GameState->PlayerArray)
+	{
+		const ABHPlayerState* PS = Cast<ABHPlayerState>(Raw);
+		if (!PS || PS->IsABot() || PS->PlayerRole != EBHPlayerRole::FakeHunter)
+		{
+			continue;
+		}
+		++Monitors;
+		if (PS->RevisionStats.ContributionCount >= GameState->RevisionContributionTarget)
+		{
+			++MonitorsDone;
+		}
+	}
+	if (Monitors > 0)
+	{
+		Text += FString::Printf(TEXT("  |  monitors %d/%d finished"), MonitorsDone, Monitors);
+	}
+	if (GameState->AllCaughtGraceRemaining >= 0)
+	{
+		Text += FString::Printf(TEXT("  |  REVISION GRACE %ds"), GameState->AllCaughtGraceRemaining);
+	}
+
 	return FText::FromString(Text);
 }
 

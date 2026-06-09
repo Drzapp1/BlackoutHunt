@@ -27,6 +27,31 @@ struct FBHLessonPreset
 	bool bReducedCameraShake = false;
 	bool bCaptions = true;
 	bool bHighContrastHud = false;
+
+	// --- Host lobby customization (Pillar 5 extension) ---
+	// Difficulty range: live selection is clamped to [MinDifficulty, MaxDifficulty]; the first
+	// question per student (and the adaptive starting tier) uses StartingDifficulty.
+	EBHQuestionDifficulty StartingDifficulty = EBHQuestionDifficulty::Easy;
+	EBHQuestionDifficulty MinDifficulty = EBHQuestionDifficulty::Easy;
+	EBHQuestionDifficulty MaxDifficulty = EBHQuestionDifficulty::Hard;
+	// Exact question set: when non-empty, the round draws only from the saved set with this id
+	// (Saved/ClassroomPresets/QuestionSets/<id>.json). Empty = use the whole active bank.
+	FString QuestionSetId;
+	// Map routing / maps-used: ordered stage maps (variable length, repeats allowed). Empty = the
+	// default Facility -> Substation -> Foggrounds sequence. This array is both the pool and the order.
+	TArray<FString> MapRoute;
+	// Procedural layout knobs (only applied when the round runs the runtime generator -- see
+	// bForceProcedural). 0 means "use the generator default".
+	int32 LayoutSeed = 0;       // 0 = generator's fixed default seed; non-zero = host-chosen seed
+	int32 BreakerCount = 0;     // 0 = default; else clamped to 3..12 placed breakers
+	int32 LayoutDensity = 0;    // 0 = default (100); else 50..160 percent (partitions + objective count)
+	bool bForceProcedural = false; // run the procedural generator even when authored maps are enabled
+	// Named procedural layout preset (host-friendly alternative to a raw seed). When set to a known name
+	// (see FBHLessonPresetStore::GetLayoutPresetNames), ValidatePreset EXPANDS it into the seed/density/
+	// breaker/force-procedural fields above, so the round needs no extra plumbing. Empty = use those raw
+	// fields directly. To author a fully custom layout instead, bake an authored .umap variant (see docs).
+	FString LayoutPresetName;
+
 	bool bBuiltin = false;
 };
 
@@ -64,6 +89,17 @@ public:
 	static FString NormalizeMapName(FString MapName);
 	static FString DifficultyMixToString(EBHRevisionDifficultyMix DifficultyMix);
 	static EBHRevisionDifficultyMix ParseDifficultyMix(const FString& DifficultyMix, EBHRevisionDifficultyMix DefaultMix);
+	static FString QuestionDifficultyToString(EBHQuestionDifficulty Difficulty);
+	static EBHQuestionDifficulty ParseQuestionDifficulty(const FString& Difficulty, EBHQuestionDifficulty DefaultDifficulty);
+	static const TArray<FString>& GetDefaultMapRoute();
+	static TArray<FString> GetAvailableMapNames();
+	static FString MapRouteToString(const TArray<FString>& MapRoute);
+	static TArray<FString> ParseMapRoute(const FString& MapRouteCsv);
+	// Host-friendly named procedural layout presets (an alternative to a raw seed). GetLayoutPresetNames
+	// returns the curated list; ApplyNamedLayoutPreset expands a name into the seed/density/breaker/force
+	// fields and returns false (leaving them unchanged) when the name is empty or unknown.
+	static TArray<FString> GetLayoutPresetNames();
+	static bool ApplyNamedLayoutPreset(const FString& PresetName, int32& OutSeed, int32& OutDensity, int32& OutBreakers, bool& bOutForceProcedural);
 	static FString BotDifficultyToString(EBHBotDifficulty Difficulty);
 	static EBHBotDifficulty ParseBotDifficulty(const FString& Difficulty, EBHBotDifficulty DefaultDifficulty);
 	static FString TopicMaskToText(int32 TopicMask);

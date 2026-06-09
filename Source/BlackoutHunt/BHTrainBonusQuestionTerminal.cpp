@@ -345,9 +345,14 @@ void ABHTrainBonusQuestionTerminal::LoadQuestion(EBHPhysicsTopic PreferredTopic,
 		}
 	}
 
+	// Bonus questions honor the same host difficulty band + exact question set as the live nodes.
+	const ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr;
+	const EBHQuestionDifficulty MinDiff = BHGM ? BHGM->GetRevisionMinDifficulty() : EBHQuestionDifficulty::Easy;
+	const EBHQuestionDifficulty MaxDiff = BHGM ? BHGM->GetRevisionMaxDifficulty() : EBHQuestionDifficulty::Hard;
+	const TArray<FString>* AllowedIds = BHGM ? &BHGM->GetRevisionAllowedQuestionIds() : nullptr;
+
 	if (!bSelected && AdaptivePlayerState)
 	{
-		const ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr;
 		EBHPhysicsTopic AdaptiveTopic = PreferredTopic;
 		EBHQuestionDifficulty AdaptiveDifficulty = EBHQuestionDifficulty::Easy;
 		FString AdaptiveReason;
@@ -355,14 +360,14 @@ void ABHTrainBonusQuestionTerminal::LoadQuestion(EBHPhysicsTopic PreferredTopic,
 		{
 			BHGM->GetAdaptiveRevisionPlan(AdaptivePlayerState, bLastAnswerCorrect, AdaptiveTopic, AdaptiveDifficulty, AdaptiveReason);
 		}
-		bSelected = FBHRevisionQuestionBank::SelectQuestionByDifficulty(AdaptiveTopic, AdaptiveDifficulty, Seed, NewQuestion);
+		bSelected = FBHRevisionQuestionBank::SelectQuestionByDifficulty(AdaptiveTopic, AdaptiveDifficulty, Seed, NewQuestion, MinDiff, MaxDiff, AllowedIds);
 	}
 
 	if (!bSelected)
 	{
 		TArray<EBHPhysicsTopic> WeakTopics;
 		WeakTopics.Add(PreferredTopic);
-		bSelected = FBHRevisionQuestionBank::SelectQuestion(PreferredTopic, EBHRevisionDifficultyMix::Adaptive, Seed, WeakTopics, NewQuestion);
+		bSelected = FBHRevisionQuestionBank::SelectQuestion(PreferredTopic, EBHRevisionDifficultyMix::Adaptive, Seed, WeakTopics, NewQuestion, MinDiff, MaxDiff, AllowedIds);
 	}
 
 	if (bSelected)

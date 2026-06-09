@@ -261,6 +261,28 @@ public:
 	UFUNCTION(Exec)
 	void TesterForceFinalRecap();
 
+	// Developer-only "unlock everything" (all cosmetics + XP). Bound to Ctrl+Alt+U in-game (F9 was already the
+	// tester train-phase shortcut) and exposed as a console exec. Dev-credential gated; inert in Shipping.
+	UFUNCTION(Exec)
+	void DevUnlockEverything();
+
+	// Dev-unlock gating (Ctrl+Alt+U). On top of the BH_DEV_UNLOCK compile gate, the unlock is restricted to the
+	// developer account (display name "Adam") and needs a one-time password the first time it is used (entered on
+	// the main menu); acceptance is then persisted. See DevUnlockEverything / SBHMainMenu::OnKeyDown.
+	bool IsLocalDevUser() const;
+	bool IsDevUnlockAuthorized() const;
+	bool TryAuthorizeDevUnlock(const FString& Password);
+	bool PerformDevUnlock();
+
+	// Attack ("Capture" action) key rebinding, surfaced in the Controls tab. Persisted per-machine in
+	// GGameUserSettingsIni [BlackoutHunt.Controls] and applied by rewriting the UInputSettings action mapping.
+	void ApplyCaptureKeyBinding(const FKey& NewKey);
+	void SaveCaptureKeyBinding(const FKey& NewKey);
+	bool LoadSavedCaptureKey(FKey& OutKey) const;
+
+	// "Stuck in a Tree" egg: O drops the pawn back to the ground if it is wedged up in the lobby greenhouse tree.
+	void ResetFromTreeStuck();
+
 	UFUNCTION(Exec)
 	void RevisionStatus();
 
@@ -322,6 +344,9 @@ public:
 	// so clicks reach the HUD-canvas hit regions and the camera stops turning; restores gameplay input
 	// on disable unless a real UI (menu/console/loading) still needs the cursor.
 	void SetQuestionCursorMode(bool bEnable);
+	// Same GameAndUI cursor handling as the question cursor, but for the emote wheel: also snaps the cursor to
+	// the viewport centre on enable so the radial opens neutral. Restores gameplay input on disable.
+	void SetEmoteWheelCursorMode(bool bEnable);
 	void ReturnToMainMenu();
 	void QuitGame();
 	void ShowTravelLoadingScreen(const FString& Title, const FString& Detail);
@@ -455,6 +480,10 @@ public:
 	bool SetAdaptiveFrameRateGoalForMenu(int32 FpsGoal, FString& OutMessage);
 	bool ApplyRenderScaleForMenu(int32 Percent, FString& OutMessage);
 	bool ApplyTextureQualityForMenu(int32 Quality, FString& OutMessage);
+	// Texture/asset preload mode: 0 = Stream (engine default streaming), 1 = Balanced (fully load used textures,
+	// VRAM-capped, per-level warmup + shaders-on-load), 2 = Full (bigger resident pool for strong GPUs). Smooths
+	// play by front-loading the work behind the level loading screen instead of streaming mips in during the round.
+	bool ApplyTexturePreloadForMenu(int32 Mode, FString& OutMessage);
 	bool ApplyShadowQualityForMenu(int32 Quality, FString& OutMessage);
 	bool ApplyEffectsQualityForMenu(int32 Quality, FString& OutMessage);
 	bool ApplyResolutionForMenu(int32 Width, int32 Height, bool bFullscreen, FString& OutMessage);
@@ -470,6 +499,9 @@ public:
 	int32 GetGraphicsAdaptiveFpsGoalForMenu() const;
 	int32 GetGraphicsFrameRateLimitForMenu() const;
 	int32 GetGraphicsTextureQualityForMenu() const;
+	// Current texture/asset preload mode (0 Stream / 1 Balanced / 2 Full), resolved to the hardware default if the
+	// player has never set it. Used by the Settings menu to highlight the active option.
+	int32 GetGraphicsTexturePreloadForMenu() const;
 	int32 GetGraphicsShadowQualityForMenu() const;
 	int32 GetGraphicsEffectsQualityForMenu() const;
 	int32 GetGraphicsAdaptiveStepForMenu() const;
@@ -804,6 +836,17 @@ private:
 	void ApplySavedManualGraphicsTuning();
 	void ApplySavedGraphicsResolution();
 	void ApplyAdaptiveGraphicsState(bool bAnnounce);
+	// Resolve the saved texture-preload mode, falling back to a safe hardware default (Stream on low-RAM / software
+	// GPUs, Balanced otherwise) when the player has never chosen one.
+	int32 ResolveTexturePreloadMode() const;
+	// Apply the texture-preload CVars for the current mode (called from ApplySavedManualGraphicsTuning, after the
+	// texture-quality pool is set, so preload can override the streaming behaviour).
+	void ApplyTexturePreloadTuning();
+	// On entering a networked gameplay/lobby level with preload enabled: keep the loading screen up and stream the
+	// level's textures fully resident (budgeted, so the screen stays animated -- no freeze) before handing control
+	// to the player. A hard timeout guarantees it always releases. Plain hide when preload is off.
+	void BeginLevelStreamingWarmupOrHide();
+	void TickLevelStreamingWarmup();
 	// Some authored bakes ship without the procedural mood-pass fog (the 0.7.0 Facility bake stripped it).
 	// The GameMode that builds fog is server-only and ExponentialHeightFog does not replicate, so each
 	// client materialises its own local floor mist for such maps. No-op once a height fog already exists.
@@ -919,6 +962,11 @@ private:
 	int32 GraphicsTextureQuality = 1;
 	int32 GraphicsShadowQuality = 1;
 	int32 GraphicsEffectsQuality = 1;
+	// Texture/asset preload mode: -1 = unset (resolve to hardware default), 0 = Stream, 1 = Balanced, 2 = Full.
+	int32 GraphicsTexturePreload = -1;
+	// Per-level streaming-warmup state (drives the animated loading screen that replaces the load freeze).
+	FTimerHandle PreloadWarmupTimerHandle;
+	float PreloadWarmupElapsedSeconds = 0.0f;
 	int32 GraphicsResolutionWidth = 0;
 	int32 GraphicsResolutionHeight = 0;
 	int32 GraphicsAdaptiveStep = 0;

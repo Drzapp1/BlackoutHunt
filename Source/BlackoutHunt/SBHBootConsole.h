@@ -180,6 +180,9 @@ private:
 	bool bReducedFlash = false;
 	bool bMenuRevealFired = false;
 	bool bFinished = false;
+	// Skipping the intro requires a KEY press (mouse clicks are ignored), pressed TWICE: the first key arms the
+	// skip (the hint changes to confirm), the second key actually skips. Prevents a stray click/keypress aborting it.
+	bool bSkipArmed = false;
 
 	// --- boot SFX state ---
 	TWeakObjectPtr<UWorld> SoundWorld;
@@ -190,6 +193,8 @@ private:
 	bool bSfxBlackout = false;
 	int32 NextDialogSfx = 0;
 	float NextBeepTime = 0.5f;
+	// Next structured-boot line awaiting its confirm/warn/FAIL audio cue (see UpdateBootSounds checklist pass).
+	int32 NextChecklistLine = 0;
 	FSimpleDelegate OnReadyForMenuDelegate;
 	FSimpleDelegate OnFinishedDelegate;
 };

@@ -31,6 +31,10 @@ void UBHTrainSwayCameraShakePattern::StartShakePatternImpl(const FCameraShakePat
 	if (!Params.bIsRestarting)
 	{
 		ElapsedSeconds = 0.0f;
+		// First jolt only after a long calm stretch; later ones are rescheduled as each jolt ends.
+		NextJoltTime = FMath::FRandRange(15.0f, 30.0f);
+		JoltStartTime = -1.0f;
+		PendingQuickBumps = 0;
 	}
 	State.Start(this, Params);
 }
@@ -58,8 +62,61 @@ void UBHTrainSwayCameraShakePattern::UpdateShakePatternImpl(const FCameraShakePa
 	Loc.Y = BHSwaySine(T, 0.80f, 1.7f, 0.55f);
 	Loc.X = BHSwaySine(T, 1.10f, 0.0f, 0.20f);
 
-	OutResult.Rotation = Rot * Envelope;
-	OutResult.Location = Loc * Envelope;
+	// ---- Occasional JOLT: a brief, sharp lurch (rough rail joint / points crossing) every ~17-36s so the ride
+	// reads as real track, not a perfectly steady hum. A damped impulse -- one big swing that rings down in ~1s --
+	// authored at ShakeScale 1 like the sway. Added AFTER the envelope so the slow "breathing" dial doesn't soften
+	// it; it still rides the shared ShakeScale + blend below, so interior/roof/reduced-camera-shake comfort scale
+	// it for free and the sway-off toggle (which never starts this shake) suppresses it too.
+	FRotator JoltRot = FRotator::ZeroRotator;
+	FVector JoltLoc = FVector::ZeroVector;
+	if (JoltStartTime < 0.0f && T >= NextJoltTime)
+	{
+		// Fire a fresh jolt: randomise length, lurch direction and strength (occasionally a notably bigger one).
+		JoltStartTime = T;
+		JoltDuration = FMath::FRandRange(0.70f, 1.00f);
+		const bool bBigOne = FMath::FRand() < 0.12f;
+		JoltStrength = bBigOne ? FMath::FRandRange(0.75f, 1.00f) : FMath::FRandRange(0.40f, 0.70f);
+		JoltLateralSign = (FMath::FRand() < 0.5f) ? -1.0f : 1.0f;
+	}
+	if (JoltStartTime >= 0.0f)
+	{
+		const float Jt = T - JoltStartTime;
+		if (Jt >= JoltDuration)
+		{
+			// Jolt over. Real track throws bumps in quick clusters (a switch/crossover) then long calm stretches,
+			// so sometimes queue a fast follow-up bump; otherwise wait out a long, smooth gap.
+			JoltStartTime = -1.0f;
+			if (PendingQuickBumps > 0)
+			{
+				--PendingQuickBumps;
+				NextJoltTime = T + FMath::FRandRange(0.45f, 0.90f);
+			}
+			else if (FMath::FRand() < 0.12f)
+			{
+				PendingQuickBumps = 1;
+				NextJoltTime = T + FMath::FRandRange(0.45f, 0.90f);
+			}
+			else
+			{
+				NextJoltTime = T + FMath::FRandRange(40.0f, 80.0f);
+			}
+		}
+		else
+		{
+			// Damped-impulse shape per axis: a dominant lateral lurch + an opposite roll rock, a sharp vertical
+			// rail-joint thump, plus small fore/aft surge, pitch nod and yaw hunt -- all ringing down quickly.
+			const float S = JoltStrength;
+			JoltLoc.Y = JoltLateralSign * 2.8f * FMath::Exp(-Jt * 4.5f) * FMath::Sin(Jt * 1.40f * 2.0f * PI) * S;
+			JoltLoc.Z = 3.2f * FMath::Exp(-Jt * 7.0f) * FMath::Sin(Jt * 3.00f * 2.0f * PI + 0.40f) * S;
+			JoltLoc.X = 1.6f * FMath::Exp(-Jt * 5.0f) * FMath::Sin(Jt * 1.10f * 2.0f * PI + 0.20f) * S;
+			JoltRot.Roll = -JoltLateralSign * 2.4f * FMath::Exp(-Jt * 4.0f) * FMath::Sin(Jt * 1.25f * 2.0f * PI) * S;
+			JoltRot.Pitch = 0.9f * FMath::Exp(-Jt * 6.0f) * FMath::Sin(Jt * 2.60f * 2.0f * PI + 0.50f) * S;
+			JoltRot.Yaw = JoltLateralSign * 0.75f * FMath::Exp(-Jt * 4.5f) * FMath::Sin(Jt * 1.00f * 2.0f * PI) * S;
+		}
+	}
+
+	OutResult.Rotation = Rot * Envelope + JoltRot;
+	OutResult.Location = Loc * Envelope + JoltLoc;
 
 	// Blend in/out weight; the base class then auto-scales by the live ShakeScale (interior vs. roof, comfort).
 	const float BlendWeight = State.Update(Params.DeltaTime);

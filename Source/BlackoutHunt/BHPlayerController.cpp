@@ -20,6 +20,7 @@
 #include "BHNetworkSupport.h"
 #include "BHPlayerState.h"
 #include "BHTrainSwayCameraShake.h"
+#include "GameFramework/InputSettings.h"
 #include "Camera/CameraShakeBase.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Components/AudioComponent.h"
@@ -30,6 +31,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SkyAtmosphereComponent.h"
 #include "Components/SkyLightComponent.h"
+#include "ContentStreaming.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/Engine.h"
 #include "Engine/ExponentialHeightFog.h"
@@ -1509,7 +1511,10 @@ void ABHPlayerController::BeginPlay()
 		}
 		else
 		{
-			ApplyGameplayInputMode();
+			// Normal gameplay/lobby entry. If asset preload is on, keep an animated loading screen up and stream
+			// the level's textures fully resident before restoring control (no first-round mip pop-in / freeze);
+			// otherwise this just restores gameplay input immediately like before.
+			BeginLevelStreamingWarmupOrHide();
 		}
 		UpdateAmbientMusic();
 		GetWorldTimerManager().SetTimer(DisplayNameSyncTimerHandle, this, &ABHPlayerController::PushLocalProfileToServer, 1.0f, false);
@@ -1607,6 +1612,13 @@ void ABHPlayerController::SetupInputComponent()
 		// New unique dev chord (Ctrl+Alt+F9) for the tester train-phase advance, in addition to plain F9. The
 		// chord is collision-proof; both work for the host in non-Shipping builds (see CanUseTesterShortcut).
 		InputComponent->BindKey(FInputChord(EKeys::F9, false, true, true, false), IE_Pressed, this, &ABHPlayerController::TesterAdvanceTrainPhase);
+		// Dedicated dev "unlock everything" chord. F9 (plain and Ctrl+Alt+F9) is already the tester train-phase
+		// shortcut, so the cosmetic unlock gets its own collision-proof combo: Ctrl+Alt+U ("U" = Unlock). The action
+		// is dev-credential gated inside DevUnlockEverything and inert in Shipping; also runnable via console exec.
+		InputComponent->BindKey(FInputChord(EKeys::U, false, true, true, false), IE_Pressed, this, &ABHPlayerController::DevUnlockEverything);
+		// "Stuck in a Tree" egg: O drops the pawn back onto the ground if it jumped up into the lobby greenhouse
+		// tree and got wedged. A harmless no-op anywhere else (the character + server both validate proximity).
+		InputComponent->BindKey(EKeys::O, IE_Pressed, this, &ABHPlayerController::ResetFromTreeStuck);
 		InputComponent->BindKey(EKeys::F11, IE_Pressed, this, &ABHPlayerController::ToggleAtmosphereConsole);
 		InputComponent->BindKey(EKeys::Pause, IE_Pressed, this, &ABHPlayerController::ToggleAtmosphereConsole);
 		InputComponent->BindKey(EKeys::Backslash, IE_Pressed, this, &ABHPlayerController::ToggleAtmosphereConsole);
@@ -1623,6 +1635,13 @@ void ABHPlayerController::SetupInputComponent()
 		InputComponent->BindKey(EKeys::NumPadEight, IE_Pressed, this, &ABHPlayerController::TesterLoadFinalStation);
 		InputComponent->BindKey(EKeys::NumPadNine, IE_Pressed, this, &ABHPlayerController::TesterTriggerFinalEscape);
 		InputComponent->BindKey(EKeys::NumPadZero, IE_Pressed, this, &ABHPlayerController::TesterForceFinalRecap);
+
+		// Apply any saved Attack (Capture) key rebinding from the Controls tab so it carries across sessions.
+		FKey SavedCaptureKey;
+		if (LoadSavedCaptureKey(SavedCaptureKey))
+		{
+			ApplyCaptureKeyBinding(SavedCaptureKey);
+		}
 	}
 }
 
@@ -2098,6 +2117,150 @@ void ABHPlayerController::TesterAdvanceTrainPhase()
 	ServerTesterAdvanceTrainPhase();
 }
 
+void ABHPlayerController::DevUnlockEverything()
+{
+#if !UE_BUILD_SHIPPING || BH_DEV_UNLOCK
+	// Developer-only "unlock everything" for playtesting: unlocks every achievement-gated cosmetic and raises XP
+	// above every XP gate (UBHAccountSubsystem::BHUnlockAllCosmetics). Bound to Ctrl+Alt+U in-game and exposed as a
+	// console exec; F9 was unavailable (already the tester train-phase shortcut). This is purely local cosmetic
+	// progress -- no server RPC needed. On TOP of the BH_DEV_UNLOCK compile gate (which keeps this out of
+	// production), the unlock is restricted to the developer account ("Adam") and needs a one-time password the
+	// first time -- entered on the MAIN MENU (SBHMainMenu::OnKeyDown), then persisted. See the helpers below.
+	if (!IsLocalDevUser())
+	{
+		ShowLocalStatusMessage(TEXT("[DEV] Unlock is restricted to the developer account."), 4.0f);
+		return;
+	}
+	if (!IsDevUnlockAuthorized())
+	{
+		ShowLocalStatusMessage(TEXT("[DEV] First-time dev unlock needs the password -- press Ctrl+Alt+U on the MAIN MENU to enter it."), 6.0f);
+		return;
+	}
+	if (PerformDevUnlock())
+	{
+		ShowLocalStatusMessage(TEXT("[DEV] Ctrl+Alt+U: unlocked everything (all cosmetics + XP). Re-open the Character / Awards tab to equip."), 6.0f);
+	}
+	else
+	{
+		ShowLocalStatusMessage(TEXT("[DEV] Unlock failed: account subsystem unavailable."), 4.0f);
+	}
+#else
+	ShowLocalStatusMessage(TEXT("Dev unlock is disabled in Shipping builds."), 3.0f);
+#endif
+}
+
+bool ABHPlayerController::IsLocalDevUser() const
+{
+	// The "developer account" is the local account whose display name is Adam (case-insensitive). The account
+	// subsystem is GameInstance-scoped, so this resolves both on the menu (pre-game) and in a live round.
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		if (UBHAccountSubsystem* Account = GI->GetSubsystem<UBHAccountSubsystem>())
+		{
+			return Account->GetProfile().DisplayName.Equals(TEXT("Adam"), ESearchCase::IgnoreCase);
+		}
+	}
+	return false;
+}
+
+bool ABHPlayerController::IsDevUnlockAuthorized() const
+{
+	// Persisted once the one-time dev password has been accepted on this machine.
+	bool bAuthorized = false;
+	if (GConfig)
+	{
+		GConfig->GetBool(TEXT("BlackoutHunt.Dev"), TEXT("DevUnlockAuthorized"), bAuthorized, GGameUserSettingsIni);
+	}
+	return bAuthorized;
+}
+
+bool ABHPlayerController::TryAuthorizeDevUnlock(const FString& Password)
+{
+	// One-time gate: the password is only checked when the shortcut is used (never at startup). On success the
+	// grant is persisted so it is never asked again on this machine.
+	if (Password.TrimStartAndEnd() != TEXT("23-89"))
+	{
+		return false;
+	}
+	if (GConfig)
+	{
+		GConfig->SetBool(TEXT("BlackoutHunt.Dev"), TEXT("DevUnlockAuthorized"), true, GGameUserSettingsIni);
+		GConfig->Flush(false, GGameUserSettingsIni);
+	}
+	return true;
+}
+
+bool ABHPlayerController::PerformDevUnlock()
+{
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		if (UBHAccountSubsystem* Account = GI->GetSubsystem<UBHAccountSubsystem>())
+		{
+			Account->BHUnlockAllCosmetics();
+			return true;
+		}
+	}
+	return false;
+}
+
+void ABHPlayerController::ApplyCaptureKeyBinding(const FKey& NewKey)
+{
+	// Rewrite the legacy UInputSettings "Capture" action mapping to the chosen key and rebuild the keymaps, so the
+	// pawn's name-based BindAction("Capture") fires on the new key. UInputSettings is local-only (not replicated);
+	// capture stays server-authoritative, so this only changes which local key triggers the existing client RPC.
+	if (!NewKey.IsValid())
+	{
+		return;
+	}
+	UInputSettings* Settings = GetMutableDefault<UInputSettings>();
+	if (!Settings)
+	{
+		return;
+	}
+	TArray<FInputActionKeyMapping> Existing;
+	Settings->GetActionMappingByName(FName(TEXT("Capture")), Existing);
+	for (const FInputActionKeyMapping& Mapping : Existing)
+	{
+		Settings->RemoveActionMapping(Mapping, false);
+	}
+	Settings->AddActionMapping(FInputActionKeyMapping(FName(TEXT("Capture")), NewKey), true);
+}
+
+void ABHPlayerController::SaveCaptureKeyBinding(const FKey& NewKey)
+{
+	if (!NewKey.IsValid())
+	{
+		return;
+	}
+	if (GConfig)
+	{
+		GConfig->SetString(TEXT("BlackoutHunt.Controls"), TEXT("CaptureKey"), *NewKey.ToString(), GGameUserSettingsIni);
+		GConfig->Flush(false, GGameUserSettingsIni);
+	}
+	ApplyCaptureKeyBinding(NewKey);
+}
+
+bool ABHPlayerController::LoadSavedCaptureKey(FKey& OutKey) const
+{
+	FString KeyName;
+	if (GConfig && GConfig->GetString(TEXT("BlackoutHunt.Controls"), TEXT("CaptureKey"), KeyName, GGameUserSettingsIni) && !KeyName.IsEmpty())
+	{
+		OutKey = FKey(*KeyName);
+		return OutKey.IsValid();
+	}
+	return false;
+}
+
+void ABHPlayerController::ResetFromTreeStuck()
+{
+	// "Stuck in a Tree" egg: ask our pawn to drop back to the ground if it is wedged up in the lobby greenhouse
+	// tree. The character + server both validate proximity, so this is an inert no-op anywhere else.
+	if (ABHCharacter* BHChar = Cast<ABHCharacter>(GetPawn()))
+	{
+		BHChar->RequestResetFromTreeStuckZone();
+	}
+}
+
 void ABHPlayerController::TesterLoadFinalStation()
 {
 	HideMainMenu();
@@ -2569,6 +2732,52 @@ void ABHPlayerController::HideTravelLoadingScreen()
 	}
 
 	TravelLoadingScreenWidget.Reset();
+}
+
+void ABHPlayerController::BeginLevelStreamingWarmupOrHide()
+{
+	EnsureGraphicsPreferencesLoaded();
+
+	// Only warm up on networked gameplay/lobby levels (the heavy, kit-textured maps) with preload enabled. The bare
+	// Standalone menu, headless/automation runs, and preload-off all just restore gameplay input as before.
+	const bool bWantWarmup = IsLocalController()
+		&& ResolveTexturePreloadMode() > 0
+		&& GetNetMode() != NM_Standalone
+		&& !FApp::IsUnattended()
+		&& FApp::CanEverRender()
+		&& GEngine && GEngine->GameViewport;
+	if (!bWantWarmup)
+	{
+		HideTravelLoadingScreen();
+		ApplyGameplayInputMode();
+		return;
+	}
+
+	// Keep an animated loading screen up and pull the level's textures fully resident before handing control back,
+	// so the round starts crisp instead of streaming mips in -- and the wait shows a throbber instead of freezing.
+	ShowTravelLoadingScreen(TEXT("LOADING LEVEL"), TEXT("Preloading textures for a smoother round."));
+	PreloadWarmupElapsedSeconds = 0.0f;
+	GetWorldTimerManager().SetTimer(PreloadWarmupTimerHandle, this, &ABHPlayerController::TickLevelStreamingWarmup, 0.05f, true);
+}
+
+void ABHPlayerController::TickLevelStreamingWarmup()
+{
+	PreloadWarmupElapsedSeconds += 0.05f;
+
+	// Budgeted streaming (a few ms per tick) so the loading screen keeps animating -- never a single blocking flush.
+	// BlockTillAllRequestsFinished respects the time limit and returns how many requests are still outstanding.
+	const int32 Remaining = IStreamingManager::Get().BlockTillAllRequestsFinished(0.006f, false);
+
+	// Finish when streaming has settled (after a short minimum so the screen does not just flash), or when a hard
+	// timeout fires -- so an endlessly-wanted resource can never strand the player on the loading screen.
+	const bool bSettled = Remaining <= 0 && PreloadWarmupElapsedSeconds >= 0.5f;
+	const bool bTimedOut = PreloadWarmupElapsedSeconds >= 8.0f;
+	if (bSettled || bTimedOut)
+	{
+		GetWorldTimerManager().ClearTimer(PreloadWarmupTimerHandle);
+		HideTravelLoadingScreen();
+		ApplyGameplayInputMode();
+	}
 }
 
 bool ABHPlayerController::HostOnlineGameForMenu(const FString& LevelName, FString& OutMessage)
@@ -5000,6 +5209,10 @@ void ABHPlayerController::EnsureGraphicsPreferencesLoaded()
 		bGraphicsHasSavedResolutionPreference = bLoadedUsableResolution;
 		bGraphicsResolutionOverrideEnabled = bGraphicsResolutionOverrideEnabled || bLoadedUsableResolution;
 
+		// Texture/asset preload mode is independent of the auto-hardware toggle (it trades load time + memory for
+		// smoother play), so it is always read. Default -1 = "never set" -> resolved to a hardware-safe default.
+		GConfig->GetInt(BHGraphicsConfigSection, TEXT("TexturePreload"), GraphicsTexturePreload, GGameUserSettingsIni);
+
 		if (!bAutoHardwareGraphicsEnabled)
 		{
 			GConfig->GetInt(BHGraphicsConfigSection, TEXT("PresetQuality"), GraphicsPresetQuality, GGameUserSettingsIni);
@@ -5022,6 +5235,7 @@ void ABHPlayerController::EnsureGraphicsPreferencesLoaded()
 	GraphicsTextureQuality = BHClampGraphicsQuality(GraphicsTextureQuality);
 	GraphicsShadowQuality = BHClampGraphicsQuality(GraphicsShadowQuality);
 	GraphicsEffectsQuality = BHClampGraphicsQuality(GraphicsEffectsQuality);
+	GraphicsTexturePreload = FMath::Clamp(GraphicsTexturePreload, -1, 2);
 	if (GraphicsResolutionWidth > 0 || GraphicsResolutionHeight > 0)
 	{
 		GraphicsResolutionWidth = FMath::Clamp(GraphicsResolutionWidth, 960, 7680);
@@ -5065,6 +5279,12 @@ void ABHPlayerController::SaveGraphicsPreferences() const
 	SaveGraphicsPreference(TEXT("TextureQuality"), GraphicsTextureQuality);
 	SaveGraphicsPreference(TEXT("ShadowQuality"), GraphicsShadowQuality);
 	SaveGraphicsPreference(TEXT("EffectsQuality"), GraphicsEffectsQuality);
+	// Only persist the preload mode once the player has actually chosen one; -1 stays "unset" so the hardware
+	// default keeps adapting if they upgrade their machine.
+	if (GraphicsTexturePreload >= 0)
+	{
+		SaveGraphicsPreference(TEXT("TexturePreload"), GraphicsTexturePreload);
+	}
 	const bool bSaveResolutionPreference = bGraphicsHasSavedResolutionPreference
 		|| (!bGraphicsAutoSafeResolutionApplied && bGraphicsResolutionOverrideEnabled && GraphicsResolutionWidth > 0 && GraphicsResolutionHeight > 0);
 	if (bSaveResolutionPreference)
@@ -5200,12 +5420,77 @@ void ABHPlayerController::ApplySavedManualGraphicsTuning()
 		break;
 	}
 
+	// Texture-preload CVars are applied AFTER the per-quality pool above so an enabled preload can override the
+	// streaming behaviour (fully load used textures rather than stream mips in/out during play).
+	ApplyTexturePreloadTuning();
+
 	GraphicsAdaptiveStep = 0;
 	GraphicsUnderTargetSamples = 0;
 	GraphicsOverTargetSamples = 0;
 	GraphicsAverageFrameTimeMs = 0.0f;
 	GraphicsAdaptiveEvaluationSeconds = -1.0f;
 	ApplyAdaptiveGraphicsState(false);
+}
+
+int32 ABHPlayerController::ResolveTexturePreloadMode() const
+{
+	if (GraphicsTexturePreload >= 0)
+	{
+		return FMath::Clamp(GraphicsTexturePreload, 0, 2);
+	}
+	// Never-set default, chosen by hardware: weak boxes (<= ~8.5 GB system RAM, integrated/shared, or a software
+	// rasterizer) stay on streaming so a full-resident texture set can't exhaust their tiny shared graphics memory;
+	// everything else gets Balanced preload for smoother rounds. Keyed on SYSTEM RAM because integrated GPUs carve
+	// their VRAM out of it -- the real constraint on the classroom laptops.
+	const bool bWeakDevice = (GraphicsSystemMemoryGB > 0.0f && GraphicsSystemMemoryGB <= 8.5f)
+		|| bGraphicsLikelySoftwareGpu;
+	return bWeakDevice ? 0 : 1;
+}
+
+void ABHPlayerController::ApplyTexturePreloadTuning()
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	const int32 Mode = ResolveTexturePreloadMode();
+
+	// LimitPoolSizeToVRAM caps the streaming pool to what the GPU actually has, so an over-eager preset can never
+	// over-commit and OOM a weak/integrated device. CreateShadersOnLoad builds shaders at load (behind the loading
+	// screen) instead of hitching on first use in the round.
+	switch (Mode)
+	{
+	case 0:
+		// Stream: engine default streaming behaviour. Leave the per-quality pool (set above) untouched and keep
+		// shader creation lazy so low-RAM devices are not pushed to fully resident textures.
+		ConsoleCommand(TEXT("r.Streaming.FullyLoadUsedTextures 0"));
+		ConsoleCommand(TEXT("r.Streaming.LimitPoolSizeToVRAM 1"));
+		ConsoleCommand(TEXT("r.CreateShadersOnLoad 0"));
+		break;
+	case 1:
+		// Balanced: fully load the textures a level actually uses and keep them resident (no in-round mip churn),
+		// VRAM-capped so it stays safe on mid devices. Modest pool bump over the quality default.
+		ConsoleCommand(TEXT("r.Streaming.FullyLoadUsedTextures 1"));
+		ConsoleCommand(TEXT("r.Streaming.LimitPoolSizeToVRAM 1"));
+		ConsoleCommand(TEXT("r.Streaming.UseFixedPoolSize 0"));
+		ConsoleCommand(TEXT("r.Streaming.PoolSize 1536"));
+		ConsoleCommand(TEXT("r.Streaming.MaxTempMemoryAllowed 192"));
+		ConsoleCommand(TEXT("r.Streaming.Boost 1"));
+		ConsoleCommand(TEXT("r.CreateShadersOnLoad 1"));
+		break;
+	default:
+		// Full: a large resident pool for strong GPUs -- maximum smoothness, minimal streaming. Still VRAM-capped
+		// as a backstop so a smaller-than-expected GPU degrades gracefully instead of crashing.
+		ConsoleCommand(TEXT("r.Streaming.FullyLoadUsedTextures 1"));
+		ConsoleCommand(TEXT("r.Streaming.LimitPoolSizeToVRAM 1"));
+		ConsoleCommand(TEXT("r.Streaming.UseFixedPoolSize 0"));
+		ConsoleCommand(TEXT("r.Streaming.PoolSize 3072"));
+		ConsoleCommand(TEXT("r.Streaming.MaxTempMemoryAllowed 320"));
+		ConsoleCommand(TEXT("r.Streaming.Boost 2"));
+		ConsoleCommand(TEXT("r.CreateShadersOnLoad 1"));
+		break;
+	}
 }
 
 void ABHPlayerController::ApplySavedGraphicsResolution()
@@ -5877,6 +6162,32 @@ bool ABHPlayerController::ApplyTextureQualityForMenu(int32 Quality, FString& Out
 	OutMessage = FString::Printf(TEXT("Texture quality set to %s."), BHGraphicsPresetLabel(GraphicsTextureQuality));
 	ShowLocalStatusMessage(OutMessage, 3.0f);
 	return true;
+}
+
+bool ABHPlayerController::ApplyTexturePreloadForMenu(int32 Mode, FString& OutMessage)
+{
+	if (!IsLocalController())
+	{
+		OutMessage = TEXT("Display settings can only be changed on the local machine.");
+		return false;
+	}
+
+	EnsureGraphicsPreferencesLoaded();
+	GraphicsTexturePreload = FMath::Clamp(Mode, 0, 2);
+	ApplyTexturePreloadTuning();
+	SaveGraphicsPreferences();
+
+	const TCHAR* Label = GraphicsTexturePreload == 0 ? TEXT("Stream (lowest memory)")
+		: (GraphicsTexturePreload == 1 ? TEXT("Balanced (preload, VRAM-safe)") : TEXT("Full (preload everything)"));
+	OutMessage = FString::Printf(TEXT("Asset preload set to %s. Takes effect on the next level load."), Label);
+	ShowLocalStatusMessage(OutMessage, 4.0f);
+	return true;
+}
+
+int32 ABHPlayerController::GetGraphicsTexturePreloadForMenu() const
+{
+	const_cast<ABHPlayerController*>(this)->EnsureGraphicsPreferencesLoaded();
+	return ResolveTexturePreloadMode();
 }
 
 bool ABHPlayerController::ApplyShadowQualityForMenu(int32 Quality, FString& OutMessage)
@@ -6756,6 +7067,42 @@ void ABHPlayerController::SetQuestionCursorMode(bool bEnable)
 	}
 }
 
+void ABHPlayerController::SetEmoteWheelCursorMode(bool bEnable)
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+	// A real UI (menu / atmosphere console / travel loading / boot console) owns the cursor; never override it.
+	if (bEnable && (MainMenuWidget.IsValid() || AtmosphereConsoleWidget.IsValid() || TravelLoadingScreenWidget.IsValid() || BootConsoleWidget.IsValid()))
+	{
+		return;
+	}
+	if (bEnable)
+	{
+		// GameAndUI with no focused Slate widget: the OS cursor moves freely (the character freezes camera look
+		// while the wheel is open), so we can read its absolute position for the radial aim. Clicks still fall
+		// through to the game input component, which is harmless here.
+		FInputModeGameAndUI InputMode;
+		InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+		InputMode.SetHideCursorDuringCapture(false);
+		SetInputMode(InputMode);
+		bShowMouseCursor = true;
+		// Snap the cursor to the exact viewport centre so the wheel always opens neutral (aim in the dead zone).
+		int32 SizeX = 0;
+		int32 SizeY = 0;
+		GetViewportSize(SizeX, SizeY);
+		if (SizeX > 0 && SizeY > 0)
+		{
+			SetMouseLocation(SizeX / 2, SizeY / 2);
+		}
+	}
+	else if (!MainMenuWidget.IsValid() && !AtmosphereConsoleWidget.IsValid() && !TravelLoadingScreenWidget.IsValid() && !BootConsoleWidget.IsValid())
+	{
+		ApplyGameplayInputMode();
+	}
+}
+
 void ABHPlayerController::HandleRoundPhaseUiState()
 {
 	if (!IsLocalController())
@@ -7024,7 +7371,18 @@ void ABHPlayerController::ApplyAmbientMusicVolume()
 {
 	if (AmbientMusicComponent)
 	{
-		AmbientMusicComponent->SetVolumeMultiplier(GetEffectiveMusicVolume());
+		float Vol = GetEffectiveMusicVolume();
+		// Per-person train jukebox: if THIS player has a jukebox track running, duck the global lobby bed so the
+		// jukebox is mostly what they hear; tapping the jukebox back to "off" restores the bed to full. Re-applied
+		// every frame from Tick -> UpdateAmbientMusic, so it tracks the selection live.
+		if (const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>())
+		{
+			if (BHPS->JukeboxTrackIndex >= 0)
+			{
+				Vol *= 0.15f;
+			}
+		}
+		AmbientMusicComponent->SetVolumeMultiplier(Vol);
 	}
 }
 

@@ -147,6 +147,25 @@ TSharedRef<FJsonObject> BHLessonPresetToJson(const FBHLessonPreset& Preset)
 	JsonObject->SetBoolField(TEXT("reduced_camera_shake"), CleanPreset.bReducedCameraShake);
 	JsonObject->SetBoolField(TEXT("captions"), CleanPreset.bCaptions);
 	JsonObject->SetBoolField(TEXT("high_contrast_hud"), CleanPreset.bHighContrastHud);
+
+	// Host lobby customization extensions.
+	JsonObject->SetStringField(TEXT("starting_difficulty"), FBHLessonPresetStore::QuestionDifficultyToString(CleanPreset.StartingDifficulty));
+	JsonObject->SetStringField(TEXT("min_difficulty"), FBHLessonPresetStore::QuestionDifficultyToString(CleanPreset.MinDifficulty));
+	JsonObject->SetStringField(TEXT("max_difficulty"), FBHLessonPresetStore::QuestionDifficultyToString(CleanPreset.MaxDifficulty));
+	JsonObject->SetStringField(TEXT("question_set"), CleanPreset.QuestionSetId);
+	{
+		TArray<TSharedPtr<FJsonValue>> RouteValues;
+		for (const FString& RouteMap : CleanPreset.MapRoute)
+		{
+			RouteValues.Add(MakeShared<FJsonValueString>(RouteMap));
+		}
+		JsonObject->SetArrayField(TEXT("map_route"), RouteValues);
+	}
+	JsonObject->SetNumberField(TEXT("layout_seed"), CleanPreset.LayoutSeed);
+	JsonObject->SetNumberField(TEXT("breaker_count"), CleanPreset.BreakerCount);
+	JsonObject->SetNumberField(TEXT("layout_density"), CleanPreset.LayoutDensity);
+	JsonObject->SetBoolField(TEXT("force_procedural"), CleanPreset.bForceProcedural);
+	JsonObject->SetStringField(TEXT("layout_preset"), CleanPreset.LayoutPresetName);
 	return JsonObject;
 }
 
@@ -183,6 +202,35 @@ bool BHLessonPresetFromJson(const TSharedPtr<FJsonObject>& JsonObject, FBHLesson
 	Preset.bReducedCameraShake = BHLessonPresetJsonBool(JsonObject, TEXT("reduced_camera_shake"), false);
 	Preset.bCaptions = BHLessonPresetJsonBool(JsonObject, TEXT("captions"), true);
 	Preset.bHighContrastHud = BHLessonPresetJsonBool(JsonObject, TEXT("high_contrast_hud"), false);
+
+	// Host lobby customization extensions (default-on-missing so older presets still load).
+	Preset.StartingDifficulty = FBHLessonPresetStore::ParseQuestionDifficulty(
+		BHLessonPresetJsonString(JsonObject, TEXT("starting_difficulty")), EBHQuestionDifficulty::Easy);
+	Preset.MinDifficulty = FBHLessonPresetStore::ParseQuestionDifficulty(
+		BHLessonPresetJsonString(JsonObject, TEXT("min_difficulty")), EBHQuestionDifficulty::Easy);
+	Preset.MaxDifficulty = FBHLessonPresetStore::ParseQuestionDifficulty(
+		BHLessonPresetJsonString(JsonObject, TEXT("max_difficulty")), EBHQuestionDifficulty::Hard);
+	Preset.QuestionSetId = BHLessonPresetJsonString(JsonObject, TEXT("question_set"));
+	Preset.MapRoute.Reset();
+	{
+		const TArray<TSharedPtr<FJsonValue>>* RouteValues = nullptr;
+		if (JsonObject->TryGetArrayField(TEXT("map_route"), RouteValues) && RouteValues)
+		{
+			for (const TSharedPtr<FJsonValue>& RouteValue : *RouteValues)
+			{
+				FString RouteMap;
+				if (RouteValue.IsValid() && RouteValue->TryGetString(RouteMap))
+				{
+					Preset.MapRoute.Add(RouteMap);
+				}
+			}
+		}
+	}
+	Preset.LayoutSeed = BHLessonPresetJsonInt(JsonObject, TEXT("layout_seed"), 0);
+	Preset.BreakerCount = BHLessonPresetJsonInt(JsonObject, TEXT("breaker_count"), 0);
+	Preset.LayoutDensity = BHLessonPresetJsonInt(JsonObject, TEXT("layout_density"), 0);
+	Preset.bForceProcedural = BHLessonPresetJsonBool(JsonObject, TEXT("force_procedural"), false);
+	Preset.LayoutPresetName = BHLessonPresetJsonString(JsonObject, TEXT("layout_preset"));
 	Preset.bBuiltin = false;
 
 	OutPreset = FBHLessonPresetStore::ValidatePreset(Preset);
@@ -713,7 +761,7 @@ bool FBHLessonPresetStore::BuildManualQuestionSet(const FBHLessonPreset& Preset,
 						+ static_cast<uint32>(TopicOffset) * 97u
 						+ static_cast<uint32>(DifficultyIndex) * 31u
 						+ static_cast<uint32>(Salt));
-					if (FBHRevisionQuestionBank::SelectQuestionByDifficulty(Topic, Difficulty, QuestionSeed, Candidate))
+					if (FBHRevisionQuestionBank::SelectQuestionByDifficulty(Topic, Difficulty, QuestionSeed, Candidate, CleanPreset.MinDifficulty, CleanPreset.MaxDifficulty))
 					{
 						bAddedQuestion = BHLessonPresetAddQuestionIfUnique(Candidate, UsedQuestionIds, OutQuestionSet);
 					}
@@ -944,6 +992,124 @@ FBHLessonPreset FBHLessonPresetStore::ValidatePreset(const FBHLessonPreset& Pres
 		bAdjusted = true;
 	}
 
+	// --- Host lobby customization clamps ---
+	// Difficulty range: clamp each tier into [Easy,Hard], ensure Min<=Max, pin Starting into the range.
+	auto ClampQuestionDifficulty = [](EBHQuestionDifficulty Difficulty)
+	{
+		return static_cast<EBHQuestionDifficulty>(FMath::Min<uint8>(
+			static_cast<uint8>(Difficulty), static_cast<uint8>(EBHQuestionDifficulty::Hard)));
+	};
+	EBHQuestionDifficulty CleanMinDifficulty = ClampQuestionDifficulty(CleanPreset.MinDifficulty);
+	EBHQuestionDifficulty CleanMaxDifficulty = ClampQuestionDifficulty(CleanPreset.MaxDifficulty);
+	if (static_cast<uint8>(CleanMinDifficulty) > static_cast<uint8>(CleanMaxDifficulty))
+	{
+		Swap(CleanMinDifficulty, CleanMaxDifficulty);
+	}
+	EBHQuestionDifficulty CleanStartingDifficulty = static_cast<EBHQuestionDifficulty>(FMath::Clamp<uint8>(
+		static_cast<uint8>(ClampQuestionDifficulty(CleanPreset.StartingDifficulty)),
+		static_cast<uint8>(CleanMinDifficulty),
+		static_cast<uint8>(CleanMaxDifficulty)));
+	if (CleanMinDifficulty != CleanPreset.MinDifficulty
+		|| CleanMaxDifficulty != CleanPreset.MaxDifficulty
+		|| CleanStartingDifficulty != CleanPreset.StartingDifficulty)
+	{
+		bAdjusted = true;
+		CleanPreset.MinDifficulty = CleanMinDifficulty;
+		CleanPreset.MaxDifficulty = CleanMaxDifficulty;
+		CleanPreset.StartingDifficulty = CleanStartingDifficulty;
+	}
+
+	// Question set id: keep it a safe filename stem (strip path separators / control chars, cap length).
+	{
+		FString CleanSet;
+		for (const TCHAR Character : CleanPreset.QuestionSetId)
+		{
+			if (FChar::IsAlnum(Character) || Character == TEXT('_') || Character == TEXT('-') || Character == TEXT('.'))
+			{
+				CleanSet.AppendChar(Character);
+			}
+			if (CleanSet.Len() >= 64)
+			{
+				break;
+			}
+		}
+		if (!CleanSet.Equals(CleanPreset.QuestionSetId, ESearchCase::CaseSensitive))
+		{
+			bAdjusted = true;
+			CleanPreset.QuestionSetId = CleanSet;
+		}
+	}
+
+	// Map route: normalize each entry to the known pool, drop blanks, cap the route length.
+	{
+		TArray<FString> CleanRoute;
+		for (const FString& RouteMap : CleanPreset.MapRoute)
+		{
+			FString Trimmed = RouteMap;
+			Trimmed.TrimStartAndEndInline();
+			if (Trimmed.IsEmpty())
+			{
+				continue;
+			}
+			CleanRoute.Add(NormalizeMapName(Trimmed));
+			if (CleanRoute.Num() >= 8)
+			{
+				break;
+			}
+		}
+		if (CleanRoute != CleanPreset.MapRoute)
+		{
+			bAdjusted = true;
+			CleanPreset.MapRoute = CleanRoute;
+		}
+	}
+
+	// Named layout preset expands into the raw layout fields (host picks a vibe, not a number). Unknown names
+	// are dropped so the raw fields apply. Runs BEFORE the clamps below so expanded values are clamp-checked.
+	{
+		int32 PresetSeed = CleanPreset.LayoutSeed;
+		int32 PresetDensity = CleanPreset.LayoutDensity;
+		int32 PresetBreakers = CleanPreset.BreakerCount;
+		bool bPresetForce = CleanPreset.bForceProcedural;
+		if (ApplyNamedLayoutPreset(CleanPreset.LayoutPresetName, PresetSeed, PresetDensity, PresetBreakers, bPresetForce))
+		{
+			if (PresetSeed != CleanPreset.LayoutSeed || PresetDensity != CleanPreset.LayoutDensity
+				|| PresetBreakers != CleanPreset.BreakerCount || bPresetForce != CleanPreset.bForceProcedural)
+			{
+				bAdjusted = true;
+			}
+			CleanPreset.LayoutSeed = PresetSeed;
+			CleanPreset.LayoutDensity = PresetDensity;
+			CleanPreset.BreakerCount = PresetBreakers;
+			CleanPreset.bForceProcedural = bPresetForce;
+		}
+		else if (!CleanPreset.LayoutPresetName.IsEmpty())
+		{
+			CleanPreset.LayoutPresetName.Reset();
+			bAdjusted = true;
+		}
+	}
+
+	// Layout knobs (0 = use the generator default).
+	const int32 CleanLayoutSeed = FMath::Max(0, CleanPreset.LayoutSeed);
+	if (CleanLayoutSeed != CleanPreset.LayoutSeed)
+	{
+		bAdjusted = true;
+		CleanPreset.LayoutSeed = CleanLayoutSeed;
+	}
+	const int32 CleanBreakerCount = CleanPreset.BreakerCount <= 0 ? 0 : FMath::Clamp(CleanPreset.BreakerCount, 3, 12);
+	if (CleanBreakerCount != CleanPreset.BreakerCount)
+	{
+		bAdjusted = true;
+		CleanPreset.BreakerCount = CleanBreakerCount;
+	}
+	const int32 CleanLayoutDensity = CleanPreset.LayoutDensity <= 0 ? 0 : FMath::Clamp(CleanPreset.LayoutDensity, 50, 160);
+	if (CleanLayoutDensity != CleanPreset.LayoutDensity)
+	{
+		bAdjusted = true;
+		CleanPreset.LayoutDensity = CleanLayoutDensity;
+	}
+
 	if (CleanPreset.Id.IsEmpty())
 	{
 		CleanPreset.Id = CleanPreset.bBuiltin
@@ -1063,6 +1229,134 @@ EBHRevisionDifficultyMix FBHLessonPresetStore::ParseDifficultyMix(const FString&
 	return DefaultMix;
 }
 
+FString FBHLessonPresetStore::QuestionDifficultyToString(EBHQuestionDifficulty Difficulty)
+{
+	switch (Difficulty)
+	{
+	case EBHQuestionDifficulty::Easy:
+		return TEXT("Easy");
+	case EBHQuestionDifficulty::Hard:
+		return TEXT("Hard");
+	case EBHQuestionDifficulty::Medium:
+	default:
+		return TEXT("Medium");
+	}
+}
+
+EBHQuestionDifficulty FBHLessonPresetStore::ParseQuestionDifficulty(const FString& Difficulty, EBHQuestionDifficulty DefaultDifficulty)
+{
+	if (Difficulty.Equals(TEXT("Easy"), ESearchCase::IgnoreCase))
+	{
+		return EBHQuestionDifficulty::Easy;
+	}
+	if (Difficulty.Equals(TEXT("Medium"), ESearchCase::IgnoreCase))
+	{
+		return EBHQuestionDifficulty::Medium;
+	}
+	if (Difficulty.Equals(TEXT("Hard"), ESearchCase::IgnoreCase))
+	{
+		return EBHQuestionDifficulty::Hard;
+	}
+	return DefaultDifficulty;
+}
+
+const TArray<FString>& FBHLessonPresetStore::GetDefaultMapRoute()
+{
+	static const TArray<FString> DefaultRoute = { TEXT("Facility"), TEXT("Substation"), TEXT("Foggrounds") };
+	return DefaultRoute;
+}
+
+TArray<FString> FBHLessonPresetStore::GetAvailableMapNames()
+{
+	return TArray<FString>{ TEXT("Facility"), TEXT("Substation"), TEXT("Foggrounds") };
+}
+
+FString FBHLessonPresetStore::MapRouteToString(const TArray<FString>& MapRoute)
+{
+	TArray<FString> CleanRoute;
+	for (const FString& RouteMap : MapRoute)
+	{
+		FString Trimmed = RouteMap;
+		Trimmed.TrimStartAndEndInline();
+		if (!Trimmed.IsEmpty())
+		{
+			CleanRoute.Add(NormalizeMapName(Trimmed));
+		}
+	}
+	return FString::Join(CleanRoute, TEXT(","));
+}
+
+TArray<FString> FBHLessonPresetStore::ParseMapRoute(const FString& MapRouteCsv)
+{
+	TArray<FString> Tokens;
+	MapRouteCsv.ParseIntoArray(Tokens, TEXT(","), true);
+
+	TArray<FString> Route;
+	for (const FString& Token : Tokens)
+	{
+		FString Trimmed = Token;
+		Trimmed.TrimStartAndEndInline();
+		if (!Trimmed.IsEmpty())
+		{
+			Route.Add(NormalizeMapName(Trimmed));
+			if (Route.Num() >= 8)
+			{
+				break;
+			}
+		}
+	}
+	return Route;
+}
+
+TArray<FString> FBHLessonPresetStore::GetLayoutPresetNames()
+{
+	// Curated, host-friendly procedural-layout "vibes" (Facility only). "Standard" is the untouched default.
+	return TArray<FString>{
+		TEXT("Standard"),
+		TEXT("Open"),
+		TEXT("Dense Maze"),
+		TEXT("Sparse Power"),
+		TEXT("Marathon"),
+		TEXT("Shuffled")
+	};
+}
+
+bool FBHLessonPresetStore::ApplyNamedLayoutPreset(const FString& PresetName, int32& OutSeed, int32& OutDensity, int32& OutBreakers, bool& bOutForceProcedural)
+{
+	const FString Name = PresetName.TrimStartAndEnd();
+	if (Name.IsEmpty())
+	{
+		return false;
+	}
+	// Each preset is a fixed, reproducible bundle of the procedural-layout knobs. All values sit inside the
+	// ValidatePreset clamps (density 50..160, breakers 3..12), so the later clamp pass leaves them intact.
+	if (Name.Equals(TEXT("Standard"), ESearchCase::IgnoreCase) || Name.Equals(TEXT("Default"), ESearchCase::IgnoreCase))
+	{
+		OutSeed = 0; OutDensity = 0; OutBreakers = 0; bOutForceProcedural = false; return true;
+	}
+	if (Name.Equals(TEXT("Open"), ESearchCase::IgnoreCase))
+	{
+		OutSeed = 0; OutDensity = 60; OutBreakers = 0; bOutForceProcedural = true; return true;
+	}
+	if (Name.Equals(TEXT("Dense Maze"), ESearchCase::IgnoreCase) || Name.Equals(TEXT("Dense"), ESearchCase::IgnoreCase))
+	{
+		OutSeed = 0; OutDensity = 150; OutBreakers = 0; bOutForceProcedural = true; return true;
+	}
+	if (Name.Equals(TEXT("Sparse Power"), ESearchCase::IgnoreCase) || Name.Equals(TEXT("Sparse"), ESearchCase::IgnoreCase))
+	{
+		OutSeed = 0; OutDensity = 80; OutBreakers = 4; bOutForceProcedural = true; return true;
+	}
+	if (Name.Equals(TEXT("Marathon"), ESearchCase::IgnoreCase))
+	{
+		OutSeed = 0; OutDensity = 110; OutBreakers = 10; bOutForceProcedural = true; return true;
+	}
+	if (Name.Equals(TEXT("Shuffled"), ESearchCase::IgnoreCase))
+	{
+		OutSeed = 20260601; OutDensity = 100; OutBreakers = 0; bOutForceProcedural = true; return true;
+	}
+	return false;
+}
+
 FString FBHLessonPresetStore::BotDifficultyToString(EBHBotDifficulty Difficulty)
 {
 	switch (Difficulty)
@@ -1125,7 +1419,7 @@ FString FBHLessonPresetStore::TopicMaskToText(int32 TopicMask)
 FString FBHLessonPresetStore::DescribePreset(const FBHLessonPreset& Preset)
 {
 	const FBHLessonPreset CleanPreset = ValidatePreset(Preset);
-	return FString::Printf(TEXT("%s | Focus %s | %s | Targets %.0f/%.0f | %d sec | Scare %d | %s | Bots %d %s"),
+	FString Description = FString::Printf(TEXT("%s | Focus %s | %s | Targets %.0f/%.0f | %d sec | Scare %d | %s | Bots %d %s"),
 		*CleanPreset.DisplayName,
 		*TopicMaskToText(CleanPreset.TopicMask),
 		*DifficultyMixToString(CleanPreset.DifficultyMix),
@@ -1136,6 +1430,27 @@ FString FBHLessonPresetStore::DescribePreset(const FBHLessonPreset& Preset)
 		*CleanPreset.MapName,
 		CleanPreset.BotCount,
 		*BotDifficultyToString(CleanPreset.BotDifficulty));
+
+	// Only surface the new lobby knobs when they differ from defaults, so the line stays readable.
+	if (CleanPreset.MinDifficulty != EBHQuestionDifficulty::Easy || CleanPreset.MaxDifficulty != EBHQuestionDifficulty::Hard)
+	{
+		Description += FString::Printf(TEXT(" | Diff %s-%s"),
+			*QuestionDifficultyToString(CleanPreset.MinDifficulty),
+			*QuestionDifficultyToString(CleanPreset.MaxDifficulty));
+	}
+	if (!CleanPreset.QuestionSetId.IsEmpty())
+	{
+		Description += FString::Printf(TEXT(" | Set %s"), *CleanPreset.QuestionSetId);
+	}
+	if (CleanPreset.MapRoute.Num() > 0)
+	{
+		Description += FString::Printf(TEXT(" | Route %s"), *MapRouteToString(CleanPreset.MapRoute));
+	}
+	if (CleanPreset.bForceProcedural || CleanPreset.LayoutSeed > 0 || CleanPreset.BreakerCount > 0 || CleanPreset.LayoutDensity > 0)
+	{
+		Description += TEXT(" | Custom layout");
+	}
+	return Description;
 }
 
 FString FBHLessonPresetStore::BuildRevisionLaunchOptions(const FBHLessonPreset& Preset, bool bLiveClassroom)
@@ -1156,6 +1471,38 @@ FString FBHLessonPresetStore::BuildRevisionLaunchOptions(const FBHLessonPreset& 
 			CleanPreset.BotCount,
 			*BotDifficultyToString(CleanPreset.BotDifficulty));
 	}
+
+	// Host lobby customization options (difficulty range always travels; the rest only when set,
+	// so an untouched preset launches byte-for-byte as before).
+	Options += FString::Printf(TEXT("?BHStartDifficulty=%s?BHMinDifficulty=%s?BHMaxDifficulty=%s"),
+		*QuestionDifficultyToString(CleanPreset.StartingDifficulty),
+		*QuestionDifficultyToString(CleanPreset.MinDifficulty),
+		*QuestionDifficultyToString(CleanPreset.MaxDifficulty));
+	if (!CleanPreset.QuestionSetId.IsEmpty())
+	{
+		Options += FString::Printf(TEXT("?BHQuestionSet=%s"), *CleanPreset.QuestionSetId);
+	}
+	if (CleanPreset.MapRoute.Num() > 0)
+	{
+		Options += FString::Printf(TEXT("?BHMapRoute=%s"), *MapRouteToString(CleanPreset.MapRoute));
+	}
+	if (CleanPreset.LayoutSeed > 0)
+	{
+		Options += FString::Printf(TEXT("?BHLayoutSeed=%d"), CleanPreset.LayoutSeed);
+	}
+	if (CleanPreset.BreakerCount > 0)
+	{
+		Options += FString::Printf(TEXT("?BHBreakerCount=%d"), CleanPreset.BreakerCount);
+	}
+	if (CleanPreset.LayoutDensity > 0)
+	{
+		Options += FString::Printf(TEXT("?BHLayoutDensity=%d"), CleanPreset.LayoutDensity);
+	}
+	if (CleanPreset.bForceProcedural)
+	{
+		Options += TEXT("?BHForceProcedural=1");
+	}
+
 	if (bLiveClassroom)
 	{
 		Options += TEXT("?BHLiveClassroom=1");

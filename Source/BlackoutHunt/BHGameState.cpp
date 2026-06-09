@@ -195,6 +195,7 @@ void ABHGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 	DOREPLIFETIME(ABHGameState, ObjectiveText);
 	DOREPLIFETIME(ABHGameState, NextLevelName);
 	DOREPLIFETIME(ABHGameState, ActiveLevelName);
+	DOREPLIFETIME(ABHGameState, LobbyTreeLocations);
 	DOREPLIFETIME(ABHGameState, TargetHunterCount);
 	DOREPLIFETIME(ABHGameState, ObjectiveIntensity);
 	DOREPLIFETIME(ABHGameState, bInfectionMode);
@@ -225,6 +226,7 @@ void ABHGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 	DOREPLIFETIME(ABHGameState, RevisionRoundDuration);
 	DOREPLIFETIME(ABHGameState, RevisionScareIntensity);
 	DOREPLIFETIME(ABHGameState, RevisionContributionTarget);
+	DOREPLIFETIME(ABHGameState, AllCaughtGraceRemaining);
 	DOREPLIFETIME(ABHGameState, RevisionClassMasteryAverage);
 	DOREPLIFETIME(ABHGameState, RevisionWeakTopic);
 	DOREPLIFETIME(ABHGameState, RevisionReviewTimeRemaining);
@@ -616,6 +618,12 @@ void ABHGameState::SetRevisionContributionTarget(int32 NewContributionTarget)
 	// show "CONTRIBUTE 4/4 / WAIT FOR CLASS GATE" while the gate still needed 5-6, so the exit and Hall
 	// Monitor tools never unlocked when the HUD said they should.
 	RevisionContributionTarget = FMath::Clamp(NewContributionTarget, 1, 6);
+}
+
+void ABHGameState::SetAllCaughtGraceRemaining(int32 NewRemaining)
+{
+	// -1 = window inactive; otherwise seconds left for monitors to finish revision after all survivors are caught.
+	AllCaughtGraceRemaining = FMath::Max(-1, NewRemaining);
 }
 
 void ABHGameState::SetRevisionSummary(float NewClassMasteryAverage, EBHPhysicsTopic NewWeakTopic, int32 NewReviewTimeRemaining, const FString& NewReviewText)

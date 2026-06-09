@@ -86,6 +86,8 @@ void ABHPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLi
 	DOREPLIFETIME(ABHPlayerState, Powerups);
 	// Owner-only: only the player's own HUD needs to know which minigame table to draw status for.
 	DOREPLIFETIME_CONDITION(ABHPlayerState, ActiveMinigameTable, COND_OwnerOnly);
+	// Owner-only: the train jukebox is per-person -- only the player's own client plays their chosen track.
+	DOREPLIFETIME_CONDITION(ABHPlayerState, JukeboxTrackIndex, COND_OwnerOnly);
 }
 
 bool ABHPlayerState::IsAliveSurvivor() const

@@ -13,6 +13,10 @@ namespace
 	// Global theme STRENGTH (0 = faint/near-neutral, 1 = full theme colour). UI-only preference. 1 = today's look.
 	float GActiveMenuThemeStrength = 1.0f;
 
+	// Global per-section CONTRAST (0 = very faint/near-monotone, 1 = very high per-section identity). UI-only
+	// preference; scales how strongly the in-menu section cards read apart. 1 = full identity (today's look).
+	float GMenuSectionContrast = 1.0f;
+
 	const TArray<FBHMenuTheme>& BHAllMenuThemes()
 	{
 		// Order is the persisted key -- APPEND ONLY. Each row: Name, Background, Panel, PanelBorder, Header,
@@ -55,6 +59,13 @@ namespace
 				FLinearColor(0.660f, 0.635f, 0.595f, 1.0f), FLinearColor(0.780f, 0.755f, 0.715f, 1.0f), FLinearColor(0.470f, 0.450f, 0.420f, 1.0f),
 				FLinearColor(0.520f, 0.155f, 0.135f, 1.0f), FLinearColor(0.840f, 0.270f, 0.210f, 1.0f),
 				FLinearColor(0.060f, 0.058f, 0.056f, 1.0f), FLinearColor(0.175f, 0.105f, 0.092f, 1.0f), FLinearColor(0.920f, 0.180f, 0.130f, 1.0f) },
+
+			// "Vault" -- the secret 100%-relic reward: deep blue-black strongroom with rich gold trim.
+			{ TEXT("Vault"),
+				FLinearColor(0.012f, 0.014f, 0.020f, 1.0f), FLinearColor(0.055f, 0.060f, 0.080f, 1.0f), FLinearColor(0.300f, 0.260f, 0.160f, 1.0f),
+				FLinearColor(0.920f, 0.820f, 0.500f, 1.0f), FLinearColor(0.900f, 0.880f, 0.800f, 1.0f), FLinearColor(0.620f, 0.580f, 0.480f, 1.0f),
+				FLinearColor(0.860f, 0.680f, 0.240f, 1.0f), FLinearColor(1.000f, 0.820f, 0.360f, 1.0f),
+				FLinearColor(0.100f, 0.110f, 0.140f, 1.0f), FLinearColor(0.220f, 0.190f, 0.120f, 1.0f), FLinearColor(0.900f, 0.320f, 0.180f, 1.0f) },
 		};
 		return Themes;
 	}
@@ -71,6 +82,7 @@ namespace
 			{ 0,   TEXT("flow_master") },   // 3 Emerald  -- achievement: full three-link flow chain
 			{ 0,   TEXT("codebreaker") },   // 4 Arcade   -- achievement: the Konami easter egg
 			{ 0,   nullptr },               // 5 Dread    -- free (the default atmospheric-horror look)
+			{ 0,   TEXT("relic_collector") }, // 6 Vault   -- secret: find every collectable relic
 		};
 		return Gates[FMath::Clamp(Index, 0, static_cast<int32>(UE_ARRAY_COUNT(Gates)) - 1)];
 	}
@@ -135,6 +147,16 @@ float BHActiveMenuThemeStrength()
 void BHSetActiveMenuThemeStrength(float Strength)
 {
 	GActiveMenuThemeStrength = FMath::Clamp(Strength, 0.0f, 1.0f);
+}
+
+float BHMenuSectionContrast()
+{
+	return GMenuSectionContrast;
+}
+
+void BHSetMenuSectionContrast(float Contrast)
+{
+	GMenuSectionContrast = FMath::Clamp(Contrast, 0.0f, 1.0f);
 }
 
 FLinearColor BHResolveActiveThemeColor(FLinearColor FBHMenuTheme::* Role)

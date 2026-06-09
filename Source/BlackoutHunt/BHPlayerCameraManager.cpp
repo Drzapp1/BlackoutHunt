@@ -26,5 +26,17 @@ void ABHPlayerCameraManager::ApplyCameraModifiers(float DeltaTime, FMinimalViewI
 			const FQuat Somersault(FVector::RightVector, FMath::DegreesToRadians(SomersaultDeg));
 			InOutPOV.Rotation = (Base * Somersault).Rotator();
 		}
+
+		// "mister ke~" emote shake: a high-frequency view-PITCH wobble (up/down) on the final POV, same local-right
+		// axis as the somersault. It lives here, not on the camera component, because bUsePawnControlRotation discards
+		// cosmetic component rotation -- and applying it to the POV rather than the control rotation keeps the player's
+		// aim/heading untouched. The matching vertical translation is on the camera component (it survives that flag).
+		const float EmoteShakePitchDeg = ViewChar->GetEmoteShakePitchOffsetDeg();
+		if (!FMath::IsNearlyZero(EmoteShakePitchDeg))
+		{
+			const FQuat ShakeBase = InOutPOV.Rotation.Quaternion();
+			const FQuat ShakePitch(FVector::RightVector, FMath::DegreesToRadians(EmoteShakePitchDeg));
+			InOutPOV.Rotation = (ShakeBase * ShakePitch).Rotator();
+		}
 	}
 }

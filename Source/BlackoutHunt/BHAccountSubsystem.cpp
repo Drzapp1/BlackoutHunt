@@ -140,9 +140,18 @@ namespace
 		{ TEXT("dont_panic"),    TEXT("Don't Panic"),     TEXT("Played under the name of the great Answer."),       42, 2, TEXT("Hitchhiker title"),   true  },
 		{ TEXT("gravity_code"),  TEXT("It Still Pulls"),  TEXT("Found the code that always pulls you down."),       30, 3, TEXT("Falling Apple emblem"), true },
 		{ TEXT("wall_reader"),   TEXT("Wall Reader"),     TEXT("Read what a previous student scratched in a locker."), 25, 2, TEXT(""),               true  },
+		{ TEXT("stuck_in_tree"), TEXT("Stuck in a Tree"), TEXT("Jumped into the lobby tree and got wedged. Press O to climb down."), 20, 2, TEXT("Treehugger title"), true },
+		// VIP egg: the real teacher signing in under his name. Excluded from the Perfectionist capstone below
+		// (only one person can ever earn it, so it must not block anyone else's 100%).
+		{ TEXT("roll_call"),     TEXT("Roll Call"),       TEXT("The faculty signed in. Class is in session."),       50, 2, TEXT("Faculty Lounge title + Gold Star emblem"), true },
 		// Capstones.
 		{ TEXT("honor_graduate"), TEXT("Honor Graduate"), TEXT("Earned every standard achievement."),              150, 5, TEXT("Honor Graduate title"), false },
-		{ TEXT("perfectionist"), TEXT("Perfectionist"),   TEXT("Earned every achievement, secrets and all."),      200, 5, TEXT("Perfectionist title"), true  }
+		{ TEXT("perfectionist"), TEXT("Perfectionist"),   TEXT("Earned every achievement, secrets and all."),      200, 5, TEXT("Perfectionist title"), true  },
+		// Collectable-relic milestones (see ABHCollectable). Awarded cumulatively by RecordCollectableFound at
+		// 25/50/100%. relic_collector (100%) also gates the secret "Vault" menu theme + the Treasure Hunter title.
+		{ TEXT("relic_seeker"),    TEXT("Relic Seeker"),    TEXT("Found a quarter of the hidden relics."),           30, 2, TEXT(""),                                  false },
+		{ TEXT("relic_hunter"),    TEXT("Relic Hunter"),    TEXT("Found half of the hidden relics."),                50, 3, TEXT(""),                                  false },
+		{ TEXT("relic_collector"), TEXT("Vault Keeper"),    TEXT("Found every hidden relic."),                      120, 5, TEXT("Vault theme + Treasure Hunter title"), false }
 	};
 	const FBHAchievementDef* BHFindAchievement(FName Id)
 	{
@@ -151,6 +160,45 @@ namespace
 			if (Id == FName(Def.Id))
 			{
 				return &Def;
+			}
+		}
+		return nullptr;
+	}
+
+	// Cryptic, non-spoiler nudge for a still-hidden secret achievement -- enough to point a curious player at the
+	// rough idea (a place, a behaviour, a name) without spelling out the steps, so "???" feels chase-able rather
+	// than blank. Returns nullptr for ids with no hint (the Awards tab then falls back to the generic secret line).
+	const TCHAR* BHAchievementHint(FName Id)
+	{
+		struct FHint { const TCHAR* Id; const TCHAR* Text; };
+		static const FHint Hints[] = {
+			// Original easter-egg secrets.
+			{ TEXT("honorary_faculty"), TEXT("The faculty remembers its own. Some names carry weight.") },
+			{ TEXT("codebreaker"),      TEXT("An old code opens nothing here -- but someone is watching for it.") },
+			{ TEXT("roof_rider"),       TEXT("The train has a way up, if you find where it breathes.") },
+			{ TEXT("roof_parkour"),     TEXT("Above the carriages, a short climb ends in light.") },
+			{ TEXT("completionist"),    TEXT("Find every quiet secret the building keeps.") },
+			// Expansion secrets.
+			{ TEXT("momentum_maestro"), TEXT("Flow without pause, again and again, until it's second nature.") },
+			{ TEXT("pop_quiz"),         TEXT("As the Teacher, strike before the chalk dust settles.") },
+			{ TEXT("ghost_in_walls"),   TEXT("Make the dark a habit. The lockers will learn your name.") },
+			{ TEXT("saved_by_bell"),    TEXT("Leave it to the very last departure.") },
+			{ TEXT("comeback_kid"),     TEXT("Be the only one left standing -- and still get out.") },
+			{ TEXT("lights_on"),        TEXT("Somewhere up high, a switch waits in the dark.") },
+			{ TEXT("did_you_see_that"), TEXT("Stay calm and watch the walls. They sometimes whisper.") },
+			{ TEXT("night_owl"),        TEXT("Class runs late. Very late.") },
+			{ TEXT("dont_panic"),       TEXT("The answer to everything makes a fine name.") },
+			{ TEXT("gravity_code"),     TEXT("On the menu, key in what always pulls you down.") },
+			{ TEXT("wall_reader"),      TEXT("Read what a frightened student scratched into the dark.") },
+			{ TEXT("stuck_in_tree"),    TEXT("Curiosity says climb the garden tree. Gravity disagrees.") },
+			{ TEXT("roll_call"),        TEXT("Reserved for the one who actually takes attendance.") },
+			{ TEXT("perfectionist"),    TEXT("Leave nothing unearned. Nothing at all.") }
+		};
+		for (const FHint& Hint : Hints)
+		{
+			if (Id == FName(Hint.Id))
+			{
+				return Hint.Text;
 			}
 		}
 		return nullptr;
@@ -750,8 +798,8 @@ void UBHAccountSubsystem::AccountResetLocalClassroomData()
 
 void UBHAccountSubsystem::BHUnlockAllCosmetics()
 {
-#if UE_BUILD_SHIPPING
-	// Developer-only: inert in Shipping (and the console is disabled there), so the packaged classroom build can
+#if UE_BUILD_SHIPPING && !BH_DEV_UNLOCK
+	// Developer-only: inert in production Shipping (and the console is disabled there), so the packaged classroom build can
 	// never grant cosmetics this way. Declared unconditionally so the generated Exec binding always links.
 	UE_LOG(LogTemp, Warning, TEXT("BHUnlockAllCosmetics is disabled in Shipping builds."));
 #else
@@ -1401,7 +1449,9 @@ void UBHAccountSubsystem::UnlockAchievement(FName AchievementId)
 		bool bAll = true;
 		for (const FBHAchievementDef& RegDef : GBHAchievements)
 		{
-			if (FName(RegDef.Id) == FName(TEXT("perfectionist")))
+			// Skip Perfectionist itself, and the VIP-only Roll Call egg (only the teacher can ever earn it, so it
+			// must not gate everyone else's 100%).
+			if (FName(RegDef.Id) == FName(TEXT("perfectionist")) || FName(RegDef.Id) == FName(TEXT("roll_call")))
 			{
 				continue;
 			}
@@ -1415,6 +1465,45 @@ void UBHAccountSubsystem::UnlockAchievement(FName AchievementId)
 		{
 			UnlockAchievement(FName(TEXT("perfectionist")));
 		}
+	}
+}
+
+int32 UBHAccountSubsystem::GetTotalCollectables() const
+{
+	// 5 relics per map x 4 maps. Keep in sync with the per-map spawns in BHGameMode::Build*Level.
+	return 20;
+}
+
+int32 UBHAccountSubsystem::GetCollectableFoundCount() const
+{
+	return Progress.CollectablesFound.Num();
+}
+
+bool UBHAccountSubsystem::HasCollectable(FName CollectableId) const
+{
+	return Progress.CollectablesFound.Contains(CollectableId);
+}
+
+void UBHAccountSubsystem::RecordCollectableFound(FName CollectableId)
+{
+	if (CollectableId.IsNone() || Progress.CollectablesFound.Contains(CollectableId))
+	{
+		return;
+	}
+	Progress.CollectablesFound.AddUnique(CollectableId);
+	Progress.XP += 15;                                  // per-relic XP
+	Progress.LastUpdatedUtc = UtcNowString();
+	SaveProgress();
+	SetLastAccountMessage(FString::Printf(TEXT("Relic found (%d/%d)."), Progress.CollectablesFound.Num(), GetTotalCollectables()));
+
+	// Milestone rewards (cumulative; UnlockAchievement is idempotent). 100% also unlocks the Vault theme + title.
+	const int32 Found = Progress.CollectablesFound.Num();
+	const int32 Total = GetTotalCollectables();
+	if (Total > 0)
+	{
+		if (Found * 4 >= Total) { UnlockAchievement(FName(TEXT("relic_seeker"))); }
+		if (Found * 2 >= Total) { UnlockAchievement(FName(TEXT("relic_hunter"))); }
+		if (Found >= Total)     { UnlockAchievement(FName(TEXT("relic_collector"))); }
 	}
 }
 
@@ -1559,6 +1648,7 @@ TArray<FBHAchievementDisplay> UBHAccountSubsystem::GetAchievementsForDisplay() c
 		Display.bHidden = Def.bHidden;
 		Display.bUnlocked = Progress.UnlockedAchievements.Contains(Display.Id);
 		Display.bIsNew = Display.bUnlocked && !Progress.SeenAchievements.Contains(Display.Id);
+		if (const TCHAR* HintText = BHAchievementHint(Display.Id)) { Display.Hint = HintText; }
 		// Progress toward countable achievements (drives the Awards-tab progress bar). Event/binary ones leave
 		// ProgressTarget at 0 (no bar).
 		{
@@ -1838,6 +1928,18 @@ void UBHAccountSubsystem::SetSelectedThemeStrength(float Strength)
 	SaveProgress();
 }
 
+void UBHAccountSubsystem::SetSelectedSectionContrast(float Contrast)
+{
+	const float Clamped = FMath::Clamp(Contrast, 0.0f, 1.0f);
+	if (FMath::IsNearlyEqual(Progress.SelectedSectionContrast, Clamped))
+	{
+		return;
+	}
+	Progress.SelectedSectionContrast = Clamped;
+	Progress.LastUpdatedUtc = UtcNowString();
+	SaveProgress();
+}
+
 FString UBHAccountSubsystem::GetCosmeticSummary() const
 {
 	return FString::Printf(
@@ -2066,6 +2168,7 @@ TSharedRef<FJsonObject> UBHAccountSubsystem::ProgressToJson() const
 	JsonObject->SetNumberField(TEXT("selected_emblem_index"), Progress.SelectedEmblemIndex);
 	JsonObject->SetNumberField(TEXT("selected_theme_index"), Progress.SelectedThemeIndex);
 	JsonObject->SetNumberField(TEXT("selected_theme_strength"), Progress.SelectedThemeStrength);
+	JsonObject->SetNumberField(TEXT("selected_section_contrast"), Progress.SelectedSectionContrast);
 	{
 		TArray<TSharedPtr<FJsonValue>> SlotColorsJson;
 		for (uint8 SlotColor : Progress.AvatarSlotColors)
@@ -2087,6 +2190,12 @@ TSharedRef<FJsonObject> UBHAccountSubsystem::ProgressToJson() const
 		SeenJson.Add(MakeShared<FJsonValueString>(Seen.ToString()));
 	}
 	JsonObject->SetArrayField(TEXT("seen_achievements"), SeenJson);
+	TArray<TSharedPtr<FJsonValue>> CollectablesJson;
+	for (const FName& Relic : Progress.CollectablesFound)
+	{
+		CollectablesJson.Add(MakeShared<FJsonValueString>(Relic.ToString()));
+	}
+	JsonObject->SetArrayField(TEXT("collectables_found"), CollectablesJson);
 	return JsonObject;
 }
 
@@ -2166,6 +2275,7 @@ void UBHAccountSubsystem::ApplyProgressJson(const TSharedPtr<FJsonObject>& JsonO
 	Progress.SelectedEmblemIndex = JsonInt(JsonObject, TEXT("selected_emblem_index"));
 	Progress.SelectedThemeIndex = JsonInt(JsonObject, TEXT("selected_theme_index"));
 	Progress.SelectedThemeStrength = FMath::Clamp(JsonFloat(JsonObject, TEXT("selected_theme_strength"), 1.0f), 0.0f, 1.0f);
+	Progress.SelectedSectionContrast = FMath::Clamp(JsonFloat(JsonObject, TEXT("selected_section_contrast"), 1.0f), 0.0f, 1.0f);
 	Progress.LastUpdatedUtc = JsonString(JsonObject, TEXT("last_updated_utc"));
 	Progress.AvatarSlotColors.Reset();
 	const TArray<TSharedPtr<FJsonValue>>* SlotColorsJson = nullptr;
@@ -2200,6 +2310,19 @@ void UBHAccountSubsystem::ApplyProgressJson(const TSharedPtr<FJsonObject>& JsonO
 			if (Value.IsValid() && Value->TryGetString(SeenId) && !SeenId.IsEmpty())
 			{
 				Progress.SeenAchievements.AddUnique(FName(SeenId));
+			}
+		}
+	}
+	Progress.CollectablesFound.Reset();
+	const TArray<TSharedPtr<FJsonValue>>* CollectablesJson = nullptr;
+	if (JsonObject.IsValid() && JsonObject->TryGetArrayField(TEXT("collectables_found"), CollectablesJson) && CollectablesJson)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *CollectablesJson)
+		{
+			FString RelicId;
+			if (Value.IsValid() && Value->TryGetString(RelicId) && !RelicId.IsEmpty())
+			{
+				Progress.CollectablesFound.AddUnique(FName(RelicId));
 			}
 		}
 	}

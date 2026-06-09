@@ -56,6 +56,7 @@ public:
 	void SetBotOptions(bool bNewBotMode, int32 NewTargetBotCount, EBHBotDifficulty NewBotDifficulty);
 	void SetRevisionOptions(EBHRevisionMode NewRevisionMode, int32 NewTopicMask, EBHRevisionDifficultyMix NewDifficultyMix, float NewClassThreshold, float NewIndividualThreshold, int32 NewRoundDuration, int32 NewScareIntensity);
 	void SetRevisionContributionTarget(int32 NewContributionTarget);
+	void SetAllCaughtGraceRemaining(int32 NewRemaining);
 	void SetRevisionSummary(float NewClassMasteryAverage, EBHPhysicsTopic NewWeakTopic, int32 NewReviewTimeRemaining, const FString& NewReviewText);
 	void SetTrainState(EBHTrainPhase NewTrainPhase, int32 NewStageIndex, float NewPhaseEndServerTime, const FString& NewDestinationName, const FString& NewAnnouncement);
 	void SetLobbyTrainActive(bool bActive);
@@ -95,6 +96,12 @@ public:
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt")
 	FString ActiveLevelName;
+
+	// World positions (trunk base) of the lobby greenhouse tree(s). Set by the game mode when it builds the lobby
+	// and replicated so the owning client can detect when it jumps up into the canopy ("Stuck in a Tree" egg) and
+	// the server can validate the O-to-reset drop. Empty in every non-lobby level.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt")
+	TArray<FVector> LobbyTreeLocations;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt")
 	int32 TargetHunterCount;
@@ -198,6 +205,11 @@ public:
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Revision")
 	int32 RevisionContributionTarget;
+
+	// Seconds left in the "all survivors caught, monitors still finishing revision" grace window. -1 = not active.
+	// Drives the everyone-visible HUD countdown during that window (see docs/ROADMAP_MOVEMENT_REVISION.md WS2).
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Revision")
+	int32 AllCaughtGraceRemaining = -1;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Revision")
 	float RevisionClassMasteryAverage;

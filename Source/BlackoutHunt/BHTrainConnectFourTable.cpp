@@ -75,6 +75,15 @@ ABHTrainConnectFourTable::ABHTrainConnectFourTable()
 	StatusTextRender->SetupAttachment(SceneRoot);
 	BHConfigureC4Text(StatusTextRender, FVector(0.0f, -6.0f, 46.0f), 6.5f, FColor(206, 226, 244));
 
+	// Mirrored copies facing the opposite seat so both players read the text the right way round.
+	TitleTextBack = CreateDefaultSubobject<UTextRenderComponent>(TEXT("TitleTextBack"));
+	TitleTextBack->SetupAttachment(SceneRoot);
+	BHPropVisuals::ConfigureReadableText(TitleTextBack, FVector(0.0f, 6.0f, 178.0f), FRotator(0.0f, -90.0f, 0.0f), 11.0f, FColor(255, 214, 120));
+
+	StatusTextBack = CreateDefaultSubobject<UTextRenderComponent>(TEXT("StatusTextBack"));
+	StatusTextBack->SetupAttachment(SceneRoot);
+	BHPropVisuals::ConfigureReadableText(StatusTextBack, FVector(0.0f, 6.0f, 46.0f), FRotator(0.0f, -90.0f, 0.0f), 6.5f, FColor(206, 226, 244));
+
 	TableLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("TableLight"));
 	TableLight->SetupAttachment(SceneRoot);
 	TableLight->SetRelativeLocation(FVector(0.0f, -40.0f, 150.0f));
@@ -92,6 +101,64 @@ ABHTrainConnectFourTable::ABHTrainConnectFourTable()
 void ABHTrainConnectFourTable::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	if (HasAuthority())
+	{
+		PruneSeats();
+	}
+	RefreshBoardVisuals();
+}
+
+void ABHTrainConnectFourTable::PruneSeats()
+{
+	// A human seat is "gone" if its owning PlayerState was destroyed (disconnect) or its pawn walked away. AI
+	// (-2) and empty (-1) seats are never pruned.
+	constexpr float SeatRange = 900.0f;
+	auto SeatGone = [this](int32 SeatId, const TWeakObjectPtr<ABHPlayerState>& SeatOwnerPtr) -> bool
+	{
+		if (SeatId < 0)
+		{
+			return false;
+		}
+		const ABHPlayerState* PS = SeatOwnerPtr.Get();
+		if (!PS)
+		{
+			return true;
+		}
+		const APawn* Pawn = PS->GetPawn();
+		return !Pawn || FVector::Dist(Pawn->GetActorLocation(), GetActorLocation()) > SeatRange;
+	};
+
+	if (!SeatGone(RedPlayerId, RedOwner) && !SeatGone(YellowPlayerId, YellowOwner))
+	{
+		return;
+	}
+
+	auto ReleaseOwner = [this](TWeakObjectPtr<ABHPlayerState>& SeatOwnerPtr)
+	{
+		if (ABHPlayerState* PS = SeatOwnerPtr.Get())
+		{
+			if (PS->GetActiveMinigameTable() == this)
+			{
+				PS->SetActiveMinigameTable(nullptr);
+			}
+		}
+		SeatOwnerPtr = nullptr;
+	};
+	ReleaseOwner(RedOwner);
+	ReleaseOwner(YellowOwner);
+	PressTimeByPlayerId.Empty();
+	RedPlayerId = -1;
+	YellowPlayerId = -1;
+	RedName.Reset();
+	YellowName.Reset();
+	Cells.Init(0, BHC4Cells);
+	Turn = 0;
+	LastCell = -1;
+	bVsAI = false;
+	Phase = static_cast<uint8>(EC4Phase::Idle);
+	StatusText = TEXT("Open table - tap to take a seat.");
+	StatusAccent = C4Neutral;
+	ForceNetUpdate();
 	RefreshBoardVisuals();
 }
 
@@ -142,15 +209,18 @@ void ABHTrainConnectFourTable::EndInteract_Implementation(ABHCharacter* Characte
 		return;
 	}
 	ABHPlayerState* BHPS = Character->GetBHPlayerState();
-	if (!BHPS || BHPS->LifeState != EBHPlayerLifeState::Alive)
+	if (!BHPS)
 	{
 		return;
 	}
-
 	const int32 MyId = BHPS->GetPlayerId();
 	const float* PressTime = PressTimeByPlayerId.Find(MyId);
 	const float HeldFor = PressTime ? (GetServerTimeSeconds() - *PressTime) : 0.0f;
-	PressTimeByPlayerId.Remove(MyId);
+	PressTimeByPlayerId.Remove(MyId);   // always clear, even if the player died mid-hold
+	if (BHPS->LifeState != EBHPlayerLifeState::Alive)
+	{
+		return;
+	}
 	const bool bHold = HeldFor >= BHC4HoldSeconds;
 
 	const EC4Phase CurrentPhase = static_cast<EC4Phase>(Phase);
@@ -290,6 +360,7 @@ void ABHTrainConnectFourTable::HandleSeating(ABHCharacter* Character, bool bHold
 	{
 		RedPlayerId = MyId;
 		RedName = MyName;
+		RedOwner = BHPS;
 		bVsAI = false;
 		BHPS->SetActiveMinigameTable(this);
 		StatusText = TEXT("Red seated - waiting for an opponent.");
@@ -320,6 +391,7 @@ void ABHTrainConnectFourTable::HandleSeating(ABHCharacter* Character, bool bHold
 	{
 		YellowPlayerId = MyId;
 		YellowName = MyName;
+		YellowOwner = BHPS;
 		bVsAI = false;
 		BHPS->SetActiveMinigameTable(this);
 		StartNewGame(false);
@@ -445,6 +517,20 @@ void ABHTrainConnectFourTable::DoAIMove()
 	if (BestColumns.Num() == 0)
 	{
 		return;
+	}
+	// Slip up sometimes -- the depth-5 search is otherwise very hard to beat. With this chance the AI drops into a
+	// random legal column instead of the best, so a human can capitalise on the mistake.
+	if (FMath::FRand() < 0.30f)
+	{
+		BestColumns.Reset();
+		for (int32 Ci = 0; Ci < BHC4Cols; ++Ci)
+		{
+			const int32 Column = C4ColumnOrder[Ci];
+			if (LowestEmptyRow(Cells, Column) >= 0)
+			{
+				BestColumns.Add(Column);
+			}
+		}
 	}
 	DropDisc(BestColumns[FMath::RandRange(0, BestColumns.Num() - 1)], -1);
 }
@@ -726,9 +812,18 @@ void ABHTrainConnectFourTable::RefreshBoardVisuals()
 	{
 		TitleText->SetText(FText::FromString(TEXT("CONNECT FOUR")));
 	}
+	if (TitleTextBack)
+	{
+		TitleTextBack->SetText(FText::FromString(TEXT("CONNECT FOUR")));
+	}
 	if (StatusTextRender)
 	{
 		StatusTextRender->SetText(FText::FromString(StatusText));
 		StatusTextRender->SetTextRenderColor(StatusAccent.ToFColor(true));
+	}
+	if (StatusTextBack)
+	{
+		StatusTextBack->SetText(FText::FromString(StatusText));
+		StatusTextBack->SetTextRenderColor(StatusAccent.ToFColor(true));
 	}
 }

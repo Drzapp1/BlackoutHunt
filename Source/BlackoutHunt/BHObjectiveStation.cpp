@@ -891,6 +891,7 @@ void ABHObjectiveStation::SetDirectorActive(bool bNewActive)
 		RevisionTeamVotes.Reset();
 		RevisionTeamPlayerIds.Reset();
 		RevisionTeamSummary = TEXT("");
+		AnsweredThisNodePlayerIds.Reset();
 		PendingCorrectionCharacters.Reset();
 		bUseAdaptiveQuestionOverride = false;
 	}
@@ -1027,118 +1028,25 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 	const bool bActiveRevisionMode = BHGS && BHGS->bRevisionMode;
 	if (bActiveRevisionMode)
 	{
-		ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr;
-		// Rebuild the co-located answer team from the players present at this node on EVERY vote, not only
-		// the first. This is what lets a lone student (or a Hall Monitor working a node alone) clear it by
-		// themselves, and stops a teammate who wandered off from soft-locking the node: the team shrinks to
-		// who is actually here, so the majority needed tracks the people who can still vote.
-		const bool bNewTeam = RevisionTeamPlayerIds.Num() == 0;
-		if (BHGM)
-		{
-			TSet<int32> PresentTeam;
-			FString TeamSummary;
-			if (BHGM->BuildRevisionAnswerTeam(this, Character, PresentTeam, TeamSummary))
-			{
-				RevisionTeamPlayerIds = PresentTeam;
-				RevisionTeamSummary = TeamSummary;
-				if (bNewTeam)
-				{
-					QuestionFeedback = FString::Printf(TEXT("Answer team: %s. Vote with 1-4."), *RevisionTeamSummary);
-					bQuestionFeedbackCorrect = true;
-				}
-			}
-		}
-
+		// Individual revision -- no answer teams. Each student answers their OWN question and is graded on it
+		// alone: no voting, no majority, no carry. A student may answer any one node only ONCE per round, so they
+		// spread across the (now all-active) nodes for coverage; a wrong answer still spends the attempt and is
+		// re-queued for spaced review elsewhere. Students may still travel together -- only the shared vote is gone.
 		const int32 PlayerId = BHPS ? BHPS->GetPlayerId() : INDEX_NONE;
-		// Drop stored votes from players who are no longer present at the node so a departed teammate's
-		// stale vote can neither block the majority nor resolve the question in their absence.
-		for (TMap<int32, int32>::TIterator It(RevisionTeamVotes); It; ++It)
-		{
-			if (!RevisionTeamPlayerIds.Contains(It.Key()))
-			{
-				It.RemoveCurrent();
-			}
-		}
-		if (RevisionTeamPlayerIds.Num() > 0 && !RevisionTeamPlayerIds.Contains(PlayerId))
+		if (PlayerId != INDEX_NONE && AnsweredThisNodePlayerIds.Contains(PlayerId))
 		{
 			if (PC)
 			{
-				PC->ClientShowStatusMessage(FString::Printf(TEXT("Watch this one. Answer team: %s."), *RevisionTeamSummary), 3.0f);
+				PC->ClientShowStatusMessage(TEXT("You already answered this node. Find another to keep building mastery."), 3.0f);
 			}
 			return false;
 		}
-
-		RevisionTeamVotes.Add(PlayerId, AnswerIndex);
-		// Size the tally to the actual choice count (floored at 4) rather than a fixed [4]. A drag/ordering
-		// question can ship more than 4 candidates; with a hard [4] a correct answer at index >=4 could never
-		// be counted, so the team could never vote the node through (soft-lock).
-		const int32 ChoiceCount = FMath::Max(QuestionChoices.Num(), 4);
-		TArray<int32> ChoiceVotes;
-		ChoiceVotes.Init(0, ChoiceCount);
-		for (const TPair<int32, int32>& Vote : RevisionTeamVotes)
+		if (PlayerId != INDEX_NONE)
 		{
-			if (Vote.Value >= 0 && Vote.Value < ChoiceVotes.Num())
-			{
-				++ChoiceVotes[Vote.Value];
-			}
+			AnsweredThisNodePlayerIds.Add(PlayerId);
 		}
-
-		const int32 TeamSize = FMath::Max(1, RevisionTeamPlayerIds.Num());
-		const int32 MajorityNeeded = FMath::Clamp((TeamSize / 2) + 1, 1, TeamSize);
-		int32 BestChoice = INDEX_NONE;
-		for (int32 ChoiceIndex = 0; ChoiceIndex < ChoiceVotes.Num(); ++ChoiceIndex)
-		{
-			if (ChoiceVotes[ChoiceIndex] >= MajorityNeeded)
-			{
-				BestChoice = ChoiceIndex;
-				break;
-			}
-		}
-
-		if (BestChoice == INDEX_NONE)
-		{
-			if (RevisionTeamVotes.Num() >= TeamSize)
-			{
-				RevisionTeamVotes.Reset();
-				QuestionFeedback = FString::Printf(TEXT("No majority. Quick correction: %s Vote again."), *QuestionExplanation);
-				bQuestionFeedbackCorrect = false;
-				if (PC)
-				{
-					PC->ClientShowStatusMessage(TEXT("No majority. Discuss for ten seconds, then revote."), 3.25f);
-				}
-				if (BHGM)
-				{
-					BHGM->NotifyLoudNoise(GetActorLocation(), TEXT("physics disagreement"));
-				}
-				return false;
-			}
-
-			QuestionFeedback = FString::Printf(TEXT("Vote recorded (%d/%d). Team: %s."), RevisionTeamVotes.Num(), TeamSize, *RevisionTeamSummary);
-			bQuestionFeedbackCorrect = true;
-			if (PC)
-			{
-				PC->ClientShowStatusMessage(QuestionFeedback, 2.0f);
-			}
-			return true;
-		}
-
-		EvaluatedAnswerIndex = BestChoice;
-		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
-		{
-			ABHCharacter* VoterCharacter = It->Get() ? Cast<ABHCharacter>(It->Get()->GetPawn()) : nullptr;
-			const ABHPlayerState* VoterPS = VoterCharacter ? VoterCharacter->GetPlayerState<ABHPlayerState>() : nullptr;
-			if (VoterCharacter && VoterPS)
-			{
-				if (const int32* VoterVote = RevisionTeamVotes.Find(VoterPS->GetPlayerId()))
-				{
-					// Grade each voter on THEIR OWN choice, not the team's majority: a correct team can never
-					// carry a student who personally answered wrong, and a lone correct voter inside a wrong
-					// team still earns their own credit.
-					RevisionParticipants.Add(TPair<ABHCharacter*, bool>(VoterCharacter, *VoterVote == CorrectAnswerIndex));
-				}
-			}
-		}
-		RevisionTeamVotes.Reset();
+		EvaluatedAnswerIndex = AnswerIndex;
+		RevisionParticipants.Add(TPair<ABHCharacter*, bool>(Character, AnswerIndex == CorrectAnswerIndex));
 	}
 
 	const bool bCorrect = EvaluatedAnswerIndex == CorrectAnswerIndex;
@@ -1939,17 +1847,21 @@ void ABHObjectiveStation::ConfigureQuestion()
 			{
 				const EBHPhysicsTopic Topic = bUseAdaptiveQuestionOverride ? AdaptiveQuestionTopic : FBHRevisionQuestionBank::TopicForStationType(StationType);
 				const EBHQuestionDifficulty PreferredDifficulty = bUseAdaptiveQuestionOverride ? AdaptiveQuestionDifficulty : EBHQuestionDifficulty::Medium;
+				// Host difficulty band + exact question set are applied inside the bank's Select* helpers.
+				const EBHQuestionDifficulty MinDiff = BHGM->GetRevisionMinDifficulty();
+				const EBHQuestionDifficulty MaxDiff = BHGM->GetRevisionMaxDifficulty();
+				const TArray<FString>* AllowedIds = &BHGM->GetRevisionAllowedQuestionIds();
 				// Bias a share of nodes toward "proper" drag matching/ordering questions; otherwise (or if
 				// the topic has no drag question) fall back to the normal difficulty/weakness-adaptive pick.
-				if (BHWantsDragQuestion() && FBHRevisionQuestionBank::SelectDragQuestion(Topic, PreferredDifficulty, LocationSeed, Selected))
+				if (BHWantsDragQuestion() && FBHRevisionQuestionBank::SelectDragQuestion(Topic, PreferredDifficulty, LocationSeed, Selected, MinDiff, MaxDiff, AllowedIds))
 				{
 					bSelected = true;
 				}
 				else
 				{
 					bSelected = bUseAdaptiveQuestionOverride
-						? FBHRevisionQuestionBank::SelectQuestionByDifficulty(Topic, AdaptiveQuestionDifficulty, LocationSeed, Selected)
-						: FBHRevisionQuestionBank::SelectQuestion(Topic, BHGM->GetRevisionDifficultyMix(), LocationSeed, BHGM->GetRevisionWeakTopics(), Selected);
+						? FBHRevisionQuestionBank::SelectQuestionByDifficulty(Topic, AdaptiveQuestionDifficulty, LocationSeed, Selected, MinDiff, MaxDiff, AllowedIds)
+						: FBHRevisionQuestionBank::SelectQuestion(Topic, BHGM->GetRevisionDifficultyMix(), LocationSeed, BHGM->GetRevisionWeakTopics(), Selected, MinDiff, MaxDiff, AllowedIds);
 				}
 			}
 			bRevisionReviewQuestion = bReviewSelected;

@@ -145,6 +145,11 @@ struct FBHAccountProgress
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	float SelectedThemeStrength = 1.0f;
 
+	// UI per-section CONTRAST (0 = very faint/near-monotone, 1 = very high per-section identity). Local UI-only
+	// preference; never replicated. 1 = full identity (today's look).
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	float SelectedSectionContrast = 1.0f;
+
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	FString LastUpdatedUtc;
 
@@ -156,6 +161,11 @@ struct FBHAccountProgress
 	// Achievements already SEEN in the Awards tab (for the "newly unlocked" indicator: unlocked-but-unseen = new).
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	TArray<FName> SeenAchievements;
+
+	// Hidden collectable relics found (stable per-site ids; see ABHCollectable). Local + persisted; drives the
+	// milestone / Collector rewards and the Awards-tab "Relics N/M" tracker. Never affects gameplay.
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	TArray<FName> CollectablesFound;
 };
 
 // One achievement's display data for the menu's Achievements tab, built from the registry + the local account's
@@ -165,10 +175,13 @@ struct FBHAchievementDisplay
 	FName Id;
 	FString Title;
 	FString Description;
-	FString RewardLabel;   // e.g. "Top Hat", "Afterimage tint" -- empty if the reward is XP only
+	FString RewardLabel;   // e.g. "Afterimage tint" -- empty if the reward is XP only
 	int32 Difficulty = 1;  // 1..5 (the badge's star meter + tier colour)
 	bool bUnlocked = false;
 	bool bHidden = false;  // a secret achievement: the tab shows "???" until it is earned
+	// A cryptic, non-spoiler nudge shown for a still-hidden secret achievement instead of a blank "???", so the
+	// player has a rough idea what to chase. Empty for non-secret (or unhinted) achievements.
+	FString Hint;
 	// Progress toward a countable achievement (e.g. 18/25 rounds). ProgressTarget == 0 means "not countable"
 	// (an event/binary achievement) and the badge draws no progress bar.
 	int32 ProgressCurrent = 0;
@@ -248,6 +261,12 @@ public:
 	// the achievement's XP, unlocks any tint gated on it, saves, and shows a one-line toast. Never affects play.
 	void UnlockAchievement(FName AchievementId);
 	bool HasAchievement(FName AchievementId) const;
+	// Collectable relics (see ABHCollectable). Found-set is client-local + persisted; recording a new relic grants
+	// XP and rolls up the milestone (25/50/100%) + Collector achievements. GetTotalCollectables() is the N/M target.
+	void RecordCollectableFound(FName CollectableId);
+	bool HasCollectable(FName CollectableId) const;
+	int32 GetCollectableFoundCount() const;
+	int32 GetTotalCollectables() const;
 
 	// Every achievement with its metadata + whether THIS account has earned it, for the menu's Achievements tab.
 	// Ordered hardest-last is handled by the caller; this preserves registry order.
@@ -276,6 +295,8 @@ public:
 	bool SetSelectedThemeIndexChecked(int32 ThemeIndex, FString& OutMessage);
 	// Persist the UI menu theme STRENGTH (0..1). UI-only; saves immediately.
 	void SetSelectedThemeStrength(float Strength);
+	// Persist the UI per-section CONTRAST (0..1). UI-only; saves immediately.
+	void SetSelectedSectionContrast(float Contrast);
 	// Recolour one clothing slot of the current skin. SlotIndex is a BHColorableMaterialNames registry index;
 	// ColorIndex is into the 18-entry avatar palette, or -1 to clear back to the skin's authored colour. Persists.
 	bool SetAvatarSlotColor(int32 SlotIndex, int32 ColorIndex, FString& OutMessage);

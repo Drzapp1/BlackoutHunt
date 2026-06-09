@@ -34,6 +34,12 @@ EBHFootstepSurface UBHFootstepSurfaceComponent::SurfaceForBlockMaterial(EBHBlock
 		return EBHFootstepSurface::Metal;
 	case EBHBlockMaterial::Tiles:
 		return EBHFootstepSurface::Tile;
+	case EBHBlockMaterial::Wood:
+	case EBHBlockMaterial::Carpet:
+	case EBHBlockMaterial::Leather:
+		return EBHFootstepSurface::Soft;
+	case EBHBlockMaterial::Marble:
+		return EBHFootstepSurface::Tile;   // hard polished stone reads like tile
 	default:
 		return EBHFootstepSurface::Default;
 	}

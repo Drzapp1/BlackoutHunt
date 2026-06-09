@@ -300,6 +300,10 @@ protected:
 	TSet<TWeakObjectPtr<ABHCharacter>> Workers;
 	TMap<int32, int32> RevisionTeamVotes;
 	TSet<int32> RevisionTeamPlayerIds;
+	// Players who have already answered a question at THIS node this round. Individual revision has no answer
+	// teams: each student gets one question per node, so they spread across the (all-active) nodes for topic
+	// coverage rather than grinding one. Reset every round in SetDirectorActive.
+	TSet<int32> AnsweredThisNodePlayerIds;
 	TSet<TWeakObjectPtr<ABHCharacter>> PendingCorrectionCharacters;
 	bool bUseAdaptiveQuestionOverride;
 	EBHPhysicsTopic AdaptiveQuestionTopic;

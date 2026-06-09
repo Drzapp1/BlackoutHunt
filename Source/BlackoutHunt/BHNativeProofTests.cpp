@@ -1265,6 +1265,26 @@ bool FBHCrawlSpaceAccessTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("Standing tester cannot enter low crawlspace."), CrawlSpace->DebugCanCharacterUseCrawlSpace(Tester));
 		TestTrue(TEXT("Tester can enter crawlspace while prone."), Tester->TrySetProneForTest(true));
 		TestTrue(TEXT("Prone tester can enter crawlspace."), CrawlSpace->DebugCanCharacterUseCrawlSpace(Tester));
+
+		// --- Auto-prone entry assist: a survivor reaching a mouth in the wrong pose is dropped into prone (admitted
+		// into cover) instead of being bounced off the lip; the Teacher is never admitted/auto-proned. ---
+		TestTrue(TEXT("Survivor stands before auto-prone test."), Survivor->TrySetProneForTest(false));
+		TestFalse(TEXT("Standing survivor is not sheltering before auto-prone."), CrawlSpace->DebugCanCharacterUseCrawlSpace(Survivor));
+		TestTrue(TEXT("Auto-prone admits a standing survivor at the mouth."), CrawlSpace->DebugTryAdmitOrAutoProneForTest(Survivor));
+		TestTrue(TEXT("Auto-proned survivor now shelters."), CrawlSpace->DebugCanCharacterUseCrawlSpace(Survivor));
+		TestTrue(TEXT("Teacher stands before admit test."), Hunter->TrySetProneForTest(false));
+		TestFalse(TEXT("Auto-prone/admit never lets the Teacher into a survivor crawlspace."), CrawlSpace->DebugTryAdmitOrAutoProneForTest(Hunter));
+
+		// --- Capture immunity: the Teacher cannot tag a survivor sheltering prone in a tunnel. ---
+		Survivor->SetActorLocation(FVector(0.0f, 0.0f, 140.0f));
+		Hunter->SetActorLocation(FVector(-60.0f, 0.0f, 140.0f));  // in capture range, facing +X toward the survivor
+		Hunter->SetActorRotation(FRotator::ZeroRotator);
+		CrawlSpace->UpdateOverlaps();
+		TestTrue(TEXT("Survivor drops prone for shelter."), Survivor->TrySetProneForTest(true));
+		TestTrue(TEXT("Prone survivor overlaps and shelters in the volume."), CrawlSpace->IsCharacterSheltering(Survivor));
+		TestFalse(TEXT("Teacher CANNOT tag a survivor sheltering prone in a tunnel."), Hunter->DebugIsTeacherCaptureCandidateForTest(Survivor));
+		TestTrue(TEXT("Survivor stands clear of the crawl."), Survivor->TrySetProneForTest(false));
+		TestTrue(TEXT("Teacher CAN tag the same survivor when standing (control proves the check can fire)."), Hunter->DebugIsTeacherCaptureCandidateForTest(Survivor));
 	}
 
 	return true;

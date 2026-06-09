@@ -77,6 +77,15 @@ ABHTrainTicTacToeTable::ABHTrainTicTacToeTable()
 	StatusTextRender->SetupAttachment(SceneRoot);
 	BHConfigureTTTText(StatusTextRender, FVector(0.0f, 48.0f, 118.0f), 6.5f, FColor(206, 226, 244));
 
+	// Mirrored copies facing the opposite (-Y) seat so both players read the text the right way round.
+	TitleTextBack = CreateDefaultSubobject<UTextRenderComponent>(TEXT("TitleTextBack"));
+	TitleTextBack->SetupAttachment(SceneRoot);
+	BHPropVisuals::ConfigureReadableText(TitleTextBack, FVector(0.0f, -48.0f, 138.0f), FRotator(0.0f, -90.0f, 0.0f), 11.0f, FColor(236, 226, 200));
+
+	StatusTextBack = CreateDefaultSubobject<UTextRenderComponent>(TEXT("StatusTextBack"));
+	StatusTextBack->SetupAttachment(SceneRoot);
+	BHPropVisuals::ConfigureReadableText(StatusTextBack, FVector(0.0f, -48.0f, 118.0f), FRotator(0.0f, -90.0f, 0.0f), 6.5f, FColor(206, 226, 244));
+
 	TableLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("TableLight"));
 	TableLight->SetupAttachment(SceneRoot);
 	TableLight->SetRelativeLocation(FVector(0.0f, 0.0f, 150.0f));
@@ -94,6 +103,64 @@ ABHTrainTicTacToeTable::ABHTrainTicTacToeTable()
 void ABHTrainTicTacToeTable::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	if (HasAuthority())
+	{
+		PruneSeats();
+	}
+	RefreshBoardVisuals();
+}
+
+void ABHTrainTicTacToeTable::PruneSeats()
+{
+	// A human seat is "gone" if its owning PlayerState was destroyed (disconnect) or its pawn walked away. AI
+	// (-2) and empty (-1) seats are never pruned.
+	constexpr float SeatRange = 900.0f;
+	auto SeatGone = [this](int32 SeatId, const TWeakObjectPtr<ABHPlayerState>& SeatOwnerPtr) -> bool
+	{
+		if (SeatId < 0)
+		{
+			return false;
+		}
+		const ABHPlayerState* PS = SeatOwnerPtr.Get();
+		if (!PS)
+		{
+			return true;
+		}
+		const APawn* Pawn = PS->GetPawn();
+		return !Pawn || FVector::Dist(Pawn->GetActorLocation(), GetActorLocation()) > SeatRange;
+	};
+
+	if (!SeatGone(XPlayerId, XOwner) && !SeatGone(OPlayerId, OOwner))
+	{
+		return;
+	}
+
+	auto ReleaseOwner = [this](TWeakObjectPtr<ABHPlayerState>& SeatOwnerPtr)
+	{
+		if (ABHPlayerState* PS = SeatOwnerPtr.Get())
+		{
+			if (PS->GetActiveMinigameTable() == this)
+			{
+				PS->SetActiveMinigameTable(nullptr);
+			}
+		}
+		SeatOwnerPtr = nullptr;
+	};
+	ReleaseOwner(XOwner);
+	ReleaseOwner(OOwner);
+	PressTimeByPlayerId.Empty();
+	XPlayerId = -1;
+	OPlayerId = -1;
+	XName.Reset();
+	OName.Reset();
+	Cells.Init(0, BHTTTCells);
+	Turn = 0;
+	LastCell = -1;
+	bVsAI = false;
+	Phase = static_cast<uint8>(ETTTPhase::Idle);
+	StatusText = TEXT("Open table - tap to take a seat.");
+	StatusAccent = TTTNeutral;
+	ForceNetUpdate();
 	RefreshBoardVisuals();
 }
 
@@ -148,15 +215,18 @@ void ABHTrainTicTacToeTable::EndInteract_Implementation(ABHCharacter* Character)
 		return;
 	}
 	ABHPlayerState* BHPS = Character->GetBHPlayerState();
-	if (!BHPS || BHPS->LifeState != EBHPlayerLifeState::Alive)
+	if (!BHPS)
 	{
 		return;
 	}
-
 	const int32 MyId = BHPS->GetPlayerId();
 	const float* PressTime = PressTimeByPlayerId.Find(MyId);
 	const float HeldFor = PressTime ? (GetServerTimeSeconds() - *PressTime) : 0.0f;
-	PressTimeByPlayerId.Remove(MyId);
+	PressTimeByPlayerId.Remove(MyId);   // always clear, even if the player died mid-hold
+	if (BHPS->LifeState != EBHPlayerLifeState::Alive)
+	{
+		return;
+	}
 	const bool bHold = HeldFor >= BHTTTHoldSeconds;
 
 	const ETTTPhase CurrentPhase = static_cast<ETTTPhase>(Phase);
@@ -294,6 +364,7 @@ void ABHTrainTicTacToeTable::HandleSeating(ABHCharacter* Character, bool bHold)
 	{
 		XPlayerId = MyId;
 		XName = MyName;
+		XOwner = BHPS;
 		bVsAI = false;
 		BHPS->SetActiveMinigameTable(this);
 		StatusText = TEXT("X seated - waiting for an opponent.");
@@ -324,6 +395,7 @@ void ABHTrainTicTacToeTable::HandleSeating(ABHCharacter* Character, bool bHold)
 	{
 		OPlayerId = MyId;
 		OName = MyName;
+		OOwner = BHPS;
 		bVsAI = false;
 		BHPS->SetActiveMinigameTable(this);
 		StartNewGame(false);
@@ -445,6 +517,19 @@ void ABHTrainTicTacToeTable::DoAIMove()
 	if (BestCells.Num() == 0)
 	{
 		return;
+	}
+	// Tic-tac-toe is perfectly solved (unbeatable) otherwise, so slip up fairly often: with this chance the AI
+	// plays a random empty cell rather than the optimal one, giving the human a real opening to win.
+	if (FMath::FRand() < 0.40f)
+	{
+		BestCells.Reset();
+		for (int32 Cell = 0; Cell < Cells.Num(); ++Cell)
+		{
+			if (Cells[Cell] == 0)
+			{
+				BestCells.Add(Cell);
+			}
+		}
 	}
 	MakeMove(BestCells[FMath::RandRange(0, BestCells.Num() - 1)], -1);
 }
@@ -582,8 +667,8 @@ void ABHTrainTicTacToeTable::ApplyTableVisuals()
 
 	const FLinearColor Wood(0.20f, 0.13f, 0.08f, 1.0f);
 	const float BoardSpan = BHTTTN * BHTTTSquareSize;
-	BHPropVisuals::ConfigurePart(Base, BHPropVisuals::CylinderMesh(), BHPropVisuals::PaintedMetalMaterial(), FVector(0.0f, 0.0f, 41.0f), FRotator::ZeroRotator, FVector(0.30f, 0.30f, 0.82f), true);
-	BHPropVisuals::ConfigurePart(BoardBody, BHPropVisuals::CubeMesh(), BHPropVisuals::PaintedMetalMaterial(), FVector(0.0f, 0.0f, 82.0f), FRotator::ZeroRotator, FVector(BoardSpan / 100.0f + 0.06f, BoardSpan / 100.0f + 0.06f, 0.06f), true);
+	BHPropVisuals::ConfigurePart(Base, BHPropVisuals::CylinderMesh(), BHPropVisuals::WoodMaterial(), FVector(0.0f, 0.0f, 41.0f), FRotator::ZeroRotator, FVector(0.30f, 0.30f, 0.82f), true);
+	BHPropVisuals::ConfigurePart(BoardBody, BHPropVisuals::CubeMesh(), BHPropVisuals::WoodMaterial(), FVector(0.0f, 0.0f, 82.0f), FRotator::ZeroRotator, FVector(BoardSpan / 100.0f + 0.06f, BoardSpan / 100.0f + 0.06f, 0.06f), true);
 	BHPropVisuals::TintPart(Base, Wood);
 	BHPropVisuals::TintPart(BoardBody, Wood * 1.3f);
 
@@ -651,9 +736,18 @@ void ABHTrainTicTacToeTable::RefreshBoardVisuals()
 	{
 		TitleText->SetText(FText::FromString(TEXT("TIC-TAC-TOE")));
 	}
+	if (TitleTextBack)
+	{
+		TitleTextBack->SetText(FText::FromString(TEXT("TIC-TAC-TOE")));
+	}
 	if (StatusTextRender)
 	{
 		StatusTextRender->SetText(FText::FromString(StatusText));
 		StatusTextRender->SetTextRenderColor(StatusAccent.ToFColor(true));
+	}
+	if (StatusTextBack)
+	{
+		StatusTextBack->SetText(FText::FromString(StatusText));
+		StatusTextBack->SetTextRenderColor(StatusAccent.ToFColor(true));
 	}
 }

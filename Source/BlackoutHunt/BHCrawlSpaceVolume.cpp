@@ -115,7 +115,7 @@ void ABHCrawlSpaceVolume::Tick(float DeltaSeconds)
 	{
 		if (ABHCharacter* Character = Cast<ABHCharacter>(Actor))
 		{
-			if (!CanCharacterUseCrawlSpace(Character))
+			if (!TryAdmitOrAutoProne(Character))
 			{
 				RejectCharacter(Character);
 			}
@@ -163,7 +163,9 @@ void ABHCrawlSpaceVolume::OnVolumeBeginOverlap(UPrimitiveComponent* OverlappedCo
 
 	if (ABHCharacter* Character = Cast<ABHCharacter>(OtherActor))
 	{
-		if (!CanCharacterUseCrawlSpace(Character))
+		// Auto-prone an eligible survivor on contact (instead of bouncing them), so dropping into cover at the
+		// mouth is immediate with no one-tick standing window; eject everyone else.
+		if (!TryAdmitOrAutoProne(Character))
 		{
 			QueueRejectCharacter(Character);
 		}
@@ -185,15 +187,43 @@ void ABHCrawlSpaceVolume::OnVolumeEndOverlap(UPrimitiveComponent* OverlappedComp
 
 bool ABHCrawlSpaceVolume::CanCharacterUseCrawlSpace(const ABHCharacter* Character) const
 {
+	return IsCharacterEligibleSurvivor(Character)
+		&& BHIsCrawlLowProfileState(Character->GetMovementSpecialState());
+}
+
+bool ABHCrawlSpaceVolume::IsCharacterEligibleSurvivor(const ABHCharacter* Character) const
+{
 	const ABHPlayerState* BHPS = Character ? Character->GetBHPlayerState() : nullptr;
 	if (!BHPS || BHPS->LifeState != EBHPlayerLifeState::Alive)
 	{
 		return false;
 	}
+	return BHPS->PlayerRole == EBHPlayerRole::Survivor || BHPS->PlayerRole == EBHPlayerRole::Tester;
+}
 
-	if (BHPS->PlayerRole == EBHPlayerRole::Survivor || BHPS->PlayerRole == EBHPlayerRole::Tester)
+bool ABHCrawlSpaceVolume::TryAdmitOrAutoProne(ABHCharacter* Character)
+{
+	// Already a low-profile survivor -> sheltering, nothing to do.
+	if (CanCharacterUseCrawlSpace(Character))
 	{
-		return BHIsCrawlLowProfileState(Character->GetMovementSpecialState());
+		return true;
+	}
+
+	// An eligible survivor at the mouth in the wrong pose: drop them to prone so a fleeing player flows into cover
+	// instead of being bounced off the lip. The Teacher / Hall Monitor / dead never qualify -> they fall through
+	// and are ejected (the Teacher must never be auto-proned or admitted).
+	if (Character && IsCharacterEligibleSurvivor(Character))
+	{
+		if (Character->TryEnterCrawlSpacePose())
+		{
+			return true;
+		}
+		// Couldn't prone this instant only because of a transient roll -> let the roll resolve and re-check next
+		// tick rather than bouncing them mid-move.
+		if (Character->GetMovementSpecialState() == EBHMovementSpecialState::Rolling)
+		{
+			return true;
+		}
 	}
 
 	return false;

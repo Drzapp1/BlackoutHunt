@@ -77,30 +77,35 @@ void ABHTrainBlackjackTable::Tick(float DeltaSeconds)
 
 	// Server-side round housekeeping: drop players who left/wandered off so a hand can't stall, and force a
 	// resolve once everyone is done or the round times out.
-	if (HasAuthority() && static_cast<EBJPhase>(Phase) == EBJPhase::PlayerTurn)
+	if (HasAuthority())
 	{
+		// Prune departed/disconnected players in ANY phase so a stale seat (and its ActiveMinigameTable)
+		// never lingers -- not only while a hand is being played.
 		PruneSeats();
-		if (Seats.Num() == 0)
+		if (static_cast<EBJPhase>(Phase) == EBJPhase::PlayerTurn)
 		{
-			Phase = static_cast<uint8>(EBJPhase::Idle);
-			DealerCards.Reset();
-			bDealerHoleHidden = true;
-			ForceNetUpdate();
-		}
-		else if (AllSeatsDone())
-		{
-			ResolveRound();
-		}
-		else if (GetServerTimeSeconds() - PlayerTurnStartTime > BHBlackjackTurnTimeout)
-		{
-			for (FBHBlackjackSeat& Seat : Seats)
+			if (Seats.Num() == 0)
 			{
-				if (Seat.State == static_cast<uint8>(EBJSeatState::Active))
-				{
-					Seat.State = static_cast<uint8>(EBJSeatState::Stand);
-				}
+				Phase = static_cast<uint8>(EBJPhase::Idle);
+				DealerCards.Reset();
+				bDealerHoleHidden = true;
+				ForceNetUpdate();
 			}
-			ResolveRound();
+			else if (AllSeatsDone())
+			{
+				ResolveRound();
+			}
+			else if (GetServerTimeSeconds() - PlayerTurnStartTime > BHBlackjackTurnTimeout)
+			{
+				for (FBHBlackjackSeat& Seat : Seats)
+				{
+					if (Seat.State == static_cast<uint8>(EBJSeatState::Active))
+					{
+						Seat.State = static_cast<uint8>(EBJSeatState::Stand);
+					}
+				}
+				ResolveRound();
+			}
 		}
 	}
 
@@ -148,15 +153,18 @@ void ABHTrainBlackjackTable::EndInteract_Implementation(ABHCharacter* Character)
 		return;
 	}
 	ABHPlayerState* BHPS = Character->GetBHPlayerState();
-	if (!BHPS || BHPS->LifeState != EBHPlayerLifeState::Alive)
+	if (!BHPS)
 	{
 		return;
 	}
-
 	const int32 MyId = BHPS->GetPlayerId();
 	const float* PressTime = PressTimeByPlayerId.Find(MyId);
 	const float HeldFor = PressTime ? (GetServerTimeSeconds() - *PressTime) : 0.0f;
-	PressTimeByPlayerId.Remove(MyId);
+	PressTimeByPlayerId.Remove(MyId);   // always clear, even if the player died mid-hold
+	if (BHPS->LifeState != EBHPlayerLifeState::Alive)
+	{
+		return;
+	}
 	const bool bHold = HeldFor >= BHBlackjackHoldSeconds;
 
 	const EBJPhase CurrentPhase = static_cast<EBJPhase>(Phase);
@@ -473,7 +481,19 @@ void ABHTrainBlackjackTable::ResolveRound()
 {
 	bDealerHoleHidden = false;
 	bool bSoft = false;
-	while (HandValue(DealerCards, bSoft) < 17)
+	// The dealer normally hits below 17 (house rules). Slip up sometimes -- a distracted dealer that stands early or
+	// greedily hits a made hand -- so players aren't grinding against perfect house play and can win more rounds.
+	int32 DealerStandValue = 17;
+	const float DealerSlip = FMath::FRand();
+	if (DealerSlip < 0.18f)
+	{
+		DealerStandValue = 15;   // stands early, often leaving a beatable dealer hand
+	}
+	else if (DealerSlip < 0.30f)
+	{
+		DealerStandValue = 19;   // hits a made 17/18 and busts far more often
+	}
+	while (HandValue(DealerCards, bSoft) < DealerStandValue)
 	{
 		DealerCards.Add(DrawCard());
 	}
@@ -506,7 +526,8 @@ void ABHTrainBlackjackTable::ResolveRound()
 		{
 			Result = TEXT("BLACKJACK! Pays 3:2.");
 			Accent = BJWin;
-			Payout = BHBlackjackBet + (BHBlackjackBet * 3) / 2;
+			// Round the half-chip in the player's favour (e.g. bet 25 -> 63, not a truncated 62).
+			Payout = BHBlackjackBet + (BHBlackjackBet * 3 + 1) / 2;
 		}
 		else if (bDealerBlackjack && !bPlayerBlackjack)
 		{
@@ -747,9 +768,9 @@ void ABHTrainBlackjackTable::ApplyTableVisuals()
 
 	const FLinearColor FeltGreen(0.05f, 0.32f, 0.16f, 1.0f);
 	const FLinearColor Wood(0.24f, 0.15f, 0.09f, 1.0f);
-	BHPropVisuals::ConfigurePart(Base, BHPropVisuals::CylinderMesh(), BHPropVisuals::PaintedMetalMaterial(), FVector(0.0f, 0.0f, 28.0f), FRotator::ZeroRotator, FVector(0.34f, 0.34f, 0.56f), true);
+	BHPropVisuals::ConfigurePart(Base, BHPropVisuals::CylinderMesh(), BHPropVisuals::WoodMaterial(), FVector(0.0f, 0.0f, 28.0f), FRotator::ZeroRotator, FVector(0.34f, 0.34f, 0.56f), true);
 	BHPropVisuals::ConfigurePart(Felt, BHPropVisuals::CylinderMesh(), BHPropVisuals::BasicMaterial(), FVector(0.0f, 0.0f, 58.0f), FRotator::ZeroRotator, FVector(1.55f, 1.10f, 0.06f), true);
-	BHPropVisuals::ConfigurePart(Rail, BHPropVisuals::CylinderMesh(), BHPropVisuals::RustedMetalMaterial(), FVector(0.0f, 0.0f, 62.0f), FRotator::ZeroRotator, FVector(1.66f, 1.20f, 0.05f));
+	BHPropVisuals::ConfigurePart(Rail, BHPropVisuals::CylinderMesh(), BHPropVisuals::WoodMaterial(), FVector(0.0f, 0.0f, 62.0f), FRotator::ZeroRotator, FVector(1.66f, 1.20f, 0.05f));
 	BHPropVisuals::ConfigurePart(ChipStack, BHPropVisuals::CylinderMesh(), BHPropVisuals::BasicMaterial(), FVector(36.0f, -44.0f, 66.0f), FRotator::ZeroRotator, FVector(0.10f, 0.10f, 0.10f));
 	BHPropVisuals::ConfigurePart(Shoe, BHPropVisuals::CubeMesh(), BHPropVisuals::PaintedMetalMaterial(), FVector(-44.0f, 40.0f, 66.0f), FRotator(0.0f, -24.0f, 0.0f), FVector(0.16f, 0.10f, 0.07f));
 

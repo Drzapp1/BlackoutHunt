@@ -9,7 +9,11 @@ param(
     [int]$MaxParallel = 0,
     # Skip the full -clean rebuild and cook iteratively. Much faster for repeat
     # builds when code/content is unchanged. Leave off for hermetic releases.
-    [switch]$Incremental
+    [switch]$Incremental,
+    # Compile the developer "unlock everything" (Ctrl+Alt+U) into THIS package. OFF by default so distributable
+    # packages never contain it; pass -DevUnlock only for a personal build. The unlock is still runtime-gated
+    # (developer account "Adam" + one-time password), so it cannot be used by players even if present.
+    [switch]$DevUnlock
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,6 +31,11 @@ if ($MaxParallel -lt 1) { $MaxParallel = 1 }
 $projectRoot = Resolve-Path "$PSScriptRoot\.."
 $project = Resolve-Path "$projectRoot\BlackoutHunt.uproject"
 $archive = Join-Path $projectRoot "Builds\Windows"
+if ($DevUnlock) {
+    # A personal dev-unlock build goes to a SEPARATE folder so it can never overwrite, or be mistaken for, the
+    # distributable at Builds\Windows. Launch THIS one to use Ctrl+Alt+U; never hand it out.
+    $archive = Join-Path $projectRoot "Builds\WindowsDev"
+}
 $packageDdc = Join-Path $projectRoot "Builds\DerivedDataCache"
 $unreal = & "$PSScriptRoot\Find-Unreal.ps1"
 $appLocalDependencies = Join-Path $unreal.Root "Engine\Binaries\ThirdParty\AppLocalDependencies"
@@ -172,6 +181,14 @@ $previousLocalDataCachePath = (Get-Item -Path "Env:\UE-LocalDataCachePath" -Erro
 Push-Location $uatDir
 try {
     Set-Item -Path "Env:\UE-LocalDataCachePath" -Value $packageDdc
+    if ($DevUnlock) {
+        Write-Host "[Package] -DevUnlock: BH_DEV_UNLOCK=1 -> compiling the developer unlock into this package (personal build, NOT for distribution)."
+        $env:BH_DEV_UNLOCK = '1'
+    }
+    else {
+        # Defensive: never let a stray BH_DEV_UNLOCK from the shell leak the unlock into a production package.
+        $env:BH_DEV_UNLOCK = '0'
+    }
     $uatArgs = @(
         "BuildCookRun",
         "-project=$project",
@@ -208,6 +225,7 @@ try {
 }
 finally {
     Pop-Location
+    Remove-Item -Path "Env:\BH_DEV_UNLOCK" -ErrorAction SilentlyContinue
     if ($null -ne $previousLocalDataCachePath) {
         Set-Item -Path "Env:\UE-LocalDataCachePath" -Value $previousLocalDataCachePath
     }

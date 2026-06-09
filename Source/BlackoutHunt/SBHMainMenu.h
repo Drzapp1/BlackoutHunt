@@ -44,6 +44,7 @@ public:
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 	virtual bool SupportsKeyboardFocus() const override;
 	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
+	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 
 private:
 	enum class EBHMainMenuTab : uint8
@@ -187,6 +188,10 @@ private:
 	// Theme STRENGTH presets (faint/normal/strong): set the active global + persist, like OnThemeClicked.
 	FReply OnThemeStrengthClicked(float Strength);
 	FSlateColor GetThemeStrengthButtonColor(float Strength) const;
+	// Per-section CONTRAST dial (very faint -> very high): live slider that sets the active global + persists.
+	void OnSectionContrastChanged(float NewContrast);
+	float GetSectionContrastValue() const;
+	FText GetSectionContrastLabel() const;
 	FReply OnAvatarTitleClicked(int32 TitleIndex);
 	FReply OnAvatarEmblemClicked(int32 EmblemIndex);
 	FReply OnMenuTabClicked(EBHMainMenuTab NewTab);
@@ -204,6 +209,7 @@ private:
 	FReply OnAdaptiveFrameRateGoalClicked(int32 FpsGoal);
 	FReply OnRenderScaleClicked(int32 Percent);
 	FReply OnTextureQualityClicked(int32 Quality);
+	FReply OnTexturePreloadClicked(int32 Mode);
 	FReply OnShadowQualityClicked(int32 Quality);
 	FReply OnEffectsQualityClicked(int32 Quality);
 	FReply OnResolutionClicked(int32 Width, int32 Height, bool bFullscreen);
@@ -362,6 +368,11 @@ private:
 	TSharedRef<SWidget> BuildClassroomPanel();
 	TSharedRef<SWidget> BuildGuidePanel();
 	TSharedRef<SWidget> BuildControlsPanel();
+	// Attack ("Capture") key rebinding row in the Controls tab + its listen/apply/reset handlers.
+	TSharedRef<SWidget> BuildCaptureRebindRow();
+	FReply OnCaptureRebindClicked();
+	FReply OnCaptureRebindResetClicked();
+	FText GetCaptureRebindButtonText() const;
 	TSharedRef<SWidget> BuildGraphicsPanel();
 	TSharedRef<SWidget> BuildPracticePanel();
 	TSharedRef<SWidget> BuildTestCommandPanel();
@@ -423,10 +434,22 @@ private:
 	int32 KonamiProgress = 0;
 	// Progress through the second secret code (G 9 8 1 -> "g = 9.81"), unlocking the It Still Pulls achievement.
 	int32 GravityCodeProgress = 0;
+	// Dev unlock (Ctrl+Alt+U) first-time password capture on the menu (developer account "Adam" only). When
+	// awaiting, typed digits / '-' build the password until Enter; Esc cancels. See SBHMainMenu::OnKeyDown.
+	bool bDevAwaitingPassword = false;
+	FString DevPasswordBuffer;
+	// Attack-key rebinding (Controls tab): true while the menu is listening for the next key/mouse button to bind
+	// the "Capture" (attack) action. See BuildCaptureRebindRow / OnKeyDown / OnMouseButtonDown.
+	bool bListeningForCaptureRebind = false;
 	// Per-part recolour: which skin material slot (a BHColorableMaterialNames registry index) the swatches recolour.
 	int32 RecolorSelectedSlot = INDEX_NONE;
 	// Rebuildable container for the recolour parts, so switching skin re-enumerates the new skin's slots.
 	TSharedPtr<SBox> RecolorSectionBox;
+	// Sticky character preview: the Character tab's scroll container + the box wrapping the avatar preview. Each
+	// Tick the preview is render-transformed by the scroll offset so it follows the view (stays on-screen) instead
+	// of scrolling away / sitting fixed in the middle. Built once with the tab and live for the menu's lifetime.
+	TSharedPtr<class SScrollBox> CharacterTabScrollBox;
+	TSharedPtr<class SBox> AvatarPreviewStickyBox;
 	// When the local player is the listen-server host, leaving ends the whole class session,
 	// so the first LEAVE press only arms a confirm prompt; the second press actually leaves.
 	bool bLeaveConfirmPending = false;

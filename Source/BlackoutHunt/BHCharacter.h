@@ -30,7 +30,7 @@ class BLACKOUTHUNT_API ABHCharacter : public ACharacter
 	GENERATED_BODY()
 
 public:
-	ABHCharacter();
+	ABHCharacter(const FObjectInitializer& ObjectInitializer);
 
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -64,10 +64,25 @@ public:
 	void ResetRoleWarmupStateForRoundStart();
 	void ApplyAvatarStyle();
 	ABHPlayerState* GetBHPlayerState() const;
-	// Social emotes: if this player played an emote within the last few seconds, returns true + its label so the
-	// HUD can draw a bubble over their head. GetEmoteLabel maps an emote id to its short text.
-	bool GetActiveEmote(FString& OutLabel) const;
+	// True while seated -- either the free-sit toggle (C) or locked onto an interactable chair. Chair seats read
+	// this to avoid re-seating an already-seated player.
+	bool IsSeated() const { return bSeated; }
+	// Seat the player ONTO an interactable chair: teleport onto the seat, enter the seated pose, and LOCK them there
+	// so movement input no longer stands you up -- only Jump does. Server authority (called from ABHTrainSeat).
+	void SitOnSeatAuthority(const FVector& SeatLocation, float FacingYaw);
+	// Social emotes: if this player played an emote within the last few seconds, returns true + its label, the
+	// emote id, and how long ago it started, so the HUD can draw a bubble over their head (the shake emote
+	// thrashes its bubble using OutAge). GetEmoteLabel maps an emote id to its short text; GetEmoteCount is the
+	// size of the set (the emote wheel lays out one wedge per entry); IsShakeEmote flags the inside-joke emote.
+	bool GetActiveEmote(FString& OutLabel, int32& OutId, float& OutAge) const;
 	static FString GetEmoteLabel(int32 Id);
+	static int32 GetEmoteCount();
+	static bool IsShakeEmote(int32 Id);
+	// Emote-wheel state for the HUD radial: whether it is open, the current selection stick (unit disc, +Y up),
+	// and the live wedge id (-1 = aim is in the centre dead zone = cancel).
+	bool IsEmoteWheelActive() const { return bEmoteWheelActive; }
+	void GetEmoteWheelSelection(float& OutX, float& OutY) const { OutX = EmoteWheelSelX; OutY = EmoteWheelSelY; }
+	int32 GetEmoteWheelHighlightedId() const;
 	float GetFlashlightTuningValue(FName ParameterName) const;
 	void SetFlashlightTuningValue(FName ParameterName, float Value);
 	bool BotBeginInteract(AActor* Target);
@@ -205,10 +220,20 @@ public:
 	// FOVPunchDegrees<=0 uses the default punch; Intensity (0..1) scales magnitude. Honors reduced-camera-shake comfort.
 	void PlayJumpscareCameraImpact(float Intensity, float FOVPunchDegrees = -1.0f);
 
+	// Local-only inside-joke effect: when the player plays the "mister ke~" emote, thrash THEIR first-person view
+	// up and down for a couple of seconds. Purely cosmetic -- it rides the same additive camera-component transform
+	// as the jumpscare flinch, so the capsule/collision and control rotation never move. Honors reduced-camera-shake.
+	void PlayEmoteShake(float Intensity = 1.0f);
+
 	// Current cosmetic first-person VIEW ROLL in degrees -- the lateral barrel roll during a dodge roll. The camera
 	// uses bUsePawnControlRotation (which clobbers component-relative roll), so ABHPlayerCameraManager reads this in
 	// ProcessViewRotation and stamps it onto the view rotation. 0 whenever no roll effect is active.
 	float GetViewRollOffsetDeg() const { return ViewRollOffsetDeg; }
+
+	// Current cosmetic view-PITCH wobble (degrees) for the "mister ke~" emote shake. Like the roll above, the camera's
+	// bUsePawnControlRotation clobbers component rotation, so ABHPlayerCameraManager reads this and pitches the final
+	// POV (after the control-rotation pitch limits, so the player's aim is never disturbed). 0 when no shake is active.
+	float GetEmoteShakePitchOffsetDeg() const;
 
 	// Server-authoritative crawl-space entry assist: if this is an eligible survivor not already in a low-profile
 	// pose, auto-drop to prone so a player sprinting at a crawl mouth flows into cover instead of being bounced off
@@ -333,6 +358,13 @@ public:
 	UFUNCTION(Client, Reliable)
 	void ClientToggleRoofServiceLights();
 
+	// "Stuck in a tree" easter egg: the owning client detects (in Tick) when it jumps up into the lobby greenhouse
+	// tree, grants the (client-local) achievement, and toasts "press O to reset". O routes here to ask the server
+	// to lift the pawn back down to the ground next to the trunk (server-validated against the replicated tree set).
+	void RequestResetFromTreeStuckZone();
+	UFUNCTION(Server, Reliable)
+	void ServerResetFromTreeStuckZone();
+
 	// Educational hook: the server tells the owning client a graded answer's result (physics topic 0..3,
 	// correct?) -> per-topic mastery + the Honor Roll / Polymath achievements. Cosmetic/local.
 	UFUNCTION(Client, Reliable)
@@ -392,6 +424,11 @@ protected:
 	float GetJumpscareImpactEnvelope() const;
 	float ComputeJumpscareFOVPunch() const;
 	FRotator ComputeJumpscareCameraFlinch() const;
+	// Transient "mister ke~" emote-shake envelope (0..1) + the additive camera-component LOCATION offset it drives
+	// (vertical-dominant; survives bUsePawnControlRotation). Both return zero unless a shake is active. The matching
+	// view-pitch wobble is exposed via GetEmoteShakePitchOffsetDeg() and applied in the camera manager.
+	float GetEmoteShakeEnvelope() const;
+	FVector ComputeEmoteShakeLocationOffset() const;
 	bool IsReducedCameraShakeLocal() const;
 	// Resolve the player's dodge-roll camera style (motion-sickness setting), honoring the cvar override and the
 	// reduced-camera-shake comfort clamp. See EBHRollCamStyle.
@@ -434,8 +471,13 @@ protected:
 	// server-side; pressing a movement key stands you back up. No body animation (the game is first-person).
 	void ToggleSit();
 	void SetSeatedAuthority(bool bNewSeated);
-	// Social emote: cycles through a small set of text emotes shown over your head to nearby players.
-	void CycleEmote();
+	// Social emote wheel (hold X): a radial selector of text emotes shown over your head to nearby players.
+	// Open on press (the cursor snaps to the screen centre), aim a wedge by moving the mouse out from centre
+	// (look is frozen while open), play it on release. The selection is the cursor's absolute offset from the
+	// centre, sampled each frame by UpdateEmoteWheelSelectionFromMouse.
+	void OpenEmoteWheel();
+	void CloseEmoteWheelAndEmote();
+	void UpdateEmoteWheelSelectionFromMouse();
 	// Cosmetic third-person seated pose (no sit animation needed): hide the leg bones and drop the torso to
 	// the seat so other players see a seated upper body instead of a standing-locked one.
 	void ApplySeatedAvatar(bool bSeatedNow);
@@ -482,6 +524,10 @@ protected:
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetSeated(bool bNewSeated);
+
+	// Point the owning client's view at the chair's facing the moment they sit (server -> owning client).
+	UFUNCTION(Client, Reliable)
+	void ClientFaceYaw(float Yaw);
 
 	UFUNCTION(Server, Reliable)
 	void ServerEmote(int32 InEmoteId);
@@ -812,6 +858,11 @@ protected:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Movement")
 	bool bSeated = false;
 
+	// Set when seated via an interactable chair (ABHTrainSeat): movement input no longer stands you up; only Jump
+	// does. Replicated so the owning client's "move to stand" shortcut respects the lock.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Movement")
+	bool bSeatLocked = false;
+
 	// Cosmetic seated-pose tracking for the third-person avatar (not replicated; derived from bSeated).
 	bool bSeatedAvatarApplied = false;
 	bool bRoleMeshStandCaptured = false;
@@ -825,8 +876,11 @@ protected:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Social")
 	float EmoteStartServerTime = 0.0f;
 
-	// Owning-client local cycle counter (not replicated).
-	int32 LocalEmoteCycle = 0;
+	// Emote wheel (owning client only, never replicated): whether the radial is open and the current
+	// selection stick (a point in the unit disc; +X right, +Y up). Mouse motion feeds it while open.
+	bool bEmoteWheelActive = false;
+	float EmoteWheelSelX = 0.0f;
+	float EmoteWheelSelY = 0.0f;
 
 	UPROPERTY()
 	TObjectPtr<AActor> CurrentInteractTarget;
@@ -846,6 +900,15 @@ protected:
 	// throws the train-roof breaker so each passenger lights the roof for themselves.
 	void SetRoofServiceLightsLocal(bool bOn);
 	bool bRoofServiceLightsOn = false;
+
+	// Owning-client per-tick check for the "Stuck in a Tree" egg (jumped up into the lobby greenhouse canopy).
+	void UpdateTreeStuckDetection(float DeltaSeconds);
+
+	// "Stuck in a tree" easter egg (owning-client detection state): edge flag so the achievement + prompt fire once
+	// per time the player jumps up into the lobby greenhouse tree, plus a timer to re-toast the "press O" hint while
+	// they stay wedged. Pure client-local; the reset itself is a server RPC.
+	bool bTreeStuckActive = false;
+	float TreeStuckPromptTimer = 0.0f;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<ABHTrainServiceLight>> LocalRoofLights;
 
@@ -874,6 +937,9 @@ protected:
 	float LastFootstepStimulusTime;
 	float LastFlashlightAudioCueTime;
 	float LastFlashlightStruggleAudioTime = -100.0f;
+	// Server-only cooldown stamp for the O "reset to spawn" unstick (see ServerResetFromTreeStuckZone). Not
+	// replicated: the server is the sole arbiter; the owning client learns the result via a status toast.
+	float LastResetToSpawnServerTime = -100000.0f;
 	float LastTeacherProximityAudioTime;
 	float FootstepStimulusDistanceAccumulator;
 	float StaminaRecoveryLockedUntil;
@@ -912,6 +978,9 @@ protected:
 	float JumpscareImpactStartTime = -1.0f;
 	float JumpscareImpactIntensity = 0.0f;
 	float JumpscareImpactFOVPunch = 0.0f;
+	// "mister ke~" emote camera shake (local-only, never replicated; like the jumpscare impact above).
+	float EmoteShakeStartTime = -1.0f;
+	float EmoteShakeIntensity = 0.0f;
 	float LocalSpecialAnimStartTime;
 	EBHMovementSpecialState LocalSpecialAnimState;
 	float FlashlightPulseTime;

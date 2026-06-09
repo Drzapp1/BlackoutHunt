@@ -1,0 +1,114 @@
+open=41665 reachable=41665 unreachable_open=0 (0.0%)
+  hunter  (-5650, -1250) blk=False reach=True
+  exit    (5600, 0) blk=False reach=True
+  surv0   (4150, -1300) blk=False reach=True
+  surv1   (4150, -450) blk=False reach=True
+  surv2   (4150, 450) blk=False reach=True
+  surv3   (4150, 1300) blk=False reach=True
+  surv4   (4400, -1300) blk=False reach=True
+  surv5   (4400, -450) blk=False reach=True
+  surv6   (4400, 450) blk=False reach=True
+  surv7   (4400, 1300) blk=False reach=True
+  surv8   (4650, -1300) blk=False reach=True
+  surv9   (4650, -450) blk=False reach=True
+  surv10  (4650, 450) blk=False reach=True
+  surv11  (4650, 1300) blk=False reach=True
+
+--- per-room entrances ---
+  C0R0 (-5300,-3550)       entrances=2 ['E', 'N']
+  C0R1 (-5300,-1250)       entrances=3 ['E', 'S', 'N']
+  C0R2 (-5300,1250)        entrances=3 ['E', 'S', 'N']
+  C0R3 (-5300,3550)        entrances=2 ['E', 'S']
+  C1R0 (-3500,-3550)       entrances=3 ['W', 'E', 'N']
+  C1R1 (-3500,-1250)       entrances=4 ['W', 'E', 'S', 'N']
+  C1R2 (-3500,1250)        entrances=4 ['W', 'E', 'S', 'N']
+  C1R3 (-3500,3550)        entrances=3 ['W', 'E', 'S']
+  C2R0 (-1500,-3550)       entrances=3 ['W', 'E', 'N']
+  C2R1 (-1500,-1250)       entrances=4 ['W', 'E', 'S', 'N']
+  C2R2 (-1500,1250)        entrances=4 ['W', 'E', 'S', 'N']
+  C2R3 (-1500,3550)        entrances=3 ['W', 'E', 'S']
+  C3R0 (650,-3550)         entrances=3 ['W', 'E', 'N']
+  C3R1 (650,-1250)         entrances=4 ['W', 'E', 'S', 'N']
+  C3R2 (650,1250)          entrances=4 ['W', 'E', 'S', 'N']
+  C3R3 (650,3550)          entrances=3 ['W', 'E', 'S']
+  C4R0 (2850,-3550)        entrances=3 ['W', 'E', 'N']
+  C4R1 (2850,-1250)        entrances=4 ['W', 'E', 'S', 'N']
+  C4R2 (2850,1250)         entrances=4 ['W', 'E', 'S', 'N']
+  C4R3 (2850,3550)         entrances=3 ['W', 'E', 'S']
+  C5R0 (5000,-3550)        entrances=2 ['W', 'N']
+  C5R1 (5000,-1250)        entrances=3 ['W', 'S', 'N']
+  C5R2 (5000,1250)         entrances=3 ['W', 'S', 'N']
+  C5R3 (5000,3550)         entrances=2 ['W', 'S']
+
+  *** rooms with <=1 entrance: 0 []
+  counts: objectives=16 transformers=8 lockers=16 clutter=10 ducts=4 doors=20
+wrote substation_proposed.png
+
+// ==== WALLS (center@175, scale; height 3.25) ====
+		{FVector(-4500.0f, -4150.0f, 175.0f), FVector(0.3f, 9f, 3.25f)},
+		{FVector(-4500.0f, -2400.0f, 175.0f), FVector(0.3f, 20f, 3.25f)},
+		{FVector(-4500.0f, 0.0f, 175.0f), FVector(0.3f, 22f, 3.25f)},
+		{FVector(-4500.0f, 2250.0f, 175.0f), FVector(0.3f, 17f, 3.25f)},
+		{FVector(-4500.0f, 4300.0f, 175.0f), FVector(0.3f, 6f, 3.25f)},
+		{FVector(-2500.0f, -4300.0f, 175.0f), FVector(0.3f, 6f, 3.25f)},
+		{FVector(-2500.0f, -2250.0f, 175.0f), FVector(0.3f, 17f, 3.25f)},
+		{FVector(-2500.0f, 0.0f, 175.0f), FVector(0.3f, 22f, 3.25f)},
+		{FVector(-2500.0f, 2250.0f, 175.0f), FVector(0.3f, 17f, 3.25f)},
+		{FVector(-2500.0f, 4300.0f, 175.0f), FVector(0.3f, 6f, 3.25f)},
+		{FVector(-500.0f, -4150.0f, 175.0f), FVector(0.3f, 9f, 3.25f)},
+		{FVector(-500.0f, -2950.0f, 175.0f), FVector(0.3f, 9f, 3.25f)},
+		{FVector(-500.0f, 2950.0f, 175.0f), FVector(0.3f, 9f, 3.25f)},
+		{FVector(-500.0f, 4150.0f, 175.0f), FVector(0.3f, 9f, 3.25f)},
+		{FVector(1800.0f, -4300.0f, 175.0f), FVector(0.3f, 6f, 3.25f)},
+		{FVector(1800.0f, -2250.0f, 175.0f), FVector(0.3f, 17f, 3.25f)},
+		{FVector(1800.0f, 0.0f, 175.0f), FVector(0.3f, 22f, 3.25f)},
+		{FVector(1800.0f, 2250.0f, 175.0f), FVector(0.3f, 17f, 3.25f)},
+		{FVector(1800.0f, 4300.0f, 175.0f), FVector(0.3f, 6f, 3.25f)},
+		{FVector(3900.0f, -4300.0f, 175.0f), FVector(0.3f, 6f, 3.25f)},
+		{FVector(3900.0f, -2250.0f, 175.0f), FVector(0.3f, 17f, 3.25f)},
+		{FVector(3900.0f, -450.0f, 175.0f), FVector(0.3f, 13f, 3.25f)},
+		{FVector(3900.0f, 1225.0f, 175.0f), FVector(0.3f, 14.5f, 3.25f)},
+		{FVector(3900.0f, 2675.0f, 175.0f), FVector(0.3f, 8.5f, 3.25f)},
+		{FVector(3900.0f, 4300.0f, 175.0f), FVector(0.3f, 6f, 3.25f)},
+		{FVector(-4075.0f, -2500.0f, 175.0f), FVector(8.5f, 0.3f, 3.25f)},
+		{FVector(-2500.0f, -2500.0f, 175.0f), FVector(17f, 0.3f, 3.25f)},
+		{FVector(-375.0f, -2500.0f, 175.0f), FVector(19.5f, 0.3f, 3.25f)},
+		{FVector(1675.0f, -2500.0f, 175.0f), FVector(15.5f, 0.3f, 3.25f)},
+		{FVector(3775.0f, -2500.0f, 175.0f), FVector(10.5f, 0.3f, 3.25f)},
+		{FVector(5900.0f, -2500.0f, 175.0f), FVector(4f, 0.3f, 3.25f)},
+		{FVector(-4075.0f, 0.0f, 175.0f), FVector(8.5f, 0.3f, 3.25f)},
+		{FVector(-2750.0f, 0.0f, 175.0f), FVector(12f, 0.3f, 3.25f)},
+		{FVector(2425.0f, 0.0f, 175.0f), FVector(5.5f, 0.3f, 3.25f)},
+		{FVector(3250.0f, 0.0f, 175.0f), FVector(5f, 0.3f, 3.25f)},
+		{FVector(5900.0f, 0.0f, 175.0f), FVector(4f, 0.3f, 3.25f)},
+		{FVector(-4075.0f, 2500.0f, 175.0f), FVector(8.5f, 0.3f, 3.25f)},
+		{FVector(-2500.0f, 2500.0f, 175.0f), FVector(17f, 0.3f, 3.25f)},
+		{FVector(-375.0f, 2500.0f, 175.0f), FVector(19.5f, 0.3f, 3.25f)},
+		{FVector(1675.0f, 2500.0f, 175.0f), FVector(15.5f, 0.3f, 3.25f)},
+		{FVector(3775.0f, 2500.0f, 175.0f), FVector(10.5f, 0.3f, 3.25f)},
+		{FVector(5900.0f, 2500.0f, 175.0f), FVector(4f, 0.3f, 3.25f)},
+
+// ==== DOORS ====
+		{FVector(-4500.0f, -3550.0f, 120.0f), FRotator::ZeroRotator},
+		{FVector(-4500.0f, -1250.0f, 120.0f), FRotator::ZeroRotator},
+		{FVector(-4500.0f, 1250.0f, 120.0f), FRotator::ZeroRotator},
+		{FVector(-2500.0f, -1250.0f, 120.0f), FRotator::ZeroRotator},
+		{FVector(-2500.0f, 1250.0f, 120.0f), FRotator::ZeroRotator},
+		{FVector(-500.0f, -3550.0f, 120.0f), FRotator::ZeroRotator},
+		{FVector(-500.0f, 3550.0f, 120.0f), FRotator::ZeroRotator},
+		{FVector(1800.0f, -1250.0f, 120.0f), FRotator::ZeroRotator},
+		{FVector(1800.0f, 1250.0f, 120.0f), FRotator::ZeroRotator},
+		{FVector(3900.0f, -1250.0f, 120.0f), FRotator::ZeroRotator},
+		{FVector(3900.0f, 350.0f, 120.0f), FRotator::ZeroRotator},
+		{FVector(3900.0f, 2100.0f, 120.0f), FRotator::ZeroRotator},
+		{FVector(-3500.0f, -2500.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)},
+		{FVector(-1500.0f, -2500.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)},
+		{FVector(750.0f, -2500.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)},
+		{FVector(-3500.0f, 0.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)},
+		{FVector(2850.0f, 0.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)},
+		{FVector(-3500.0f, 2500.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)},
+		{FVector(-1500.0f, 2500.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)},
+		{FVector(750.0f, 2500.0f, 120.0f), FRotator(0.0f, 90.0f, 0.0f)},
+
+// ==== BREAKERS / OBJECTIVES / LOCKERS / CLUTTER / SPAWNS counts ====
+// breakers=8 objectives=16 lockers=16 clutter=10 spawns=12 transformers=8

@@ -925,12 +925,24 @@ const TArray<FBHRevisionQuestion>& FBHRevisionQuestionBank::GetBuiltInQuestions(
 	return Bank;
 }
 
+namespace
+{
+	// Active bank cache. File-scope (not a function-local static) so InvalidateQuestionCache() can clear it
+	// for a host live re-edit of the JSON override / question set. Game-thread only.
+	TArray<FBHRevisionQuestion> GActiveQuestionBank;
+	bool bGActiveQuestionBankLoaded = false;
+}
+
 const TArray<FBHRevisionQuestion>& FBHRevisionQuestionBank::GetQuestions()
 {
-	// Prefer an editable JSON override when present and structurally valid; otherwise fall back
-	// to the compiled built-in bank. Resolved once and cached for the process.
-	static const TArray<FBHRevisionQuestion> Bank = []() -> TArray<FBHRevisionQuestion>
+	// Prefer an editable JSON override when present and structurally valid; otherwise fall back to the
+	// compiled built-in bank. Cached until InvalidateQuestionCache() is called.
+	if (!bGActiveQuestionBankLoaded)
 	{
+		bGActiveQuestionBankLoaded = true;
+		GActiveQuestionBank.Reset();
+		bool bUsedOverride = false;
+
 		const FString Path = GetOverrideFilePath();
 		FString JsonText;
 		if (FFileHelper::LoadFileToString(JsonText, *Path))
@@ -943,9 +955,13 @@ const TArray<FBHRevisionQuestion>& FBHRevisionQuestionBank::GetQuestions()
 				if (ValidateQuestionSet(Loaded, ValidateSummary))
 				{
 					UE_LOG(LogTemp, Log, TEXT("[BHRevision] Loaded %d question(s) from override %s"), Loaded.Num(), *Path);
-					return Loaded;
+					GActiveQuestionBank = MoveTemp(Loaded);
+					bUsedOverride = true;
 				}
-				UE_LOG(LogTemp, Warning, TEXT("[BHRevision] Override question bank failed validation (%s) - using built-in bank. %s"), *Path, *ValidateSummary);
+				else
+				{
+					UE_LOG(LogTemp, Warning, TEXT("[BHRevision] Override question bank failed validation (%s) - using built-in bank. %s"), *Path, *ValidateSummary);
+				}
 			}
 			else
 			{
@@ -955,9 +971,20 @@ const TArray<FBHRevisionQuestion>& FBHRevisionQuestionBank::GetQuestions()
 				UE_LOG(LogTemp, Warning, TEXT("[BHRevision] Could not parse override question bank %s (%s). Backed up to %s; using built-in bank."), *Path, *Error, *Backup);
 			}
 		}
-		return GetBuiltInQuestions();
-	}();
-	return Bank;
+
+		if (!bUsedOverride)
+		{
+			GActiveQuestionBank = GetBuiltInQuestions();
+		}
+	}
+	return GActiveQuestionBank;
+}
+
+void FBHRevisionQuestionBank::InvalidateQuestionCache()
+{
+	// Next GetQuestions() reloads from the override file (used after a host live re-edit / set change).
+	bGActiveQuestionBankLoaded = false;
+	GActiveQuestionBank.Reset();
 }
 
 bool FBHRevisionQuestionBank::Validate(FString& OutSummary)
@@ -1028,14 +1055,30 @@ bool FBHRevisionQuestionBank::FindQuestion(const FString& Id, FBHRevisionQuestio
 	return false;
 }
 
-bool FBHRevisionQuestionBank::SelectQuestion(EBHPhysicsTopic Topic, EBHRevisionDifficultyMix DifficultyMix, int32 Seed, const TArray<EBHPhysicsTopic>& WeakTopics, FBHRevisionQuestion& OutQuestion)
+bool FBHRevisionQuestionBank::SelectQuestion(EBHPhysicsTopic Topic, EBHRevisionDifficultyMix DifficultyMix, int32 Seed, const TArray<EBHPhysicsTopic>& WeakTopics, FBHRevisionQuestion& OutQuestion,
+	EBHQuestionDifficulty MinDifficulty, EBHQuestionDifficulty MaxDifficulty, const TArray<FString>* AllowedIds)
 {
+	const uint8 MinValue = FMath::Min<uint8>(static_cast<uint8>(MinDifficulty), static_cast<uint8>(MaxDifficulty));
+	const uint8 MaxValue = FMath::Max<uint8>(static_cast<uint8>(MinDifficulty), static_cast<uint8>(MaxDifficulty));
+	const bool bHasIdSet = AllowedIds && AllowedIds->Num() > 0;
+
 	TArray<const FBHRevisionQuestion*> Candidates;
 	TArray<const FBHRevisionQuestion*> TopicCandidates;
 	const bool bWeakTopic = WeakTopics.Contains(Topic);
 	for (const FBHRevisionQuestion& Question : GetQuestions())
 	{
 		if (Question.Topic != Topic)
+		{
+			continue;
+		}
+		// Host difficulty band: never pick outside [Min,Max] (the band also constrains the fallback pool).
+		const uint8 DifficultyValue = static_cast<uint8>(Question.Difficulty);
+		if (DifficultyValue < MinValue || DifficultyValue > MaxValue)
+		{
+			continue;
+		}
+		// Host exact question set: only draw from the pinned ids when one is set.
+		if (bHasIdSet && !AllowedIds->ContainsByPredicate([&Question](const FString& Id){ return Id.Equals(Question.Id, ESearchCase::IgnoreCase); }))
 		{
 			continue;
 		}
@@ -1077,8 +1120,15 @@ bool FBHRevisionQuestionBank::SelectQuestion(EBHPhysicsTopic Topic, EBHRevisionD
 	return true;
 }
 
-bool FBHRevisionQuestionBank::SelectQuestionByDifficulty(EBHPhysicsTopic Topic, EBHQuestionDifficulty Difficulty, int32 Seed, FBHRevisionQuestion& OutQuestion)
+bool FBHRevisionQuestionBank::SelectQuestionByDifficulty(EBHPhysicsTopic Topic, EBHQuestionDifficulty Difficulty, int32 Seed, FBHRevisionQuestion& OutQuestion,
+	EBHQuestionDifficulty MinDifficulty, EBHQuestionDifficulty MaxDifficulty, const TArray<FString>* AllowedIds)
 {
+	const uint8 MinValue = FMath::Min<uint8>(static_cast<uint8>(MinDifficulty), static_cast<uint8>(MaxDifficulty));
+	const uint8 MaxValue = FMath::Max<uint8>(static_cast<uint8>(MinDifficulty), static_cast<uint8>(MaxDifficulty));
+	const bool bHasIdSet = AllowedIds && AllowedIds->Num() > 0;
+	// Pin the requested tier into the host band so an exact-tier pick still respects [Min,Max].
+	const EBHQuestionDifficulty TargetDifficulty = static_cast<EBHQuestionDifficulty>(FMath::Clamp<uint8>(static_cast<uint8>(Difficulty), MinValue, MaxValue));
+
 	TArray<const FBHRevisionQuestion*> Candidates;
 	TArray<const FBHRevisionQuestion*> TopicCandidates;
 	for (const FBHRevisionQuestion& Question : GetQuestions())
@@ -1087,9 +1137,18 @@ bool FBHRevisionQuestionBank::SelectQuestionByDifficulty(EBHPhysicsTopic Topic, 
 		{
 			continue;
 		}
+		const uint8 DifficultyValue = static_cast<uint8>(Question.Difficulty);
+		if (DifficultyValue < MinValue || DifficultyValue > MaxValue)
+		{
+			continue;
+		}
+		if (bHasIdSet && !AllowedIds->ContainsByPredicate([&Question](const FString& Id){ return Id.Equals(Question.Id, ESearchCase::IgnoreCase); }))
+		{
+			continue;
+		}
 
 		TopicCandidates.Add(&Question);
-		if (Question.Difficulty == Difficulty)
+		if (Question.Difficulty == TargetDifficulty)
 		{
 			Candidates.Add(&Question);
 		}
@@ -1112,8 +1171,14 @@ bool FBHRevisionQuestionBank::SelectQuestionByDifficulty(EBHPhysicsTopic Topic, 
 	return true;
 }
 
-bool FBHRevisionQuestionBank::SelectDragQuestion(EBHPhysicsTopic Topic, EBHQuestionDifficulty PreferredDifficulty, int32 Seed, FBHRevisionQuestion& OutQuestion)
+bool FBHRevisionQuestionBank::SelectDragQuestion(EBHPhysicsTopic Topic, EBHQuestionDifficulty PreferredDifficulty, int32 Seed, FBHRevisionQuestion& OutQuestion,
+	EBHQuestionDifficulty MinDifficulty, EBHQuestionDifficulty MaxDifficulty, const TArray<FString>* AllowedIds)
 {
+	const uint8 MinValue = FMath::Min<uint8>(static_cast<uint8>(MinDifficulty), static_cast<uint8>(MaxDifficulty));
+	const uint8 MaxValue = FMath::Max<uint8>(static_cast<uint8>(MinDifficulty), static_cast<uint8>(MaxDifficulty));
+	const bool bHasIdSet = AllowedIds && AllowedIds->Num() > 0;
+	const EBHQuestionDifficulty TargetPreferred = static_cast<EBHQuestionDifficulty>(FMath::Clamp<uint8>(static_cast<uint8>(PreferredDifficulty), MinValue, MaxValue));
+
 	const TArray<FBHRevisionQuestion>& Bank = GetQuestions();
 	TArray<int32> PreferredMatches;
 	TArray<int32> AnyMatches;
@@ -1128,8 +1193,17 @@ bool FBHRevisionQuestionBank::SelectDragQuestion(EBHPhysicsTopic Topic, EBHQuest
 		{
 			continue;
 		}
+		const uint8 DifficultyValue = static_cast<uint8>(Question.Difficulty);
+		if (DifficultyValue < MinValue || DifficultyValue > MaxValue)
+		{
+			continue;
+		}
+		if (bHasIdSet && !AllowedIds->ContainsByPredicate([&Question](const FString& Id){ return Id.Equals(Question.Id, ESearchCase::IgnoreCase); }))
+		{
+			continue;
+		}
 		AnyMatches.Add(Index);
-		if (Question.Difficulty == PreferredDifficulty)
+		if (Question.Difficulty == TargetPreferred)
 		{
 			PreferredMatches.Add(Index);
 		}
@@ -1294,6 +1368,126 @@ FString FBHRevisionQuestionBank::GetOverrideFilePath()
 	return FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("ClassroomPresets") / TEXT("QuestionBank.json"));
 }
 
+FString FBHRevisionQuestionBank::GetQuestionSetFilePath(const FString& SetId)
+{
+	// Sanitize to a bare filename stem (no path separators / traversal) before building the path.
+	FString Clean;
+	for (const TCHAR Character : SetId)
+	{
+		if (FChar::IsAlnum(Character) || Character == TEXT('_') || Character == TEXT('-') || Character == TEXT('.'))
+		{
+			Clean.AppendChar(Character);
+		}
+	}
+	if (Clean.IsEmpty())
+	{
+		Clean = TEXT("set");
+	}
+	return FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("ClassroomPresets") / TEXT("QuestionSets") / (Clean + TEXT(".json")));
+}
+
+bool FBHRevisionQuestionBank::LoadQuestionSetIds(const FString& SetId, TArray<FString>& OutQuestionIds, FString& OutMessage)
+{
+	OutQuestionIds.Reset();
+	if (SetId.IsEmpty())
+	{
+		OutMessage = TEXT("No question set id.");
+		return false;
+	}
+
+	const FString Path = GetQuestionSetFilePath(SetId);
+	FString JsonText;
+	if (!FFileHelper::LoadFileToString(JsonText, *Path))
+	{
+		OutMessage = FString::Printf(TEXT("Question set '%s' not found."), *SetId);
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> Root;
+	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonText);
+	if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
+	{
+		OutMessage = FString::Printf(TEXT("Question set '%s' is not valid JSON."), *SetId);
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* IdValues = nullptr;
+	if (!Root->TryGetArrayField(TEXT("questionIds"), IdValues) || IdValues == nullptr)
+	{
+		OutMessage = FString::Printf(TEXT("Question set '%s' has no 'questionIds' array."), *SetId);
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& Value : *IdValues)
+	{
+		FString Id;
+		if (Value.IsValid() && Value->TryGetString(Id))
+		{
+			Id.TrimStartAndEndInline();
+			if (!Id.IsEmpty())
+			{
+				OutQuestionIds.AddUnique(Id);
+			}
+		}
+	}
+
+	OutMessage = FString::Printf(TEXT("Loaded question set '%s' (%d ids)."), *SetId, OutQuestionIds.Num());
+	return OutQuestionIds.Num() > 0;
+}
+
+bool FBHRevisionQuestionBank::SaveQuestionSet(const FString& SetId, const FString& DisplayName, const TArray<FString>& QuestionIds, FString& OutMessage)
+{
+	if (SetId.IsEmpty())
+	{
+		OutMessage = TEXT("A question set needs a name.");
+		return false;
+	}
+
+	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetNumberField(TEXT("version"), 1);
+	Root->SetStringField(TEXT("id"), SetId);
+	Root->SetStringField(TEXT("name"), DisplayName.IsEmpty() ? SetId : DisplayName);
+
+	TArray<TSharedPtr<FJsonValue>> IdValues;
+	for (const FString& Id : QuestionIds)
+	{
+		FString Trimmed = Id;
+		Trimmed.TrimStartAndEndInline();
+		if (!Trimmed.IsEmpty())
+		{
+			IdValues.Add(MakeShared<FJsonValueString>(Trimmed));
+		}
+	}
+	Root->SetArrayField(TEXT("questionIds"), IdValues);
+
+	FString Output;
+	const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Output);
+	FJsonSerializer::Serialize(Root, Writer);
+
+	const FString Path = GetQuestionSetFilePath(SetId);
+	if (!FFileHelper::SaveStringToFile(Output, *Path))
+	{
+		OutMessage = FString::Printf(TEXT("Could not write question set to %s."), *Path);
+		return false;
+	}
+
+	OutMessage = FString::Printf(TEXT("Saved question set '%s' (%d ids)."), *SetId, IdValues.Num());
+	return true;
+}
+
+void FBHRevisionQuestionBank::GetAvailableQuestionSetIds(TArray<FString>& OutSetIds)
+{
+	OutSetIds.Reset();
+	const FString Dir = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("ClassroomPresets") / TEXT("QuestionSets"));
+	TArray<FString> Files;
+	IFileManager::Get().FindFiles(Files, *(Dir / TEXT("*.json")), true, false);
+	for (const FString& File : Files)
+	{
+		OutSetIds.Add(FPaths::GetBaseFilename(File));
+	}
+	OutSetIds.Sort();
+}
+
 FString FBHRevisionQuestionBank::SerializeQuestionsToJson(const TArray<FBHRevisionQuestion>& Questions)
 {
 	TArray<TSharedPtr<FJsonValue>> QuestionValues;
@@ -1302,6 +1496,8 @@ FString FBHRevisionQuestionBank::SerializeQuestionsToJson(const TArray<FBHRevisi
 	{
 		TSharedRef<FJsonObject> Obj = MakeShared<FJsonObject>();
 		Obj->SetStringField(TEXT("id"), Question.Id);
+		// Host can set "enabled": false to drop a question from play without deleting it (see ParseQuestionsFromJson).
+		Obj->SetBoolField(TEXT("enabled"), true);
 		Obj->SetStringField(TEXT("topic"), EnumToKey(Question.Topic));
 		Obj->SetStringField(TEXT("topicName"), Question.TopicName);
 		Obj->SetStringField(TEXT("subtopic"), Question.Subtopic);
@@ -1383,6 +1579,16 @@ bool FBHRevisionQuestionBank::ParseQuestionsFromJson(const FString& JsonText, TA
 			continue;
 		}
 		const TSharedPtr<FJsonObject>& Obj = *ObjPtr;
+
+		// Host can disable an individual question in the editable bank without deleting it (default enabled).
+		// NOTE: disabling so many that a topic in play has zero questions will fail bank validation and fall
+		// back to the built-in bank -- keep at least one enabled question per topic you teach.
+		bool bEnabled = true;
+		Obj->TryGetBoolField(TEXT("enabled"), bEnabled);
+		if (!bEnabled)
+		{
+			continue;
+		}
 
 		FBHRevisionQuestion Question;
 		Question.Id = JsonStr(Obj, TEXT("id"));

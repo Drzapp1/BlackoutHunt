@@ -227,7 +227,7 @@ UBHGameSettings::UBHGameSettings()
 	ScanCooldownSeconds = 25.0f;
 	DecoyCooldownSeconds = 10.0f;
 	HunterSprintDrainMultiplierMax = 0.85f;
-	HunterStaminaRecoveryMultiplier = 1.75f;
+	HunterStaminaRecoveryMultiplier = 0.8f;
 	TeacherAxeStaminaCost = 5.0f;
 	TeacherAxeMinStamina = 2.0f;
 	BatteryRefillAmount = 45.0f;

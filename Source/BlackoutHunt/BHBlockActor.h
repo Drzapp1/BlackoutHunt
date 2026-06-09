@@ -34,7 +34,13 @@ enum class EBHBlockMaterial : uint8
 	// Cool gray-teal world-aligned concrete: same triplanar tiling as ConcreteWA but a cold industrial tint
 	// instead of the backrooms dark-red. Used for the Substation so its concrete reads textured (not stretched)
 	// while keeping the substation's cold palette. Appended last to preserve baked .umap enum byte values.
-	ConcreteWACool
+	ConcreteWACool,
+	// CC0 ambientCG comfort materials for the lobby's lounge/games/relax dressing (warm wood, soft carpet,
+	// leather upholstery, polished marble). Appended last to preserve baked .umap enum byte values.
+	Wood,
+	Carpet,
+	Leather,
+	Marble
 };
 
 UCLASS()

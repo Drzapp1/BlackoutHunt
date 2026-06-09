@@ -11,6 +11,14 @@ public class BlackoutHunt : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 
+		// Developer-only "unlock everything" (Ctrl+Alt+U). OFF by default, so it is compiled OUT of Shipping exactly
+		// as before and production packages never contain it. To compile it into YOUR personal build (including a
+		// Shipping .exe), set the build-time environment variable BH_DEV_UNLOCK=1 before compiling/packaging; the
+		// unlock then still requires the runtime Saved/.bhdev marker (or BH_DEV=1) to fire. Leave the variable unset
+		// for production. Always defined as 0/1 so the #if guards never reference an undefined identifier.
+		bool bDevUnlock = System.Environment.GetEnvironmentVariable("BH_DEV_UNLOCK") == "1";
+		PrivateDefinitions.Add("BH_DEV_UNLOCK=" + (bDevUnlock ? "1" : "0"));
+
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
 			"Core",
