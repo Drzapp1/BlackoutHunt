@@ -367,6 +367,13 @@ void ABHGameMode::BeginPropHuntHidePhase()
 
 	RecordPlaytestTelemetryMarker(TEXT("ph_round_start"), HunterSpawn, FString::Printf(TEXT("round=%d"), RoundIndex));
 
+	// Bot orchestration (P8): a light 2 Hz service covering the hide AND the seek (it early-outs by phase).
+	PropHuntBotNextActionTime.Reset();
+	if (bBotMode)
+	{
+		GetWorldTimerManager().SetTimer(PropHuntBotServiceHandle, this, &ABHGameMode::ServicePropHuntBots, 0.5f, true, 1.0f);
+	}
+
 	const int32 HideSeconds = BHGS ? BHGS->RemainingTime : CVarBHPropHuntHideSeconds.GetValueOnGameThread();
 	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
 	{
@@ -555,6 +562,11 @@ void ABHGameMode::ForcePropHuntTaunt()
 		ReportAtmosphereStimulus(EBHAtmosphereStimulusType::Noise, PropLocation, Prop, nullptr, 1.0f, TEXT("prop_taunt"));
 		// Taunt horn at the prop's position -- far-audible so the seeker can walk the sound down (P5 audio).
 		BroadcastGameplayAudioCue(BHMakePropHuntAudioCue(BHPropHuntTauntHornSoundPath, PropLocation + FVector(0.0f, 0.0f, 60.0f), 0.9f, 1.18f, 5200.0f, /*bSpatial*/ true));
+		// Bot props (P8): a taunt just exposed everyone -- some bots take the cue to scurry somewhere fresh.
+		if (BHPS->IsABot() && Prop->IsPropLockedInPlace() && FMath::FRand() < 0.35f)
+		{
+			PropHuntBotNextActionTime.FindOrAdd(Prop) = (GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f) + FMath::FRandRange(0.5f, 2.5f);
+		}
 		++TauntedProps;
 		if (ABHPlayerController* PropPC = Cast<ABHPlayerController>(Prop->GetController()))
 		{
@@ -860,6 +872,97 @@ void ABHGameMode::HandlePropHuntRoundEnd(EBHRoundPhase ResultPhase)
 		BroadcastStatus(FString::Printf(TEXT("Round %d of %d done - next round shortly."), RoundsPlayed, RoundCount), 4.0f);
 	}
 	RecordPlaytestTelemetryMarker(TEXT("ph_round_end"), HunterSpawn, FString::Printf(TEXT("round=%d/%d"), RoundsPlayed, RoundCount));
+}
+
+// Bot orchestration (P8). Bot PROPS: wander on their normal survivor brain for a while, then disguise as the
+// nearest valid mesh where they happen to stand, lock, and hold -- with an occasional post-taunt relocation
+// (scheduled by ForcePropHuntTaunt) so they don't fossilize. Bot SEEKERS: the normal hunter brain does the
+// roaming/chasing/swinging (the bot-vision gate makes still disguises invisible to it, so it hunts by noise);
+// this service just fires the sonar on a human-ish cadence, which doubles as an audible "seeker was here" tell.
+void ABHGameMode::ServicePropHuntBots()
+{
+	ABHGameState* BHGS = GetGameState<ABHGameState>();
+	UWorld* World = GetWorld();
+	if (!bPropHuntMode || !World || !BHGS)
+	{
+		return;
+	}
+	const bool bHidePhase = BHGS->RoundPhase == EBHRoundPhase::Prep;
+	const bool bSeekPhase = BHGS->RoundPhase == EBHRoundPhase::Hunt;
+	if (!bHidePhase && !bSeekPhase)
+	{
+		return;
+	}
+
+	const float Now = World->GetTimeSeconds();
+	const float HideSeconds = FMath::Max(3.0f, static_cast<float>(CVarBHPropHuntHideSeconds.GetValueOnGameThread()));
+	for (TActorIterator<ABHCharacter> It(World); It; ++It)
+	{
+		ABHCharacter* Bot = *It;
+		ABHPlayerState* BotPS = Bot ? Bot->GetPlayerState<ABHPlayerState>() : nullptr;
+		if (!Bot || !BotPS || !BotPS->IsABot() || BotPS->LifeState != EBHPlayerLifeState::Alive)
+		{
+			continue;
+		}
+
+		float& NextActionTime = PropHuntBotNextActionTime.FindOrAdd(Bot, -1.0f);
+		if (BotPS->PlayerRole == EBHPlayerRole::Survivor)
+		{
+			if (!Bot->IsDisguisedAsProp())
+			{
+				if (NextActionTime < 0.0f)
+				{
+					// First sight of this bot prop: let the survivor brain wander a stretch of the hide first, so
+					// bots spread into spots instead of freezing at spawn. Mid-seek (an infection round restart or
+					// a relocation window) hides again quickly.
+					NextActionTime = Now + (bHidePhase ? FMath::FRandRange(0.30f, 0.65f) * HideSeconds : FMath::FRandRange(2.0f, 5.0f));
+				}
+				else if (Now >= NextActionTime)
+				{
+					if (Bot->BotPickNearbyPropDisguiseAuthority())
+					{
+						Bot->SetPropLockedAuthority(true);
+						NextActionTime = Now + 1.0e9f; // hold until a taunt schedules a relocation look
+					}
+					else
+					{
+						NextActionTime = Now + 2.0f; // blocked (no-hide zone?) -- keep wandering, retry shortly
+					}
+				}
+			}
+			else if (!Bot->IsPropLockedInPlace() && Now >= NextActionTime)
+			{
+				// End of a relocation wander: settle wherever the brain walked us, possibly as a new prop.
+				if (Bot->BotPickNearbyPropDisguiseAuthority())
+				{
+					Bot->SetPropLockedAuthority(true);
+				}
+				else
+				{
+					Bot->SetPropLockedAuthority(true); // keep the current disguise; locking still beats drifting
+				}
+				NextActionTime = Now + 1.0e9f;
+			}
+			else if (Bot->IsPropLockedInPlace() && Now >= NextActionTime && NextActionTime < 1.0e8f)
+			{
+				// A taunt marked this bot for a relocation look: unfreeze and let the survivor brain scurry.
+				Bot->SetPropLockedAuthority(false);
+				NextActionTime = Now + FMath::FRandRange(3.5f, 7.0f);
+			}
+		}
+		else if (BotPS->PlayerRole == EBHPlayerRole::Hunter && bSeekPhase)
+		{
+			if (NextActionTime < 0.0f || NextActionTime > 1.0e8f)
+			{
+				NextActionTime = Now + FMath::FRandRange(4.0f, 9.0f);
+			}
+			else if (Now >= NextActionTime)
+			{
+				Bot->BotUseScan(); // the prop sonar branch: loud at the bot, fear-pings nearby props
+				NextActionTime = Now + BHPropHuntScanCooldownSeconds() + FMath::FRandRange(2.0f, 6.0f);
+			}
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

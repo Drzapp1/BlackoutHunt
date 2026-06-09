@@ -555,6 +555,11 @@ protected:
 	int32 GetPropHuntRoundCount() const;
 	// Rotation pick (P6): the bh.PropHuntSeekers players who have seeked the fewest times (ties -> lowest score).
 	TArray<ABHPlayerState*> ChoosePropHuntStartingSeekers(const TArray<ABHPlayerState*>& Players);
+	// Bot orchestration (P8), a light 2 Hz service started at hide start: bot props wander, disguise as the
+	// nearest valid mesh, lock, and sometimes relocate after a taunt; bot seekers fire the sonar on a cadence
+	// (their chasing/investigating stays the normal hunter brain, deafened to still disguises by the bot-vision
+	// gate). All per-bot timing lives in PropHuntBotNextActionTime.
+	void ServicePropHuntBots();
 	// Recompute + replicate the prop-hunt HUD state (props remaining/total, next-taunt countdown).
 	void RefreshPropHuntGameState();
 	// Count props (role == Survivor) and how many are still hidden (alive). Caught props keep the Survivor role
@@ -757,6 +762,10 @@ protected:
 	bool bPropHuntMatchCompletePendingTravel = false;
 	// Score snapshot at round start (hide phase), so the round MVP is the biggest DELTA, not the match leader.
 	TMap<TWeakObjectPtr<ABHPlayerState>, int32> PropHuntRoundStartScores;
+	// Bot service (P8): the 2 Hz orchestration timer + each bot's next scheduled action time (disguise moment in
+	// the hide, relocate window after a taunt, next sonar for a bot seeker).
+	FTimerHandle PropHuntBotServiceHandle;
+	TMap<TWeakObjectPtr<ABHCharacter>, float> PropHuntBotNextActionTime;
 	// Below this Z an alive pawn counts as fallen out of the world (RecoverPlayersFromVoid teleports it back). The
 	// BlackoutHunt maps are built around Z=0 so -650 is right for them; a prop-hunt arena (imported pack map) sets
 	// this from its own geometry bounds, which may sit far from the origin.

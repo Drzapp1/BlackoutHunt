@@ -1925,6 +1925,20 @@ bool ABHBotController::CanSeeCharacter(const ABHCharacter* Other, float Range, b
 		return false;
 	}
 
+	// Prop hunt: a disguised prop IS furniture to a bot's eyes -- a still one is only "seen" at arm's reach, a
+	// moving one is spottable at mid range (matching what a human seeker can actually read). The bot's honest
+	// search signals stay the taunt/pulse noise stimuli it already consumes, so a bot seeker investigates and
+	// stumbles onto props rather than wallhacking the pawn list.
+	if (Other->IsDisguisedAsProp())
+	{
+		const bool bPropMoving = Other->GetVelocity().SizeSquared2D() > FMath::Square(60.0f);
+		const float DisguisedSightRange = bPropMoving ? 1400.0f : 330.0f;
+		if (ToTarget.SizeSquared() > FMath::Square(DisguisedSightRange))
+		{
+			return false;
+		}
+	}
+
 	const float Dot = FVector::DotProduct(ControlledPawn->GetActorForwardVector(), ToTarget.GetSafeNormal());
 	const float RequiredFacingDot = FMath::Lerp(0.34f, 0.18f, SightProfileMultiplier);
 	if (Dot < RequiredFacingDot)

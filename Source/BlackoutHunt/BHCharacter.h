@@ -137,6 +137,13 @@ public:
 	// Server-only stamp of this prop's last manual taunt. Public: ABHGameMode::HandlePropHuntManualTaunt owns the
 	// cooldown bookkeeping (all prop-hunt orchestration lives in the game-mode partial).
 	float LastManualTauntServerTime = -1000.0f;
+	// Bot prop (P8): server-side disguise pick with no camera -- copies the nearest valid world static mesh
+	// (size-clamped, not a pawn), falling back to the engine-shape catalogue. Returns false when blocked (e.g.
+	// inside the hide-phase no-hide zone, so the bot wanders on and retries). Driven by ServicePropHuntBots.
+	bool BotPickNearbyPropDisguiseAuthority();
+	// Server-side: freeze the pawn dead-still (or release it). Reuses the locker/seat movement-freeze idiom.
+	// Public so the prop-hunt bot service can lock/unlock bot props alongside the player RPC path.
+	void SetPropLockedAuthority(bool bNewLocked);
 
 	// Tutorial movement lesson: a bitmask of which of the four move directions the player has actually
 	// driven (forward 0x01 / back 0x02 / right 0x04 / left 0x08). Accumulated in MoveForward/MoveRight on the
@@ -538,8 +545,6 @@ protected:
 	// Owner-only: reparent the first-person Camera onto the 3rd-person boom (or back to the capsule eye) per
 	// bPropThirdPerson, and flip the disguise mesh owner-visibility so a 3rd-person prop sees its own disguise.
 	void ApplyPropCameraMode();
-	// Server-side: freeze the pawn dead-still (or release it). Reuses the locker/seat movement-freeze idiom.
-	void SetPropLockedAuthority(bool bNewLocked);
 	void UpdateHunterVisualCue();
 	void ConfigureLowPolyAvatar();
 	void UpdateLowPolyAvatar(float DeltaSeconds);

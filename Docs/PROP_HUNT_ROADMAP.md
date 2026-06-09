@@ -420,8 +420,19 @@ Each phase is independently shippable and leaves the build green + tests passing
   `ph_round_end/ph_match_end` with arena, durations, counts — so you can see what's fun and tune.
 - **Acceptance:** a friend session feels clean: clear feedback, no one stuck, sensible defaults, nothing baffling.
 
-### P8 — Bots that play prop hunt (M)  *(after the human game is good)*
+### P8 — Bots that play prop hunt (M)  *(after the human game is good)* **(done — 2026-06-09)**
 **Goal:** fill empty slots so 2–3 friends still get a lively round.
+
+> **STATUS:** **Bot vision gate** (the keystone): `CanSeeCharacter` treats a STILL disguised prop as furniture —
+> invisible beyond ~3.3 m however clear the LOS; a MOVING prop is spottable to 14 m. Bot seekers therefore hunt by
+> the taunt/pulse noise stimuli they already consume instead of wallhacking the pawn list. **Bot props:** a 2 Hz
+> `ServicePropHuntBots` (bot-mode rounds only) lets each bot wander 30–65% of the hide on its survivor brain, then
+> `BotPickNearbyPropDisguiseAuthority` copies the NEAREST size-clamped world mesh (engine-shape fallback; same
+> no-hide-zone rule as humans) and locks; after an auto-taunt ~35% of locked bots take a 3.5–7 s relocation scurry
+> and re-disguise wherever they end up. **Bot seekers:** the stock hunter brain roams/chases/swings; the service
+> fires the prop sonar on a human-ish cadence (cooldown + 2–6 s jitter), which doubles as an audible tell.
+> **Infection:** caught bot props convert through the same HandlePropHuntCapture SetRole+RestartPlayer path as
+> humans. Difficulty scaling beyond the existing bot-difficulty knobs is deferred until a playtest says it matters.
 - **Bot props:** on Hiding, a bot picks a nearby valid prop, disguises, navigates to a hiding spot, locks. On auto-taunt
   it may relocate. Reuse the bot stimulus/intent system (`EBHBotIntent::Hide`, patrol points, nav).
 - **Bot seeker:** roams via nav, uses scan on a cadence, investigates taunt noises (the bots already consume noise

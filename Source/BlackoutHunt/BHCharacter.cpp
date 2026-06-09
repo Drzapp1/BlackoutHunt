@@ -19,6 +19,7 @@
 #include "BHMovementTuningAsset.h"
 #include "BHNoiseDecoy.h"
 #include "BHObjectiveStation.h"
+#include "BHPropHuntLibrary.h"
 #include "BHPlayerController.h"
 #include "BHHUD.h"
 #include "BHQuestionInteraction.h"
@@ -8147,6 +8148,97 @@ void ABHCharacter::BotExitCurrentLocker()
 bool ABHCharacter::BotTryCapture()
 {
 	return TryCaptureAuthority(false);
+}
+
+bool ABHCharacter::BotPickNearbyPropDisguiseAuthority()
+{
+	UWorld* World = GetWorld();
+	if (!HasAuthority() || !World || !IsPropHuntProp())
+	{
+		return false;
+	}
+
+	// Same no-hide-zone rule a human gets: never disguise on the blind seeker's holding spot during the hide.
+	const ABHGameState* BHGS = World->GetGameState<ABHGameState>();
+	if (BHGS && BHGS->RoundPhase == EBHRoundPhase::Prep)
+	{
+		const float NoHideRadius = CVarBHPropHuntHoldNoHideRadius.GetValueOnGameThread();
+		const ABHGameMode* BHGM = World->GetAuthGameMode<ABHGameMode>();
+		if (BHGM && NoHideRadius > 0.0f
+			&& FVector::Dist2D(GetActorLocation(), BHGM->GetHunterSpawnLocation()) < NoHideRadius)
+		{
+			return false;
+		}
+	}
+
+	// Nearest believable world mesh wins -- the same size clamp the player path enforces, no pawns, no hidden
+	// cosmetics. A bot hiding as the shelf right next to it reads exactly like a player would have played it.
+	const float SearchRadius = 900.0f;
+	const float MinSize = CVarBHPropHuntMinSize.GetValueOnGameThread();
+	const float MaxSize = CVarBHPropHuntMaxSize.GetValueOnGameThread();
+	const UStaticMeshComponent* BestComponent = nullptr;
+	float BestDistSq = TNumericLimits<float>::Max();
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* Candidate = *It;
+		if (!Candidate || Candidate->IsA(APawn::StaticClass()))
+		{
+			continue;
+		}
+		if (FVector::DistSquared(Candidate->GetActorLocation(), GetActorLocation()) > FMath::Square(SearchRadius * 2.0f))
+		{
+			continue; // cheap actor-level reject before touching components
+		}
+		TInlineComponentArray<UStaticMeshComponent*> CandidateMeshes(Candidate);
+		for (const UStaticMeshComponent* Component : CandidateMeshes)
+		{
+			if (!Component || !Component->GetStaticMesh() || !Component->IsRegistered() || Component->bHiddenInGame)
+			{
+				continue;
+			}
+			const float DistSq = FVector::DistSquared(Component->GetComponentLocation(), GetActorLocation());
+			if (DistSq > FMath::Square(SearchRadius) || DistSq >= BestDistSq)
+			{
+				continue;
+			}
+			const float Radius = Component->GetStaticMesh()->GetBounds().SphereRadius * FMath::Max(0.05f, Component->GetComponentScale().GetAbsMax());
+			if (Radius < MinSize || Radius > MaxSize)
+			{
+				continue;
+			}
+			BestComponent = Component;
+			BestDistSq = DistSq;
+		}
+	}
+
+	if (bHiddenInLocker)
+	{
+		ExitLocker();
+	}
+	bDisguisedAsProp = true;
+	LastDisguiseChangeServerTime = World->GetTimeSeconds();
+	if (BestComponent)
+	{
+		PropDisguiseMeshPath = BestComponent->GetStaticMesh()->GetPathName();
+		const UMaterialInterface* CopiedMaterial = BestComponent->GetMaterial(0);
+		const FString CopiedMaterialPath = CopiedMaterial ? CopiedMaterial->GetPathName() : FString();
+		PropDisguiseMaterialPath = (!CopiedMaterialPath.IsEmpty() && LoadObject<UMaterialInterface>(nullptr, *CopiedMaterialPath)) ? CopiedMaterialPath : FString();
+		PropDisguiseScale = BestComponent->GetComponentScale().BoundToBox(FVector(0.1f), FVector(8.0f));
+	}
+	else
+	{
+		// Nothing believable in reach: the engine-shape fallback keeps the bot playable (matches the player's
+		// "disguise with nothing in view" fallback).
+		const ABHPlayerState* SaltPS = GetPlayerState<ABHPlayerState>();
+		const BHPropHunt::FFallbackProp& Fallback = BHPropHunt::FallbackPropForSalt(SaltPS ? SaltPS->GetPlayerId() : GetUniqueID());
+		PropDisguiseMeshPath = Fallback.MeshPath;
+		PropDisguiseMaterialPath = Fallback.MaterialPath;
+		PropDisguiseScale = FVector(Fallback.Scale);
+	}
+	PropDisguiseYaw = FMath::FRandRange(0.0f, 360.0f);
+	ApplyPropDisguiseVisuals();
+	ForceNetUpdate();
+	return true;
 }
 
 bool ABHCharacter::BotUseScan()
