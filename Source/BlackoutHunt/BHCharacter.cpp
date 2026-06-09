@@ -1452,6 +1452,25 @@ static TAutoConsoleVariable<float> CVarBHPropHuntMaxSize(
 	TEXT("Prop Hunt: largest disguise a prop may become (mesh bounding-sphere radius * scale, cm)."),
 	ECVF_Default);
 
+// P7 polish knobs. SolidProps gives a LOCKED disguise real blocking collision (the seeker can bump it; a prop
+// can't lock half-inside someone); the re-disguise cooldown stops mesh strobing; the hold radius keeps props
+// from disguising on top of the blind seeker's holding spot during the hide.
+static TAutoConsoleVariable<int32> CVarBHPropHuntSolidProps(
+	TEXT("bh.PropHuntSolidProps"),
+	1,
+	TEXT("Prop Hunt: 1 = a LOCKED disguise gets blocking collision (bump-able, no overlap-hiding); 0 = pure cosmetic."),
+	ECVF_Default);
+static TAutoConsoleVariable<float> CVarBHPropHuntReDisguiseCooldown(
+	TEXT("bh.PropHuntReDisguiseCooldown"),
+	1.5f,
+	TEXT("Prop Hunt: seconds between disguise swaps (anti-strobe on Z)."),
+	ECVF_Default);
+static TAutoConsoleVariable<float> CVarBHPropHuntHoldNoHideRadius(
+	TEXT("bh.PropHuntHoldNoHideRadius"),
+	700.0f,
+	TEXT("Prop Hunt: during the hide phase a prop may not disguise within this range (cm) of the seeker's holding spot. 0 = off."),
+	ECVF_Default);
+
 ABHCharacter::ABHCharacter(const FObjectInitializer& ObjectInitializer)
 	// Use the BH movement component so survivors/teacher/monitors get CS2-style air-strafing (see WS1).
 	: Super(ObjectInitializer.SetDefaultSubobjectClass<UBHCharacterMovementComponent>(ACharacter::CharacterMovementComponentName))
@@ -1890,6 +1909,12 @@ void ABHCharacter::Tick(float DeltaSeconds)
 	if (!IsLocallyControlled() && GetNetMode() != NM_DedicatedServer)
 	{
 		UpdateProximityPlayerHideFromLocalView();
+	}
+
+	// Prop hunt: the disguise idle bob is pure cosmetics -- skip where nobody is looking.
+	if (GetNetMode() != NM_DedicatedServer)
+	{
+		UpdatePropDisguiseIdleBob(DeltaSeconds);
 	}
 
 	if (HasAuthority() && IsSpecialMoveActive())
@@ -7178,6 +7203,35 @@ void ABHCharacter::ServerSetPropDisguise_Implementation(const FString& MeshPath,
 		return;
 	}
 	ABHPlayerController* OwnerPC = Cast<ABHPlayerController>(GetController());
+	const float NowServer = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	// Anti-strobe (P7): a small cooldown between disguise SWAPS so a prop can't flicker through meshes mid-chase.
+	// The first disguise is always free; only re-disguising is throttled.
+	const float SwapCooldown = FMath::Max(0.0f, CVarBHPropHuntReDisguiseCooldown.GetValueOnGameThread());
+	if (bDisguisedAsProp && NowServer - LastDisguiseChangeServerTime < SwapCooldown)
+	{
+		if (OwnerPC)
+		{
+			OwnerPC->ClientShowStatusMessage(TEXT("Still settling into this prop - try again in a moment."), 1.5f);
+		}
+		return;
+	}
+	// Seeker-hold no-hide zone (P7): during the HIDE the blind seeker's holding spot is off limits, so nobody
+	// disguises right where the seeker opens their eyes (cheap spawn-camp in reverse).
+	const ABHGameState* HoldGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	if (HoldGS && HoldGS->RoundPhase == EBHRoundPhase::Prep)
+	{
+		const float NoHideRadius = CVarBHPropHuntHoldNoHideRadius.GetValueOnGameThread();
+		const ABHGameMode* HoldGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr;
+		if (HoldGM && NoHideRadius > 0.0f
+			&& FVector::Dist2D(GetActorLocation(), HoldGM->GetHunterSpawnLocation()) < NoHideRadius)
+		{
+			if (OwnerPC)
+			{
+				OwnerPC->ClientShowStatusMessage(TEXT("Too close to the seeker's holding spot - hide further away."), 2.0f);
+			}
+			return;
+		}
+	}
 	// Server-validate the mesh resolves to a real asset before replicating it to everyone -- rejects a malicious /
 	// garbage path and guarantees clients won't waste a load on something that can only fall back to the cube.
 	UStaticMesh* PropMeshAsset = LoadObject<UStaticMesh>(nullptr, *MeshPath);
@@ -7209,6 +7263,7 @@ void ABHCharacter::ServerSetPropDisguise_Implementation(const FString& MeshPath,
 		ExitLocker();
 	}
 	bDisguisedAsProp = true;
+	LastDisguiseChangeServerTime = NowServer;
 	PropDisguiseMeshPath = MeshPath;
 	// Drop a material path that doesn't resolve to a loadable asset (e.g. a runtime dynamic-material-instance whose
 	// path is transient and won't exist on other clients) so the disguise falls back to the copied mesh's OWN default
@@ -7248,6 +7303,9 @@ void ABHCharacter::SetPropLockedAuthority(bool bNewLocked)
 		return;
 	}
 	bPropLockedInPlace = bNewLocked;
+	// Solidity flips with the lock; drop the collision BEFORE walking resumes so an unlock never sweeps a
+	// still-solid mesh through the world.
+	ApplyPropLockSolidity();
 	if (bNewLocked)
 	{
 		GetCharacterMovement()->StopMovementImmediately();
@@ -7358,6 +7416,61 @@ void ABHCharacter::ApplyPropDisguiseVisuals()
 	{
 		ApplyPropCameraMode();
 	}
+
+	// Keep the solidity in step with the (possibly re-applied) disguise state on every machine.
+	ApplyPropLockSolidity();
+	PropBobTime = 0.0f;
+}
+
+// LOCKED disguises optionally become genuinely solid (bh.PropHuntSolidProps, default on): the seeker can bump
+// them, and a prop can't overlap-hide inside another prop or a pawn. The CAPSULE stays the capture target either
+// way; the mesh only blocks bodies. Visibility stays blocked too -- a locked crate giving real cover is the point.
+void ABHCharacter::ApplyPropLockSolidity()
+{
+	if (!PropDisguiseMesh)
+	{
+		return;
+	}
+	const bool bSolid = bDisguisedAsProp && bPropLockedInPlace && CVarBHPropHuntSolidProps.GetValueOnGameThread() != 0;
+	if (bSolid)
+	{
+		PropDisguiseMesh->SetCollisionObjectType(ECC_WorldDynamic);
+		PropDisguiseMesh->SetCollisionResponseToAllChannels(ECR_Block);
+		// Never block the camera: the owner's own 3rd-person boom and bystanders' cameras should glide past
+		// a locked prop like they do past every other piece of furniture's camera handling.
+		PropDisguiseMesh->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+		PropDisguiseMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	}
+	else
+	{
+		PropDisguiseMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	}
+}
+
+// A tiny breathing bob on an UNLOCKED disguise, swelling with movement so a walking crate reads as alive while a
+// locked one is dead-still (the tell the seeker learns to read). Pure cosmetics, every machine locally; rides on
+// top of the floor-aligned base Z captured in ApplyPropDisguiseVisuals.
+void ABHCharacter::UpdatePropDisguiseIdleBob(float DeltaSeconds)
+{
+	if (!bDisguisedAsProp || !PropDisguiseMesh)
+	{
+		return;
+	}
+	if (bPropLockedInPlace)
+	{
+		// Snap back to the exact rest height once; perfectly still is the locked prop's whole advantage.
+		if (!FMath::IsNearlyEqual(PropDisguiseMesh->GetRelativeLocation().Z, PropDisguiseBaseZ, 0.01f))
+		{
+			PropDisguiseMesh->SetRelativeLocation(FVector(0.0f, 0.0f, PropDisguiseBaseZ));
+		}
+		PropBobTime = 0.0f;
+		return;
+	}
+
+	const float MoveAlpha = FMath::Clamp(GetVelocity().Size2D() / 240.0f, 0.0f, 1.0f);
+	PropBobTime += DeltaSeconds * (1.7f + 5.5f * MoveAlpha);
+	const float Amplitude = 1.1f + 2.4f * MoveAlpha; // cm: a breath at rest, a visible jostle on the move
+	PropDisguiseMesh->SetRelativeLocation(FVector(0.0f, 0.0f, PropDisguiseBaseZ + FMath::Sin(PropBobTime) * Amplitude));
 }
 
 void ABHCharacter::ApplyPropCameraMode()
@@ -7429,6 +7542,8 @@ void ABHCharacter::OnRep_PropDisguise()
 
 void ABHCharacter::OnRep_PropLockedInPlace()
 {
+	// Clients mirror the lock's solidity (collision is per-machine state on this cosmetic-driven component).
+	ApplyPropLockSolidity();
 	UCharacterMovementComponent* Move = GetCharacterMovement();
 	if (!Move)
 	{

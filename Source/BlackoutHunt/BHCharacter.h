@@ -987,6 +987,15 @@ protected:
 	// Base relative Z of the disguise mesh (floor alignment), captured in ApplyPropDisguiseVisuals; the idle bob rides
 	// on top of it each frame so a walking (unlocked) prop reads as alive while a locked prop sits perfectly still.
 	float PropDisguiseBaseZ = 0.0f;
+	// Idle-bob phase clock (P7, cosmetic, every machine locally).
+	float PropBobTime = 0.0f;
+	// Server stamp of the last accepted disguise swap (drives the bh.PropHuntReDisguiseCooldown anti-strobe).
+	float LastDisguiseChangeServerTime = -1000.0f;
+	// LOCKED disguises optionally get real blocking collision (bh.PropHuntSolidProps); applied wherever the lock or
+	// disguise state lands (authority + OnReps) so server and clients always agree on the mesh's collision.
+	void ApplyPropLockSolidity();
+	// Tiny breathing/walk bob on an UNLOCKED disguise so a moving prop reads as alive; a locked prop is dead-still.
+	void UpdatePropDisguiseIdleBob(float DeltaSeconds);
 
 	// --- Prop Hunt manual taunt (P5). The risk/reward flush: a prop deliberately gives away its position for bonus
 	// points. Input handler + server RPC; validation/cooldown/scoring live in ABHGameMode::HandlePropHuntManualTaunt.

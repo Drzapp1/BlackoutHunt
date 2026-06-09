@@ -382,8 +382,22 @@ Each phase is independently shippable and leaves the build green + tests passing
 - **Acceptance:** host picks Prop Hunt + best-of-3 + 2 arenas from the menu, presses start; the group plays 3 rounds
   with rotating seekers, a scoreboard between rounds, and a final winner.
 
-### P7 — Polish, feel, accessibility, anti-grief (M, ongoing)
+### P7 — Polish, feel, accessibility, anti-grief (M, ongoing) **(core items done — 2026-06-09; grab-bag stays open)**
 **Goal:** the difference between "works" and "enjoyable & polished". Grab-bag, do continuously.
+
+> **STATUS (landed):** **idle bob** — UpdatePropDisguiseIdleBob (Tick, non-dedicated): a ~1 cm breath at rest
+> swelling to ~3.5 cm while moving, riding PropDisguiseBaseZ; a LOCKED prop snaps to rest and stays dead-still
+> (the tell the seeker learns). **Solidity** — `bh.PropHuntSolidProps` (1): a locked disguise gets real blocking
+> collision (camera channel ignored), applied in lockstep on server + clients (SetPropLockedAuthority / OnRep /
+> ApplyPropDisguiseVisuals), dropped BEFORE walking resumes on unlock. **Anti-strobe** — `bh.PropHuntReDisguiseCooldown`
+> (1.5s) between disguise SWAPS (first disguise always free). **Seeker-hold no-hide zone** —
+> `bh.PropHuntHoldNoHideRadius` (700) blocks disguising near the blind seeker's holding spot during the hide.
+> **Telemetry** — full ph_* set now: ph_round_start / ph_hide_end / ph_sonar / ph_pulse / ph_taunt_manual /
+> ph_catch / ph_round_end / ph_match_end. FOUND toasts + score feedback were in P5/P6.
+> **Still open (needs assets/editor or later passes):** disguise poof/shatter VFX, hide-phase audio bed,
+> spectate-cam for the caught-before-infected moment, colour-blind outline palette (markers are shape+text
+> already), reduced-flash variant of the seeker screen-black (it is FUNCTIONAL anti-peek, so a dim variant must
+> stay opaque enough to not leak positions).
 - **Feel/VFX:** disguise "poof" particle + sound on transform; a subtle dust/​settle when a prop locks; a catch
   "shatter" of the prop; reveal-pulse outline material; seeker footstep/heartbeat audio ramp near props.
 - **HUD/UX (small but high-impact):** clear phase banners; per-prop "FOUND!" toast with name; props-left pips; seeker

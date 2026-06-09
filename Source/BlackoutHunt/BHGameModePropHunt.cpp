@@ -365,6 +365,8 @@ void ABHGameMode::BeginPropHuntHidePhase()
 		}
 	}
 
+	RecordPlaytestTelemetryMarker(TEXT("ph_round_start"), HunterSpawn, FString::Printf(TEXT("round=%d"), RoundIndex));
+
 	const int32 HideSeconds = BHGS ? BHGS->RemainingTime : CVarBHPropHuntHideSeconds.GetValueOnGameThread();
 	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
 	{
@@ -406,6 +408,10 @@ void ABHGameMode::BeginPropHuntHunt()
 
 	// Release klaxon: one global (non-spatial) hit so everyone knows the hunt is on.
 	BroadcastGameplayAudioCue(BHMakePropHuntAudioCue(BHPropHuntKlaxonSoundPath, FVector::ZeroVector, 0.85f, 1.12f, 0.0f, /*bSpatial*/ false));
+	int32 HiddenAtRelease = 0;
+	int32 TotalProps = 0;
+	CountPropHuntProps(TotalProps, HiddenAtRelease);
+	RecordPlaytestTelemetryMarker(TEXT("ph_hide_end"), HunterSpawn, FString::Printf(TEXT("props=%d"), HiddenAtRelease));
 
 	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
 	{
