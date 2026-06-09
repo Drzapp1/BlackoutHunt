@@ -55,6 +55,8 @@ public:
 	void SetTestMode(bool bNewTestMode);
 	// Prop Hunt (opt-in, reversible): the mode flag + the props-left / total readout + the next forced-taunt time.
 	void SetPropHuntState(bool bNewPropHuntMode, int32 NewPropsRemaining, int32 NewPropsTotal, float NewNextTauntServerTime);
+	// Prop Hunt match wrapper (P6): the best-of-N readout ("ROUND 2/3") + the match-complete flag for the final board.
+	void SetPropHuntMatchState(int32 NewRoundIndex, int32 NewRoundCount, bool bNewMatchComplete);
 	void SetBotOptions(bool bNewBotMode, int32 NewTargetBotCount, EBHBotDifficulty NewBotDifficulty);
 	void SetRevisionOptions(EBHRevisionMode NewRevisionMode, int32 NewTopicMask, EBHRevisionDifficultyMix NewDifficultyMix, float NewClassThreshold, float NewIndividualThreshold, int32 NewRoundDuration, int32 NewScareIntensity);
 	void SetRevisionContributionTarget(int32 NewContributionTarget);
@@ -190,6 +192,17 @@ public:
 	// Server time of the next forced prop taunt, for the HUD countdown. 0 when not yet scheduled.
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Prop Hunt")
 	float PropHuntNextTauntServerTime;
+
+	// Best-of-N match readout (P6): 1-based current round / total rounds; 0/0 until a prop-hunt round starts.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Prop Hunt")
+	int32 PropHuntRoundIndex;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Prop Hunt")
+	int32 PropHuntRoundCount;
+
+	// True once the final round of the match has ended -- the HUD switches the round-end board to FINAL STANDINGS.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Prop Hunt")
+	bool bPropHuntMatchComplete;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Bots")
 	bool bBotMode;

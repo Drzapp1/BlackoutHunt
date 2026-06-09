@@ -547,6 +547,14 @@ protected:
 	void ForcePropHuntRevealPulse();
 	// Round-end win/lose sting + caption (gated to prop hunt; called from EndRound so every end path plays it once).
 	void PlayPropHuntRoundEndSting(EBHRoundPhase ResultPhase);
+	// Match wrapper (P6), called from the same idempotent EndRound seam: survive bonuses, the round-MVP banner,
+	// the best-of-N round counter (persisted in the GameInstance across the round travel), arena rotation via the
+	// host map route, and on the final round the champion broadcast + the return-to-lobby flag.
+	void HandlePropHuntRoundEnd(EBHRoundPhase ResultPhase);
+	// The configured best-of-N (the ?BHPropHuntRounds= travel option when present, else bh.PropHuntRoundCount).
+	int32 GetPropHuntRoundCount() const;
+	// Rotation pick (P6): the bh.PropHuntSeekers players who have seeked the fewest times (ties -> lowest score).
+	TArray<ABHPlayerState*> ChoosePropHuntStartingSeekers(const TArray<ABHPlayerState*>& Players);
 	// Recompute + replicate the prop-hunt HUD state (props remaining/total, next-taunt countdown).
 	void RefreshPropHuntGameState();
 	// Count props (role == Survivor) and how many are still hidden (alive). Caught props keep the Survivor role
@@ -742,6 +750,13 @@ protected:
 	float PropHuntLastTauntServerTime = -1000.0f;
 	// Server time of the last auto reveal pulse (P4); seeded at seek start so the first pulse lands a full interval in.
 	float PropHuntLastPulseServerTime = -1000.0f;
+	// Host-configured best-of-N from ?BHPropHuntRounds= (0 = unset -> the bh.PropHuntRoundCount cvar). Carried
+	// across every prop-hunt travel hop like the other host options.
+	int32 PropHuntRoundCountOption = 0;
+	// Set by HandlePropHuntRoundEnd when the final round finishes; steers the post-round travel back to the lobby.
+	bool bPropHuntMatchCompletePendingTravel = false;
+	// Score snapshot at round start (hide phase), so the round MVP is the biggest DELTA, not the match leader.
+	TMap<TWeakObjectPtr<ABHPlayerState>, int32> PropHuntRoundStartScores;
 	// Below this Z an alive pawn counts as fallen out of the world (RecoverPlayersFromVoid teleports it back). The
 	// BlackoutHunt maps are built around Z=0 so -650 is right for them; a prop-hunt arena (imported pack map) sets
 	// this from its own geometry bounds, which may sit far from the origin.

@@ -171,6 +171,10 @@ public:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Prop Hunt")
 	int32 PropHuntScore = 0;
 
+	// Rounds this player has STARTED as the seeker this match (server-only bookkeeping for the fewest-first
+	// rotation; persisted across the round travel with the other progress fields, never replicated).
+	int32 PropHuntTimesSeeker = 0;
+
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Powerups")
 	TArray<FBHPowerupInventoryEntry> Powerups;
 

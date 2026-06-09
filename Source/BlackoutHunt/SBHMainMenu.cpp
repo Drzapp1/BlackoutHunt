@@ -6119,6 +6119,31 @@ void SBHMainMenu::BuildPlayActionList(TSharedRef<SVerticalBox> ActionList, bool 
 			FLinearColor(0.24f, 0.33f, 0.29f, 1.0f),
 			BotActions);
 
+		// Prop Hunt (P6): hide as the furniture - best-of-N with a rotating seeker. Boards the lobby train with the
+		// chosen arena queued, so the host just readies up.
+		TSharedRef<SVerticalBox> PropHuntActions = SNew(SVerticalBox);
+		AddAction(PropHuntActions, MenuPlayActionButton(
+			FText::FromString(TEXT("PROP HUNT: WAREHOUSE")),
+			FText::FromString(TEXT("Hide as crates and barrels in the container warehouse. Best-of-3, rotating seeker.")),
+			FLinearColor(0.42f, 0.32f, 0.16f, 1.0f),
+			FOnClicked::CreateSP(this, &SBHMainMenu::OnHostPropHuntClicked, FString(TEXT("ContainersHouse")))));
+		AddAction(PropHuntActions, MenuPlayActionButton(
+			FText::FromString(TEXT("PROP HUNT: RUINED CRYPT")),
+			FText::FromString(TEXT("Hide among urns and rubble in the crypt (editor/dev builds until its cook ships).")),
+			FLinearColor(0.30f, 0.26f, 0.40f, 1.0f),
+			FOnClicked::CreateSP(this, &SBHMainMenu::OnHostPropHuntClicked, FString(TEXT("RuinedCrypt")))));
+		AddAction(PropHuntActions, MenuPlayActionButton(
+			FText::FromString(TEXT("PROP HUNT: FACILITY")),
+			FText::FromString(TEXT("The classroom map as a prop arena - no pack content needed.")),
+			FLinearColor(0.16f, 0.36f, 0.32f, 1.0f),
+			FOnClicked::CreateSP(this, &SBHMainMenu::OnHostPropHuntClicked, FString(TEXT("Facility")))));
+		MenuAddPlayDropdownSection(
+			ActionList,
+			FText::FromString(TEXT("Prop Hunt")),
+			FText::FromString(TEXT("Hide as the furniture - friends lobby, best-of-N, rotating seeker.")),
+			FLinearColor(0.42f, 0.32f, 0.16f, 1.0f),
+			PropHuntActions);
+
 		TSharedRef<SVerticalBox> HostActions = SNew(SVerticalBox);
 		AddAction(HostActions, MenuPlayActionButton(
 			FText::FromString(TEXT("HOST FACILITY")),
@@ -6439,6 +6464,20 @@ FReply SBHMainMenu::OnHostBotFoggroundsClicked()
 	{
 		FString Message;
 		PC->HostBotGameForMenu(TEXT("Foggrounds"), Message);
+		StatusText = FText::FromString(Message);
+		return FReply::Handled();
+	}
+
+	StatusText = FText::FromString(TEXT("No local player controller was available."));
+	return FReply::Handled();
+}
+
+FReply SBHMainMenu::OnHostPropHuntClicked(FString ArenaName)
+{
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		FString Message;
+		PC->HostPropHuntForMenu(ArenaName, Message);
 		StatusText = FText::FromString(Message);
 		return FReply::Handled();
 	}

@@ -1589,6 +1589,17 @@ void ABHHUD::DrawPropHuntOverlay(const ABHGameState* GameState, const ABHPlayerS
 	}
 	Y += DrawCentered(Title, CenterX, Y, TitleColor, 0.95f * TextScale) + 4.0f * TextScale;
 
+	// Best-of-N readout (P6): the round counter while playing, FINAL STANDINGS when the match just ended.
+	if (GameState->PropHuntRoundCount > 0)
+	{
+		const FString MatchLine = (bRoundEnd && GameState->bPropHuntMatchComplete)
+			? TEXT("MATCH OVER - FINAL STANDINGS")
+			: FString::Printf(TEXT("ROUND %d / %d"), FMath::Max(1, GameState->PropHuntRoundIndex), GameState->PropHuntRoundCount);
+		Y += DrawCentered(MatchLine, CenterX, Y,
+			(bRoundEnd && GameState->bPropHuntMatchComplete) ? FLinearColor(0.98f, 0.84f, 0.35f, 1.0f) : MutedText(),
+			0.66f * TextScale) + 3.0f * TextScale;
+	}
+
 	// Big countdown during hide / seek.
 	if (bHiding || bSeeking)
 	{
@@ -1653,6 +1664,44 @@ void ABHHUD::DrawPropHuntOverlay(const ABHGameState* GameState, const ABHPlayerS
 	if (!RoleLine.IsEmpty())
 	{
 		Y += DrawCentered(RoleLine, CenterX, Y, RoleColor, 0.60f * TextScale) + 3.0f * TextScale;
+	}
+
+	// --- Round-end scoreboard (P6): everyone sorted by match score; the leader is crowned on the final board. -----
+	if (bRoundEnd)
+	{
+		TArray<const ABHPlayerState*> Ranked;
+		for (const TObjectPtr<APlayerState>& RawPS : GameState->PlayerArray)
+		{
+			if (const ABHPlayerState* RankPS = Cast<ABHPlayerState>(RawPS))
+			{
+				Ranked.Add(RankPS);
+			}
+		}
+		Ranked.Sort([](const ABHPlayerState& A, const ABHPlayerState& B)
+		{
+			return A.PropHuntScore > B.PropHuntScore;
+		});
+
+		Y += 4.0f * TextScale;
+		const int32 MaxRows = 8;
+		for (int32 Rank = 0; Rank < FMath::Min(Ranked.Num(), MaxRows); ++Rank)
+		{
+			const ABHPlayerState* RowPS = Ranked[Rank];
+			const bool bChampionRow = Rank == 0 && GameState->bPropHuntMatchComplete;
+			const FString RowText = FString::Printf(TEXT("%s%d. %s  -  %d PTS"),
+				bChampionRow ? TEXT("[CHAMPION] ") : TEXT(""),
+				Rank + 1,
+				*RowPS->GetPlayerName().ToUpper(),
+				RowPS->PropHuntScore);
+			Y += DrawCentered(RowText, CenterX, Y,
+				bChampionRow ? FLinearColor(0.98f, 0.84f, 0.35f, 1.0f)
+					: (Rank == 0 ? FLinearColor(0.92f, 0.88f, 0.66f, 0.95f) : MutedText()),
+				(Rank == 0 ? 0.66f : 0.58f) * TextScale) + 2.0f * TextScale;
+		}
+		if (Ranked.Num() > MaxRows)
+		{
+			Y += DrawCentered(FString::Printf(TEXT("+%d more"), Ranked.Num() - MaxRows), CenterX, Y, MutedText(), 0.50f * TextScale) + 2.0f * TextScale;
+		}
 	}
 
 	// --- Seeker kit readout (P4): sonar ready clock, through-wall reveal markers, reveal-pulse flash. -------------

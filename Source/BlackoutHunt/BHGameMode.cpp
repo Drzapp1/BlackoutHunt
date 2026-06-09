@@ -6507,6 +6507,8 @@ void ABHGameMode::BuildRuntimeFacility()
 		bRevisionMode = false;
 		RevisionMode = EBHRevisionMode::None;
 	}
+	// Host-configured best-of-N (?BHPropHuntRounds=); 0 = unset -> the bh.PropHuntRoundCount cvar decides.
+	PropHuntRoundCountOption = FMath::Clamp(FCString::Atoi(GetWorld()->URL.GetOption(TEXT("BHPropHuntRounds="), TEXT("0"))), 0, 9);
 	if (bRevisionMode)
 	{
 		const FString RevisionTopicsOption = GetWorld()->URL.GetOption(TEXT("BHRevisionTopics="), TEXT("All"));
@@ -6602,6 +6604,13 @@ void ABHGameMode::BuildRuntimeFacility()
 	// until the round starts, then travels to LobbyFirstLevelName. Dispatch it first.
 	if (bLobbyLevel)
 	{
+		// The lobby is the only between-matches stop, so a fresh prop-hunt match always starts here: zero the
+		// persisted round counter + every player's match score/seeker history (also clears stale state when the
+		// session switches AWAY from prop hunt).
+		if (UBHGameInstance* PropHuntGI = GetGameInstance<UBHGameInstance>())
+		{
+			PropHuntGI->ResetPropHuntMatch();
+		}
 		RuntimeLevelName = TEXT("TrainLobby");
 		NextRuntimeLevelName = LobbyFirstLevelName;
 		BuildTrainLobbyLevel();
@@ -14717,9 +14726,16 @@ void ABHGameMode::AssignRoles()
 
 	const int32 DesiredHunterCount = FMath::Clamp(TargetHunterCount, 1, FMath::Max(1, Players.Num() - 1));
 	TArray<ABHPlayerState*> ChosenHunters;
+	// Prop hunt: the STARTING seeker is a fair rotation (fewest seeks first), not a volunteer pick -- everyone
+	// seeks before anyone seeks twice, whatever roles players asked for. The bot-substitution and FakeHunter
+	// blocks below are also skipped: prop hunt has exactly seekers and props.
+	if (bPropHuntMode)
+	{
+		ChosenHunters = ChoosePropHuntStartingSeekers(Players);
+	}
 	for (ABHPlayerState* BHPS : Players)
 	{
-		if (BHPS && BHPS->DesiredRole == EBHPlayerRole::Hunter && ChosenHunters.Num() < DesiredHunterCount)
+		if (!bPropHuntMode && BHPS && BHPS->DesiredRole == EBHPlayerRole::Hunter && ChosenHunters.Num() < DesiredHunterCount)
 		{
 			ChosenHunters.Add(BHPS);
 		}
@@ -14727,7 +14743,7 @@ void ABHGameMode::AssignRoles()
 
 	for (ABHPlayerState* BHPS : Players)
 	{
-		if (BHPS && BHPS->DesiredRole != EBHPlayerRole::Survivor && BHPS->DesiredRole != EBHPlayerRole::FakeHunter && !ChosenHunters.Contains(BHPS) && ChosenHunters.Num() < DesiredHunterCount)
+		if (!bPropHuntMode && BHPS && BHPS->DesiredRole != EBHPlayerRole::Survivor && BHPS->DesiredRole != EBHPlayerRole::FakeHunter && !ChosenHunters.Contains(BHPS) && ChosenHunters.Num() < DesiredHunterCount)
 		{
 			ChosenHunters.Add(BHPS);
 		}
@@ -14735,13 +14751,14 @@ void ABHGameMode::AssignRoles()
 
 	for (ABHPlayerState* BHPS : Players)
 	{
-		if (BHPS && !ChosenHunters.Contains(BHPS) && ChosenHunters.Num() < DesiredHunterCount)
+		if (!bPropHuntMode && BHPS && !ChosenHunters.Contains(BHPS) && ChosenHunters.Num() < DesiredHunterCount)
 		{
 			ChosenHunters.Add(BHPS);
 		}
 	}
 
-	if (bBotMode)
+	// Bot mode prefers a bot Teacher in the classroom game; prop hunt keeps the fair human rotation instead.
+	if (bBotMode && !bPropHuntMode)
 	{
 		const auto IsBotPlayerState = [this](const ABHPlayerState* Candidate)
 		{
@@ -14819,7 +14836,8 @@ void ABHGameMode::AssignRoles()
 			BHPS->SetRole(EBHPlayerRole::Hunter);
 			BHPS->SetFakeHunterEligible(false);
 		}
-		else if (BHPS->DesiredRole == EBHPlayerRole::FakeHunter || BHPS->bFakeHunterEligible)
+		// Prop hunt has exactly seekers and props -- no hall monitors, whatever a player queued for.
+		else if (!bPropHuntMode && (BHPS->DesiredRole == EBHPlayerRole::FakeHunter || BHPS->bFakeHunterEligible))
 		{
 			BHPS->SetRole(EBHPlayerRole::FakeHunter);
 			BHPS->SetFakeHunterEligible(false);
@@ -15091,8 +15109,10 @@ void ABHGameMode::EndRound(EBHRoundPhase ResultPhase)
 
 	BHGS->SetRoundPhase(ResultPhase);
 	BHGS->SetRemainingTime(0);
-	// Prop hunt: the win/lose sting rides the one idempotent round-end seam (no-op outside the mode).
+	// Prop hunt: the win/lose sting + the best-of-N match wrapper both ride the one idempotent round-end seam
+	// (no-ops outside the mode).
 	PlayPropHuntRoundEndSting(ResultPhase);
+	HandlePropHuntRoundEnd(ResultPhase);
 	RecordPlaytestTelemetryMarker(TEXT("round_end"), HunterSpawn, StaticEnum<EBHRoundPhase>() ? StaticEnum<EBHRoundPhase>()->GetNameStringByValue(static_cast<int64>(ResultPhase)) : TEXT("Unknown"));
 	if (bBotMode)
 	{
@@ -15205,6 +15225,28 @@ void ABHGameMode::ResetRoundByTravel()
 			return;
 		}
 
+		// Prop-hunt match complete: the post-round travel goes BACK TO THE TRAIN LOBBY (the between-matches stop)
+		// with the same arena pre-selected for a one-click rematch. Players' scores were already broadcast; the
+		// lobby build zeroes the match (ResetPropHuntMatch) on arrival.
+		if (bPropHuntMode && bPropHuntMatchCompletePendingTravel)
+		{
+			PersistPlayersForTravel();
+			FString LobbyURL = FString::Printf(TEXT("%s?listen?BHLobby=1?BHFirstLevel=%s?BHPropHunt=1"),
+				*BHResolveLevelMapPackage(TEXT("TrainIntermission")),
+				*RuntimeLevelName);
+			if (PropHuntRoundCountOption > 0)
+			{
+				LobbyURL += FString::Printf(TEXT("?BHPropHuntRounds=%d"), PropHuntRoundCountOption);
+			}
+			if (RuntimeMapRoute.Num() > 0)
+			{
+				LobbyURL += FString::Printf(TEXT("?BHMapRoute=%s"), *FBHLessonPresetStore::MapRouteToString(RuntimeMapRoute));
+			}
+			UBHGameSettings::AppendMaxPlayersOption(LobbyURL);
+			GetWorld()->ServerTravel(LobbyURL);
+			return;
+		}
+
 		PersistPlayersForTravel();
 		const FString TravelLevelName = NextRuntimeLevelName.IsEmpty() ? RuntimeLevelName : NextRuntimeLevelName;
 		FString TravelURL = FString::Printf(TEXT("%s?listen?BHLevel=%s?BHFogPreset=%s"),
@@ -15221,6 +15263,10 @@ void ABHGameMode::ResetRoundByTravel()
 		if (bPropHuntMode)
 		{
 			TravelURL += TEXT("?BHPropHunt=1");
+			if (PropHuntRoundCountOption > 0)
+			{
+				TravelURL += FString::Printf(TEXT("?BHPropHuntRounds=%d"), PropHuntRoundCountOption);
+			}
 		}
 		if (bBotMode)
 		{
@@ -15422,6 +15468,10 @@ FString ABHGameMode::BuildTravelOptionsForLevel(const FString& LevelName, bool b
 	if (bPropHuntMode)
 	{
 		TravelURL += TEXT("?BHPropHunt=1");
+		if (PropHuntRoundCountOption > 0)
+		{
+			TravelURL += FString::Printf(TEXT("?BHPropHuntRounds=%d"), PropHuntRoundCountOption);
+		}
 	}
 
 	if (bFogPresetOverride)

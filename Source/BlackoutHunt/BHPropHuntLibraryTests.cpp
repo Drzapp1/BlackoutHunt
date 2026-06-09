@@ -128,6 +128,18 @@ bool FBHPropHuntLibraryTest::RunTest(const FString& Parameters)
 	}
 	TestTrue(TEXT("The first 16 scatter candidates spread across the space (>=10 of 16 4x4 cells)."), Cells.Num() >= 10);
 
+	// --- PickStartingSeekerIndex: fewest-seeks first, lowest score breaks ties, stable on full ties ------------------
+	TestEqual(TEXT("Seeker rotation on empty input is INDEX_NONE."),
+		BHPropHunt::PickStartingSeekerIndex(TArray<int32>(), TArray<int32>()), static_cast<int32>(INDEX_NONE));
+	TestEqual(TEXT("Seeker rotation rejects mismatched arrays."),
+		BHPropHunt::PickStartingSeekerIndex({ 0, 1 }, { 5 }), static_cast<int32>(INDEX_NONE));
+	TestEqual(TEXT("Seeker rotation picks the player who has seeked the fewest times."),
+		BHPropHunt::PickStartingSeekerIndex({ 1, 0, 1 }, { 0, 500, 0 }), 1);
+	TestEqual(TEXT("Equal seek counts: the trailing (lowest-score) player gets the turn."),
+		BHPropHunt::PickStartingSeekerIndex({ 1, 1, 1 }, { 120, 40, 90 }), 1);
+	TestEqual(TEXT("Full ties keep join order (the first candidate)."),
+		BHPropHunt::PickStartingSeekerIndex({ 0, 0 }, { 0, 0 }), 0);
+
 	// --- PickSeekerHoldIndex: farthest-from-centroid, safe on empty --------------------------------------------------
 	TestEqual(TEXT("Seeker hold pick on an empty set is INDEX_NONE."), BHPropHunt::PickSeekerHoldIndex(TArray<FVector>()), static_cast<int32>(INDEX_NONE));
 	TArray<FVector> Cluster = { FVector(0, 0, 0), FVector(100, 0, 0), FVector(0, 100, 0), FVector(5000, 5000, 0) };

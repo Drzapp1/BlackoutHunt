@@ -19,6 +19,7 @@
 #include "BHRevisionQuestionBank.h"
 #include "BHNetworkSupport.h"
 #include "BHPlayerState.h"
+#include "BHPropHuntLibrary.h"
 #include "BHTrainSwayCameraShake.h"
 #include "GameFramework/InputSettings.h"
 #include "Camera/CameraShakeBase.h"
@@ -597,6 +598,11 @@ FString BHNormalizeRuntimeLevelName(FString LevelName)
 	if (LevelName.Equals(TEXT("Tutorial"), ESearchCase::IgnoreCase))
 	{
 		return TEXT("Tutorial");
+	}
+	// Prop-hunt arena names are first-class level tokens (mirrors NormalizeBHLevelName in BHGameMode.cpp).
+	if (const BHPropHunt::FArenaSpec* Arena = BHPropHunt::FindArenaSpec(LevelName))
+	{
+		return Arena->LogicalName;
 	}
 	return LevelName.Equals(TEXT("Substation"), ESearchCase::IgnoreCase) ? TEXT("Substation") : TEXT("Facility");
 }
@@ -2911,6 +2917,25 @@ bool ABHPlayerController::HostLiveClassroomForMenu(const FString& LevelName, FSt
 	BHApplyClassroomLoopbackBinding(Settings);
 	HideMainMenu();
 	ShowTravelLoadingScreen(TEXT("BOARDING LOBBY"), TEXT("Boarding the classroom lobby train."));
+	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(TEXT("TrainIntermission"))), true, Options);
+	return true;
+}
+
+bool ABHPlayerController::HostPropHuntForMenu(const FString& ArenaOrLevelName, FString& OutMessage)
+{
+	// Arena names and the classroom maps are all valid prop-hunt destinations; unknown tokens fall back to
+	// Facility (prop hunt on the classroom map is the no-pack fallback and works fine).
+	const FString NormalizedLevel = BHNormalizeRuntimeLevelName(ArenaOrLevelName);
+	// Board the train lobby first (mirrors the Live Classroom host flow) so friends can join and mess around
+	// before the host departs; the lobby's ready/force-start travel carries ?BHPropHunt=1 onto the arena and the
+	// best-of-N match then loops itself (rounds -> rotation -> final board -> back to this lobby).
+	const FString LobbyExtras = FString::Printf(TEXT("?BHLobby=1?BHFirstLevel=%s?BHPropHunt=1"), *NormalizedLevel);
+	const FString Options = BHMakeListenOptions(NormalizedLevel, LobbyExtras);
+
+	OutMessage = FString::Printf(TEXT("Starting PROP HUNT on %s. Friends can join; ready up (Enter) to begin the hide."), *NormalizedLevel);
+	ShowLocalStatusMessage(OutMessage, 3.0f);
+	HideMainMenu();
+	ShowTravelLoadingScreen(TEXT("PROP HUNT"), TEXT("Boarding the lobby train for the prop hunt."));
 	UGameplayStatics::OpenLevel(this, FName(BHResolveLevelMapPackage(TEXT("TrainIntermission"))), true, Options);
 	return true;
 }

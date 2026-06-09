@@ -50,6 +50,10 @@ struct FBHTravelPlayerProgress
 	int32 LifetimeQuestionPoints = 0;
 	int32 HunterPoints = 0;
 	int32 LifetimeHunterPoints = 0;
+	// Prop-hunt match bookkeeping (P6): the cumulative match score and how many rounds this player has STARTED as
+	// the seeker (drives the fewest-first rotation). Both zeroed by ResetPropHuntMatch when a new match begins.
+	int32 PropHuntScore = 0;
+	int32 PropHuntTimesSeeker = 0;
 	TArray<FBHPowerupInventoryEntry> Powerups;
 	// Monotonic wall-clock time (FPlatformTime::Seconds) this player disconnected during an active
 	// round, or < 0 if this entry is a normal travel snapshot rather than a pending mid-round
@@ -212,6 +216,12 @@ public:
 	void SetReconnectClockOverrideForTest(double NowSeconds);
 	void ResetPersistentHunterPoints();
 	void ResetPersistentTrainRunProgress();
+	// Prop-hunt match wrapper (P6): rounds completed this match, surviving the per-round ServerTravel the same way
+	// the train run does. ResetPropHuntMatch starts a fresh match: zeroes the counter AND every player's persisted
+	// prop-hunt score/seeker history (called when the session enters the train lobby).
+	int32 GetPropHuntRoundsPlayed() const { return PropHuntRoundsPlayed; }
+	int32 IncrementPropHuntRoundsPlayed() { return ++PropHuntRoundsPlayed; }
+	void ResetPropHuntMatch();
 	void RecordQuestionAttempt(const FBHQuestionAttemptRecord& Attempt);
 	const TArray<FBHQuestionAttemptRecord>& GetQuestionAttemptHistory() const;
 	void ClearQuestionAttemptHistory();
@@ -286,6 +296,8 @@ private:
 	bool bAutomationJoinConsumed = false;
 	TSet<FString> AutomationMarkersLogged;
 	TArray<FBHTravelPlayerProgress> TravelPlayerProgress;
+	// Prop-hunt rounds completed this match (P6); reset by ResetPropHuntMatch on entering the lobby.
+	int32 PropHuntRoundsPlayed = 0;
 	// >= 0 only in automated tests; otherwise the reconnect grace clock uses FPlatformTime::Seconds().
 	double ReconnectClockOverrideSeconds = -1.0;
 	TArray<FBHQuestionAttemptRecord> QuestionAttemptHistory;

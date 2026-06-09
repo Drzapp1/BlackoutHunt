@@ -100,6 +100,8 @@ private:
 	FReply OnHostBotClicked();
 	FReply OnHostBotSubstationClicked();
 	FReply OnHostBotFoggroundsClicked();
+	// Prop Hunt (P6): one-click host - boards the lobby train with the mode armed and the chosen arena queued.
+	FReply OnHostPropHuntClicked(FString ArenaName);
 	FReply OnHostOnlineClicked();
 	FReply OnHostOnlineSubstationClicked();
 	FReply OnHostOnlineFoggroundsClicked();

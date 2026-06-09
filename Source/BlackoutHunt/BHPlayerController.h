@@ -360,6 +360,9 @@ public:
 	bool HostLiveClassroomForMenu(FString& OutMessage);
 	bool HostLiveClassroomForMenu(const FString& LevelName, FString& OutMessage);
 	bool HostBotGameForMenu(const FString& LevelName, FString& OutMessage);
+	// Prop Hunt (P6): boards the train lobby with prop hunt armed and the chosen arena (or classroom map) as the
+	// round-start destination; the whole best-of-N match then runs itself. The one-click host path for the mode.
+	bool HostPropHuntForMenu(const FString& ArenaOrLevelName, FString& OutMessage);
 	bool FindOnlineGamesForMenu(FString& OutMessage);
 	bool JoinOnlineGameForMenu(int32 SessionIndex, FString& OutMessage);
 	bool DestroyOnlineSessionForMenu(FString& OutMessage);

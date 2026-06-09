@@ -346,8 +346,26 @@ Each phase is independently shippable and leaves the build green + tests passing
   - All routed through the existing audio-cue multicast so they're networked + positional where relevant.
 - **Acceptance:** auto + manual taunts both fire with sound; manual taunt scores + risks; the seeker can localise taunts.
 
-### P6 — Match flow, scoring, MVP, host/lobby UI (L)  *(multiplayer-first payoff)*
+### P6 — Match flow, scoring, MVP, host/lobby UI (L)  *(multiplayer-first payoff)* **(done — 2026-06-09)**
 **Goal:** a real best-of-N match with rotation, a scoreboard, and host control — the "with friends" experience.
+
+> **STATUS:** the full loop is live. **Match wrapper:** rounds-played persists in `UBHGameInstance` across the
+> per-round ServerTravel (like the train run); per-player `PropHuntScore` (replicated) + `PropHuntTimesSeeker`
+> persist via `FBHTravelPlayerProgress`; GameState replicates `PropHuntRoundIndex/Count` + `bPropHuntMatchComplete`.
+> Best-of-N = `?BHPropHuntRounds=` (carried on every hop) else `bh.PropHuntRoundCount` (3). **Rotation:** AssignRoles
+> branches to `ChoosePropHuntStartingSeekers` — fewest-seeks-first, ties to lowest score (pure helper
+> `PickStartingSeekerIndex`, unit-tested); bot-Teacher substitution + FakeHunter assignment are gated OFF in prop
+> hunt; `bh.PropHuntSeekers` (1) picks N. **Scoring:** survival trickle (`bh.PropHuntPointsPerSecondAlive`=1/s in
+> TickPropHunt), catch (`bh.PropHuntPointsPerCatch`=75), survive-the-timer bonus (`bh.PropHuntSurviveBonus`=100),
+> starting-seeker base (`bh.PropHuntSeekerBasePoints`=25), manual-taunt bonus (P5). **Round end** (idempotent
+> EndRound seam): round-MVP banner = biggest score DELTA (snapshot at hide start), round counter++, arena rotation
+> via `?BHMapRoute=` (arena names are route tokens), and after the final round: champion broadcast + FINAL STANDINGS
+> board + travel BACK TO THE TRAIN LOBBY with the same arena queued for a one-click rematch (match auto-zeroes on
+> lobby arrival). **Scoreboard:** round-end board in DrawPropHuntOverlay, sorted by score, champion crowned on the
+> final board, "ROUND i/N" readout while playing. **Host UI:** main-menu "Prop Hunt" section (Warehouse / Ruined
+> Crypt / Facility) → `HostPropHuntForMenu` boards the lobby train with `?BHPropHunt=1?BHFirstLevel=<arena>`; the
+> existing ready-up/force-start departure carries the mode automatically. Round count via `bh.PropHuntRoundCount`
+> or `?BHPropHuntRounds=` (a host-menu picker for it can ride a later polish pass).
 - **Match wrapper** (server, in `BHGameModePropHunt.cpp` + GameState): `PropHuntRoundIndex`, `PropHuntRoundCount`
   (best-of-N, CVar/host-set), per-player cumulative score, round-winner history. On RoundEnd → intermission (~8s,
   reuse the post-round travel timer) → rotate starting seeker → next arena (rotation list) → next round; after N →

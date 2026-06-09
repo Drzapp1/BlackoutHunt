@@ -1048,6 +1048,8 @@ void UBHGameInstance::PersistTravelPlayerState(const ABHPlayerState* PlayerState
 	Progress.LifetimeQuestionPoints = PlayerState->LifetimeQuestionPoints;
 	Progress.HunterPoints = PlayerState->HunterPoints;
 	Progress.LifetimeHunterPoints = PlayerState->LifetimeHunterPoints;
+	Progress.PropHuntScore = PlayerState->PropHuntScore;
+	Progress.PropHuntTimesSeeker = PlayerState->PropHuntTimesSeeker;
 	Progress.Powerups = PlayerState->Powerups;
 	Progress.ReconnectToken = PlayerState->ReconnectToken;
 	Progress.LastPersistedWallTime = NowWall;
@@ -1056,6 +1058,19 @@ void UBHGameInstance::PersistTravelPlayerState(const ABHPlayerState* PlayerState
 	// pending reconnect or an entry refreshed in the last few minutes. Done after the write above so the
 	// just-persisted entry (NowWall timestamp) is protected.
 	BHPruneStaleTravelProgress(TravelPlayerProgress, NowWall);
+}
+
+void UBHGameInstance::ResetPropHuntMatch()
+{
+	// A new prop-hunt match starts clean: round counter, every player's match score, and the seeker rotation
+	// history all zero. Called when the session enters the train lobby (the only between-matches stop), so a
+	// rematch or a mode switch can never inherit half a match's standings.
+	PropHuntRoundsPlayed = 0;
+	for (FBHTravelPlayerProgress& Progress : TravelPlayerProgress)
+	{
+		Progress.PropHuntScore = 0;
+		Progress.PropHuntTimesSeeker = 0;
+	}
 }
 
 bool UBHGameInstance::RestoreTravelPlayerState(ABHPlayerState* PlayerState, bool bApplyRoleAndLifeState) const
@@ -1112,6 +1127,8 @@ bool UBHGameInstance::RestoreTravelPlayerState(ABHPlayerState* PlayerState, bool
 	PlayerState->LifetimeQuestionPoints = FMath::Max(PlayerState->QuestionPoints, Existing->LifetimeQuestionPoints);
 	PlayerState->HunterPoints = FMath::Max(0, Existing->HunterPoints);
 	PlayerState->LifetimeHunterPoints = FMath::Max(PlayerState->HunterPoints, Existing->LifetimeHunterPoints);
+	PlayerState->PropHuntScore = FMath::Max(0, Existing->PropHuntScore);
+	PlayerState->PropHuntTimesSeeker = FMath::Max(0, Existing->PropHuntTimesSeeker);
 	PlayerState->Powerups = Existing->Powerups;
 	for (FBHPowerupInventoryEntry& Entry : PlayerState->Powerups)
 	{

@@ -150,6 +150,9 @@ ABHGameState::ABHGameState()
 	PropHuntPropsRemaining = 0;
 	PropHuntPropsTotal = 0;
 	PropHuntNextTauntServerTime = 0.0f;
+	PropHuntRoundIndex = 0;
+	PropHuntRoundCount = 0;
+	bPropHuntMatchComplete = false;
 	bBotMode = false;
 	TargetBotCount = 0;
 	BotDifficulty = EBHBotDifficulty::Normal;
@@ -223,6 +226,9 @@ void ABHGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 	DOREPLIFETIME(ABHGameState, PropHuntPropsRemaining);
 	DOREPLIFETIME(ABHGameState, PropHuntPropsTotal);
 	DOREPLIFETIME(ABHGameState, PropHuntNextTauntServerTime);
+	DOREPLIFETIME(ABHGameState, PropHuntRoundIndex);
+	DOREPLIFETIME(ABHGameState, PropHuntRoundCount);
+	DOREPLIFETIME(ABHGameState, bPropHuntMatchComplete);
 	DOREPLIFETIME(ABHGameState, bBotMode);
 	DOREPLIFETIME(ABHGameState, TargetBotCount);
 	DOREPLIFETIME(ABHGameState, BotDifficulty);
@@ -611,6 +617,13 @@ void ABHGameState::SetPropHuntState(bool bNewPropHuntMode, int32 NewPropsRemaini
 	PropHuntPropsRemaining = FMath::Max(0, NewPropsRemaining);
 	PropHuntPropsTotal = FMath::Max(0, NewPropsTotal);
 	PropHuntNextTauntServerTime = NewNextTauntServerTime;
+}
+
+void ABHGameState::SetPropHuntMatchState(int32 NewRoundIndex, int32 NewRoundCount, bool bNewMatchComplete)
+{
+	PropHuntRoundIndex = FMath::Max(0, NewRoundIndex);
+	PropHuntRoundCount = FMath::Max(0, NewRoundCount);
+	bPropHuntMatchComplete = bNewMatchComplete;
 }
 
 void ABHGameState::SetBotOptions(bool bNewBotMode, int32 NewTargetBotCount, EBHBotDifficulty NewBotDifficulty)

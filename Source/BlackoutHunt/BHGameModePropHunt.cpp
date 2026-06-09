@@ -20,6 +20,7 @@
 #include "BHCharacter.h"
 #include "BHEscapeStationManager.h"
 #include "BHExitGate.h"
+#include "BHGameInstance.h"
 #include "BHGameState.h"
 #include "BHObjectiveStation.h"
 #include "BHPlayerController.h"
@@ -125,6 +126,44 @@ static TAutoConsoleVariable<float> CVarBHPropHuntMissSlowFactor(
 	TEXT("bh.PropHuntMissSlowFactor"),
 	0.55f,
 	TEXT("Prop Hunt: movement-speed multiplier while the wrong-hit slow is active (0.55 = a heavy but escapable stumble)."),
+	ECVF_Default);
+
+// --- Match wrapper (P6) ----------------------------------------------------------------------------------------
+
+static TAutoConsoleVariable<int32> CVarBHPropHuntRoundCount(
+	TEXT("bh.PropHuntRoundCount"),
+	3,
+	TEXT("Prop Hunt: rounds per match (best-of-N). The ?BHPropHuntRounds= travel option overrides per session."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarBHPropHuntSeekers(
+	TEXT("bh.PropHuntSeekers"),
+	1,
+	TEXT("Prop Hunt: STARTING seeker count per round (infection adds more as props are caught)."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarBHPropHuntPointsPerSecondAlive(
+	TEXT("bh.PropHuntPointsPerSecondAlive"),
+	1,
+	TEXT("Prop Hunt: score a hidden prop earns per second alive during the seek."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarBHPropHuntPointsPerCatch(
+	TEXT("bh.PropHuntPointsPerCatch"),
+	75,
+	TEXT("Prop Hunt: score a seeker earns per prop caught."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarBHPropHuntSurviveBonus(
+	TEXT("bh.PropHuntSurviveBonus"),
+	100,
+	TEXT("Prop Hunt: bonus for every prop still hidden when the seek timer expires (the props-win payoff)."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarBHPropHuntSeekerBasePoints(
+	TEXT("bh.PropHuntSeekerBasePoints"),
+	25,
+	TEXT("Prop Hunt: flat score for STARTING a round as the seeker, so the rotation is never a points penalty."),
 	ECVF_Default);
 
 // --- Taunts + audio (P5) ---------------------------------------------------------------------------------------
@@ -306,6 +345,26 @@ void ABHGameMode::BeginPropHuntHidePhase()
 	PropHuntLastTauntServerTime = 1.0e9f;
 	RefreshPropHuntGameState();
 
+	// Match wrapper (P6): publish the best-of-N readout (rounds completed live in the GameInstance, surviving the
+	// per-round travel) and snapshot every player's score so the round MVP is the biggest DELTA this round.
+	const UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>();
+	const int32 RoundIndex = (BHGI ? BHGI->GetPropHuntRoundsPlayed() : 0) + 1;
+	if (BHGS)
+	{
+		BHGS->SetPropHuntMatchState(RoundIndex, GetPropHuntRoundCount(), false);
+	}
+	PropHuntRoundStartScores.Reset();
+	if (GameState)
+	{
+		for (APlayerState* RawPS : GameState->PlayerArray)
+		{
+			if (ABHPlayerState* ScorePS = Cast<ABHPlayerState>(RawPS))
+			{
+				PropHuntRoundStartScores.Add(ScorePS, ScorePS->PropHuntScore);
+			}
+		}
+	}
+
 	const int32 HideSeconds = BHGS ? BHGS->RemainingTime : CVarBHPropHuntHideSeconds.GetValueOnGameThread();
 	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
 	{
@@ -381,9 +440,16 @@ void ABHGameMode::HandlePropHuntCapture(ABHCharacter* Survivor, ABHCharacter* Ca
 	ABHPlayerState* CatcherPS = CapturingHunter ? CapturingHunter->GetPlayerState<ABHPlayerState>() : nullptr;
 	RecordPlaytestTelemetryMarker(TEXT("ph_catch"), Loc, TEXT("prophunt"), CatcherPS, PS);
 
+	const int32 CatchPoints = FMath::Max(0, CVarBHPropHuntPointsPerCatch.GetValueOnGameThread());
+	if (CatcherPS && CatchPoints > 0)
+	{
+		CatcherPS->AddPropHuntScore(CatchPoints);
+	}
 	if (ABHPlayerController* CatcherPC = Cast<ABHPlayerController>(CapturingHunter ? CapturingHunter->GetController() : nullptr))
 	{
-		CatcherPC->ClientShowStatusMessage(TEXT("Caught a prop!"), 2.5f);
+		CatcherPC->ClientShowStatusMessage(CatchPoints > 0
+			? FString::Printf(TEXT("Caught a prop! +%d points."), CatchPoints)
+			: TEXT("Caught a prop!"), 2.5f);
 	}
 
 	Survivor->MarkCaptured(); // drops the disguise + any lock, sets Captured/out-of-play/hidden
@@ -428,6 +494,21 @@ void ABHGameMode::TickPropHunt()
 	{
 		ForcePropHuntTaunt();
 		PropHuntLastTauntServerTime = Now;
+	}
+
+	// Survival trickle (P6): every second hidden is worth bh.PropHuntPointsPerSecondAlive. Rides this 1 Hz tick, so
+	// it only accrues during the seek (this function early-outs outside the Hunt phase).
+	const int32 PerSecond = CVarBHPropHuntPointsPerSecondAlive.GetValueOnGameThread();
+	if (PerSecond > 0 && GameState)
+	{
+		for (APlayerState* RawPS : GameState->PlayerArray)
+		{
+			ABHPlayerState* TrickleP = Cast<ABHPlayerState>(RawPS);
+			if (TrickleP && TrickleP->PlayerRole == EBHPlayerRole::Survivor && TrickleP->LifeState == EBHPlayerLifeState::Alive)
+			{
+				TrickleP->AddPropHuntScore(PerSecond);
+			}
+		}
 	}
 
 	// Auto reveal pulse (P4): same tightening-lerp shape as the taunt cadence, on its own (slower) clock. Guarantees
@@ -621,6 +702,158 @@ void ABHGameMode::PlayPropHuntRoundEndSting(EBHRoundPhase ResultPhase)
 	BroadcastGameplayAudioCue(BHMakePropHuntAudioCue(
 		bPropsWon ? BHPropHuntPropsWinSoundPath : BHPropHuntSeekersWinSoundPath,
 		FVector::ZeroVector, 0.8f, 1.0f, 0.0f, /*bSpatial*/ false));
+}
+
+int32 ABHGameMode::GetPropHuntRoundCount() const
+{
+	const int32 Configured = PropHuntRoundCountOption > 0
+		? PropHuntRoundCountOption
+		: CVarBHPropHuntRoundCount.GetValueOnGameThread();
+	return FMath::Clamp(Configured, 1, 9);
+}
+
+// Rotation pick (P6): everyone seeks before anyone seeks twice. The per-player counts/scores persist across the
+// round travel (FBHTravelPlayerProgress), so leavers simply drop out of the candidate set and rejoiners keep
+// their history. Picks bh.PropHuntSeekers players, fewest-seeks-first, ties to the lowest score then join order.
+TArray<ABHPlayerState*> ABHGameMode::ChoosePropHuntStartingSeekers(const TArray<ABHPlayerState*>& Players)
+{
+	TArray<ABHPlayerState*> Candidates;
+	for (ABHPlayerState* Candidate : Players)
+	{
+		if (Candidate)
+		{
+			Candidates.Add(Candidate);
+		}
+	}
+
+	const int32 SeekerCount = FMath::Clamp(CVarBHPropHuntSeekers.GetValueOnGameThread(), 1, FMath::Max(1, Candidates.Num() - 1));
+	TArray<ABHPlayerState*> Chosen;
+	while (Chosen.Num() < SeekerCount && Candidates.Num() > 0)
+	{
+		TArray<int32> TimesSeeker;
+		TArray<int32> Scores;
+		for (const ABHPlayerState* Candidate : Candidates)
+		{
+			TimesSeeker.Add(Candidate->PropHuntTimesSeeker);
+			Scores.Add(Candidate->PropHuntScore);
+		}
+		const int32 PickIndex = BHPropHunt::PickStartingSeekerIndex(TimesSeeker, Scores);
+		if (!Candidates.IsValidIndex(PickIndex))
+		{
+			break;
+		}
+		Chosen.Add(Candidates[PickIndex]);
+		Candidates.RemoveAt(PickIndex);
+	}
+
+	const int32 SeekerBase = FMath::Max(0, CVarBHPropHuntSeekerBasePoints.GetValueOnGameThread());
+	for (ABHPlayerState* Seeker : Chosen)
+	{
+		++Seeker->PropHuntTimesSeeker;
+		if (SeekerBase > 0)
+		{
+			Seeker->AddPropHuntScore(SeekerBase);
+		}
+	}
+	return Chosen;
+}
+
+// Match wrapper (P6), on the idempotent EndRound seam: survive bonuses, the round-MVP banner, the persisted round
+// counter, arena rotation, and -- after the final round -- the champion broadcast + the return-to-lobby flag that
+// ResetRoundByTravel consumes.
+void ABHGameMode::HandlePropHuntRoundEnd(EBHRoundPhase ResultPhase)
+{
+	if (!bPropHuntMode || (ResultPhase != EBHRoundPhase::SurvivorsWin && ResultPhase != EBHRoundPhase::HunterWin))
+	{
+		return;
+	}
+
+	// Props that outlasted the seek earn the survive bonus (every alive prop survived; with infection the last
+	// prop standing is usually alone by now).
+	const int32 SurviveBonus = FMath::Max(0, CVarBHPropHuntSurviveBonus.GetValueOnGameThread());
+	if (ResultPhase == EBHRoundPhase::SurvivorsWin && SurviveBonus > 0 && GameState)
+	{
+		for (APlayerState* RawPS : GameState->PlayerArray)
+		{
+			ABHPlayerState* BonusPS = Cast<ABHPlayerState>(RawPS);
+			if (BonusPS && BonusPS->PlayerRole == EBHPlayerRole::Survivor && BonusPS->LifeState == EBHPlayerLifeState::Alive)
+			{
+				BonusPS->AddPropHuntScore(SurviveBonus);
+			}
+		}
+	}
+
+	// Round MVP = the biggest score DELTA this round (snapshot taken at hide start).
+	ABHPlayerState* RoundMvp = nullptr;
+	int32 BestDelta = 0;
+	if (GameState)
+	{
+		for (APlayerState* RawPS : GameState->PlayerArray)
+		{
+			ABHPlayerState* DeltaPS = Cast<ABHPlayerState>(RawPS);
+			if (!DeltaPS)
+			{
+				continue;
+			}
+			const int32* StartScore = PropHuntRoundStartScores.Find(DeltaPS);
+			const int32 Delta = DeltaPS->PropHuntScore - (StartScore ? *StartScore : 0);
+			if (Delta > BestDelta)
+			{
+				BestDelta = Delta;
+				RoundMvp = DeltaPS;
+			}
+		}
+	}
+	if (RoundMvp)
+	{
+		BroadcastStatus(FString::Printf(TEXT("Round MVP: %s (+%d pts)"), *RoundMvp->GetPlayerName(), BestDelta), 5.0f);
+	}
+
+	UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>();
+	const int32 RoundsPlayed = BHGI ? BHGI->IncrementPropHuntRoundsPlayed() : 1;
+	const int32 RoundCount = GetPropHuntRoundCount();
+	ABHGameState* BHGS = GetGameState<ABHGameState>();
+
+	if (RoundsPlayed >= RoundCount)
+	{
+		// Match over: crown the champion (top cumulative score) and flag the post-round travel back to the lobby.
+		if (BHGS)
+		{
+			BHGS->SetPropHuntMatchState(RoundsPlayed, RoundCount, true);
+		}
+		bPropHuntMatchCompletePendingTravel = true;
+		ABHPlayerState* Champion = nullptr;
+		if (GameState)
+		{
+			for (APlayerState* RawPS : GameState->PlayerArray)
+			{
+				ABHPlayerState* ChampPS = Cast<ABHPlayerState>(RawPS);
+				if (ChampPS && (!Champion || ChampPS->PropHuntScore > Champion->PropHuntScore))
+				{
+					Champion = ChampPS;
+				}
+			}
+		}
+		BroadcastStatus(Champion
+			? FString::Printf(TEXT("MATCH OVER - champion: %s with %d points! Returning to the lobby."), *Champion->GetPlayerName(), Champion->PropHuntScore)
+			: TEXT("MATCH OVER. Returning to the lobby."), 6.0f);
+		RecordPlaytestTelemetryMarker(TEXT("ph_match_end"), HunterSpawn, FString::Printf(TEXT("rounds=%d"), RoundsPlayed), Champion);
+	}
+	else
+	{
+		if (BHGS)
+		{
+			BHGS->SetPropHuntMatchState(RoundsPlayed, RoundCount, false);
+		}
+		// Arena rotation: a host map route (?BHMapRoute=ContainersHouse,RuinedCrypt,...) cycles one arena per
+		// round; without a route the match replays the same arena.
+		if (RuntimeMapRoute.Num() > 0)
+		{
+			NextRuntimeLevelName = RuntimeMapRoute[RoundsPlayed % RuntimeMapRoute.Num()];
+		}
+		BroadcastStatus(FString::Printf(TEXT("Round %d of %d done - next round shortly."), RoundsPlayed, RoundCount), 4.0f);
+	}
+	RecordPlaytestTelemetryMarker(TEXT("ph_round_end"), HunterSpawn, FString::Printf(TEXT("round=%d/%d"), RoundsPlayed, RoundCount));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

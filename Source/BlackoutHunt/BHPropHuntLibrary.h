@@ -172,6 +172,27 @@ namespace BHPropHunt
 		return FVector2D(HaltonSequence(Position, 2), HaltonSequence(Position, 3));
 	}
 
+	// Rotating starting seeker (P6): everyone seeks before anyone seeks twice. Pick the candidate who has STARTED
+	// as seeker the fewest times; break ties by LOWEST match score (trailing players get the catch-points turn),
+	// then by index (stable join order). The arrays are parallel per-candidate; INDEX_NONE on empty/mismatched input.
+	inline int32 PickStartingSeekerIndex(const TArray<int32>& TimesSeeker, const TArray<int32>& Scores)
+	{
+		if (TimesSeeker.Num() == 0 || TimesSeeker.Num() != Scores.Num())
+		{
+			return INDEX_NONE;
+		}
+		int32 BestIndex = 0;
+		for (int32 Index = 1; Index < TimesSeeker.Num(); ++Index)
+		{
+			if (TimesSeeker[Index] < TimesSeeker[BestIndex]
+				|| (TimesSeeker[Index] == TimesSeeker[BestIndex] && Scores[Index] < Scores[BestIndex]))
+			{
+				BestIndex = Index;
+			}
+		}
+		return BestIndex;
+	}
+
 	// The seeker's hide-phase holding spot: the spawn point farthest from the cloud's centroid, so the seeker starts
 	// at the edge of the play space rather than in the middle of the hiding props. INDEX_NONE on an empty set.
 	inline int32 PickSeekerHoldIndex(const TArray<FVector>& Points)
