@@ -15091,6 +15091,8 @@ void ABHGameMode::EndRound(EBHRoundPhase ResultPhase)
 
 	BHGS->SetRoundPhase(ResultPhase);
 	BHGS->SetRemainingTime(0);
+	// Prop hunt: the win/lose sting rides the one idempotent round-end seam (no-op outside the mode).
+	PlayPropHuntRoundEndSting(ResultPhase);
 	RecordPlaytestTelemetryMarker(TEXT("round_end"), HunterSpawn, StaticEnum<EBHRoundPhase>() ? StaticEnum<EBHRoundPhase>()->GetNameStringByValue(static_cast<int64>(ResultPhase)) : TEXT("Unknown"));
 	if (bBotMode)
 	{

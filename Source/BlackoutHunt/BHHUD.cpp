@@ -1600,10 +1600,14 @@ void ABHHUD::DrawPropHuntOverlay(const ABHGameState* GameState, const ABHPlayerS
 		Y += DrawCentered(CountLine, CenterX, Y, bHiding ? ActivePalette.Good : ActivePalette.Bad, 0.82f * TextScale) + 3.0f * TextScale;
 	}
 
-	// Props-left counter (seek + round end).
+	// Props-left counter (seek + round end), with the local player's prop-hunt score alongside once they have any.
 	if (bSeeking || bRoundEnd)
 	{
-		const FString CountText = FString::Printf(TEXT("PROPS LEFT  %d / %d"), GameState->PropHuntPropsRemaining, GameState->PropHuntPropsTotal);
+		FString CountText = FString::Printf(TEXT("PROPS LEFT  %d / %d"), GameState->PropHuntPropsRemaining, GameState->PropHuntPropsTotal);
+		if (PlayerState && PlayerState->PropHuntScore > 0)
+		{
+			CountText += FString::Printf(TEXT("   |   %d PTS"), PlayerState->PropHuntScore);
+		}
 		Y += DrawCentered(CountText, CenterX, Y, MainText(), 0.74f * TextScale) + 3.0f * TextScale;
 	}
 
@@ -1634,8 +1638,8 @@ void ABHHUD::DrawPropHuntOverlay(const ABHGameState* GameState, const ABHPlayerS
 		else if (Character && Character->IsDisguisedAsProp())
 		{
 			RoleLine = Character->IsPropLockedInPlace()
-				? TEXT("DISGUISED & LOCKED. Middle-mouse to break free. [ ] rotate, Z re-disguise.")
-				: TEXT("DISGUISED. Middle-mouse locks you still, [ ] rotate, Z re-disguise.");
+				? TEXT("DISGUISED & LOCKED. Middle-mouse to break free. [ ] rotate, Z re-disguise, T taunt (+pts).")
+				: TEXT("DISGUISED. Middle-mouse locks you still, [ ] rotate, Z re-disguise, T taunt (+pts).");
 			RoleColor = ActivePalette.Good;
 		}
 		else

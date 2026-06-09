@@ -2558,6 +2558,7 @@ void ABHCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCompone
 	PlayerInputComponent->BindAction(TEXT("PropRotateLeft"), IE_Pressed, this, &ABHCharacter::RotatePropLeft);
 	PlayerInputComponent->BindAction(TEXT("PropRotateRight"), IE_Pressed, this, &ABHCharacter::RotatePropRight);
 	PlayerInputComponent->BindAction(TEXT("PropCameraToggle"), IE_Pressed, this, &ABHCharacter::TogglePropCamera);
+	PlayerInputComponent->BindAction(TEXT("PropTaunt"), IE_Pressed, this, &ABHCharacter::PropTaunt);
 	PlayerInputComponent->BindKey(EKeys::F1, IE_Pressed, this, &ABHCharacter::UsePowerupSlotOne);
 	PlayerInputComponent->BindKey(EKeys::F2, IE_Pressed, this, &ABHCharacter::UsePowerupSlotTwo);
 	PlayerInputComponent->BindKey(EKeys::F3, IE_Pressed, this, &ABHCharacter::UsePowerupSlotThree);
@@ -7404,6 +7405,23 @@ void ABHCharacter::TogglePropCamera()
 	SendStatusMessage(bPropThirdPerson ? TEXT("Third-person view.") : TEXT("First-person view."));
 }
 
+void ABHCharacter::PropTaunt()
+{
+	if (!IsPropHuntProp())
+	{
+		return;
+	}
+	ServerPropTaunt();
+}
+
+void ABHCharacter::ServerPropTaunt_Implementation()
+{
+	if (ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
+	{
+		BHGM->HandlePropHuntManualTaunt(this);
+	}
+}
+
 void ABHCharacter::OnRep_PropDisguise()
 {
 	ApplyPropDisguiseVisuals();
@@ -9749,6 +9767,10 @@ void ABHCharacter::ApplyPropHuntMissPenaltyAuthority()
 	// Re-derive the speed just after expiry; nothing else fires a state change at that moment.
 	GetWorldTimerManager().SetTimer(PropHuntMissSlowExpireHandle, this, &ABHCharacter::RefreshMovementSpeedFromState, SlowSeconds + 0.05f, false);
 	EmitFootstepStimulus(0.62f, TEXT("seeker whiff"), ResolveFootstepSurface());
+	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
+	{
+		BHGM->PlayPropHuntWrongHitClang(GetActorLocation());
+	}
 	SendStatusMessage(FString::Printf(TEXT("Wrong hit! Stumbling for %.1fs (miss x%d)."), SlowSeconds, PropHuntConsecutiveMisses));
 	ForceNetUpdate();
 }

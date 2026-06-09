@@ -35,6 +35,7 @@
 #include "GameFramework/PlayerState.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/PackageName.h"
+#include "UObject/SoftObjectPath.h"
 
 // Master opt-in fallback toggle (the URL option ?BHPropHunt=1 is the primary path). A host can flip this in the console
 // before starting and every level for the rest of the session reads it (the cvar is global and survives ServerTravel).
@@ -125,6 +126,46 @@ static TAutoConsoleVariable<float> CVarBHPropHuntMissSlowFactor(
 	0.55f,
 	TEXT("Prop Hunt: movement-speed multiplier while the wrong-hit slow is active (0.55 = a heavy but escapable stumble)."),
 	ECVF_Default);
+
+// --- Taunts + audio (P5) ---------------------------------------------------------------------------------------
+
+static TAutoConsoleVariable<int32> CVarBHPropHuntTauntBonusPoints(
+	TEXT("bh.PropHuntTauntBonusPoints"),
+	25,
+	TEXT("Prop Hunt: score bonus a prop earns for a MANUAL taunt (deliberately giving away its position)."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarBHPropHuntManualTauntCooldown(
+	TEXT("bh.PropHuntManualTauntCooldown"),
+	8.0f,
+	TEXT("Prop Hunt: per-prop seconds between manual taunts (keeps the bonus a deliberate risk, not a farm)."),
+	ECVF_Default);
+
+namespace
+{
+	// First-guess stingers from the SoundsOfHorror pack (the only licensed SFX library in the tree). They are wired
+	// for FUNCTION, not final feel -- swap the paths freely after an ear pass in the playtest (P9). Captions are
+	// carried by the status-message channel instead so multi-cue moments don't spam the caption line.
+	constexpr const TCHAR* BHPropHuntKlaxonSoundPath = TEXT("/Game/SoundsOfHorror/Impacts/CUE/CUE_SOH_IP_03.CUE_SOH_IP_03");
+	constexpr const TCHAR* BHPropHuntTauntHornSoundPath = TEXT("/Game/SoundsOfHorror/Clues/CUE/CUE_SOH_Clue_05.CUE_SOH_Clue_05");
+	constexpr const TCHAR* BHPropHuntFoundStingSoundPath = TEXT("/Game/SoundsOfHorror/Impacts/CUE/CUE_SOH_IP_07.CUE_SOH_IP_07");
+	constexpr const TCHAR* BHPropHuntWrongHitClangSoundPath = TEXT("/Game/SoundsOfHorror/Impacts/CUE/CUE_SOH_IP_02.CUE_SOH_IP_02");
+	constexpr const TCHAR* BHPropHuntPulseWhooshSoundPath = TEXT("/Game/SoundsOfHorror/Tension/CUE/CUE_SOH_TS_03.CUE_SOH_TS_03");
+	constexpr const TCHAR* BHPropHuntPropsWinSoundPath = TEXT("/Game/SoundsOfHorror/BuildUps/CUE/CUE_SOH_BU_02.CUE_SOH_BU_02");
+	constexpr const TCHAR* BHPropHuntSeekersWinSoundPath = TEXT("/Game/SoundsOfHorror/BuildUps/CUE/CUE_SOH_BU_06.CUE_SOH_BU_06");
+
+	FBHGameplayAudioCue BHMakePropHuntAudioCue(const TCHAR* ObjectPath, const FVector& Location, float Volume, float Pitch, float MaxDistance, bool bSpatial)
+	{
+		FBHGameplayAudioCue Cue;
+		Cue.AudioAsset = TSoftObjectPtr<USoundBase>(FSoftObjectPath(ObjectPath));
+		Cue.Location = Location;
+		Cue.Volume = Volume;
+		Cue.Pitch = Pitch;
+		Cue.MaxAudibleDistance = MaxDistance;
+		Cue.bSpatial = bSpatial;
+		return Cue;
+	}
+}
 
 // Free accessor so BuildRuntimeFacility (in BHGameMode.cpp) can fold the cvar into the parsed bPropHuntMode without
 // the cvar object leaking out of this translation unit. Declared in BHGameMode.h.
@@ -304,6 +345,9 @@ void ABHGameMode::BeginPropHuntHunt()
 	PropHuntLastPulseServerTime = Now; // first reveal pulse lands a full interval after release
 	RefreshPropHuntGameState();
 
+	// Release klaxon: one global (non-spatial) hit so everyone knows the hunt is on.
+	BroadcastGameplayAudioCue(BHMakePropHuntAudioCue(BHPropHuntKlaxonSoundPath, FVector::ZeroVector, 0.85f, 1.12f, 0.0f, /*bSpatial*/ false));
+
 	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
 	{
 		ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get());
@@ -345,6 +389,8 @@ void ABHGameMode::HandlePropHuntCapture(ABHCharacter* Survivor, ABHCharacter* Ca
 	Survivor->MarkCaptured(); // drops the disguise + any lock, sets Captured/out-of-play/hidden
 	ApplyPresenceSpike(Loc, 60.0f, TEXT("A prop was found."));
 	BroadcastStatus(FString::Printf(TEXT("%s was found!"), *PS->GetPlayerName()), 3.0f);
+	// Found sting: a global hit so the whole lobby feels the count drop (P5 audio).
+	BroadcastGameplayAudioCue(BHMakePropHuntAudioCue(BHPropHuntFoundStingSoundPath, Loc, 0.7f, 1.0f, 0.0f, /*bSpatial*/ false));
 
 	// Infection: props remain -> the caught prop joins the seeker team. Otherwise that was the last prop -> seekers win.
 	if (CountAliveSurvivors() > 0 && Ctrl)
@@ -420,6 +466,8 @@ void ABHGameMode::ForcePropHuntTaunt()
 		const FVector PropLocation = Prop->GetActorLocation();
 		NotifyLoudNoise(PropLocation, TEXT("prop_taunt"));
 		ReportAtmosphereStimulus(EBHAtmosphereStimulusType::Noise, PropLocation, Prop, nullptr, 1.0f, TEXT("prop_taunt"));
+		// Taunt horn at the prop's position -- far-audible so the seeker can walk the sound down (P5 audio).
+		BroadcastGameplayAudioCue(BHMakePropHuntAudioCue(BHPropHuntTauntHornSoundPath, PropLocation + FVector(0.0f, 0.0f, 60.0f), 0.9f, 1.18f, 5200.0f, /*bSpatial*/ true));
 		++TauntedProps;
 		if (ABHPlayerController* PropPC = Cast<ABHPlayerController>(Prop->GetController()))
 		{
@@ -484,12 +532,95 @@ void ABHGameMode::ForcePropHuntRevealPulse()
 			continue;
 		}
 		SeekerChar->ClientReceivePropHuntSonar(PropLocations, /*RevealSeconds*/ 1.6f, /*bIsPulse*/ true, /*CooldownSeconds*/ 0.0f);
+		// A soft whoosh sells the pulse on the seeker's side only (props get the text warning instead).
+		PC->ClientPlayGameplayAudioCue(BHMakePropHuntAudioCue(BHPropHuntPulseWhooshSoundPath, FVector::ZeroVector, 0.5f, 1.0f, 0.0f, /*bSpatial*/ false));
 		++PulsedSeekers;
 	}
 	if (PulsedSeekers > 0)
 	{
 		RecordPlaytestTelemetryMarker(TEXT("ph_pulse"), PropLocations[0], FString::Printf(TEXT("props=%d seekers=%d"), PropLocations.Num(), PulsedSeekers));
 	}
+}
+
+// Manual taunt (P5): the risk/reward flush. A live prop deliberately emits the taunt cue at its position for
+// bh.PropHuntTauntBonusPoints, on a personal cooldown -- and the AUTO taunt clock restarts, so one bold prop's risk
+// buys every prop a fresh quiet window (the fairness debt is paid either way).
+void ABHGameMode::HandlePropHuntManualTaunt(ABHCharacter* Prop)
+{
+	ABHGameState* BHGS = GetGameState<ABHGameState>();
+	ABHPlayerState* PropPS = Prop ? Prop->GetPlayerState<ABHPlayerState>() : nullptr;
+	if (!bPropHuntMode || !BHGS || !PropPS || !GetWorld())
+	{
+		return;
+	}
+	if (PropPS->PlayerRole != EBHPlayerRole::Survivor || PropPS->LifeState != EBHPlayerLifeState::Alive)
+	{
+		return;
+	}
+	ABHPlayerController* PropPC = Cast<ABHPlayerController>(Prop->GetController());
+	if (BHGS->RoundPhase != EBHRoundPhase::Hunt)
+	{
+		if (PropPC)
+		{
+			PropPC->ClientShowStatusMessage(TEXT("Taunting unlocks when the seek begins."), 2.5f);
+		}
+		return;
+	}
+
+	const float Now = GetWorld()->GetTimeSeconds();
+	const float Cooldown = FMath::Max(1.0f, CVarBHPropHuntManualTauntCooldown.GetValueOnGameThread());
+	if (Now - Prop->LastManualTauntServerTime < Cooldown)
+	{
+		if (PropPC)
+		{
+			PropPC->ClientShowStatusMessage(FString::Printf(TEXT("Taunt recharging: %ds."), FMath::CeilToInt(Cooldown - (Now - Prop->LastManualTauntServerTime))), 2.0f);
+		}
+		return;
+	}
+	Prop->LastManualTauntServerTime = Now;
+
+	const FVector PropLocation = Prop->GetActorLocation();
+	NotifyLoudNoise(PropLocation, TEXT("prop_taunt_manual"));
+	ReportAtmosphereStimulus(EBHAtmosphereStimulusType::Noise, PropLocation, Prop, nullptr, 1.0f, TEXT("prop_taunt_manual"));
+	// Slightly higher pitch than the auto horn so regulars learn to tell a bold prop from the forced chorus.
+	BroadcastGameplayAudioCue(BHMakePropHuntAudioCue(BHPropHuntTauntHornSoundPath, PropLocation + FVector(0.0f, 0.0f, 60.0f), 0.95f, 1.35f, 5200.0f, /*bSpatial*/ true));
+
+	const int32 Bonus = FMath::Max(0, CVarBHPropHuntTauntBonusPoints.GetValueOnGameThread());
+	PropPS->AddPropHuntScore(Bonus);
+	// Pay the fairness debt: the auto-taunt clock restarts for everyone.
+	PropHuntLastTauntServerTime = Now;
+	RefreshPropHuntGameState();
+
+	if (PropPC)
+	{
+		PropPC->ClientShowStatusMessage(FString::Printf(TEXT("TAUNT! +%d points - now move before the seeker arrives."), Bonus), 3.0f);
+	}
+	RecordPlaytestTelemetryMarker(TEXT("ph_taunt_manual"), PropLocation, TEXT("prophunt"), PropPS);
+}
+
+// Wrong-hit clang (P5 audio): a spatial metal hit at the whiffing seeker, audible to anyone nearby (a hiding prop
+// HEARS the seeker flailing one aisle over -- free intel, the other half of the wrong-hit penalty).
+void ABHGameMode::PlayPropHuntWrongHitClang(const FVector& Location)
+{
+	if (!bPropHuntMode)
+	{
+		return;
+	}
+	BroadcastGameplayAudioCue(BHMakePropHuntAudioCue(BHPropHuntWrongHitClangSoundPath, Location, 0.8f, 0.86f, 2400.0f, /*bSpatial*/ true));
+}
+
+// Round-end sting (P5 audio): one global win/lose hit. Called from EndRound, which is idempotent, so every end path
+// (all caught, timer expiry, seeker disconnect) plays it exactly once.
+void ABHGameMode::PlayPropHuntRoundEndSting(EBHRoundPhase ResultPhase)
+{
+	if (!bPropHuntMode || (ResultPhase != EBHRoundPhase::SurvivorsWin && ResultPhase != EBHRoundPhase::HunterWin))
+	{
+		return;
+	}
+	const bool bPropsWon = ResultPhase == EBHRoundPhase::SurvivorsWin;
+	BroadcastGameplayAudioCue(BHMakePropHuntAudioCue(
+		bPropsWon ? BHPropHuntPropsWinSoundPath : BHPropHuntSeekersWinSoundPath,
+		FVector::ZeroVector, 0.8f, 1.0f, 0.0f, /*bSpatial*/ false));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

@@ -112,6 +112,10 @@ public:
 	void NotifyObjectiveStationCompleted(ABHObjectiveStation* Station);
 	void NotifySurvivorCaptured(ABHCharacter* Survivor, ABHCharacter* CapturingHunter = nullptr);
 	void NotifySurvivorEscaped(ABHCharacter* Survivor);
+	// Prop hunt (public: the pawn drives both). Manual taunt = risk/reward bonus on a personal cooldown; the clang
+	// is the audible half of the wrong-hit penalty. Defined in BHGameModePropHunt.cpp; no-ops outside the mode.
+	void HandlePropHuntManualTaunt(ABHCharacter* Prop);
+	void PlayPropHuntWrongHitClang(const FVector& Location);
 	void ToggleLightCircuit(int32 CircuitId);
 	void OpenSecurityCircuit(int32 CircuitId);
 	bool ToggleSecurityCircuit(int32 CircuitId);
@@ -541,6 +545,8 @@ protected:
 	// Auto reveal pulse (P4): briefly surface EVERY alive prop's position to every seeker (range-unlimited), on a
 	// cadence that tightens as the seek timer runs down. The fairness valve that guarantees endgame closure.
 	void ForcePropHuntRevealPulse();
+	// Round-end win/lose sting + caption (gated to prop hunt; called from EndRound so every end path plays it once).
+	void PlayPropHuntRoundEndSting(EBHRoundPhase ResultPhase);
 	// Recompute + replicate the prop-hunt HUD state (props remaining/total, next-taunt countdown).
 	void RefreshPropHuntGameState();
 	// Count props (role == Survivor) and how many are still hidden (alive). Caught props keep the Survivor role

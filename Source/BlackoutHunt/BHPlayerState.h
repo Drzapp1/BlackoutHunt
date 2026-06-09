@@ -67,6 +67,10 @@ public:
 	int32 ApplyCaughtQuestionPointPenalty(float PenaltyFraction = 0.25f);
 	void AddHunterPoints(int32 Points);
 	bool SpendHunterPoints(int32 Points);
+	// Prop-hunt round score (manual-taunt bonus now; survival/catch/MVP land with the P6 match wrapper).
+	// Server-authoritative; clamped at zero.
+	void AddPropHuntScore(int32 Points);
+	void ResetPropHuntScore();
 	int32 GetPowerupCharges(EBHPowerupType Type) const;
 	bool AddPowerupCharge(EBHPowerupType Type, int32 MaxCharges);
 	bool ConsumePowerupCharge(EBHPowerupType Type);
@@ -162,6 +166,10 @@ public:
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Train")
 	int32 LifetimeHunterPoints;
+
+	// Prop-hunt cumulative score for the current round/match (replicated to everyone: the scoreboard is public).
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Prop Hunt")
+	int32 PropHuntScore = 0;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Powerups")
 	TArray<FBHPowerupInventoryEntry> Powerups;

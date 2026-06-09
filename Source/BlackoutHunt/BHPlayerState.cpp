@@ -83,6 +83,7 @@ void ABHPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLi
 	DOREPLIFETIME(ABHPlayerState, LifetimeQuestionPoints);
 	DOREPLIFETIME(ABHPlayerState, HunterPoints);
 	DOREPLIFETIME(ABHPlayerState, LifetimeHunterPoints);
+	DOREPLIFETIME(ABHPlayerState, PropHuntScore);
 	DOREPLIFETIME(ABHPlayerState, Powerups);
 	// Owner-only: only the player's own HUD needs to know which minigame table to draw status for.
 	DOREPLIFETIME_CONDITION(ABHPlayerState, ActiveMinigameTable, COND_OwnerOnly);
@@ -358,6 +359,18 @@ bool ABHPlayerState::SpendHunterPoints(int32 Points)
 
 	HunterPoints -= ClampedPoints;
 	return true;
+}
+
+void ABHPlayerState::AddPropHuntScore(int32 Points)
+{
+	// Negative deltas are allowed (future penalties), but the score never dips below zero. The saturating add is
+	// only safe for non-negative deltas, so the penalty path adds plainly under the zero floor.
+	PropHuntScore = Points >= 0 ? BHSaturatingAddPoints(PropHuntScore, Points) : FMath::Max(0, PropHuntScore + Points);
+}
+
+void ABHPlayerState::ResetPropHuntScore()
+{
+	PropHuntScore = 0;
 }
 
 int32 ABHPlayerState::GetPowerupCharges(EBHPowerupType Type) const

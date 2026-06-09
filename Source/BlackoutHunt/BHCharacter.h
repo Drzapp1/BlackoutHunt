@@ -134,6 +134,9 @@ public:
 	float GetPropHuntSonarMarkersExpireClientTime() const { return PropHuntSonarMarkersExpireClientTime; }
 	float GetPropHuntSonarReadyClientTime() const { return PropHuntSonarReadyClientTime; }
 	float GetPropHuntPulseFlashClientTime() const { return PropHuntPulseFlashClientTime; }
+	// Server-only stamp of this prop's last manual taunt. Public: ABHGameMode::HandlePropHuntManualTaunt owns the
+	// cooldown bookkeeping (all prop-hunt orchestration lives in the game-mode partial).
+	float LastManualTauntServerTime = -1000.0f;
 
 	// Tutorial movement lesson: a bitmask of which of the four move directions the player has actually
 	// driven (forward 0x01 / back 0x02 / right 0x04 / left 0x08). Accumulated in MoveForward/MoveRight on the
@@ -984,6 +987,12 @@ protected:
 	// Base relative Z of the disguise mesh (floor alignment), captured in ApplyPropDisguiseVisuals; the idle bob rides
 	// on top of it each frame so a walking (unlocked) prop reads as alive while a locked prop sits perfectly still.
 	float PropDisguiseBaseZ = 0.0f;
+
+	// --- Prop Hunt manual taunt (P5). The risk/reward flush: a prop deliberately gives away its position for bonus
+	// points. Input handler + server RPC; validation/cooldown/scoring live in ABHGameMode::HandlePropHuntManualTaunt.
+	void PropTaunt();
+	UFUNCTION(Server, Reliable)
+	void ServerPropTaunt();
 
 	// --- Prop Hunt seeker kit (P4). ---------------------------------------------------------------------------------
 	// Consecutive whiffed capture swings (server-only); a landed catch resets it. Drives the escalating wrong-hit

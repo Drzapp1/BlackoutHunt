@@ -322,8 +322,19 @@ Each phase is independently shippable and leaves the build green + tests passing
   arrow), pulse flash.
 - **Acceptance:** seeker can ping, catch, gets slowed for flailing, and the pulse reliably surfaces the last prop.
 
-### P5 — Taunts (auto + manual) + first audio pass (M)
+### P5 — Taunts (auto + manual) + first audio pass (M) **(done — 2026-06-09)**
 **Goal:** the flush-out mechanic with risk/reward, and the sounds that sell it.
+
+> **STATUS:** **Manual taunt** = `PropTaunt` on **T** (role-gated; spectator T conflict is benign) →
+> `ABHGameMode::HandlePropHuntManualTaunt`: alive-prop + Seek-phase + `bh.PropHuntManualTauntCooldown` (8s) checks,
+> emits the loud-noise + atmosphere stimulus + a HIGHER-pitched horn (so regulars can tell bold from forced), awards
+> `bh.PropHuntTauntBonusPoints` (25) into the new replicated `ABHPlayerState::PropHuntScore`, and **restarts the
+> auto-taunt clock** (one bold prop buys everyone a quiet window). HUD: score rides the props-left line; taunt key in
+> the prop prompt. **Audio first pass** through `BroadcastGameplayAudioCue` (all paths in BHGameModePropHunt.cpp,
+> first-guess SoundsOfHorror stingers — SWAP AFTER AN EAR PASS): release klaxon (global), auto/manual taunt horn
+> (spatial 52 m, walk-the-sound-down), found sting (global), wrong-hit clang (spatial at the whiffing seeker — free
+> intel for nearby props), reveal-pulse whoosh (seekers only), props/seekers win stings via the idempotent
+> `EndRound` seam. Hide-phase bed deferred to P7 (needs loop management).
 - **Auto taunt (v1 done, refine).** Keep the shrinking-interval forced taunt; on fire, every alive prop emits a noise
   at their location (already) **and** plays a **taunt horn** SFX audible to the seeker, plus a brief self-outline.
 - **Manual taunt (new).** Prop input **`PropTaunt`** (new key): on press, emit the taunt cue at your location and earn
