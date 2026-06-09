@@ -38,6 +38,23 @@ struct FBHLessonPreset;
 // the special TrainIntermission level. ABHGameMode::ResolveTravelMapForLevel delegates to this.
 BLACKOUTHUNT_API FString BHResolveLevelMapPackage(const FString& LevelName);
 
+// True when the bh.PropHunt console variable is set. Defined in BHGameModePropHunt.cpp so the cvar object stays
+// file-local; BuildRuntimeFacility folds this into the parsed bPropHuntMode (opt-in, reversible Prop Hunt mode).
+BLACKOUTHUNT_API bool BHIsPropHuntCVarEnabled();
+
+// Indoor (non-Foggrounds) auto-exposure tuning, shared by two paths that must stay in lockstep:
+//  * ABHGameMode::AddMoodPass bakes these into the authored .umap's post-process volume at export time, and
+//  * ABHPlayerController::ClampIndoorAutoExposure re-applies them on every client at runtime, repairing the
+//    already-baked volume in maps that were exported before this fix (re-exporting the art-passed .umaps to
+//    rebake the value is not an option, as it would discard the mesh/lighting pass layered on the seed).
+// MaxBrightness is the ceiling the eye may adapt TO: the old 0.95 let a flashlit near wall fill the frame,
+// drag adaptation toward the bright end, and crush the whole scene to near-black (creeping back only at the
+// engine's slow default SpeedDown). A tight ceiling caps that darkening; the floor (0.030, kept in AddMoodPass)
+// stays well below normal-play luminance so ordinary dark-room play is visually unchanged, and the brisk
+// symmetric speed makes any residual swing snap back instead of crawling.
+inline constexpr float BHIndoorAutoExposureMaxBrightness = 0.20f;
+inline constexpr float BHAutoExposureAdaptSpeed = 4.0f;
+
 UCLASS()
 class BLACKOUTHUNT_API ABHGameMode : public AGameModeBase
 {
@@ -100,10 +117,13 @@ public:
 	void TestJumpscareVariant(ABHPlayerController* RequestingController, const FString& VariantToken);
 	FString GetJumpscareVariantTestReport() const;
 	void ForceStartRound(ABHPlayerController* RequestingController);
-	// Recovery: teleport a player back to a safe interior train spawn if they get stuck outside the carriage
-	// (e.g. up on the roof in the lobby, where nothing auto-boards them). Only valid on the train lobby /
-	// intermission; returns false elsewhere so it can't be used to escape a live hunt.
+	// Recovery: teleport a player to the centre of the carriage they're currently in if they get stuck on the
+	// train (wedged in interior geometry, or out on the roof in the lobby where nothing auto-boards them). Only
+	// valid on the train lobby / intermission; returns false elsewhere so it can't be used to escape a live hunt.
 	bool ResetPlayerToTrainInterior(AController* Controller);
+	// Index into a TrainCabinCenters-style array of the cabin centre nearest to X (cars run along the train's
+	// length, so only X matters). Returns INDEX_NONE for an empty array. Pure helper, unit-tested.
+	static int32 NearestCabinCenterIndex(const TArray<FVector>& Centers, float X);
 	void SetDesiredRole(ABHPlayerController* RequestingController, APlayerState* TargetPlayerState, EBHPlayerRole DesiredRole);
 	void QueueSpectatorRolePreference(ABHPlayerController* RequestingController, EBHPlayerRole DesiredRole);
 	void RequestSpectatorEncouragement(ABHPlayerController* RequestingController);
@@ -171,6 +191,8 @@ public:
 	// slots as more humans join, so a full lobby naturally makes room for late arrivals.
 	void FillBotsToCapacity(ABHPlayerController* RequestingController);
 	bool IsRevisionMode() const;
+	// True for the opt-in, reversible Prop Hunt mode (Seeker = Hunter, Props = Survivors). See BHGameModePropHunt.cpp.
+	bool IsPropHuntMode() const;
 	// The per-round master seed (see PrepareRoundDirector). Exposed so other actors can derive
 	// reproducible per-round variety from it (e.g. revision question selection).
 	int32 GetRoundSeed() const { return RoundSeed; }
@@ -198,6 +220,16 @@ public:
 	TArray<EBHPhysicsTopic> GetRevisionWeakTopics() const;
 	int32 GetRevisionQuestionTargetPerNode() const;
 	int32 GetRevisionAnswerTeamTargetSize() const;
+	// True when the per-node "answer this node only once per round" rule should be enforced. That rule
+	// spreads a populated class across nodes for coverage, but it is only SATISFIABLE when there are at
+	// least as many live human revision students as a node needs distinct correct answers
+	// (GetRevisionQuestionTargetPerNode). With fewer humans -- a lone player, or a bot-populated lobby
+	// (bots are excluded from every revision score, so their answers can never make up the shortfall) --
+	// the cap makes each node unwinnable and the exit mathematically unreachable. In that case this
+	// returns false so the present human(s) can re-answer a node (each press loads a fresh question) and
+	// complete it themselves. Always true outside revision mode. Reads live state on purpose: if a class
+	// shrinks below the target mid-round it only ever relaxes (never makes a populated class harder).
+	bool ShouldEnforceRevisionNodeAnswerCap() const;
 	// Returns the FROZEN per-round hall-monitor contribution gate target (the snapshot in
 	// RevisionContributionGateTarget). Stable for the whole round; recomputed only by
 	// RefreshRevisionContributionGateTarget at round start and on intentional admin changes.
@@ -217,11 +249,21 @@ public:
 	int32 CountMonitorsBelowRevisionTarget() const;
 	bool TickAllCaughtRevisionGrace();
 	void ApplyUnfinishedMonitorRevisionDock();
+
+	// --- Catch-pressure loop (docs/CATCH_PRESSURE.md). CVar-reading wrappers around the pure BHCompute* helpers
+	// in BHTypes.h, plus the climb-back contribution target derived from the monitor gate. ----------------------
+	float ComputeRecaptureTaxFraction(int32 InTimesCaught) const;
+	float ComputeDetentionHoldSeconds(int32 InTimesCaught) const;
+	int32 GetClimbBackContributionTarget() const;
 	static bool IsRevisionParticipantRole(EBHPlayerRole Role);
 	static bool IsValidSpectatorRolePreference(EBHPlayerRole Role);
 	static EBHPlayerRole SanitizeSpectatorRolePreference(EBHPlayerRole Role);
 	static int32 ResolveRevisionQuestionTargetFor(int32 StudentCount, int32 StageIndex);
 	static int32 ResolveRevisionNodeTargetFor(int32 StudentCount, int32 StageIndex, int32 StationCount);
+	// Pure rule behind ShouldEnforceRevisionNodeAnswerCap: the once-per-node cap is enforced only when
+	// there are at least PerNodeAnswerTarget live human students (enough to fill a node via distinct
+	// answers). Fewer humans => relax. Static so it can be unit-tested without a live world.
+	static bool RevisionNodeAnswerCapApplies(int32 HumanStudentCount, int32 PerNodeAnswerTarget);
 	static FVector ResolveFoggroundsDoorFrameOrigin(const FVector& DoorLocation);
 	// Records a revision answer (mastery, spaced-repetition queue, telemetry) and returns the
 	// shop points awarded for the answer (0 when wrong or when not in revision mode).
@@ -281,6 +323,10 @@ protected:
 	// authored (and generation should be skipped); false leaves the procedural generator to run as before.
 	bool DiscoverAuthoredLevel();
 	void BuildTrainIntermissionLevel();
+	// Records the centre of every carriage (along the train's length) when a lobby / intermission train is built.
+	// Cars sit at a fixed 1500cm pitch centred in the tube, so this is derived from the tube's X bounds and covers
+	// every car in either build. Consumed by ResetPlayerToTrainInterior (the O-key cabin-reset unstick).
+	void RecordTrainCabinCenters(float TubeMinX, float TubeMaxX, float FloorZ);
 	// The pre-game LOBBY built as a parked subway train: a longer carriage with a large social/seating lounge so
 	// joining players can see each other and mingle while they wait. Self-contained (no intermission manager, no
 	// auto-advance); the round starts via TravelFromLobbyToFirstHunt() on ready / host force-start.
@@ -455,6 +501,19 @@ protected:
 	void StartHuntPhaseImmediately();
 	void StartHuntPhase();
 	void AssignRoles();
+	// --- Prop Hunt (opt-in, reversible). All gated by bPropHuntMode; defined in BHGameModePropHunt.cpp. ----------
+	// Seed the taunt clock + send the role-tailored intro at the moment the live Hunt starts.
+	void BeginPropHuntHunt();
+	// Once-per-second service (called from TickRoundTimer's Hunt branch): drives the forced-taunt cadence and the
+	// replicated "props left / total" HUD counters.
+	void TickPropHunt();
+	// Force every still-hidden prop to emit a noise so the seeker gets a fair directional hint.
+	void ForcePropHuntTaunt();
+	// Recompute + replicate the prop-hunt HUD state (props remaining/total, next-taunt countdown).
+	void RefreshPropHuntGameState();
+	// Count props (role == Survivor) and how many are still hidden (alive). Caught props keep the Survivor role
+	// in prop hunt (the Hall-Monitor conversion is suppressed), so found = total - remaining is exact.
+	void CountPropHuntProps(int32& OutTotal, int32& OutRemaining) const;
 	void TickRoundTimer();
 	void EndRound(EBHRoundPhase ResultPhase);
 	void ResetRoundByTravel();
@@ -515,6 +574,8 @@ public:
 	int32 DebugGetExitGateCountForTest() const { return ExitGates.Num(); }
 	int32 DebugGetSurvivorSpawnCountForTest() const { return SurvivorSpawns.Num(); }
 	FVector DebugGetHunterSpawnForTest() const { return HunterSpawn; }
+	void DebugRecordTrainCabinCentersForTest(float MinX, float MaxX, float FloorZ) { RecordTrainCabinCenters(MinX, MaxX, FloorZ); }
+	const TArray<FVector>& DebugGetTrainCabinCentersForTest() const { return TrainCabinCenters; }
 	FString DebugResolveTravelMapForLevelForTest(const FString& Level) const { return ResolveTravelMapForLevel(Level); }
 protected:
 #endif
@@ -549,6 +610,9 @@ protected:
 	bool bAllowHostForceStart;
 
 	TArray<FVector> SurvivorSpawns;
+	// Centre of each train carriage along the train's length, recorded by RecordTrainCabinCenters when the lobby /
+	// intermission train is built. ResetPlayerToTrainInterior snaps a stuck player to the nearest one by X.
+	TArray<FVector> TrainCabinCenters;
 	TArray<FVector> ScarePoints;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<ABHBreaker>> BreakerActors;
@@ -617,6 +681,11 @@ protected:
 	// selected tutorial). Parsed from ?BHTutorialChain= (default true). Preserved across the chaining travels.
 	bool bTutorialChain = true;
 	bool bTestMode;
+	// Opt-in, reversible Prop Hunt mode (parsed from ?BHPropHunt=1 / the bh.PropHunt cvar in BuildRuntimeFacility).
+	// Mutually exclusive with the practice/test/train sandboxes and revision mode. When false the game is unchanged.
+	bool bPropHuntMode = false;
+	// Server time of the last forced prop taunt (drives the shrinking taunt cadence). See BHGameModePropHunt.cpp.
+	float PropHuntLastTauntServerTime = -1000.0f;
 	EBHRevisionMode RevisionMode;
 	bool bRevisionMode;
 	int32 RevisionTopicMask;

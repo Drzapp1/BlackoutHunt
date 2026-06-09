@@ -53,10 +53,17 @@ public:
 	void SetPracticeMode(bool bNewPracticeMode);
 	void SetTutorialMode(bool bNewTutorialMode);
 	void SetTestMode(bool bNewTestMode);
+	// Prop Hunt (opt-in, reversible): the mode flag + the props-left / total readout + the next forced-taunt time.
+	void SetPropHuntState(bool bNewPropHuntMode, int32 NewPropsRemaining, int32 NewPropsTotal, float NewNextTauntServerTime);
 	void SetBotOptions(bool bNewBotMode, int32 NewTargetBotCount, EBHBotDifficulty NewBotDifficulty);
 	void SetRevisionOptions(EBHRevisionMode NewRevisionMode, int32 NewTopicMask, EBHRevisionDifficultyMix NewDifficultyMix, float NewClassThreshold, float NewIndividualThreshold, int32 NewRoundDuration, int32 NewScareIntensity);
 	void SetRevisionContributionTarget(int32 NewContributionTarget);
 	void SetAllCaughtGraceRemaining(int32 NewRemaining);
+	// Catch-pressure setters (server-only callers; clamp + replicate). See docs/CATCH_PRESSURE.md.
+	void SetClassLifelines(int32 NewRemaining, int32 NewMax);
+	void SetCatchEscalationLevel(int32 NewLevel, int32 Cap);
+	void SetClassmatesCaughtCount(int32 NewCount);
+	bool IsClassLifelinesActive() const { return ClassLifelinesRemaining >= 0; }
 	void SetRevisionSummary(float NewClassMasteryAverage, EBHPhysicsTopic NewWeakTopic, int32 NewReviewTimeRemaining, const FString& NewReviewText);
 	void SetTrainState(EBHTrainPhase NewTrainPhase, int32 NewStageIndex, float NewPhaseEndServerTime, const FString& NewDestinationName, const FString& NewAnnouncement);
 	void SetLobbyTrainActive(bool bActive);
@@ -170,6 +177,20 @@ public:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Test")
 	bool bTestMode;
 
+	// --- Prop Hunt (opt-in, reversible). All default to off/zero so a non-prop-hunt round is unchanged. ----------
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Prop Hunt")
+	bool bPropHuntMode;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Prop Hunt")
+	int32 PropHuntPropsRemaining;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Prop Hunt")
+	int32 PropHuntPropsTotal;
+
+	// Server time of the next forced prop taunt, for the HUD countdown. 0 when not yet scheduled.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Prop Hunt")
+	float PropHuntNextTauntServerTime;
+
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Bots")
 	bool bBotMode;
 
@@ -210,6 +231,26 @@ public:
 	// Drives the everyone-visible HUD countdown during that window (see docs/ROADMAP_MOVEMENT_REVISION.md WS2).
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Revision")
 	int32 AllCaughtGraceRemaining = -1;
+
+	// --- Catch-pressure loop (docs/CATCH_PRESSURE.md) ----------------------------------------------------------
+	// Shared "class lifelines": each un-rescued capture spends one; at 0 the next capture is a REAL elimination
+	// (true spectate) instead of a free Hall-Monitor respawn. -1 = feature disabled this round (parity with the
+	// pre-feature instant-convert behaviour). Everyone can see the pool -> collective dread meter.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Catch Pressure")
+	int32 ClassLifelinesRemaining = -1;
+
+	// Pool denominator (the HUD bar's max). 0 while the feature is off.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Catch Pressure")
+	int32 ClassLifelinesMax = 0;
+
+	// "Closing dark" tier: bumped once per real capture, clamped to bh.CatchEscalationCap. Feeds the Hunter
+	// sprint multiplier + a presence floor lift so every classmate lost makes the room measurably worse.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Catch Pressure")
+	uint8 CatchEscalationLevel = 0;
+
+	// Raw running tally of captures this round (uncapped), drives the "X classmates caught" HUD indicator.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Catch Pressure")
+	int32 ClassmatesCaughtCount = 0;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Revision")
 	float RevisionClassMasteryAverage;

@@ -45,6 +45,7 @@
 #include "Engine/OverlapResult.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
+#include "Materials/MaterialInterface.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "BHCharacterMovementComponent.h"
 #include "GameFramework/GameStateBase.h"
@@ -486,6 +487,43 @@ static TArray<FName> BHCollectLegBones(const USkeletalMeshComponent* Mesh)
 		return Result;
 	}
 	static const TCHAR* Keys[] = { TEXT("thigh"), TEXT("upleg"), TEXT("calf"), TEXT("shin"), TEXT("foot"), TEXT("toe"), TEXT("knee"), TEXT("leg") };
+	const FReferenceSkeleton& RefSkel = Asset->GetRefSkeleton();
+	const int32 BoneCount = RefSkel.GetNum();
+	for (int32 BoneIdx = 0; BoneIdx < BoneCount; ++BoneIdx)
+	{
+		const FName BoneName = RefSkel.GetBoneName(BoneIdx);
+		const FString BoneString = BoneName.ToString();
+		for (const TCHAR* Key : Keys)
+		{
+			if (BoneString.Contains(Key, ESearchCase::IgnoreCase))
+			{
+				Result.Add(BoneName);
+				break;
+			}
+		}
+	}
+	return Result;
+}
+
+// Collect the UPPER-BODY bones (spine/chest/torso, neck, head, shoulders, arms, hands) so the first-person body clone
+// can hide everything above the hips and render LEGS ONLY -- the upper body sits at/above the camera and would clip
+// into it, whereas the hips + legs are entirely below the eyeline. HideBoneByName also collapses each bone's children,
+// so hiding the spine base alone usually clears the whole torso; the explicit list is belt-and-suspenders for rigs
+// that parent arms/shoulders straight off the hips. Keyword match so it works across Quaternius ("Spine"/"Chest"/
+// "Shoulder"/"UpperArm"...) and the Hunter rig ("spine"/"chest"/"shoulder"/"arm"...). None of these substrings occur
+// in a hip or leg bone (hips/pelvis/thigh/calf/shin/upleg/upperleg/lowerleg/knee/foot/toe), so the legs always survive.
+static TArray<FName> BHCollectUpperBodyBones(const USkeletalMeshComponent* Mesh)
+{
+	TArray<FName> Result;
+	const USkeletalMesh* Asset = Mesh ? Mesh->GetSkeletalMeshAsset() : nullptr;
+	if (!Asset)
+	{
+		return Result;
+	}
+	static const TCHAR* Keys[] = {
+		TEXT("spine"), TEXT("chest"), TEXT("torso"), TEXT("neck"), TEXT("head"),
+		TEXT("shoulder"), TEXT("clavicle"), TEXT("arm"), TEXT("hand"), TEXT("finger"), TEXT("thumb")
+	};
 	const FReferenceSkeleton& RefSkel = Asset->GetRefSkeleton();
 	const int32 BoneCount = RefSkel.GetNum();
 	for (int32 BoneIdx = 0; BoneIdx < BoneCount; ++BoneIdx)
@@ -1428,10 +1466,49 @@ ABHCharacter::ABHCharacter(const FObjectInitializer& ObjectInitializer)
 	RoleStaticMesh->SetupAttachment(RoleModelRoot);
 	BHPrepareRoleMeshComponent(RoleStaticMesh);
 
+	// Prop Hunt disguise mesh. Attached to the CAPSULE (not the bobbing AvatarRoot) so a hidden prop sits perfectly
+	// still; visual-only (no collision -- the capsule keeps collision so the seeker can still capture the player); and
+	// owner-no-see so the disguised player isn't blinded by their own prop. Hidden until a disguise is taken.
+	PropDisguiseMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("PropDisguiseMesh"));
+	PropDisguiseMesh->SetupAttachment(GetCapsuleComponent());
+	PropDisguiseMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	PropDisguiseMesh->SetGenerateOverlapEvents(false);
+	PropDisguiseMesh->SetCanEverAffectNavigation(false);
+	PropDisguiseMesh->SetOwnerNoSee(true);
+	PropDisguiseMesh->SetOnlyOwnerSee(false);
+	PropDisguiseMesh->SetMobility(EComponentMobility::Movable);
+	// World-fixed facing: the prop follows the player's LOCATION but not their look yaw, so a "chair" stays put when
+	// you mouse-look. The player re-aims it deliberately with [ and ] (PropDisguiseYaw). Location stays relative.
+	PropDisguiseMesh->SetUsingAbsoluteRotation(true);
+	PropDisguiseMesh->SetHiddenInGame(true);
+	PropDisguiseMesh->SetVisibility(false);
+
 	RoleSkeletalMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("RoleSkeletalMesh"));
 	RoleSkeletalMesh->SetupAttachment(RoleModelRoot);
 	RoleSkeletalMesh->SetAnimationMode(EAnimationMode::AnimationSingleNode);
 	BHPrepareRoleMeshComponent(RoleSkeletalMesh);
+
+	// First-person legs: a clone of the role mesh that ONLY the owner sees (the third-person RoleSkeletalMesh stays
+	// owner-no-see for everyone else). The whole upper body is hidden at runtime so only the legs show when you look
+	// down -- the torso would otherwise clip the camera. No collision, no shadow (the third-person mesh casts the
+	// world shadow), and the pose is driven by the same movement state as the third-person mesh.
+	FirstPersonBodyMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("FirstPersonBodyMesh"));
+	FirstPersonBodyMesh->SetupAttachment(RoleModelRoot);
+	FirstPersonBodyMesh->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+	FirstPersonBodyMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	FirstPersonBodyMesh->SetGenerateOverlapEvents(false);
+	FirstPersonBodyMesh->SetCanEverAffectNavigation(false);
+	FirstPersonBodyMesh->SetOnlyOwnerSee(true);
+	FirstPersonBodyMesh->SetOwnerNoSee(false);
+	FirstPersonBodyMesh->SetCastShadow(false);
+	FirstPersonBodyMesh->bCastDynamicShadow = false;
+	FirstPersonBodyMesh->SetReceivesDecals(false);
+	FirstPersonBodyMesh->SetMobility(EComponentMobility::Movable);
+	// Always tick the pose: this is the player's own body and must keep animating even for the frames it's off-screen
+	// (e.g. looking straight up), so looking back down never catches it mid-freeze. It's a single local mesh -- cheap.
+	FirstPersonBodyMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+	FirstPersonBodyMesh->SetHiddenInGame(true);
+	FirstPersonBodyMesh->SetVisibility(false);
 
 	const auto CreateJoint = [this](FName Name, USceneComponent* Parent)
 	{
@@ -2085,6 +2162,7 @@ void ABHCharacter::Tick(float DeltaSeconds)
 	UpdateViewFeel(DeltaSeconds);
 	UpdateFlashlightFeel(DeltaSeconds);
 	UpdateLowPolyAvatar(DeltaSeconds);
+	UpdateFirstPersonBodyMesh();
 
 	if (bBHopJumpQueued)
 	{
@@ -2304,6 +2382,21 @@ static TAutoConsoleVariable<int32> CVarBHRollCamStyle(
 	-1,
 	TEXT("Dodge-roll camera: -1 = use the player's comfort setting; 0=Off, 1=Subtle, 2=Dip, 3=Full forward somersault."),
 	ECVF_Default);
+// First-person body: render the owning player's own body (head/neck hidden) so they see their torso/arms/legs when
+// looking down. -1 = use the player's [BlackoutHunt.Comfort] FirstPersonBody setting (default ON); 0 = off, 1 = on.
+static TAutoConsoleVariable<int32> CVarBHFirstPersonBody(
+	TEXT("bh.FirstPersonBody"),
+	-1,
+	TEXT("First-person body: -1 = use the player's saved setting (default on); 0 = hide own body, 1 = show own body."),
+	ECVF_Default);
+// Vertical offset (cm) of the owner-only first-person legs relative to the true third-person mesh. 0 keeps the feet on
+// the floor (only the owner sees these legs, so this never affects anyone else). Exposed only as a fine-tune lever --
+// e.g. nudge it if a particular avatar's feet sit slightly high or low.
+static TAutoConsoleVariable<float> CVarBHFirstPersonBodyOffsetZ(
+	TEXT("bh.FirstPersonBodyOffsetZ"),
+	0.0f,
+	TEXT("Vertical offset (cm) of the first-person legs vs the real mesh. 0 = feet on the floor. Default 0."),
+	ECVF_Default);
 // Silent slide-stop: releasing Prone within this early fraction of a Slide brakes into a quiet crouch instead of
 // standing/proning (trades distance for silence). 0 disables the early-brake outcome.
 static TAutoConsoleVariable<float> CVarBHSlideStopWindow(
@@ -2357,6 +2450,26 @@ static TAutoConsoleVariable<float> CVarBHVaultMaxLedgeHeight(
 void ABHCharacter::Landed(const FHitResult& Hit)
 {
 	Super::Landed(Hit);
+
+	// Local "raw" landing jolt: a hard touchdown punches the view, scaled by fall speed. This runs on the owning
+	// client BEFORE the authority gate below, so a remote player (who never reaches the server-only code) still feels
+	// it. Suppressed when the landing converts into a drop-roll (held Sprint+Crouch) or a special move is already
+	// running -- those play the smooth roll instead. GetVelocity().Z still holds the impact speed at this notify.
+	if (IsLocallyControlled() && !IsSpecialMoveActive() && !IsProne())
+	{
+		// Suppress the jolt when this landing converts into a drop-roll -- either the reliable held path (Sprint+Crouch
+		// down through the fall) or a roll tapped within the buffer window just before touchdown -- so the smooth roll
+		// plays instead of a jolt-then-roll. (On a remote client the buffered stamp isn't set, but the held path is.)
+		const float DropRollWindow = CVarBHDropRollWindow.GetValueOnGameThread();
+		const float NowSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+		const bool bBufferedDropRoll = DropRollWindow > 0.0f
+			&& (NowSeconds - LastDropRollInputTime) >= 0.0f && (NowSeconds - LastDropRollInputTime) <= DropRollWindow;
+		const bool bConvertsToDropRoll = (bSprintInputHeld && bCrouchInputHeld) || bBufferedDropRoll;
+		if (!bConvertsToDropRoll)
+		{
+			PlayLandingCameraImpact(-GetVelocity().Z);
+		}
+	}
 
 	if (!HasAuthority())
 	{
@@ -2432,6 +2545,12 @@ void ABHCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCompone
 	PlayerInputComponent->BindAction(TEXT("Scan"), IE_Pressed, this, &ABHCharacter::UseScan);
 	PlayerInputComponent->BindAction(TEXT("HunterPower"), IE_Pressed, this, &ABHCharacter::UseHunterPower);
 	PlayerInputComponent->BindAction(TEXT("Decoy"), IE_Pressed, this, &ABHCharacter::DropDecoy);
+	// Prop Hunt (opt-in, reversible). These actions are inert unless the player is a live prop in prop-hunt mode, so
+	// the keys do nothing in every other mode. Mapped to Z / MiddleMouse / [ / ] in DefaultInput.ini.
+	PlayerInputComponent->BindAction(TEXT("PropDisguise"), IE_Pressed, this, &ABHCharacter::TogglePropDisguise);
+	PlayerInputComponent->BindAction(TEXT("PropLock"), IE_Pressed, this, &ABHCharacter::TogglePropLockInPlace);
+	PlayerInputComponent->BindAction(TEXT("PropRotateLeft"), IE_Pressed, this, &ABHCharacter::RotatePropLeft);
+	PlayerInputComponent->BindAction(TEXT("PropRotateRight"), IE_Pressed, this, &ABHCharacter::RotatePropRight);
 	PlayerInputComponent->BindKey(EKeys::F1, IE_Pressed, this, &ABHCharacter::UsePowerupSlotOne);
 	PlayerInputComponent->BindKey(EKeys::F2, IE_Pressed, this, &ABHCharacter::UsePowerupSlotTwo);
 	PlayerInputComponent->BindKey(EKeys::F3, IE_Pressed, this, &ABHCharacter::UsePowerupSlotThree);
@@ -2475,7 +2594,11 @@ void ABHCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCompone
 	// mouse button (otherwise the Capture key, gated in TryCapture while the cursor is up) clicks
 	// choices / drags arrangement pieces. Number keys 1-4 still work, so keyboard/bots are unaffected.
 	PlayerInputComponent->BindAction(TEXT("NodeMarker"), IE_Pressed, this, &ABHCharacter::UseNodeMarker);
-	PlayerInputComponent->BindAction(TEXT("ResetToTrain"), IE_Pressed, this, &ABHCharacter::RequestResetToTrainInterior);
+	// NOTE: O is intentionally NOT bound here anymore. The roof "return to the cabin" action and the "Stuck in a
+	// Tree" climb-down used to both claim O, and the tree egg shadowed the roof return. O is now a SINGLE
+	// context-aware bind on the player controller (ABHPlayerController::HandleResetKey), which routes to
+	// RequestResetToTrainInterior on the train roof and to RequestResetFromTreeStuckZone (tree climb-down /
+	// reset-to-spawn) otherwise.
 	// Functional sit toggle (C). Free key -- Crouch is LeftCtrl. Pressing a movement key stands you back up.
 	PlayerInputComponent->BindKey(EKeys::C, IE_Pressed, this, &ABHCharacter::ToggleSit);
 	// Social emote wheel (hold X): press opens the radial selector, release plays the highlighted emote. While
@@ -2505,6 +2628,8 @@ void ABHCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 	DOREPLIFETIME_CONDITION(ABHCharacter, Fear, COND_OwnerOnly);
 	DOREPLIFETIME_CONDITION(ABHCharacter, Dread, COND_OwnerOnly);
 	DOREPLIFETIME(ABHCharacter, DetentionMarkRemaining);
+	DOREPLIFETIME(ABHCharacter, bInDetentionHold);
+	DOREPLIFETIME(ABHCharacter, DetentionRescueProgress);
 	DOREPLIFETIME(ABHCharacter, MovementSpecialState);
 	DOREPLIFETIME(ABHCharacter, bTeacherCaptureAttackActive);
 	DOREPLIFETIME(ABHCharacter, TeacherCaptureAttackStartServerTime);
@@ -2513,6 +2638,13 @@ void ABHCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 	DOREPLIFETIME(ABHCharacter, TeacherCaptureNextAllowedServerTime);
 	DOREPLIFETIME(ABHCharacter, bHiddenInLocker);
 	DOREPLIFETIME(ABHCharacter, bOutOfPlay);
+	// Prop Hunt disguise (replicated to everyone -- the seeker must see the prop; the disguise mesh is owner-no-see).
+	DOREPLIFETIME(ABHCharacter, bDisguisedAsProp);
+	DOREPLIFETIME(ABHCharacter, PropDisguiseMeshPath);
+	DOREPLIFETIME(ABHCharacter, PropDisguiseMaterialPath);
+	DOREPLIFETIME(ABHCharacter, PropDisguiseScale);
+	DOREPLIFETIME(ABHCharacter, PropDisguiseYaw);
+	DOREPLIFETIME(ABHCharacter, bPropLockedInPlace);
 	DOREPLIFETIME(ABHCharacter, bSeated);
 	DOREPLIFETIME(ABHCharacter, bSeatLocked);
 	DOREPLIFETIME(ABHCharacter, EmoteId);
@@ -2662,6 +2794,8 @@ void ABHCharacter::MarkCaptured()
 	}
 
 	ExitLocker();
+	// Prop Hunt: a found prop drops its disguise (and any freeze) on capture.
+	ClearPropDisguiseAuthority();
 	// Drop any half-RTT flow-chain request still buffered so a captured pawn can't fire a phantom roll on its way out.
 	BufferedChainMove = EBHMovementSpecialState::None;
 	BufferedChainMoveServerTime = -999.0f;
@@ -2688,6 +2822,8 @@ void ABHCharacter::MarkEscaped()
 	}
 
 	ExitLocker();
+	// Prop Hunt: an escaped prop drops its disguise (and any freeze).
+	ClearPropDisguiseAuthority();
 	// Drop any half-RTT flow-chain request still buffered so an escaped pawn can't fire a phantom roll on its way out.
 	BufferedChainMove = EBHMovementSpecialState::None;
 	BufferedChainMoveServerTime = -999.0f;
@@ -2769,6 +2905,8 @@ void ABHCharacter::ResetRoleWarmupStateForRoundStart()
 	}
 
 	ExitLocker();
+	// Prop Hunt: never carry a disguise (or a freeze) across a round boundary.
+	ClearPropDisguiseAuthority();
 	// Never let the tutorial-only capture shield survive into a live round (e.g. an abandoned tutorial whose pawn is
 	// reused) -- a round always starts with the student fully capturable.
 	bTutorialCaptureImmune = false;
@@ -2818,6 +2956,12 @@ void ABHCharacter::ResetRoleWarmupStateForRoundStart()
 	Fear = 0.0f;
 	Dread = 0.0f;
 	DetentionMarkRemaining = 0.0f;
+	// Catch-pressure: a fresh round never starts a pawn pinned in detention (an abandoned hold could otherwise
+	// survive into the next round's reused pawn). Clears the marker + the rescue lock.
+	bInDetentionHold = false;
+	DetentionRescueProgress = 0.0f;
+	CurrentRescuer = nullptr;
+	DetentionCellLocation = FVector::ZeroVector;
 	HiddenSeconds = 0.0f;
 	bFlashlightOn = false;
 	bHiddenInLocker = false;
@@ -5977,6 +6121,17 @@ void ABHCharacter::UpdateRoleSkeletalAnimation(float Speed2D, float MoveAlpha, f
 	{
 		const bool bMovingProneState = MovementSpecialState == EBHMovementSpecialState::Prone && Speed2D > 20.0f;
 		MovementAnim->SetBlackoutMovementState(MovementSpecialState, CosmeticMovementSpecialState, Speed2D, bMovingProneState, bGrounded, MovementFailurePulse);
+		// Drive the owner's first-person body with the IDENTICAL movement state so it animates (idle / walk / run /
+		// prone / slide) in lockstep instead of sitting in the reference T-pose. It is a separate, head-hidden component
+		// with its own anim instance -- the third-person mesh above is owner-no-see and so isn't pose-ticked for the
+		// owner, which is exactly why we can't just leader-pose it and must feed the clone here.
+		if (FirstPersonBodyMesh)
+		{
+			if (UBHMovementAnimInstance* FPBodyAnim = Cast<UBHMovementAnimInstance>(FirstPersonBodyMesh->GetAnimInstance()))
+			{
+				FPBodyAnim->SetBlackoutMovementState(MovementSpecialState, CosmeticMovementSpecialState, Speed2D, bMovingProneState, bGrounded, MovementFailurePulse);
+			}
+		}
 		return;
 	}
 
@@ -6186,6 +6341,94 @@ void ABHCharacter::ApplyRoleModelVisuals(const ABHPlayerState* BHPS, const FLine
 	BHSetRoleMeshVisible(RoleStaticMesh, bAppliedRoleModel && !bAppliedSkeletalModel);
 	bUsingRoleModel = bAppliedRoleModel;
 	SetLowPolyAvatarVisible(!bAppliedRoleModel);
+
+	// The avatar mesh just (re)applied -- rebuild the owner's first-person body clone to match it (or tear it down if
+	// this role has no skeletal body). The per-frame Tick call keeps it in step afterwards (late possession, toggles).
+	FirstPersonBodyConfiguredAsset.Reset();
+	UpdateFirstPersonBodyMesh();
+}
+
+void ABHCharacter::UpdateFirstPersonBodyMesh()
+{
+	if (!FirstPersonBodyMesh || !RoleSkeletalMesh)
+	{
+		return;
+	}
+
+	// Only the owning player needs (or renders) the first-person body. Tear it down for everyone else and whenever the
+	// feature is off, the role has no skeletal body, or the view should stay clear (seated / hidden in a locker / out).
+	USkeletalMesh* RoleAsset = RoleSkeletalMesh->GetSkeletalMeshAsset();
+	const bool bWantBody = IsLocallyControlled()
+		&& bUsingRoleModel
+		&& RoleAsset != nullptr
+		&& RoleSkeletalMesh->IsVisible()
+		&& ResolveFirstPersonBodyEnabled()
+		&& !bSeated
+		&& !bHiddenInLocker
+		&& !bOutOfPlay;
+
+	if (!bWantBody)
+	{
+		if (bFirstPersonBodyVisible)
+		{
+			FirstPersonBodyMesh->SetHiddenInGame(true);
+			FirstPersonBodyMesh->SetVisibility(false);
+			bFirstPersonBodyVisible = false;
+		}
+		return;
+	}
+
+	// Rebuild the clone (the heavy part: mesh asset, transform, materials, head/neck hide) only when the avatar mesh
+	// changes. This resets bone visibility, so the re-hide always runs against a clean state. The third-person
+	// RoleSkeletalMesh is a separate component and untouched, so other players still see the full head.
+	if (FirstPersonBodyConfiguredAsset.Get() != RoleAsset)
+	{
+		FirstPersonBodyConfiguredAsset = RoleAsset;
+		FirstPersonBodyMesh->SetSkeletalMeshAsset(RoleAsset);
+		// Legs-only: align exactly with the true third-person mesh so the feet meet the floor when you look down
+		// (a vertical offset would sink them into / float them off the ground). The clip-avoidance offset that a
+		// full-body clone needed is unnecessary here -- everything above the hips is hidden below.
+		const float BodyDropZ = CVarBHFirstPersonBodyOffsetZ.GetValueOnGameThread();
+		FirstPersonBodyMesh->SetRelativeLocation(RoleSkeletalMesh->GetRelativeLocation() + FVector(0.0f, 0.0f, BodyDropZ));
+		FirstPersonBodyMesh->SetRelativeRotation(RoleSkeletalMesh->GetRelativeRotation());
+		FirstPersonBodyMesh->SetRelativeScale3D(RoleSkeletalMesh->GetRelativeScale3D());
+
+		// Share the third-person mesh's materials (already palette-tinted dynamic instances) so the body matches.
+		const int32 NumMaterials = RoleSkeletalMesh->GetNumMaterials();
+		for (int32 MatIdx = 0; MatIdx < NumMaterials; ++MatIdx)
+		{
+			FirstPersonBodyMesh->SetMaterial(MatIdx, RoleSkeletalMesh->GetMaterial(MatIdx));
+		}
+
+		// LEGS ONLY: hide the whole upper body (HideBoneByName collapses each bone's children, so the spine base takes
+		// the torso/arms/head with it). The third-person RoleSkeletalMesh is a separate component and untouched, so
+		// other players still see the full character.
+		const TArray<FName> UpperBodyBones = BHCollectUpperBodyBones(FirstPersonBodyMesh);
+		for (const FName& BoneName : UpperBodyBones)
+		{
+			FirstPersonBodyMesh->HideBoneByName(BoneName, PBO_None);
+		}
+	}
+
+	// Ensure the clone is running the movement anim BP, not the single-node reference (T-)pose. The anim graph is
+	// PUSH-driven (UpdateRoleSkeletalAnimation feeds SetBlackoutMovementState to this instance each frame), so the
+	// instance must exist. The class can be momentarily unavailable right after spawn (player state not yet
+	// replicated); this cheap per-frame retry installs it as soon as it loads, without re-running the heavy rebuild.
+	if (FirstPersonBodyMesh->GetAnimationMode() != EAnimationMode::AnimationBlueprint)
+	{
+		if (UClass* AnimClass = BHLoadMovementAnimInstanceClass(GetPlayerState<ABHPlayerState>()))
+		{
+			FirstPersonBodyMesh->SetAnimationMode(EAnimationMode::AnimationBlueprint);
+			FirstPersonBodyMesh->SetAnimInstanceClass(AnimClass);
+		}
+	}
+
+	if (!bFirstPersonBodyVisible)
+	{
+		FirstPersonBodyMesh->SetHiddenInGame(false);
+		FirstPersonBodyMesh->SetVisibility(true);
+		bFirstPersonBodyVisible = true;
+	}
 }
 
 void ABHCharacter::UpdateViewFeel(float DeltaSeconds)
@@ -6214,6 +6457,50 @@ void ABHCharacter::UpdateViewFeel(float DeltaSeconds)
 	}
 	SmoothedStrafeAlpha = FMath::FInterpTo(SmoothedStrafeAlpha, StrafeTarget, DeltaSeconds, 7.5f);
 
+	// ---- "Raw" camera layer setup (local/cosmetic). bRawCamera gates the speed FOV kick, lean, heavier sprint bob,
+	// footplant kick and rumble. The shaky parts respect reduced-camera-shake (ReducedMotionScale) and the Intensity
+	// level; the steady FOV widen is left at the gentle baseline under reduced shake instead of being amplified. ----
+	const FBHPOVAnimationTuning POVTuning = BHResolvePOVAnimationTuning();
+	const bool bReducedShake = IsReducedCameraShakeLocal();
+	const bool bRawCamera = POVTuning.bEnableRawCamera;
+	const float RawLevelScale = BHPOVIntensityScale(POVTuning.Intensity);
+	const float RawComfortScale = bReducedShake ? POVTuning.ReducedMotionScale : 1.0f;
+	const float RawShakeScale = bRawCamera ? RawLevelScale * RawComfortScale : 0.0f;
+
+	// View lean (local owner only): bank into a strafe and into the direction the look-yaw is sweeping. The turn rate is
+	// the per-second change in control yaw, smoothed (and clamped so a frame hitch can't spike it). Published to
+	// ABHPlayerCameraManager, which is the LOCAL view target -- only the locally-controlled pawn has a meaningful
+	// control rotation and is ever read, so skip the work (and reset the state) on every other pawn. The lean is also
+	// suppressed during a somersault so the two cosmetic view rolls don't compound into a disorienting tumble.
+	float LeanTarget = 0.0f;
+	if (IsLocallyControlled())
+	{
+		if (DeltaSeconds > KINDA_SMALL_NUMBER)
+		{
+			const float ControlYaw = GetControlRotation().Yaw;
+			const float TurnRateDegPerSec = bHasLastControlYaw
+				? FMath::Clamp(FMath::FindDeltaAngleDegrees(LastControlYaw, ControlYaw) / DeltaSeconds, -720.0f, 720.0f)
+				: 0.0f;
+			LastControlYaw = ControlYaw;
+			bHasLastControlYaw = true;
+			SmoothedTurnRate = FMath::FInterpTo(SmoothedTurnRate, TurnRateDegPerSec, DeltaSeconds, POVTuning.LeanInterpSpeed);
+		}
+		const bool bRollingNow = MovementSpecialState == EBHMovementSpecialState::Rolling
+			|| CosmeticMovementSpecialState == EBHMovementSpecialState::Rolling;
+		if (bRawCamera && !bRollingNow)
+		{
+			const float StrafeLean = -SmoothedStrafeAlpha * POVTuning.StrafeLeanDeg;
+			const float TurnLean = -FMath::Clamp(SmoothedTurnRate * POVTuning.TurnLeanScale, -POVTuning.TurnLeanMaxDeg, POVTuning.TurnLeanMaxDeg);
+			LeanTarget = (StrafeLean + TurnLean) * RawLevelScale * RawComfortScale;
+		}
+	}
+	else
+	{
+		bHasLastControlYaw = false;
+		SmoothedTurnRate = 0.0f;
+	}
+	ViewLeanRollDeg = FMath::FInterpTo(ViewLeanRollDeg, LeanTarget, DeltaSeconds, POVTuning.LeanInterpSpeed);
+
 	if (SmoothedMoveAlpha > 0.025f && bGrounded)
 	{
 		const float BobFrequency = FMath::Lerp(6.4f, 10.8f, SmoothedSprintAlpha);
@@ -6224,8 +6511,13 @@ void ABHCharacter::UpdateViewFeel(float DeltaSeconds)
 	const float FearPanicAlpha = BHFearPanicAlpha(this);
 	const float DreadStrainAlpha = BHDreadStrainAlpha(this);
 	const float BobScale = SmoothedMoveAlpha * (bIsCrouched ? 0.44f : 1.0f);
-	const float BobZ = FMath::Sin(CameraBobTime * 2.0f) * FMath::Lerp(0.8f, 1.85f, SmoothedSprintAlpha) * BobScale;
-	const float BobY = FMath::Sin(CameraBobTime) * FMath::Lerp(0.45f, 1.05f, SmoothedSprintAlpha) * BobScale;
+	// Raw layer: heavier bob the faster you sprint (only the EXTRA over the baseline is comfort-scaled, so the stock
+	// feel is untouched for everyone else), a sharp downward kick at each footplant, and a low rumble at top speed.
+	const float SprintBobBoost = 1.0f + (POVTuning.SprintBobScale - 1.0f) * SmoothedSprintAlpha * RawShakeScale;
+	const float BobZ = FMath::Sin(CameraBobTime * 2.0f) * FMath::Lerp(0.8f, 1.85f, SmoothedSprintAlpha) * BobScale * SprintBobBoost;
+	const float BobY = FMath::Sin(CameraBobTime) * FMath::Lerp(0.45f, 1.05f, SmoothedSprintAlpha) * BobScale * SprintBobBoost;
+	const float StepKick = -FMath::Abs(FMath::Sin(CameraBobTime * 2.0f)) * POVTuning.StepKickCm * SmoothedSprintAlpha * BobScale * RawShakeScale;
+	const float SprintRumble = FMath::Sin(FlashlightPulseTime * 7.0f) * POVTuning.SprintRumbleCm * SmoothedSprintAlpha * RawShakeScale;
 	const float StressTremor = (FMath::Sin(FlashlightPulseTime * 13.0f) + FMath::Sin(FlashlightPulseTime * 19.7f) * 0.45f)
 		* (FearPanicAlpha * 0.82f + DreadStrainAlpha * 0.34f);
 	const float CrouchOffset = bIsCrouched ? -14.0f : 0.0f;
@@ -6240,7 +6532,7 @@ void ABHCharacter::UpdateViewFeel(float DeltaSeconds)
 			? BHSlideCameraOffsetZ
 			: (VisualSpecialState == EBHMovementSpecialState::Diving ? BHDiveCameraOffsetZ : 0.0f));
 	const FVector TargetCameraLocation = DefaultCameraLocation
-		+ FVector(0.0f, BobY - SmoothedStrafeAlpha * 1.65f, CrouchOffset + SeatedOffset + SpecialOffset + BobZ + StressTremor);
+		+ FVector(0.0f, BobY - SmoothedStrafeAlpha * 1.65f, CrouchOffset + SeatedOffset + SpecialOffset + BobZ + StressTremor + StepKick + SprintRumble);
 
 	// Interpolate the base view-feel location into a member; UpdatePOVAnimation owns the single
 	// final SetRelativeLocation so the additive POV punch doesn't fight the bob interpolation.
@@ -6249,10 +6541,17 @@ void ABHCharacter::UpdateViewFeel(float DeltaSeconds)
 	const float HiddenFOVPenalty = bHiddenInLocker ? 3.5f : 0.0f;
 	const float ExhaustionThreshold = MaxStamina * 0.22f;
 	const float ExhaustionAlpha = ExhaustionThreshold > 0.0f ? FMath::Clamp((ExhaustionThreshold - Stamina) / ExhaustionThreshold, 0.0f, 1.0f) : 0.0f;
-	const float DesiredFOV = DefaultCameraFOV + SmoothedSprintAlpha * 4.8f - HiddenFOVPenalty - HorrorAlpha * 6.8f - ExhaustionAlpha * 1.4f;
+	// Raw layer: a bigger sprint FOV widen, and an ASYMMETRIC interp -- fast to widen (punches out the instant you
+	// break into a sprint), slower to settle back -- which is what reads as a "speed kick". Reduced-camera-shake keeps
+	// the gentle baseline widen and its symmetric ease, since a steady FOV change is comfortable but a hard snap isn't.
+	const float SprintFOVTerm = (bRawCamera && !bReducedShake) ? POVTuning.SprintFOVKickDeg : 4.8f;
+	const float DesiredFOV = DefaultCameraFOV + SmoothedSprintAlpha * SprintFOVTerm - HiddenFOVPenalty - HorrorAlpha * 6.8f - ExhaustionAlpha * 1.4f;
 	// Track the smoothed "base" FOV in a member so the transient jumpscare punch layers on top
 	// without feeding back into the interpolation each frame.
-	SmoothedBaseFOV = FMath::FInterpTo(SmoothedBaseFOV, DesiredFOV, DeltaSeconds, 4.2f);
+	const float FOVInterpSpeed = (bRawCamera && !bReducedShake)
+		? (DesiredFOV > SmoothedBaseFOV ? POVTuning.FOVKickAttackSpeed : POVTuning.FOVKickReturnSpeed)
+		: 4.2f;
+	SmoothedBaseFOV = FMath::FInterpTo(SmoothedBaseFOV, DesiredFOV, DeltaSeconds, FOVInterpSpeed);
 	Camera->SetFieldOfView(FMath::Clamp(SmoothedBaseFOV - ComputeJumpscareFOVPunch(), 30.0f, 140.0f));
 
 	UpdatePOVAnimation(DeltaSeconds);
@@ -6269,7 +6568,9 @@ bool ABHCharacter::IsReducedCameraShakeLocal() const
 
 EBHRollCamStyle ABHCharacter::ResolveRollCamStyle() const
 {
-	int32 Style = static_cast<int32>(EBHRollCamStyle::Dip); // comfortable default: a forward nod, no full flip
+	// Default is the full forward somersault -- the fast, immersive flip. Players prone to motion sickness drop it in
+	// the comfort menu (or it's clamped to Subtle by reduced-camera-shake below); new installs get the action feel.
+	int32 Style = static_cast<int32>(EBHRollCamStyle::Full);
 	if (GConfig)
 	{
 		GConfig->GetInt(TEXT("BlackoutHunt.Comfort"), TEXT("RollCamStyle"), Style, GGameUserSettingsIni);
@@ -6286,6 +6587,22 @@ EBHRollCamStyle ABHCharacter::ResolveRollCamStyle() const
 		Style = static_cast<int32>(EBHRollCamStyle::Subtle);
 	}
 	return static_cast<EBHRollCamStyle>(Style);
+}
+
+bool ABHCharacter::ResolveFirstPersonBodyEnabled() const
+{
+	// Default ON: the player asked to see their body. Persisted as a comfort bool; a console cvar can force either way.
+	bool bEnabled = true;
+	if (GConfig)
+	{
+		GConfig->GetBool(TEXT("BlackoutHunt.Comfort"), TEXT("FirstPersonBody"), bEnabled, GGameUserSettingsIni);
+	}
+	const int32 Override = CVarBHFirstPersonBody.GetValueOnGameThread();
+	if (Override >= 0)
+	{
+		bEnabled = (Override != 0);
+	}
+	return bEnabled;
 }
 
 void ABHCharacter::UpdatePOVAnimation(float DeltaSeconds)
@@ -6519,6 +6836,35 @@ void ABHCharacter::PlayJumpscareCameraImpact(float Intensity, float FOVPunchDegr
 	{
 		JumpscareImpactFOVPunch *= 0.4f;
 	}
+}
+
+void ABHCharacter::PlayLandingCameraImpact(float FallSpeed)
+{
+	if (!IsLocallyControlled() || !GetWorld())
+	{
+		return;
+	}
+
+	const FBHPOVAnimationTuning Tuning = BHResolvePOVAnimationTuning();
+	if (!Tuning.bEnableRawCamera)
+	{
+		return;
+	}
+
+	const float MinSpeed = FMath::Max(0.0f, Tuning.LandingMinFallSpeed);
+	const float MaxSpeed = FMath::Max(MinSpeed + 1.0f, Tuning.LandingMaxFallSpeed);
+	if (FallSpeed <= MinSpeed)
+	{
+		return; // a soft step-down -- no jolt
+	}
+
+	const float Alpha = FMath::Clamp((FallSpeed - MinSpeed) / (MaxSpeed - MinSpeed), 0.0f, 1.0f);
+	const float Intensity = Alpha * Tuning.LandingMaxIntensity * BHPOVIntensityScale(Tuning.Intensity);
+	// Pass the FOV punch UN-scaled by Alpha: ComputeJumpscareFOVPunch already multiplies it by the impact envelope
+	// (which carries the Alpha-derived Intensity), so the effective punch is linear in fall speed -- pre-scaling here
+	// too would make it quadratic. Reuse the jumpscare envelope (downward pitch flinch + FOV zoom); that path clamps
+	// the intensity and applies the reduced-camera-shake comfort scaling, so a hard landing honours the comfort setting.
+	PlayJumpscareCameraImpact(Intensity, Tuning.LandingFOVPunchDeg);
 }
 
 float ABHCharacter::GetEmoteShakeEnvelope() const
@@ -6813,6 +7159,304 @@ void ABHCharacter::ApplyHiddenState()
 	}
 
 	UpdateHunterVisualCue();
+}
+
+// ===================================================================================================================
+// Prop Hunt (opt-in, reversible). Every input handler / RPC gates on IsPropHuntProp(), so the keys are inert for any
+// non-prop player and in every other mode. The disguise hides the body (RoleModelRoot) and shows a capsule-anchored,
+// world-fixed prop mesh that everyone-but-the-owner sees; the capsule keeps its collision so the seeker can still
+// capture the player. See BHGameModePropHunt.cpp for the matching round services.
+// ===================================================================================================================
+bool ABHCharacter::IsPropHuntProp() const
+{
+	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	if (!BHGS || !BHGS->bPropHuntMode)
+	{
+		return false;
+	}
+	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	return BHPS
+		&& BHPS->PlayerRole == EBHPlayerRole::Survivor
+		&& BHPS->LifeState == EBHPlayerLifeState::Alive
+		&& !bOutOfPlay;
+}
+
+bool ABHCharacter::ResolvePropDisguiseTargetFromView(FString& OutMeshPath, FString& OutMaterialPath, FVector& OutScale, FString& OutLabel) const
+{
+	UWorld* World = GetWorld();
+	if (!World || !Camera)
+	{
+		return false;
+	}
+	const FVector Start = Camera->GetComponentLocation();
+	const FVector End = Start + Camera->GetForwardVector() * 700.0f;
+	FCollisionQueryParams Params(FName(TEXT("BHPropDisguiseTrace")), /*bTraceComplex=*/false, this);
+	FHitResult Hit;
+	if (!World->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params))
+	{
+		return false;
+	}
+	const UStaticMeshComponent* HitMesh = Cast<UStaticMeshComponent>(Hit.GetComponent());
+	if (!HitMesh || !HitMesh->GetStaticMesh())
+	{
+		return false;
+	}
+	// Only copy world props -- never another player's body parts / weapon / disguise mesh.
+	if (Hit.GetActor() && Hit.GetActor()->IsA(ABHCharacter::StaticClass()))
+	{
+		return false;
+	}
+	OutMeshPath = HitMesh->GetStaticMesh()->GetPathName();
+	const UMaterialInterface* Material = HitMesh->GetMaterial(0);
+	OutMaterialPath = Material ? Material->GetPathName() : FString();
+	OutScale = HitMesh->GetComponentScale();
+	OutLabel = Hit.GetActor() ? Hit.GetActor()->GetActorNameOrLabel() : FString(TEXT("prop"));
+	return true;
+}
+
+void ABHCharacter::TogglePropDisguise()
+{
+	if (!IsPropHuntProp())
+	{
+		return;
+	}
+	FString MeshPath;
+	FString MaterialPath;
+	FVector Scale = FVector::OneVector;
+	FString Label;
+	if (ResolvePropDisguiseTargetFromView(MeshPath, MaterialPath, Scale, Label))
+	{
+		ServerSetPropDisguise(MeshPath, MaterialPath, Scale);
+	}
+	else
+	{
+		SendStatusMessage(TEXT("Look directly at a prop to become it."));
+	}
+}
+
+void ABHCharacter::ServerSetPropDisguise_Implementation(const FString& MeshPath, const FString& MaterialPath, FVector Scale)
+{
+	if (!HasAuthority() || !IsPropHuntProp() || MeshPath.IsEmpty())
+	{
+		return;
+	}
+	// Server-validate the mesh resolves to a real asset before replicating it to everyone -- rejects a malicious /
+	// garbage path and guarantees clients won't waste a load on something that can only fall back to the cube.
+	if (!LoadObject<UStaticMesh>(nullptr, *MeshPath))
+	{
+		if (ABHPlayerController* PC = Cast<ABHPlayerController>(GetController()))
+		{
+			PC->ClientShowStatusMessage(TEXT("Couldn't copy that prop - try another."), 2.0f);
+		}
+		return;
+	}
+	// A disguised prop is never also hiding in a locker.
+	if (bHiddenInLocker)
+	{
+		ExitLocker();
+	}
+	bDisguisedAsProp = true;
+	PropDisguiseMeshPath = MeshPath;
+	// Drop a material path that doesn't resolve to a loadable asset (e.g. a runtime dynamic-material-instance whose
+	// path is transient and won't exist on other clients) so the disguise falls back to the copied mesh's OWN default
+	// materials -- which look correct -- instead of a broken/cube material on remote clients.
+	PropDisguiseMaterialPath = (!MaterialPath.IsEmpty() && LoadObject<UMaterialInterface>(nullptr, *MaterialPath)) ? MaterialPath : FString();
+	// Clamp the copied scale into a sane band (server-authoritative; the client only suggests it).
+	PropDisguiseScale = (Scale.GetMax() > 0.01f) ? Scale.BoundToBox(FVector(0.1f), FVector(8.0f)) : FVector::OneVector;
+	PropDisguiseYaw = GetActorRotation().Yaw;
+	ApplyPropDisguiseVisuals();
+	if (ABHPlayerController* PC = Cast<ABHPlayerController>(GetController()))
+	{
+		PC->ClientShowStatusMessage(TEXT("Disguised! Hold still or move slowly. [ and ] rotate, middle-mouse locks you."), 2.5f);
+	}
+}
+
+void ABHCharacter::TogglePropLockInPlace()
+{
+	if (!IsPropHuntProp())
+	{
+		return;
+	}
+	ServerSetPropLocked(!bPropLockedInPlace);
+}
+
+void ABHCharacter::ServerSetPropLocked_Implementation(bool bNewLocked)
+{
+	if (!HasAuthority() || !IsPropHuntProp())
+	{
+		return;
+	}
+	SetPropLockedAuthority(bNewLocked);
+}
+
+void ABHCharacter::SetPropLockedAuthority(bool bNewLocked)
+{
+	if (!HasAuthority() || !GetCharacterMovement())
+	{
+		return;
+	}
+	bPropLockedInPlace = bNewLocked;
+	if (bNewLocked)
+	{
+		GetCharacterMovement()->StopMovementImmediately();
+		GetCharacterMovement()->DisableMovement();
+		if (ABHPlayerController* PC = Cast<ABHPlayerController>(GetController()))
+		{
+			PC->ClientShowStatusMessage(TEXT("Locked dead-still. Middle-mouse to break free."), 2.0f);
+		}
+	}
+	else
+	{
+		GetCharacterMovement()->SetMovementMode(MOVE_Walking);
+	}
+}
+
+void ABHCharacter::RotatePropLeft()
+{
+	if (IsPropHuntProp() && bDisguisedAsProp)
+	{
+		ServerRotateProp(-15.0f);
+	}
+}
+
+void ABHCharacter::RotatePropRight()
+{
+	if (IsPropHuntProp() && bDisguisedAsProp)
+	{
+		ServerRotateProp(15.0f);
+	}
+}
+
+void ABHCharacter::ServerRotateProp_Implementation(float DeltaYaw)
+{
+	if (!HasAuthority() || !IsPropHuntProp() || !bDisguisedAsProp)
+	{
+		return;
+	}
+	PropDisguiseYaw = FMath::UnwindDegrees(PropDisguiseYaw + DeltaYaw);
+	ApplyPropDisguiseVisuals();
+}
+
+void ABHCharacter::ApplyPropDisguiseVisuals()
+{
+	if (!PropDisguiseMesh)
+	{
+		return;
+	}
+
+	if (bDisguisedAsProp)
+	{
+		UStaticMesh* MeshAsset = PropDisguiseMeshPath.IsEmpty() ? nullptr : LoadObject<UStaticMesh>(nullptr, *PropDisguiseMeshPath);
+		if (!MeshAsset)
+		{
+			MeshAsset = BHPropVisuals::CubeMesh();
+		}
+		PropDisguiseMesh->SetStaticMesh(MeshAsset);
+		PropDisguiseMesh->SetRelativeScale3D(PropDisguiseScale.GetMin() > 0.01f ? PropDisguiseScale : FVector::OneVector);
+		if (!PropDisguiseMaterialPath.IsEmpty())
+		{
+			if (UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, *PropDisguiseMaterialPath))
+			{
+				const int32 Slots = FMath::Max(1, PropDisguiseMesh->GetNumMaterials());
+				for (int32 Slot = 0; Slot < Slots; ++Slot)
+				{
+					PropDisguiseMesh->SetMaterial(Slot, Material);
+				}
+			}
+		}
+		// Sit the prop's BOTTOM on the floor (capsule base) regardless of the mesh's pivot, and face the chosen WORLD
+		// yaw (the mesh uses absolute rotation). Using the mesh bounds (Origin - Extent = local bottom) makes a
+		// center-pivot engine cube and a base-pivot authored prop both rest on the ground instead of sinking/floating.
+		const float HalfHeight = GetCapsuleComponent() ? GetCapsuleComponent()->GetScaledCapsuleHalfHeight() : 0.0f;
+		float LocalBottomZ = 0.0f;
+		if (MeshAsset)
+		{
+			const FBoxSphereBounds Bounds = MeshAsset->GetBounds();
+			LocalBottomZ = (Bounds.Origin.Z - Bounds.BoxExtent.Z) * PropDisguiseScale.Z;
+		}
+		PropDisguiseMesh->SetRelativeLocation(FVector(0.0f, 0.0f, -HalfHeight - LocalBottomZ));
+		PropDisguiseMesh->SetWorldRotation(FRotator(0.0f, PropDisguiseYaw, 0.0f));
+		PropDisguiseMesh->SetHiddenInGame(false);
+		PropDisguiseMesh->SetVisibility(true);
+		// Hide the whole real body (low-poly parts, role static/skeletal, first-person legs -- all under RoleModelRoot).
+		if (RoleModelRoot)
+		{
+			RoleModelRoot->SetVisibility(false, /*bPropagateToChildren=*/true);
+			RoleModelRoot->SetHiddenInGame(true, /*bPropagateToChildren=*/true);
+		}
+	}
+	else
+	{
+		PropDisguiseMesh->SetHiddenInGame(true);
+		PropDisguiseMesh->SetVisibility(false);
+		if (RoleModelRoot)
+		{
+			RoleModelRoot->SetVisibility(true, /*bPropagateToChildren=*/true);
+			RoleModelRoot->SetHiddenInGame(false, /*bPropagateToChildren=*/true);
+		}
+		// Re-establish the correct per-part avatar for this role (some parts are meant to stay hidden, e.g. the
+		// unused role mesh). ApplyAvatarStyle is the canonical avatar rebuild, so it fixes the "showed everything" above.
+		ApplyAvatarStyle();
+	}
+}
+
+void ABHCharacter::OnRep_PropDisguise()
+{
+	ApplyPropDisguiseVisuals();
+}
+
+void ABHCharacter::OnRep_PropLockedInPlace()
+{
+	UCharacterMovementComponent* Move = GetCharacterMovement();
+	if (!Move)
+	{
+		return;
+	}
+	if (bPropLockedInPlace)
+	{
+		Move->StopMovementImmediately();
+		Move->DisableMovement();
+	}
+	// Only un-freeze if we are actually still in play: a captured/escaped/locker-hidden pawn is frozen by its own
+	// path (ApplyHiddenState), so re-walking it here would wrongly animate an out-of-play prop.
+	else if (Move->MovementMode == MOVE_None && !bHiddenInLocker && !bOutOfPlay)
+	{
+		const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+		if (!BHPS || BHPS->LifeState == EBHPlayerLifeState::Alive)
+		{
+			Move->SetMovementMode(MOVE_Walking);
+		}
+	}
+}
+
+void ABHCharacter::ClearPropDisguiseAuthority()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	const bool bWasLocked = bPropLockedInPlace;
+	const bool bWasDisguised = bDisguisedAsProp;
+	if (!bWasLocked && !bWasDisguised)
+	{
+		return;
+	}
+	bPropLockedInPlace = false;
+	bDisguisedAsProp = false;
+	PropDisguiseMeshPath.Reset();
+	PropDisguiseMaterialPath.Reset();
+	PropDisguiseScale = FVector::OneVector;
+	PropDisguiseYaw = 0.0f;
+	// Release the freeze if we locked it and the pawn is still alive (a captured/escaped pawn is frozen by its own path).
+	if (bWasLocked && GetCharacterMovement())
+	{
+		const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+		if (!BHPS || BHPS->LifeState == EBHPlayerLifeState::Alive)
+		{
+			GetCharacterMovement()->SetMovementMode(MOVE_Walking);
+		}
+	}
+	ApplyPropDisguiseVisuals();
 }
 
 void ABHCharacter::UpdateHunterVisualCue()

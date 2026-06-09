@@ -20,6 +20,7 @@ class UBHPowerupComponent;
 class UMeshComponent;
 class UPointLightComponent;
 class USceneComponent;
+class USkeletalMesh;
 class USkeletalMeshComponent;
 class UStaticMeshComponent;
 class USpotLightComponent;
@@ -117,6 +118,15 @@ public:
 	// tutorial director to detect when a student has tried the flashlight.
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt")
 	bool IsFlashlightOn() const { return bFlashlightOn; }
+
+	// --- Prop Hunt (opt-in, reversible). Read by the HUD; all default to "not a prop" when the mode is off. -------
+	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Prop Hunt")
+	bool IsDisguisedAsProp() const { return bDisguisedAsProp; }
+	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Prop Hunt")
+	bool IsPropLockedInPlace() const { return bPropLockedInPlace; }
+	// Server-authoritative reset of the disguise (also re-shows the real body). Public so round-reset / capture /
+	// escape paths can clear a lingering disguise. No-op off the server or when not disguised.
+	void ClearPropDisguiseAuthority();
 
 	// Tutorial movement lesson: a bitmask of which of the four move directions the player has actually
 	// driven (forward 0x01 / back 0x02 / right 0x04 / left 0x08). Accumulated in MoveForward/MoveRight on the
@@ -230,6 +240,11 @@ public:
 	// ProcessViewRotation and stamps it onto the view rotation. 0 whenever no roll effect is active.
 	float GetViewRollOffsetDeg() const { return ViewRollOffsetDeg; }
 
+	// Current cosmetic first-person VIEW LEAN in degrees -- a bank (roll about the view forward axis) into strafes and
+	// into the direction you turn, part of the "raw" camera layer. Like the somersault above, bUsePawnControlRotation
+	// clobbers component-relative roll, so ABHPlayerCameraManager reads this and rolls the final POV. 0 when no lean.
+	float GetViewLeanRollDeg() const { return ViewLeanRollDeg; }
+
 	// Current cosmetic view-PITCH wobble (degrees) for the "mister ke~" emote shake. Like the roll above, the camera's
 	// bUsePawnControlRotation clobbers component rotation, so ABHPlayerCameraManager reads this and pitches the final
 	// POV (after the control-rotation pitch limits, so the player's aim is never disturbed). 0 when no shake is active.
@@ -285,6 +300,12 @@ protected:
 	void UseScan();
 	void UseHunterPower();
 	void DropDecoy();
+	// --- Prop Hunt (opt-in, reversible) input handlers. Each is a no-op unless this player is a live prop (a
+	// Survivor in prop-hunt mode), so the keys are inert in every other mode. See the prop-hunt block lower down. ---
+	void TogglePropDisguise();   // become the prop you are looking at (re-disguise allowed)
+	void TogglePropLockInPlace(); // freeze perfectly still / unfreeze
+	void RotatePropLeft();
+	void RotatePropRight();
 	// bVisual = answered via the interactive visual element (a clicked diagram region); choice rows
 	// and number keys pass false. Visual answers earn extra mastery (server-side).
 	void SubmitAnswer(int32 AnswerIndex, bool bVisual = false);
@@ -313,11 +334,6 @@ protected:
 	// typed numeric entry keep working whether or not this is on, so keyboard/bots are unaffected.
 	void ToggleQuestionCursor();
 	void UseNodeMarker();
-	// Recovery: ask the server to teleport this player back inside the train if they get stuck outside (e.g. up
-	// on the lobby roof). Local handler -> ServerResetToTrainInterior; the GameMode gates it to train levels.
-	void RequestResetToTrainInterior();
-	UFUNCTION(Server, Reliable)
-	void ServerResetToTrainInterior();
 	// LeftMouseButton press/release while the question cursor is active: select a choice, pick up or
 	// drop an arrangement piece, or tap a keypad key, by hit-testing the HUD's question regions.
 	void OnQuestionPointerDown();
@@ -364,6 +380,16 @@ public:
 	void RequestResetFromTreeStuckZone();
 	UFUNCTION(Server, Reliable)
 	void ServerResetFromTreeStuckZone();
+	// True on the owning client while the pawn is wedged up in a lobby greenhouse tree (see UpdateTreeStuckDetection).
+	// Lets the O-key handler prefer the tree climb-down over the roof "return to the cabin" when both could apply.
+	bool IsTreeStuckActive() const { return bTreeStuckActive; }
+
+	// Recovery: ask the server to teleport this player back inside the train carriage when they are out on the
+	// roof (PUBLIC so ABHPlayerController's context-aware O handler can route here). Local handler ->
+	// ServerResetToTrainInterior; the GameMode gates it to train levels (lobby / intermission).
+	void RequestResetToTrainInterior();
+	UFUNCTION(Server, Reliable)
+	void ServerResetToTrainInterior();
 
 	// Educational hook: the server tells the owning client a graded answer's result (physics topic 0..3,
 	// correct?) -> per-topic mastery + the Honor Roll / Polymath achievements. Cosmetic/local.
@@ -420,6 +446,14 @@ protected:
 	void ResetAntiCampTrackingAuthority();
 	void UpdateViewFeel(float DeltaSeconds);
 	void UpdatePOVAnimation(float DeltaSeconds);
+	// Local-only first-person legs: mirror the third-person role skeletal mesh onto an only-owner-see component with the
+	// whole upper body hidden, so the owning player sees their own legs (not a camera-filling torso) when they look
+	// down. Gated by ResolveFirstPersonBodyEnabled(); re-applies when the avatar mesh changes; hidden while seated / hidden.
+	void UpdateFirstPersonBodyMesh();
+	bool ResolveFirstPersonBodyEnabled() const;
+	// Local-only camera jolt on a hard landing (reuses the jumpscare-impact envelope: a downward flinch + FOV punch).
+	// FallSpeed is the downward speed (cm/s, positive) at touchdown; the magnitude is mapped from the POV tuning.
+	void PlayLandingCameraImpact(float FallSpeed);
 	// Transient jumpscare-impact envelope (0..1) shared by the FOV punch and camera flinch.
 	float GetJumpscareImpactEnvelope() const;
 	float ComputeJumpscareFOVPunch() const;
@@ -483,6 +517,18 @@ protected:
 	void ApplySeatedAvatar(bool bSeatedNow);
 	void ApplyFlashlightState();
 	void ApplyHiddenState();
+	// --- Prop Hunt (opt-in, reversible) internals. -----------------------------------------------------------------
+	// True when this player should be acting as a prop right now (a live Survivor while the GameState is in prop-hunt
+	// mode). The single gate every prop-hunt input handler / RPC checks, so the keys are inert in any other mode.
+	bool IsPropHuntProp() const;
+	// Server-side: line-trace from the pawn's (replicated) aim for a static-mesh world actor to copy. Returns its mesh
+	// path, material path, world scale and a short label. False when nothing copyable is in view.
+	bool ResolvePropDisguiseTargetFromView(FString& OutMeshPath, FString& OutMaterialPath, FVector& OutScale, FString& OutLabel) const;
+	// Apply the current replicated disguise state to the meshes (hide the body + show the prop, or restore the body).
+	// Runs on the server and (via OnRep_PropDisguise) on every client.
+	void ApplyPropDisguiseVisuals();
+	// Server-side: freeze the pawn dead-still (or release it). Reuses the locker/seat movement-freeze idiom.
+	void SetPropLockedAuthority(bool bNewLocked);
 	void UpdateHunterVisualCue();
 	void ConfigureLowPolyAvatar();
 	void UpdateLowPolyAvatar(float DeltaSeconds);
@@ -552,6 +598,16 @@ protected:
 	UFUNCTION(Server, Reliable)
 	void ServerDropDecoy();
 
+	// --- Prop Hunt (opt-in, reversible) server RPCs. The owning client resolves the prop it is looking at (it has the
+	// real camera) and sends the asset paths + scale; the server validates the prop role + clamps the scale before
+	// replicating. Worst-case client trust here is cosmetic (which mesh you wear), never a gameplay advantage. ---
+	UFUNCTION(Server, Reliable)
+	void ServerSetPropDisguise(const FString& MeshPath, const FString& MaterialPath, FVector Scale);
+	UFUNCTION(Server, Reliable)
+	void ServerSetPropLocked(bool bNewLocked);
+	UFUNCTION(Server, Reliable)
+	void ServerRotateProp(float DeltaYaw);
+
 	UFUNCTION(Server, Reliable)
 	void ServerSubmitAnswer(int32 AnswerIndex, bool bVisualAnswer);
 
@@ -579,6 +635,16 @@ protected:
 
 	UFUNCTION()
 	void OnRep_HiddenInLocker();
+
+	// Prop Hunt: re-apply the disguise visuals on clients whenever any disguise field changes (mirrors
+	// ABHRuntimeMeshPropActor::OnRep_PropVisuals -- all the disguise fields point here so a late field still re-applies).
+	UFUNCTION()
+	void OnRep_PropDisguise();
+
+	// Prop Hunt: apply / release the dead-still freeze on clients when the lock flag changes (so the owning client's
+	// predicted movement actually stops, and a captured/escaped/unlocked prop isn't left frozen).
+	UFUNCTION()
+	void OnRep_PropLockedInPlace();
 
 	UFUNCTION()
 	void OnRep_OutOfPlay();
@@ -616,8 +682,20 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UStaticMeshComponent> RoleStaticMesh;
 
+	// Prop Hunt: the disguise mesh shown in place of the body while disguised. Attached to the CAPSULE (not the
+	// bobbing AvatarRoot) so a hidden prop sits dead-still, and owner-no-see so the disguised player isn't blinded by
+	// their own prop. No collision (visual only) -- the capsule keeps collision so the seeker can still capture them.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UStaticMeshComponent> PropDisguiseMesh;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<USkeletalMeshComponent> RoleSkeletalMesh;
+
+	// Only-owner-see first-person legs: a clone of RoleSkeletalMesh with the whole upper body hidden, rendered ONLY for
+	// the owning player so they see their own legs looking down (others still see the full third-person RoleSkeletalMesh,
+	// which stays owner-no-see). Configured in UpdateFirstPersonBodyMesh; empty/hidden when the feature is off.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<USkeletalMeshComponent> FirstPersonBodyMesh;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UStaticMeshComponent> RoleHeadwearMesh;
@@ -844,8 +922,47 @@ protected:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Horror")
 	float DetentionMarkRemaining;
 
+	// --- Catch-pressure detention hold (docs/CATCH_PRESSURE.md; gated by bh.DetentionEnabled) ------------------
+	// True while this pawn is a caught survivor pinned in the detention cell awaiting rescue-or-timeout. Drives
+	// the "FREE (E)" world marker, the CanInteract rescue gate, and keeps the captive frozen-but-visible.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Catch Pressure")
+	bool bInDetentionHold = false;
+
+	// Rescue hold ring 0..1 (a teammate holding E on this captive). Server-written each tick while a rescuer is
+	// registered; replicated so the captive and the rescuer both see the bar climb.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Catch Pressure")
+	float DetentionRescueProgress = 0.0f;
+
+	// Single-rescuer lock (server-only): the one teammate currently holding the rescue interact on this captive.
+	TWeakObjectPtr<ABHCharacter> CurrentRescuer;
+
+	// Where this captive was teleported for the hold (server-only).
+	FVector DetentionCellLocation = FVector::ZeroVector;
+
 	UPROPERTY(ReplicatedUsing = OnRep_HiddenInLocker, BlueprintReadOnly, Category = "Stealth")
 	bool bHiddenInLocker;
+
+	// --- Prop Hunt (opt-in, reversible). All disguise fields share OnRep_PropDisguise so a late-arriving field still
+	// re-applies the visuals (mirrors ABHRuntimeMeshPropActor). Replicated to everyone -- the seeker must see the prop.
+	UPROPERTY(ReplicatedUsing = OnRep_PropDisguise, BlueprintReadOnly, Category = "Blackout Hunt|Prop Hunt")
+	bool bDisguisedAsProp = false;
+
+	UPROPERTY(ReplicatedUsing = OnRep_PropDisguise)
+	FString PropDisguiseMeshPath;
+
+	UPROPERTY(ReplicatedUsing = OnRep_PropDisguise)
+	FString PropDisguiseMaterialPath;
+
+	UPROPERTY(ReplicatedUsing = OnRep_PropDisguise)
+	FVector PropDisguiseScale = FVector::OneVector;
+
+	UPROPERTY(ReplicatedUsing = OnRep_PropDisguise)
+	float PropDisguiseYaw = 0.0f;
+
+	// Frozen-still flag. ReplicatedUsing so the freeze/unfreeze is APPLIED on every client (incl. the owning remote
+	// client, whose predicted movement must stop too), mirroring bHiddenInLocker -- not just shown on the HUD.
+	UPROPERTY(ReplicatedUsing = OnRep_PropLockedInPlace, BlueprintReadOnly, Category = "Blackout Hunt|Prop Hunt")
+	bool bPropLockedInPlace = false;
 
 	// Server-only tutorial capture shield (see SetTutorialCaptureImmune). Not replicated -- capture is authority-decided.
 	bool bTutorialCaptureImmune = false;
@@ -974,6 +1091,16 @@ protected:
 	// Cosmetic first-person view-roll (degrees), updated each frame in UpdatePOVAnimation and read by
 	// ABHPlayerCameraManager (the camera's bUsePawnControlRotation ignores component-relative roll). See GetViewRollOffsetDeg.
 	float ViewRollOffsetDeg = 0.0f;
+	// Cosmetic first-person view LEAN (degrees), updated in UpdateViewFeel and read by ABHPlayerCameraManager. See
+	// GetViewLeanRollDeg. Banks the view into strafes/turns; the supporting smoothed turn-rate state backs it.
+	float ViewLeanRollDeg = 0.0f;
+	float SmoothedTurnRate = 0.0f;
+	float LastControlYaw = 0.0f;
+	bool bHasLastControlYaw = false;
+	// First-person body (local owner only): whether the clone is currently shown, and the asset it was last
+	// configured for, so UpdateFirstPersonBodyMesh only rebuilds (and re-hides the head/neck) when the avatar changes.
+	bool bFirstPersonBodyVisible = false;
+	TWeakObjectPtr<USkeletalMesh> FirstPersonBodyConfiguredAsset;
 	float SmoothedBaseFOV = 0.0f;
 	float JumpscareImpactStartTime = -1.0f;
 	float JumpscareImpactIntensity = 0.0f;

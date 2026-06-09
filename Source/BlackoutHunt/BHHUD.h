@@ -14,6 +14,22 @@
 class ABHCharacter;
 class UFont;
 
+// Role-aware "wallet" readout for the train intermission point-balance panel. Hunters/Teachers spend
+// capture points (earned by capturing); everyone else (survivors, and testers who ride the train as
+// survivors) spend shop points (earned by answering). Built by BHBuildTrainWalletReadout -- a pure free
+// function declared here and defined in BHHUD.cpp OUTSIDE the file-local anonymous namespace, so the
+// train-economy automation tests can assert the role -> label/balance mapping directly.
+struct FBHTrainWalletReadout
+{
+	bool bHunterCurrency = false; // true: capture points (Teacher); false: shop/question points (Survivor)
+	int32 Balance = 0;            // the spendable balance for this role's currency
+	FString ShortLabel;           // compact label for the status readout line, e.g. "CAPTURE" / "POINTS"
+	FString TitleLabel;           // panel heading, e.g. "CAPTURE POINTS" / "SHOP POINTS"
+	FString PurposeHint;          // one-line "what it's for" so the balance never reads as a mystery number
+};
+
+FBHTrainWalletReadout BHBuildTrainWalletReadout(EBHPlayerRole Role, int32 HunterPoints, int32 QuestionPoints);
+
 UCLASS()
 class BLACKOUTHUNT_API ABHHUD : public AHUD
 {
@@ -53,6 +69,10 @@ protected:
 	void DrawMinigameStatus(ABHCharacter* Character);
 	// "Press O to return to the cabin" banner shown while the local player is up on the train roof (Z > 320).
 	void DrawRoofPrompt(ABHCharacter* Character);
+	// Dedicated per-player "wallet" panel shown only during the train intermission: a clear, glanceable
+	// capture/shop point balance (with a gain/spend flash) so hunters and survivors never have to guess what
+	// they can afford at the shop. Pure client-local; reads the owning ABHPlayerState's replicated point totals.
+	void DrawTrainPointBalance(const class ABHGameState* GameState, const class ABHPlayerState* PlayerState);
 	void DrawNearbyNameTags(const ABHCharacter* Character);
 	// Radial emote selector for the local player while they hold X. Drawn as a top overlay; the live wedge is
 	// highlighted from the character's selection stick (ABHCharacter::GetEmoteWheelSelection / HighlightedId).
@@ -72,6 +92,9 @@ protected:
 	// back to the procedural diagram.
 	class UTexture2D* ResolveDiagramTexture(const FString& ObjectPath);
 	void DrawPhaseBanner(const class ABHGameState* GameState, const ABHCharacter* Character);
+	// Prop Hunt (opt-in, reversible): a small top-centre overlay (mode title, props-left counter, taunt countdown,
+	// role-specific prompt). No-op unless GameState->bPropHuntMode; never touches the standard HUD.
+	void DrawPropHuntOverlay(const class ABHGameState* GameState, const class ABHPlayerState* PlayerState, ABHCharacter* Character);
 	// One-shot role onboarding card shown at warmup start (driven by ClientShowRoleIntro).
 	void DrawRoleIntroCard(const class ABHPlayerController* BHPC, const class ABHGameState* GameState);
 	// Full-screen tutorial transition snapshot (dark wash + centred title/body), driven by PC card state.
@@ -138,6 +161,12 @@ protected:
 	bool bWasHiddenInLockerLastTick = false;
 	int32 LastSeenPresencePulse;
 	float PresencePulseEndTime;
+	// Train intermission wallet panel: remember the last-shown balance so a change flashes a "+N" (earned at
+	// the bonus terminal / activity stations) or "-N" (spent at the shop). -1 means "not currently shown", so
+	// re-entering an intermission never flashes a phantom delta off a stale balance.
+	int32 LastSeenWalletBalance = -1;
+	float WalletDeltaFlashEndTime = 0.0f;
+	int32 WalletDeltaAmount = 0;
 	bool bHasVisibleHunterCue;
 	FVector LastVisibleHunterLocation;
 	float LastVisibleHunterDistanceCm;

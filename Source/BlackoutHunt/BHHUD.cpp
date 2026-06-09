@@ -33,6 +33,30 @@
 #include "EngineUtils.h"
 #include "GameFramework/PlayerController.h"
 
+// Pure, role-aware wallet readout for the train intermission point-balance panel. Defined at file scope
+// (NOT inside the anonymous namespace below) so BHTrainEconomyTests can link against it. Hunters/Teachers
+// spend capture points; survivors -- and testers, who ride the train as survivors -- spend shop points.
+FBHTrainWalletReadout BHBuildTrainWalletReadout(EBHPlayerRole Role, int32 HunterPoints, int32 QuestionPoints)
+{
+	FBHTrainWalletReadout Readout;
+	Readout.bHunterCurrency = (Role == EBHPlayerRole::Hunter);
+	if (Readout.bHunterCurrency)
+	{
+		Readout.Balance = HunterPoints;
+		Readout.ShortLabel = TEXT("CAPTURE");
+		Readout.TitleLabel = TEXT("CAPTURE POINTS");
+		Readout.PurposeHint = TEXT("Spend at the shop carriage on Teacher upgrades.");
+	}
+	else
+	{
+		Readout.Balance = QuestionPoints;
+		Readout.ShortLabel = TEXT("POINTS");
+		Readout.TitleLabel = TEXT("SHOP POINTS");
+		Readout.PurposeHint = TEXT("Spend at the shop carriage on Survivor upgrades.");
+	}
+	return Readout;
+}
+
 namespace
 {
 	// Survivor stress warning thresholds (fear/dread are 0..100 meters). These cutoffs
@@ -672,11 +696,14 @@ namespace
 		{
 			const float ServerNow = GameState->GetServerWorldTimeSeconds();
 			const int32 Countdown = FMath::Max(0, FMath::CeilToInt(GameState->TrainPhaseEndServerTime - ServerNow));
-			const FString PointsText = PlayerState
-				? (PlayerState->IsAliveHunter()
-					? FString::Printf(TEXT("CAPTURE %d"), PlayerState->HunterPoints)
-					: FString::Printf(TEXT("POINTS %d"), PlayerState->QuestionPoints))
-				: FString(TEXT("POINTS --"));
+			// Same role -> currency mapping as the dedicated wallet panel (BHBuildTrainWalletReadout), so the
+			// compact status line and the big panel never disagree about which currency you're looking at.
+			FString PointsText(TEXT("POINTS --"));
+			if (PlayerState)
+			{
+				const FBHTrainWalletReadout Wallet = BHBuildTrainWalletReadout(PlayerState->PlayerRole, PlayerState->HunterPoints, PlayerState->QuestionPoints);
+				PointsText = FString::Printf(TEXT("%s %d"), *Wallet.ShortLabel, Wallet.Balance);
+			}
 			return FString::Printf(TEXT("%s / %s / %s / %s / %s"),
 				*TrainPhaseLabel(GameState->TrainPhase),
 				*FormatClock(Countdown),
@@ -1058,6 +1085,14 @@ void ABHHUD::DrawHUD()
 	{
 		DrawHudText(TEXT("NO SIGNAL"), SafePad, SafePad, FLinearColor(0.96f, 0.24f, 0.16f, 0.92f), GEngine->GetSmallFont(), 0.90f * TextScale);
 		DrawHudText(TEXT("HOST OR JOIN"), SafePad, SafePad + 21.0f * TextScale, FLinearColor(0.72f, 0.68f, 0.60f, 0.88f), GEngine->GetSmallFont(), 0.64f * TextScale);
+	}
+
+	// Dedicated point-balance panel during the train intermission, just under the status readout. Suppressed
+	// in the guided tutorial (which owns its own instruction channel); the function itself gates to the
+	// intermission phase and a role that actually has a wallet, and resets its flash tracker otherwise.
+	if (BHGS && !BHGS->bTutorialMode)
+	{
+		DrawTrainPointBalance(BHGS, BHPS);
 	}
 
 	if (BHPS)
@@ -1484,6 +1519,9 @@ void ABHHUD::DrawHUD()
 	DrawMinigameStatus(Character);
 	DrawRoofPrompt(Character);
 
+	// Prop Hunt (opt-in, reversible): top-centre mode readout. Inert unless the round is in prop-hunt mode.
+	DrawPropHuntOverlay(BHGS, BHPS, Character);
+
 	DrawPhaseBanner(BHGS, Character);
 	DrawRoleIntroCard(BHPC, BHGS);
 	DrawDiagramPreview();
@@ -1493,6 +1531,78 @@ void ABHHUD::DrawHUD()
 	DrawEmoteWheel(Character);
 	// Drawn last so the transition snapshot sits on top of the whole HUD.
 	DrawTutorialCard(BHPC);
+}
+
+void ABHHUD::DrawPropHuntOverlay(const ABHGameState* GameState, const ABHPlayerState* PlayerState, ABHCharacter* Character)
+{
+	if (!Canvas || !GEngine || !GameState || !GameState->bPropHuntMode)
+	{
+		return;
+	}
+
+	const float TextScale = HudTextScale;
+	const UFont* Font = GEngine->GetSmallFont();
+	const float CenterX = Canvas->ClipX * 0.5f;
+	float Y = FMath::Max(20.0f, Canvas->ClipY * 0.045f);
+
+	auto DrawCentered = [this, Font](const FString& Text, float CenterXIn, float YIn, const FLinearColor& Color, float Scale) -> float
+	{
+		float W = 0.0f;
+		float H = 0.0f;
+		Canvas->TextSize(Font, Text, W, H, Scale, Scale);
+		// Slight drop shadow so the readout stays legible over a bright prop / wall.
+		DrawHudText(Text, CenterXIn - W * 0.5f + 1.0f, YIn + 1.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.7f), Font, Scale);
+		DrawHudText(Text, CenterXIn - W * 0.5f, YIn, Color, Font, Scale);
+		return H;
+	};
+
+	// Mode title.
+	Y += DrawCentered(TEXT("PROP HUNT"), CenterX, Y, FLinearColor(0.98f, 0.78f, 0.30f, 1.0f), 0.92f * TextScale) + 4.0f * TextScale;
+
+	// Props-left counter.
+	const FString CountText = FString::Printf(TEXT("PROPS LEFT  %d / %d"), GameState->PropHuntPropsRemaining, GameState->PropHuntPropsTotal);
+	Y += DrawCentered(CountText, CenterX, Y, MainText(), 0.74f * TextScale) + 3.0f * TextScale;
+
+	// Taunt countdown (Hunt only).
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	if (GameState->RoundPhase == EBHRoundPhase::Hunt && GameState->PropHuntNextTauntServerTime > Now)
+	{
+		const int32 TauntIn = FMath::CeilToInt(GameState->PropHuntNextTauntServerTime - Now);
+		Y += DrawCentered(FString::Printf(TEXT("TAUNT IN  %ds"), TauntIn), CenterX, Y, ActivePalette.Bad, 0.62f * TextScale) + 3.0f * TextScale;
+	}
+
+	// Role-specific prompt.
+	const EBHPlayerRole PropRole = PlayerState ? PlayerState->PlayerRole : EBHPlayerRole::Unassigned;
+	FString RoleLine;
+	FLinearColor RoleColor = MutedText();
+	if (PropRole == EBHPlayerRole::Hunter)
+	{
+		RoleLine = TEXT("YOU ARE THE SEEKER - find every disguised prop. Q scans, Mouse1 swings.");
+		RoleColor = ActivePalette.Bad;
+	}
+	else if (PropRole == EBHPlayerRole::Survivor)
+	{
+		if (PlayerState && PlayerState->LifeState != EBHPlayerLifeState::Alive)
+		{
+			RoleLine = TEXT("FOUND - spectating. Better luck next round!");
+		}
+		else if (Character && Character->IsDisguisedAsProp())
+		{
+			RoleLine = Character->IsPropLockedInPlace()
+				? TEXT("DISGUISED & LOCKED. Middle-mouse to break free. [ ] rotate, Z re-disguise.")
+				: TEXT("DISGUISED. Middle-mouse locks you still, [ ] rotate, Z re-disguise.");
+			RoleColor = ActivePalette.Good;
+		}
+		else
+		{
+			RoleLine = TEXT("YOU ARE A PROP - look at a prop and press Z to become it. Survive the timer!");
+			RoleColor = ActivePalette.Good;
+		}
+	}
+	if (!RoleLine.IsEmpty())
+	{
+		DrawCentered(RoleLine, CenterX, Y, RoleColor, 0.60f * TextScale);
+	}
 }
 
 void ABHHUD::DrawMinigameStatus(ABHCharacter* Character)
@@ -1598,7 +1708,7 @@ void ABHHUD::DrawRoofPrompt(ABHCharacter* Character)
 		return;
 	}
 	// The walkable roof slab top is Z=316 and a standing player inside is ~212, so Z>320 cleanly means "on the
-	// roof". O is already bound to ResetToTrain (-> RequestResetToTrainInterior), which teleports back inside.
+	// roof". O routes through ABHPlayerController::HandleResetKey, which on a train roof teleports back inside.
 	if (Character->GetActorLocation().Z <= 320.0f)
 	{
 		return;
@@ -1617,6 +1727,69 @@ void ABHHUD::DrawRoofPrompt(ABHCharacter* Character)
 	const float PanelY = Canvas->ClipY * 0.16f;
 	DrawPanel(PanelX, PanelY, PanelW, PanelH, FLinearColor(0.03f, 0.04f, 0.06f, 0.88f), FLinearColor(1.0f, 0.82f, 0.34f, 0.96f));
 	DrawHudText(Message, PanelX + 28.0f * Scale, PanelY + 14.0f * Scale, FLinearColor(1.0f, 0.94f, 0.62f, 1.0f), Font, Scale);
+}
+
+void ABHHUD::DrawTrainPointBalance(const ABHGameState* GameState, const ABHPlayerState* PlayerState)
+{
+	// Only the train intermission has a spendable "wallet" worth surfacing, and only roles that actually
+	// carry one (hunters / survivors / testers -- not spectators or the unassigned). Reset the flash tracker
+	// whenever the panel is hidden so a later intermission never flashes a delta against a stale balance.
+	const bool bEligibleRole = PlayerState
+		&& (PlayerState->PlayerRole == EBHPlayerRole::Hunter
+			|| PlayerState->PlayerRole == EBHPlayerRole::Survivor
+			|| PlayerState->PlayerRole == EBHPlayerRole::Tester);
+	if (!Canvas || !GEngine || !GameState || GameState->RoundPhase != EBHRoundPhase::Intermission || !bEligibleRole)
+	{
+		LastSeenWalletBalance = -1;
+		return;
+	}
+
+	const FBHTrainWalletReadout Wallet = BHBuildTrainWalletReadout(PlayerState->PlayerRole, PlayerState->HunterPoints, PlayerState->QuestionPoints);
+
+	// Edge-detect a balance change to flash a "+N" (earned at the bonus terminal / activity stations) or
+	// "-N" (spent at the shop) next to the number, so the player sees the swing rather than guessing.
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	if (LastSeenWalletBalance >= 0 && Wallet.Balance != LastSeenWalletBalance)
+	{
+		WalletDeltaAmount = Wallet.Balance - LastSeenWalletBalance;
+		WalletDeltaFlashEndTime = Now + 1.7f;
+	}
+	LastSeenWalletBalance = Wallet.Balance;
+
+	// Self-contained panel: scale geometry + interior text together by max(widget,text) like the other
+	// centred popups, anchored under the text-scaled top-left status readout (timer/action/detail/aux rows).
+	const float SafePad = FMath::Max(18.0f, Canvas->ClipX * 0.014f);
+	const float S = FMath::Max(HudWidgetScale, HudTextScale);
+	const float PanelW = FMath::Clamp(Canvas->ClipX * 0.24f, 232.0f, 344.0f) * S;
+	const float PanelH = 72.0f * S;
+	const float PanelX = SafePad;
+	const float PanelY = SafePad + 96.0f * HudTextScale;
+
+	FLinearColor Accent = Wallet.bHunterCurrency ? ActivePalette.WarnHot : ActivePalette.Good;
+	const float FlashAlpha = FMath::Clamp((WalletDeltaFlashEndTime - Now) / 1.7f, 0.0f, 1.0f);
+	if (FlashAlpha > 0.0f)
+	{
+		// Briefly warm the accent toward bright cream when the balance changes.
+		Accent = FMath::Lerp(Accent, FLinearColor(1.0f, 0.98f, 0.86f, Accent.A), 0.55f * FlashAlpha);
+	}
+
+	DrawPanel(PanelX, PanelY, PanelW, PanelH, ActivePalette.PanelFill, Accent);
+
+	// Role-coloured heading, a big glanceable balance number, and a one-line "what it buys" hint.
+	DrawHudText(Wallet.TitleLabel, PanelX + 15.0f * S, PanelY + 9.0f * S, Accent, GEngine->GetSmallFont(), 0.60f * S);
+
+	const UFont* BalanceFont = GEngine->GetLargeFont() ? GEngine->GetLargeFont() : GEngine->GetSmallFont();
+	DrawHudText(FString::FromInt(Wallet.Balance), PanelX + 15.0f * S, PanelY + 24.0f * S, MainText(), BalanceFont, 1.0f * S);
+
+	if (FlashAlpha > 0.0f && WalletDeltaAmount != 0)
+	{
+		const bool bGain = WalletDeltaAmount > 0;
+		const FString DeltaText = FString::Printf(TEXT("%s%d"), bGain ? TEXT("+") : TEXT("-"), FMath::Abs(WalletDeltaAmount));
+		const FLinearColor DeltaColor = WithAlpha(bGain ? ActivePalette.Good : ActivePalette.Bad, FlashAlpha);
+		DrawRightAlignedText(DeltaText, PanelX + PanelW - 15.0f * S, PanelY + 26.0f * S, DeltaColor, BalanceFont, 0.8f * S);
+	}
+
+	DrawHudText(Wallet.PurposeHint, PanelX + 15.0f * S, PanelY + PanelH - 17.0f * S, ActivePalette.TextDim, GEngine->GetSmallFont(), 0.46f * S);
 }
 
 FLinearColor ABHHUD::MainText() const

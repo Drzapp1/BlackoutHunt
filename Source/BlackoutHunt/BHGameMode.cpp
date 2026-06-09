@@ -81,7 +81,6 @@
 #include "BHTrainTunnelMotionActor.h"
 #include "BHTrainSeat.h"
 #include "BHTrainStopCord.h"
-#include "BHTrainHandStrap.h"
 #include "Components/BoxComponent.h"
 #include "Components/BrushComponent.h"
 #include "Components/DirectionalLightComponent.h"
@@ -383,7 +382,7 @@ ABHJumpscareMonster* BHSpawnScriptedJumpscareStage(UWorld* World, AActor* Owner,
 	return Monster;
 }
 
-FVector BHResolveSpawnLocation(const UWorld* World, const FVector& DesiredLocation, int32 PlayerIndex)
+FVector BHResolveSpawnLocation(const UWorld* World, const FVector& DesiredLocation, int32 PlayerIndex, const AActor* IgnoreActor = nullptr)
 {
 	if (!World)
 	{
@@ -408,11 +407,21 @@ FVector BHResolveSpawnLocation(const UWorld* World, const FVector& DesiredLocati
 
 	const int32 StartOffset = FMath::Abs(PlayerIndex) % UE_ARRAY_COUNT(Rings);
 	const FCollisionShape Capsule = FCollisionShape::MakeCapsule(42.0f, 98.0f);
+	// IgnoreActor lets a caller exclude one pawn from the overlap test. The fresh-spawn callers pass nullptr (the
+	// pawn isn't placed yet, so there's nothing to ignore). The cabin-reset caller passes the pawn being moved so
+	// the resolve doesn't treat the player's OWN current capsule as a blocker -- otherwise, on the lobby train
+	// (where pawns still block ECC_Pawn) an already-centred O press would be nudged sideways off the exact centre.
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(BHResolveSpawnLocation), false);
+	if (IgnoreActor)
+	{
+		QueryParams.AddIgnoredActor(IgnoreActor);
+	}
 	auto IsClear = [&](const FVector& P) -> bool
 	{
-		// Tests against pawns that have ALREADY spawned, so sequential joins stack OUTWARD instead of on top of
-		// each other. (Two players who modulo to the same SurvivorSpawns index still get separated here.)
-		return !World->OverlapBlockingTestByChannel(P, FQuat::Identity, ECC_Pawn, Capsule);
+		// Tests against pawns that have ALREADY spawned (and any world geometry that blocks the Pawn channel, e.g.
+		// train walls/furniture), so sequential joins stack OUTWARD instead of on top of each other or inside a
+		// prop. (Two players who modulo to the same SurvivorSpawns index still get separated here.)
+		return !World->OverlapBlockingTestByChannel(P, FQuat::Identity, ECC_Pawn, Capsule, QueryParams);
 	};
 
 	// 1) The fixed close-in ring first: keeps everyone in the intended cluster when there is room.
@@ -1068,6 +1077,8 @@ void ABHGameMode::BeginPlay()
 		PublishObjectiveBeats();
 		BHGS->SetPracticeMode(bPracticeMode);
 		BHGS->SetTestMode(bTestMode);
+		// Prop Hunt: replicate the mode flag early so clients' HUDs switch to the prop-hunt readout from the lobby on.
+		BHGS->SetPropHuntState(bPropHuntMode, 0, 0, 0.0f);
 		BHGS->SetBotOptions(bBotMode, TargetBotCount, BotDifficulty);
 		BHGS->SetRevisionOptions(RevisionMode, RevisionTopicMask, RevisionDifficultyMix, RevisionClassThreshold, RevisionIndividualThreshold, RevisionRoundDuration, RevisionScareIntensity);
 		RefreshRevisionContributionGateTarget();
@@ -1667,7 +1678,9 @@ void ABHGameMode::NotifySurvivorCaptured(ABHCharacter* Survivor, ABHCharacter* C
 		return;
 	}
 
-	const bool bCanReturnAsFakeHunter = BHGS && BHGS->RoundPhase == EBHRoundPhase::Hunt && SurvivorPS && SurvivorPS->IsAliveSurvivor() && SurvivorController;
+	// Prop Hunt: a "found" prop is OUT (spectating), never a returning Hall Monitor -- suppress the conversion so the
+	// seeker's win condition (all props caught) resolves cleanly and "props found" math stays exact.
+	const bool bCanReturnAsFakeHunter = !bPropHuntMode && BHGS && BHGS->RoundPhase == EBHRoundPhase::Hunt && SurvivorPS && SurvivorPS->IsAliveSurvivor() && SurvivorController;
 	const FVector CaptureLocation = Survivor->GetActorLocation();
 	const int32 LostQuestionPoints = SurvivorPS ? SurvivorPS->ApplyCaughtQuestionPointPenalty(0.25f) : 0;
 	RecordPlaytestTelemetryMarker(TEXT("capture"), CaptureLocation, bCanReturnAsFakeHunter ? TEXT("hall_monitor_return") : TEXT("eliminated"), CapturingHunterPS, SurvivorPS);
@@ -3500,6 +3513,26 @@ int32 ABHGameMode::ResolveRevisionNodeTargetFor(int32 StudentCount, int32 StageI
 	return FMath::Clamp(RevisionNodeTarget, 0, FMath::Max(0, StationCount));
 }
 
+bool ABHGameMode::RevisionNodeAnswerCapApplies(int32 HumanStudentCount, int32 PerNodeAnswerTarget)
+{
+	// A node needs PerNodeAnswerTarget DISTINCT correct answers, and each student may answer it once. So the
+	// once-per-node cap is satisfiable (and therefore worth enforcing for coverage) only when at least that
+	// many live humans are present. With fewer humans the node can never reach the target, so relax the cap.
+	return HumanStudentCount >= FMath::Max(1, PerNodeAnswerTarget);
+}
+
+bool ABHGameMode::ShouldEnforceRevisionNodeAnswerCap() const
+{
+	if (!bRevisionMode)
+	{
+		// The once-per-node spread rule only exists in revision mode; standard Hunt nodes are unaffected.
+		return true;
+	}
+	// Humans-only count (bots are excluded from every revision score, so they cannot fill a node's quota).
+	const int32 HumanStudents = CountActiveRevisionStudents(GameState, true);
+	return RevisionNodeAnswerCapApplies(HumanStudents, GetRevisionQuestionTargetPerNode());
+}
+
 FVector ABHGameMode::ResolveFoggroundsDoorFrameOrigin(const FVector& DoorLocation)
 {
 	return FVector(DoorLocation.X, DoorLocation.Y, 0.0f);
@@ -3572,6 +3605,118 @@ static TAutoConsoleVariable<float> CVarBHMonitorDockMaxPct(
 	0.6f,
 	TEXT("Revision mode: hard cap on the unfinished-revision monitor point dock. (Default 0.6)"),
 	ECVF_Default);
+
+// --- Catch-pressure loop CVars (docs/CATCH_PRESSURE.md) ------------------------------------------------------
+// Escalating recapture tax: fraction of unspent question points lost, climbing per catch from Base by Step, capped.
+static TAutoConsoleVariable<float> CVarBHRecaptureTaxBase(
+	TEXT("bh.RecaptureTaxBase"), 0.25f,
+	TEXT("Catch-pressure: question-point penalty fraction on a player's FIRST capture of the round. (Default 0.25 = today's value)"),
+	ECVF_Default);
+static TAutoConsoleVariable<float> CVarBHRecaptureTaxStep(
+	TEXT("bh.RecaptureTaxStep"), 0.15f,
+	TEXT("Catch-pressure: extra penalty fraction added per prior capture this round (escalating recapture tax). (Default 0.15)"),
+	ECVF_Default);
+static TAutoConsoleVariable<float> CVarBHRecaptureTaxMax(
+	TEXT("bh.RecaptureTaxMax"), 0.60f,
+	TEXT("Catch-pressure: hard cap on the recapture tax fraction. (Default 0.60)"),
+	ECVF_Default);
+
+// Closing dark: each capture bumps the escalation level (capped); the level feeds a Hunter sprint multiplier.
+static TAutoConsoleVariable<int32> CVarBHCatchEscalationCap(
+	TEXT("bh.CatchEscalationCap"), 5,
+	TEXT("Catch-pressure: max closing-dark escalation level (captures beyond this stop ramping). (Default 5)"),
+	ECVF_Default);
+static TAutoConsoleVariable<float> CVarBHCatchEscalationSprintPerStep(
+	TEXT("bh.CatchEscalationSprintPerStep"), 0.02f,
+	TEXT("Catch-pressure: Hunter sprint-speed bonus added per escalation level. (Default 0.02 = +2%/catch)"),
+	ECVF_Default);
+static TAutoConsoleVariable<float> CVarBHCatchEscalationSprintMaxBonus(
+	TEXT("bh.CatchEscalationSprintMaxBonus"), 0.10f,
+	TEXT("Catch-pressure: hard cap on the closing-dark Hunter sprint bonus. (Default 0.10 = +10%)"),
+	ECVF_Default);
+
+// Class lifeline pool: shared lives. Pool = clamp(Base + floor(PerSurvivor * survivors), 1, Max). At 0 the next
+// un-rescued capture is a true elimination (spectate) instead of a free Hall-Monitor respawn.
+static TAutoConsoleVariable<int32> CVarBHClassLifelinesEnabled(
+	TEXT("bh.ClassLifelinesEnabled"), 1,
+	TEXT("Catch-pressure: 1 = arm the shared class lifeline pool (true-elimination at zero); 0 = always convert to monitor. (Default 1)"),
+	ECVF_Default);
+static TAutoConsoleVariable<int32> CVarBHClassLifelinesBase(
+	TEXT("bh.ClassLifelinesBase"), 2,
+	TEXT("Catch-pressure: base class lifelines before the per-survivor bonus. (Default 2)"),
+	ECVF_Default);
+static TAutoConsoleVariable<float> CVarBHClassLifelinesPerSurvivor(
+	TEXT("bh.ClassLifelinesPerSurvivor"), 0.5f,
+	TEXT("Catch-pressure: extra class lifelines per starting survivor (floored). (Default 0.5)"),
+	ECVF_Default);
+static TAutoConsoleVariable<int32> CVarBHClassLifelinesMax(
+	TEXT("bh.ClassLifelinesMax"), 6,
+	TEXT("Catch-pressure: hard cap on the class lifeline pool. (Default 6)"),
+	ECVF_Default);
+
+// Climb-back: a monitor who reaches (monitor gate + this many) contributions returns to Survivor mid-round.
+static TAutoConsoleVariable<int32> CVarBHClimbBackExtraContributions(
+	TEXT("bh.ClimbBackExtraContributions"), 3,
+	TEXT("Catch-pressure: contributions ABOVE the monitor tool-unlock gate needed for a monitor to climb back to Survivor. (Default 3)"),
+	ECVF_Default);
+static TAutoConsoleVariable<int32> CVarBHClimbBackToolActions(
+	TEXT("bh.ClimbBackToolActions"), 4,
+	TEXT("Catch-pressure: NON-revision climb-back currency -- successful monitor tool uses needed to return to Survivor. (Default 4)"),
+	ECVF_Default);
+
+// Detention hold + rescue. SHIPS OFF: needs an in-engine + 3-client smoke test of the cell-camp balance and the
+// un-hide/collision ordering before it goes live. When off, a capture converts straight to monitor as today.
+static TAutoConsoleVariable<int32> CVarBHDetentionEnabled(
+	TEXT("bh.DetentionEnabled"), 0,
+	TEXT("Catch-pressure: 1 = caught survivors are held in a detention cell (teammate can rescue) before converting; 0 = instant convert (today's behaviour). (Default 0)"),
+	ECVF_Default);
+static TAutoConsoleVariable<float> CVarBHDetentionHoldSeconds(
+	TEXT("bh.DetentionHoldSeconds"), 12.0f,
+	TEXT("Catch-pressure: base detention/ransom window in seconds before an un-rescued captive converts. (Default 12)"),
+	ECVF_Default);
+static TAutoConsoleVariable<float> CVarBHDetentionHoldReducePerCatch(
+	TEXT("bh.DetentionHoldReducePerCatch"), 2.5f,
+	TEXT("Catch-pressure: seconds shaved off the detention window per prior capture this round (repeat offenders convert faster). (Default 2.5)"),
+	ECVF_Default);
+static TAutoConsoleVariable<float> CVarBHDetentionHoldMinSeconds(
+	TEXT("bh.DetentionHoldMinSeconds"), 6.0f,
+	TEXT("Catch-pressure: floor on the detention window however many times a player has been caught. (Default 6)"),
+	ECVF_Default);
+static TAutoConsoleVariable<float> CVarBHDetentionRescueHoldSeconds(
+	TEXT("bh.DetentionRescueHoldSeconds"), 1.75f,
+	TEXT("Catch-pressure: how long a teammate must hold the rescue interact to free a captive. (Default 1.75)"),
+	ECVF_Default);
+static TAutoConsoleVariable<int32> CVarBHDetentionRescueReward(
+	TEXT("bh.DetentionRescueReward"), 15,
+	TEXT("Catch-pressure: question points awarded to a teammate who frees a captive from detention. (Default 15)"),
+	ECVF_Default);
+
+float ABHGameMode::ComputeRecaptureTaxFraction(int32 InTimesCaught) const
+{
+	return BHComputeRecaptureTaxFraction(
+		InTimesCaught,
+		CVarBHRecaptureTaxBase.GetValueOnGameThread(),
+		CVarBHRecaptureTaxStep.GetValueOnGameThread(),
+		CVarBHRecaptureTaxMax.GetValueOnGameThread());
+}
+
+float ABHGameMode::ComputeDetentionHoldSeconds(int32 InTimesCaught) const
+{
+	return BHComputeDetentionHoldSeconds(
+		CVarBHDetentionHoldSeconds.GetValueOnGameThread(),
+		InTimesCaught,
+		CVarBHDetentionHoldReducePerCatch.GetValueOnGameThread(),
+		CVarBHDetentionHoldMinSeconds.GetValueOnGameThread());
+}
+
+int32 ABHGameMode::GetClimbBackContributionTarget() const
+{
+	// One clear bar above the monitor tool-unlock gate: unlock tools first, then keep working to earn a return
+	// to Survivor. Clamped so it can never dip to/under the gate (which would make climb-back instant).
+	const int32 Gate = GetRevisionMinimumContributionTarget();
+	const int32 Extra = FMath::Max(1, CVarBHClimbBackExtraContributions.GetValueOnGameThread());
+	return Gate + Extra;
+}
 
 int32 ABHGameMode::CountMonitorsBelowRevisionTarget() const
 {
@@ -6306,6 +6451,18 @@ void ABHGameMode::BuildRuntimeFacility()
 		bRevisionMode = true;
 		RevisionMode = EBHRevisionMode::PhysicsClassroom;
 	}
+	// --- Prop Hunt (opt-in, reversible). ?BHPropHunt=1 or the bh.PropHunt cvar flips the live Hunt into a
+	// hide-as-a-prop game. Mutually exclusive with the practice/test/train sandboxes and revision mode; when off the
+	// game is byte-for-byte unchanged. The cvar is global and survives ServerTravel, so a host that flips it in the
+	// console carries prop hunt through every level of the session. See BHGameModePropHunt.cpp. ---
+	const FString PropHuntOption = GetWorld()->URL.GetOption(TEXT("BHPropHunt="), TEXT(""));
+	bPropHuntMode = !bPracticeMode && !bTestMode && !bTrainIntermissionLevel
+		&& (IsTrueOption(PropHuntOption) || BHIsPropHuntCVarEnabled());
+	if (bPropHuntMode)
+	{
+		bRevisionMode = false;
+		RevisionMode = EBHRevisionMode::None;
+	}
 	if (bRevisionMode)
 	{
 		const FString RevisionTopicsOption = GetWorld()->URL.GetOption(TEXT("BHRevisionTopics="), TEXT("All"));
@@ -8315,6 +8472,9 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 	const float TubeMinX = -5250.0f;
 	const float TubeMaxX = 5250.0f;
 	const float TubeLen = (TubeMaxX - TubeMinX) / 100.0f;   // 75 units = 7500cm
+	// Cabin centres for the O-key unstick (reset to the centre of the car you're in). Floor Z matches the spawn
+	// transforms above. Recorded from the tube bounds so all seven cars (incl. the two end lounges) are covered.
+	RecordTrainCabinCenters(TubeMinX, TubeMaxX, 124.0f);
 	const float WallY = 300.0f;   // interior side-wall plane
 	const float CeilZ = 300.0f;   // interior ceiling underside
 	const float WinBotZ = 118.0f; // window band bottom
@@ -8814,6 +8974,14 @@ void ABHGameMode::BuildTrainLobbyLevel()
 	const float TubeMinX = -11250.0f;
 	const float TubeMaxX = 11250.0f;
 	const float TubeLen = (TubeMaxX - TubeMinX) / 100.0f;
+	// Cabin centres for the O-key unstick (reset to the centre of the car you're in). Floor Z matches the per-car
+	// SurvivorSpawns below; recorded from the tube bounds so all NumCars carriages are covered. NumCars and the
+	// tube bounds are separate constants here, so assert they still agree -- if a future edit drifts one, this
+	// fires loudly instead of silently leaving a car without a reset anchor.
+	RecordTrainCabinCenters(TubeMinX, TubeMaxX, 124.0f);
+	ensureMsgf(TrainCabinCenters.Num() == NumCars,
+		TEXT("Lobby cabin-centre count (%d) != NumCars (%d); tube bounds and NumCars have drifted apart."),
+		TrainCabinCenters.Num(), NumCars);
 	const float WallY = 300.0f;
 	const float CeilZ = 300.0f;
 	const float WinBotZ = 118.0f;
@@ -8953,16 +9121,6 @@ void ABHGameMode::BuildTrainLobbyLevel()
 		// sign for the whole carriage to see (replicated); tap again to cancel. One per car on the +Y wall.
 		GetWorld()->SpawnActor<ABHTrainStopCord>(FVector(CenterX + 620.0f, 292.0f, 70.0f), FRotator::ZeroRotator);
 
-		// Overhead hand-straps on both grab rails that pendulum-sway as the carriage rides -- sells the moving
-		// train. Cosmetic; one row per rail per car.
-		for (const float StrapRailY : {-72.0f, 72.0f})
-		{
-			if (ABHTrainHandStrap* Straps = GetWorld()->SpawnActor<ABHTrainHandStrap>(FVector(CenterX, StrapRailY, 244.0f), FRotator::ZeroRotator))
-			{
-				Straps->ConfigureRow(7, 540.0f);
-			}
-		}
-
 		// Spawn points along the aisle. The two GAME cars (CarIndex 2 & 4) carry a centred feature table, so skip
 		// their centre spawn to avoid materialising a player on top of the table; the side spawns stay clear.
 		const bool bGameCar = (CarIndex >= 1 && CarIndex <= NumCars - 2);
@@ -8974,7 +9132,7 @@ void ABHGameMode::BuildTrainLobbyLevel()
 		SurvivorSpawns.Add(FVector(CenterX, 200.0f, 124.0f));
 
 		// A welcome / waiting board per car (mounted just inside the window glass on alternating walls).
-		const FString BoardBody = TEXT("Welcome aboard. Mingle while we wait for everyone.\nReady up (Enter); the host departs when the class is ready.\nThe next stop loads when the train pulls out.\nStuck outside? Press O to return to the carriage.");
+		const FString BoardBody = TEXT("Welcome aboard. Mingle while we wait for everyone.\nReady up (Enter); the host departs when the class is ready.\nThe next stop loads when the train pulls out.\nStuck anywhere on the train? Press O to reset to the centre of your carriage.");
 		const float BoardY = (CarIndex % 2 == 0) ? -290.0f : 290.0f;
 		const FRotator BoardRot = (CarIndex % 2 == 0) ? FRotator::ZeroRotator : FRotator(0.0f, 180.0f, 0.0f);
 		if (ABHTrainDisplayActor* Display = GetWorld()->SpawnActor<ABHTrainDisplayActor>(FVector(CenterX, BoardY, 178.0f), BoardRot))
@@ -10794,7 +10952,20 @@ void ABHGameMode::AddMoodPass(const FLinearColor& FogColor, float FogDensity, fl
 		PostProcess->Settings.bOverride_AutoExposureMinBrightness = true;
 		PostProcess->Settings.AutoExposureMinBrightness = bFoggrounds ? FoggroundsFixedExposure : 0.030f;
 		PostProcess->Settings.bOverride_AutoExposureMaxBrightness = true;
-		PostProcess->Settings.AutoExposureMaxBrightness = bFoggrounds ? FoggroundsFixedExposure : 0.95f;
+		// Indoor maps keep the low exposure floor (0.030) above so dark corners stay readable, but the eye may
+		// only adapt up to a tight ceiling. Previously this was 0.95, so aiming the flashlight at a near wall
+		// filled the frame with bright pixels, auto-exposure adapted toward 0.95, and the whole scene crushed to
+		// near-black -- then crept back at the engine's slow default SpeedDown when the player turned away. The
+		// tight ceiling caps that darkening (the floor sits below normal-play luminance, so ordinary dark-room
+		// play is unchanged) and the brisk symmetric speeds below make any residual change snap back.
+		PostProcess->Settings.AutoExposureMaxBrightness = bFoggrounds ? FoggroundsFixedExposure : BHIndoorAutoExposureMaxBrightness;
+		if (!bFoggrounds)
+		{
+			PostProcess->Settings.bOverride_AutoExposureSpeedUp = true;
+			PostProcess->Settings.AutoExposureSpeedUp = BHAutoExposureAdaptSpeed;
+			PostProcess->Settings.bOverride_AutoExposureSpeedDown = true;
+			PostProcess->Settings.AutoExposureSpeedDown = BHAutoExposureAdaptSpeed;
+		}
 		if (bFoggrounds)
 		{
 			PostProcess->Settings.bOverride_AutoExposureBias = true;
@@ -14291,6 +14462,12 @@ void ABHGameMode::StartPrepPhase()
 		UpdateDirectorGameState(TEXT("Role warmup: try flashlight, lockers, questions, decoys, scans, captures, and Hall Monitor tools. The live Hunt resets everyone."));
 	}
 
+	// Prop Hunt: publish the props-left/total readout during warmup so the HUD reflects the mode before the Hunt.
+	if (bPropHuntMode)
+	{
+		RefreshPropHuntGameState();
+	}
+
 	GetWorldTimerManager().SetTimer(RoundTimerHandle, this, &ABHGameMode::TickRoundTimer, 1.0f, true);
 
 	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
@@ -14357,6 +14534,11 @@ void ABHGameMode::StartHuntPhase()
 	TelemetryCompletedObjectiveKeys.Reset();
 	TelemetrySnapshotKeys.Reset();
 	RecordPlaytestTelemetryMarker(TEXT("round_start"), HunterSpawn, TEXT("hunt"));
+	// Prop Hunt: seed the taunt clock + send the seeker/prop intro now that the live Hunt is underway.
+	if (bPropHuntMode)
+	{
+		BeginPropHuntHunt();
+	}
 	// Arm the round ticker explicitly (idempotent — SetTimer replaces the handle), like
 	// StartHuntPhaseImmediately, rather than relying on the looping timer armed back in StartPrepPhase. If any
 	// Prep-phase path cleared RoundTimerHandle, the live Hunt would otherwise have no ticker and the
@@ -14722,6 +14904,12 @@ void ABHGameMode::TickRoundTimer()
 
 	if (BHGS->RoundPhase == EBHRoundPhase::Hunt)
 	{
+		// Prop Hunt: drive the forced-taunt cadence + refresh the props-left HUD counters once per second.
+		if (bPropHuntMode)
+		{
+			TickPropHunt();
+		}
+
 		// Re-evaluate the revision exit every tick so it opens the instant the class qualifies — e.g.
 		// after a blocking straggler is captured/leaves/disconnects, or late mastery is earned. Previously
 		// the exit was only re-checked on node/breaker completion, so a class that finished every node with
@@ -14776,7 +14964,8 @@ void ABHGameMode::TickRoundTimer()
 		}
 		else if (BHGS->RemainingTime <= 0)
 		{
-			EndRound(EBHRoundPhase::HunterWin);
+			// Prop Hunt flips the timeout: surviving the clock is a PROPS win, not a Hunter win.
+			EndRound(bPropHuntMode ? EBHRoundPhase::SurvivorsWin : EBHRoundPhase::HunterWin);
 		}
 	}
 	else if (BHGS->RoundPhase == EBHRoundPhase::FinalEscape)
@@ -15307,14 +15496,44 @@ FTransform ABHGameMode::GetSpawnTransformFor(AController* Controller) const
 	return FTransform(FRotator(0.0f, 180.0f, 0.0f), BHResolveSpawnLocation(GetWorld(), SpawnLocation, PlayerIndex));
 }
 
+void ABHGameMode::RecordTrainCabinCenters(float TubeMinX, float TubeMaxX, float FloorZ)
+{
+	// Cars sit at a fixed 1500cm pitch, centred in the tube (car i centre = TubeMinX + 750 + i*1500), matching
+	// BuildTrainLobbyLevel / BuildTrainIntermissionLevel. Deriving the centres from the bounds covers EVERY car in
+	// either build -- including the intermission's two end lounge cars, which are dressed outside the main car loop
+	// -- without duplicating those per-car dressing loops or their geometry constants.
+	TrainCabinCenters.Reset();
+	const int32 NumCars = FMath::Max(1, FMath::RoundToInt((TubeMaxX - TubeMinX) / 1500.0f));
+	for (int32 CarIndex = 0; CarIndex < NumCars; ++CarIndex)
+	{
+		TrainCabinCenters.Add(FVector(TubeMinX + 750.0f + static_cast<float>(CarIndex) * 1500.0f, 0.0f, FloorZ));
+	}
+}
+
+int32 ABHGameMode::NearestCabinCenterIndex(const TArray<FVector>& Centers, float X)
+{
+	int32 BestIndex = INDEX_NONE;
+	float BestDistX = TNumericLimits<float>::Max();
+	for (int32 Index = 0; Index < Centers.Num(); ++Index)
+	{
+		const float DistX = FMath::Abs(Centers[Index].X - X);
+		if (DistX < BestDistX)
+		{
+			BestDistX = DistX;
+			BestIndex = Index;
+		}
+	}
+	return BestIndex;
+}
+
 bool ABHGameMode::ResetPlayerToTrainInterior(AController* Controller)
 {
 	if (!HasAuthority())
 	{
 		return false;
 	}
-	// Only on the train (lobby / intermission). Never on a live hunt level -- teleporting to spawn there would
-	// be an escape exploit.
+	// Only on the train (lobby / intermission). Never on a live hunt level -- teleporting there would be an
+	// escape exploit.
 	if (!bLobbyLevel && !bTrainIntermissionLevel)
 	{
 		return false;
@@ -15325,11 +15544,35 @@ bool ABHGameMode::ResetPlayerToTrainInterior(AController* Controller)
 		return false;
 	}
 
-	const FTransform InteriorTransform = GetSpawnTransformFor(Controller);
-	Character->SetActorLocation(InteriorTransform.GetLocation(), false, nullptr, ETeleportType::TeleportPhysics);
+	// Drop the player into the centre of the carriage they're CURRENTLY in. Cars run along the train's length
+	// (X) at a fixed pitch, so the nearest recorded cabin centre by X is the car they're standing in (or standing
+	// above, on the roof). This is the O-key unstick for players wedged in interior geometry or out on the roof.
+	const int32 CabinIndex = NearestCabinCenterIndex(TrainCabinCenters, Character->GetActorLocation().X);
+	FVector InteriorLocation;
+	if (TrainCabinCenters.IsValidIndex(CabinIndex))
+	{
+		// Resolve out of anything occupying the dead centre (a game car's feature table, a wall, another player)
+		// while staying in this car: BHResolveSpawnLocation probes outward on the Pawn channel, which blocking
+		// train furniture also occupies, so it lands a clear capsule near the cabin centre. Ignore this pawn so
+		// its own current capsule isn't counted as a blocker (else an already-centred press would be nudged off).
+		const ABHPlayerState* BHPS = Controller->GetPlayerState<ABHPlayerState>();
+		const int32 PlayerIndex = (GameState && BHPS) ? FMath::Max(0, GameState->PlayerArray.IndexOfByKey(BHPS)) : 0;
+		InteriorLocation = BHResolveSpawnLocation(GetWorld(), TrainCabinCenters[CabinIndex], PlayerIndex, Character);
+	}
+	else
+	{
+		// No cabin centres recorded (defensive): fall back to the role-aware spawn so O still does something.
+		InteriorLocation = GetSpawnTransformFor(Controller).GetLocation();
+	}
+
+	if (UCharacterMovementComponent* Movement = Character->GetCharacterMovement())
+	{
+		Movement->StopMovementImmediately();
+	}
+	Character->SetActorLocation(InteriorLocation, false, nullptr, ETeleportType::TeleportPhysics);
 	if (ABHPlayerController* PC = Cast<ABHPlayerController>(Controller))
 	{
-		PC->ClientShowStatusMessage(TEXT("Returned to the carriage interior."), 2.5f);
+		PC->ClientShowStatusMessage(TEXT("Reset to the centre of the carriage."), 2.5f);
 	}
 	return true;
 }

@@ -3,6 +3,7 @@
 // Unauthorized copying or distribution is strictly prohibited.
 
 #include "BHGameState.h"
+#include "BHGameSettings.h"
 #include "Net/UnrealNetwork.h"
 
 namespace
@@ -145,6 +146,10 @@ ABHGameState::ABHGameState()
 	bPracticeMode = false;
 	bTutorialMode = false;
 	bTestMode = false;
+	bPropHuntMode = false;
+	PropHuntPropsRemaining = 0;
+	PropHuntPropsTotal = 0;
+	PropHuntNextTauntServerTime = 0.0f;
 	bBotMode = false;
 	TargetBotCount = 0;
 	BotDifficulty = EBHBotDifficulty::Normal;
@@ -214,6 +219,10 @@ void ABHGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 	DOREPLIFETIME(ABHGameState, bPracticeMode);
 	DOREPLIFETIME(ABHGameState, bTutorialMode);
 	DOREPLIFETIME(ABHGameState, bTestMode);
+	DOREPLIFETIME(ABHGameState, bPropHuntMode);
+	DOREPLIFETIME(ABHGameState, PropHuntPropsRemaining);
+	DOREPLIFETIME(ABHGameState, PropHuntPropsTotal);
+	DOREPLIFETIME(ABHGameState, PropHuntNextTauntServerTime);
 	DOREPLIFETIME(ABHGameState, bBotMode);
 	DOREPLIFETIME(ABHGameState, TargetBotCount);
 	DOREPLIFETIME(ABHGameState, BotDifficulty);
@@ -227,6 +236,10 @@ void ABHGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 	DOREPLIFETIME(ABHGameState, RevisionScareIntensity);
 	DOREPLIFETIME(ABHGameState, RevisionContributionTarget);
 	DOREPLIFETIME(ABHGameState, AllCaughtGraceRemaining);
+	DOREPLIFETIME(ABHGameState, ClassLifelinesRemaining);
+	DOREPLIFETIME(ABHGameState, ClassLifelinesMax);
+	DOREPLIFETIME(ABHGameState, CatchEscalationLevel);
+	DOREPLIFETIME(ABHGameState, ClassmatesCaughtCount);
 	DOREPLIFETIME(ABHGameState, RevisionClassMasteryAverage);
 	DOREPLIFETIME(ABHGameState, RevisionWeakTopic);
 	DOREPLIFETIME(ABHGameState, RevisionReviewTimeRemaining);
@@ -592,10 +605,21 @@ void ABHGameState::SetTestMode(bool bNewTestMode)
 	bTestMode = bNewTestMode;
 }
 
+void ABHGameState::SetPropHuntState(bool bNewPropHuntMode, int32 NewPropsRemaining, int32 NewPropsTotal, float NewNextTauntServerTime)
+{
+	bPropHuntMode = bNewPropHuntMode;
+	PropHuntPropsRemaining = FMath::Max(0, NewPropsRemaining);
+	PropHuntPropsTotal = FMath::Max(0, NewPropsTotal);
+	PropHuntNextTauntServerTime = NewNextTauntServerTime;
+}
+
 void ABHGameState::SetBotOptions(bool bNewBotMode, int32 NewTargetBotCount, EBHBotDifficulty NewBotDifficulty)
 {
 	bBotMode = bNewBotMode;
-	TargetBotCount = FMath::Clamp(NewTargetBotCount, 0, 11);
+	// Clamp to the real class cap, not a hardcoded 11: the gamemode can fill up to MaxPlayers-1 bots, and
+	// the menu reads this replicated value, so capping it at 11 made the label read 11/11 while the round
+	// spawned MaxPlayers-1 (32-player cap -> 31 bots).
+	TargetBotCount = FMath::Clamp(NewTargetBotCount, 0, UBHGameSettings::GetClampedClassMaxBots());
 	BotDifficulty = NewBotDifficulty;
 }
 
@@ -624,6 +648,30 @@ void ABHGameState::SetAllCaughtGraceRemaining(int32 NewRemaining)
 {
 	// -1 = window inactive; otherwise seconds left for monitors to finish revision after all survivors are caught.
 	AllCaughtGraceRemaining = FMath::Max(-1, NewRemaining);
+}
+
+void ABHGameState::SetClassLifelines(int32 NewRemaining, int32 NewMax)
+{
+	// -1 remaining = feature off (parity with the pre-feature instant-convert path). Otherwise clamp into [0, Max].
+	ClassLifelinesMax = FMath::Max(0, NewMax);
+	if (NewRemaining < 0)
+	{
+		ClassLifelinesRemaining = -1;
+	}
+	else
+	{
+		ClassLifelinesRemaining = FMath::Clamp(NewRemaining, 0, ClassLifelinesMax);
+	}
+}
+
+void ABHGameState::SetCatchEscalationLevel(int32 NewLevel, int32 Cap)
+{
+	CatchEscalationLevel = static_cast<uint8>(FMath::Clamp(NewLevel, 0, FMath::Clamp(Cap, 0, 255)));
+}
+
+void ABHGameState::SetClassmatesCaughtCount(int32 NewCount)
+{
+	ClassmatesCaughtCount = FMath::Max(0, NewCount);
 }
 
 void ABHGameState::SetRevisionSummary(float NewClassMasteryAverage, EBHPhysicsTopic NewWeakTopic, int32 NewReviewTimeRemaining, const FString& NewReviewText)
