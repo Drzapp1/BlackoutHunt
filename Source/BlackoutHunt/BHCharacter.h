@@ -128,6 +128,12 @@ public:
 	// Server-authoritative reset of the disguise (also re-shows the real body). Public so round-reset / capture /
 	// escape paths can clear a lingering disguise. No-op off the server or when not disguised.
 	void ClearPropDisguiseAuthority();
+	// Seeker-kit client presentation state (P4), read by DrawPropHuntOverlay on the seeker's HUD: the through-wall
+	// sonar/pulse markers with their expiry, the local sonar-ready clock, and the reveal-pulse flash stamp.
+	const TArray<FVector>& GetPropHuntSonarMarkers() const { return PropHuntSonarMarkers; }
+	float GetPropHuntSonarMarkersExpireClientTime() const { return PropHuntSonarMarkersExpireClientTime; }
+	float GetPropHuntSonarReadyClientTime() const { return PropHuntSonarReadyClientTime; }
+	float GetPropHuntPulseFlashClientTime() const { return PropHuntPulseFlashClientTime; }
 
 	// Tutorial movement lesson: a bitmask of which of the four move directions the player has actually
 	// driven (forward 0x01 / back 0x02 / right 0x04 / left 0x08). Accumulated in MoveForward/MoveRight on the
@@ -978,6 +984,36 @@ protected:
 	// Base relative Z of the disguise mesh (floor alignment), captured in ApplyPropDisguiseVisuals; the idle bob rides
 	// on top of it each frame so a walking (unlocked) prop reads as alive while a locked prop sits perfectly still.
 	float PropDisguiseBaseZ = 0.0f;
+
+	// --- Prop Hunt seeker kit (P4). ---------------------------------------------------------------------------------
+	// Consecutive whiffed capture swings (server-only); a landed catch resets it. Drives the escalating wrong-hit
+	// self-slow via BHPropHunt::SeekerMissSlowSeconds, so flailing at furniture is punished but one honest miss
+	// barely stings.
+	int32 PropHuntConsecutiveMisses = 0;
+	// Server-clock time (GetTeacherCaptureClockSeconds domain) the wrong-hit slow ends. Owner-only replicated so the
+	// seeker's own client recomputes its move speed in lockstep with the server (everyone else never reads it).
+	UPROPERTY(ReplicatedUsing = OnRep_PropHuntMissSlow)
+	float PropHuntMissSlowUntilServerTime = -1000.0f;
+	FTimerHandle PropHuntMissSlowExpireHandle;
+	UFUNCTION()
+	void OnRep_PropHuntMissSlow();
+	// Escalate the miss counter + apply the timed self-slow (server). Called from the swing whiff/dodge branches.
+	void ApplyPropHuntMissPenaltyAuthority();
+	// Q in prop hunt: the prop SONAR -- a through-wall ping of every alive prop within bh.PropHuntScanRadius, on the
+	// bh.PropHuntScanCooldown clock. Replaces the classroom heartbeat scan for the seeker (UseScanAuthority branches).
+	bool UsePropHuntSonarAuthority(bool bShowFailureMessages);
+public:
+	// Reveal delivery: marker world-positions + how long the HUD shows them. bIsPulse marks the periodic auto reveal
+	// (full-screen flash + no cooldown touch); CooldownSeconds (sonar only) mirrors the server cooldown for the HUD.
+	// Public: the GameMode's reveal pulse (ForcePropHuntRevealPulse) drives it for every seeker.
+	UFUNCTION(Client, Reliable)
+	void ClientReceivePropHuntSonar(const TArray<FVector>& PropLocations, float RevealSeconds, bool bIsPulse, float CooldownSeconds);
+protected:
+	// Client-local presentation state (read by the HUD via the public getters).
+	TArray<FVector> PropHuntSonarMarkers;
+	float PropHuntSonarMarkersExpireClientTime = -1000.0f;
+	float PropHuntSonarReadyClientTime = -1000.0f;
+	float PropHuntPulseFlashClientTime = -1000.0f;
 
 	// Server-only tutorial capture shield (see SetTutorialCaptureImmune). Not replicated -- capture is authority-decided.
 	bool bTutorialCaptureImmune = false;

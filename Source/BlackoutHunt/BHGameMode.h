@@ -47,6 +47,16 @@ BLACKOUTHUNT_API bool BHIsPropHuntCVarEnabled();
 // otherwise empty (not a registered arena, or nothing on disk/in the cook). Defined in BHGameModePropHunt.cpp.
 BLACKOUTHUNT_API FString BHResolvePropHuntArenaPackage(const FString& Token);
 
+// Prop-hunt seeker-kit tunables (the bh.PropHuntScan*/MissSlow* cvars live file-local in BHGameModePropHunt.cpp;
+// these accessors let the pawn code in BHCharacter.cpp read them without the cvar objects leaking out).
+BLACKOUTHUNT_API float BHPropHuntScanRadius();
+BLACKOUTHUNT_API float BHPropHuntScanCooldownSeconds();
+// The wrong-hit self-slow duration for the Nth consecutive miss (folds the bh.PropHuntMissSlow* cvars into
+// BHPropHunt::SeekerMissSlowSeconds). 0 when misses <= 0.
+BLACKOUTHUNT_API float BHPropHuntMissSlowSecondsFor(int32 ConsecutiveMisses);
+// The movement-speed multiplier applied while the wrong-hit slow is active.
+BLACKOUTHUNT_API float BHPropHuntMissSlowFactor();
+
 // Indoor (non-Foggrounds) auto-exposure tuning, shared by two paths that must stay in lockstep:
 //  * ABHGameMode::AddMoodPass bakes these into the authored .umap's post-process volume at export time, and
 //  * ABHPlayerController::ClampIndoorAutoExposure re-applies them on every client at runtime, repairing the
@@ -523,11 +533,14 @@ protected:
 	void BeginPropHuntHunt();
 	// A caught prop joins the seekers (infection); the last caught prop ends the round as a seeker win.
 	void HandlePropHuntCapture(ABHCharacter* Survivor, ABHCharacter* CapturingHunter);
-	// Once-per-second service (called from TickRoundTimer's Hunt branch): drives the forced-taunt cadence and the
-	// replicated "props left / total" HUD counters.
+	// Once-per-second service (called from TickRoundTimer's Hunt branch): drives the forced-taunt cadence, the
+	// auto reveal-pulse cadence, and the replicated "props left / total" HUD counters.
 	void TickPropHunt();
 	// Force every still-hidden prop to emit a noise so the seeker gets a fair directional hint.
 	void ForcePropHuntTaunt();
+	// Auto reveal pulse (P4): briefly surface EVERY alive prop's position to every seeker (range-unlimited), on a
+	// cadence that tightens as the seek timer runs down. The fairness valve that guarantees endgame closure.
+	void ForcePropHuntRevealPulse();
 	// Recompute + replicate the prop-hunt HUD state (props remaining/total, next-taunt countdown).
 	void RefreshPropHuntGameState();
 	// Count props (role == Survivor) and how many are still hidden (alive). Caught props keep the Survivor role
@@ -721,6 +734,8 @@ protected:
 	bool bPropHuntMode = false;
 	// Server time of the last forced prop taunt (drives the shrinking taunt cadence). See BHGameModePropHunt.cpp.
 	float PropHuntLastTauntServerTime = -1000.0f;
+	// Server time of the last auto reveal pulse (P4); seeded at seek start so the first pulse lands a full interval in.
+	float PropHuntLastPulseServerTime = -1000.0f;
 	// Below this Z an alive pawn counts as fallen out of the world (RecoverPlayersFromVoid teleports it back). The
 	// BlackoutHunt maps are built around Z=0 so -650 is right for them; a prop-hunt arena (imported pack map) sets
 	// this from its own geometry bounds, which may sit far from the origin.

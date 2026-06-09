@@ -2646,6 +2646,8 @@ void ABHCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 	DOREPLIFETIME(ABHCharacter, bHiddenInLocker);
 	DOREPLIFETIME(ABHCharacter, bOutOfPlay);
 	// Prop Hunt disguise (replicated to everyone -- the seeker must see the prop; the disguise mesh is owner-no-see).
+	// The wrong-hit slow is the seeker's own state -- owner-only keeps it off everyone else's wire.
+	DOREPLIFETIME_CONDITION(ABHCharacter, PropHuntMissSlowUntilServerTime, COND_OwnerOnly);
 	DOREPLIFETIME(ABHCharacter, bDisguisedAsProp);
 	DOREPLIFETIME(ABHCharacter, PropDisguiseMeshPath);
 	DOREPLIFETIME(ABHCharacter, PropDisguiseMaterialPath);
@@ -2912,8 +2914,11 @@ void ABHCharacter::ResetRoleWarmupStateForRoundStart()
 	}
 
 	ExitLocker();
-	// Prop Hunt: never carry a disguise (or a freeze) across a round boundary.
+	// Prop Hunt: never carry a disguise (or a freeze) across a round boundary, and start the seeker kit fresh
+	// (miss ladder + slow + any lingering sonar markers expire client-side on their own).
 	ClearPropDisguiseAuthority();
+	PropHuntConsecutiveMisses = 0;
+	PropHuntMissSlowUntilServerTime = -1000.0f;
 	// Never let the tutorial-only capture shield survive into a live round (e.g. an abandoned tutorial whose pawn is
 	// reused) -- a round always starts with the student fully capturable.
 	bTutorialCaptureImmune = false;
@@ -4797,11 +4802,16 @@ void ABHCharacter::RefreshMovementSpeedFromState()
 	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
 	const float HunterPenaltyMultiplier = BHFinalEscapeHunterPenaltyActive(GetWorld(), this) ? 0.72f : 1.0f;
 	const float TeacherCaptureMoveMultiplier = (BHPS && BHPS->IsAliveHunter() && IsTeacherCaptureAttackActive()) ? BHTeacherCaptureMoveMultiplier : 1.0f;
-	const float WalkSpeedNow = BHRoleWalkSpeed(BHPS, WalkSpeed) * HunterPenaltyMultiplier * TeacherCaptureMoveMultiplier * BHHorrorWalkSpeedMultiplier(this, BHPS);
+	// Prop hunt wrong-hit stumble: active while the replicated until-time is ahead of the shared server clock, so
+	// server and owning client compute the same answer. The until-time is only ever set in prop hunt.
+	const float PropHuntMissSlowMultiplier = (PropHuntMissSlowUntilServerTime > -900.0f
+		&& GetTeacherCaptureClockSeconds() < PropHuntMissSlowUntilServerTime) ? BHPropHuntMissSlowFactor() : 1.0f;
+	const float WalkSpeedNow = BHRoleWalkSpeed(BHPS, WalkSpeed) * HunterPenaltyMultiplier * TeacherCaptureMoveMultiplier * PropHuntMissSlowMultiplier * BHHorrorWalkSpeedMultiplier(this, BHPS);
 	const float SprintSpeedNow = BHRoleSprintSpeed(BHPS, SprintSpeed)
 		* (PowerupComponent ? PowerupComponent->GetSprintSpeedMultiplier() : 1.0f)
 		* HunterPenaltyMultiplier
 		* TeacherCaptureMoveMultiplier
+		* PropHuntMissSlowMultiplier
 		* BHHorrorSprintSpeedMultiplier(this, BHPS);
 
 	if (IsProne())
@@ -9288,6 +9298,9 @@ void ABHCharacter::ResolveTeacherCaptureAttackAuthority()
 	if (!BestTarget)
 	{
 		StartTeacherCaptureRecoveryAuthority(Now, BHTeacherCaptureMissRecoverySeconds);
+		// Prop hunt wrong-hit penalty: a whiff (usually a swing at innocent furniture) stacks the seeker's
+		// escalating self-slow. No-op outside prop hunt.
+		ApplyPropHuntMissPenaltyAuthority();
 		SendStatusMessage(TEXT("Axe missed. Recovering."));
 		return;
 	}
@@ -9306,10 +9319,13 @@ void ABHCharacter::ResolveTeacherCaptureAttackAuthority()
 		BestTarget->EmitFootstepStimulus(0.86f, TEXT("panic dodge"), BestTarget->ResolveFootstepSurface());
 		BestTarget->SendStatusMessage(TEXT("Timed escape beat the swing. Keep moving."));
 		StartTeacherCaptureRecoveryAuthority(Now, BHTeacherCaptureMissRecoverySeconds);
+		ApplyPropHuntMissPenaltyAuthority();
 		SendStatusMessage(TEXT("Axe missed. Recovering."));
 		return;
 	}
 
+	// A landed catch resets the prop-hunt wrong-hit ladder (harmless zero outside the mode).
+	PropHuntConsecutiveMisses = 0;
 	StartTeacherCaptureRecoveryAuthority(Now, BHTeacherCaptureSuccessRecoverySeconds);
 	MulticastTeacherMeleeSwing(true);
 	if (BHIsRoleWarmupPhase(GetWorld()->GetGameState<ABHGameState>()))
@@ -9528,6 +9544,14 @@ bool ABHCharacter::UseScanAuthority(bool bShowFailureMessages)
 		return false;
 	}
 
+	// Prop hunt: Q is the prop SONAR instead -- a through-wall ping of every alive prop in radius on its own
+	// cooldown, with marker presentation on the seeker's HUD (the classroom nearest-survivor heartbeat would be
+	// useless against a room of furniture).
+	if (BHGS->bPropHuntMode && !bRoleWarmup)
+	{
+		return UsePropHuntSonarAuthority(bShowFailureMessages);
+	}
+
 	const int32 ScanFocusCharges = FMath::Clamp(HunterPS->GetPowerupCharges(EBHPowerupType::TeacherScanFocus), 0, 2);
 	// The teacher tutorial teaches Scan, then asks for a SECOND scan a few seconds later to confirm a decoy (the Noise
 	// step). The full live cooldown (8-25s) left that confirm-scan dead, reading as a broken tool. Give the tutorial the
@@ -9609,6 +9633,135 @@ bool ABHCharacter::UseScanAuthority(bool bShowFailureMessages)
 		BHGM->RecordPlaytestTelemetryMarker(TEXT("teacher_scan"), GetActorLocation(), Nearest ? TEXT("found") : TEXT("empty"), HunterPS, Nearest ? Nearest->GetPlayerState<ABHPlayerState>() : nullptr);
 	}
 	return Nearest != nullptr;
+}
+
+// Prop hunt seeker sonar (P4): ping every alive prop within bh.PropHuntScanRadius THROUGH WALLS, deliver the
+// positions to the seeker's HUD as timed markers, and pay for it with a loud noise at the seeker's own location
+// (the props hear where the ping came from -- information flows both ways). Rides the shared LastScanTime clock.
+bool ABHCharacter::UsePropHuntSonarAuthority(bool bShowFailureMessages)
+{
+	UWorld* World = GetWorld();
+	if (!World || !HasAuthority())
+	{
+		return false;
+	}
+
+	const float Now = World->GetTimeSeconds();
+	const float Cooldown = BHPropHuntScanCooldownSeconds();
+	if (Now - LastScanTime < Cooldown)
+	{
+		if (bShowFailureMessages)
+		{
+			SendStatusMessage(FString::Printf(TEXT("Sonar recharging: %ds."), FMath::CeilToInt(Cooldown - (Now - LastScanTime))));
+		}
+		return false;
+	}
+	LastScanTime = Now;
+
+	const float Radius = BHPropHuntScanRadius();
+	TArray<FVector> Revealed;
+	for (TActorIterator<ABHCharacter> It(World); It; ++It)
+	{
+		ABHCharacter* Prop = *It;
+		const ABHPlayerState* PropPS = Prop ? Prop->GetPlayerState<ABHPlayerState>() : nullptr;
+		if (!Prop || Prop == this || !PropPS || !PropPS->IsAliveSurvivor())
+		{
+			continue;
+		}
+		if (FVector::DistSquared(Prop->GetActorLocation(), GetActorLocation()) > FMath::Square(Radius))
+		{
+			continue;
+		}
+		Revealed.Add(Prop->GetActorLocation());
+		Prop->AddFear(10.0f);
+		if (ABHPlayerController* PropPC = Cast<ABHPlayerController>(Prop->GetController()))
+		{
+			PropPC->ClientShowStatusMessage(TEXT("The seeker's sonar swept your hiding spot!"), 2.5f);
+		}
+	}
+
+	ABHGameMode* BHGM = World->GetAuthGameMode<ABHGameMode>();
+	if (BHGM)
+	{
+		// The ping is LOUD: every prop (and the noise/atmosphere systems) learns where the seeker stood.
+		BHGM->NotifyLoudNoise(GetActorLocation(), TEXT("prop sonar"));
+		BHGM->RecordPlaytestTelemetryMarker(TEXT("ph_sonar"), GetActorLocation(), FString::Printf(TEXT("hits=%d"), Revealed.Num()), GetPlayerState<ABHPlayerState>());
+	}
+
+	ClientReceivePropHuntSonar(Revealed, /*RevealSeconds*/ 2.2f, /*bIsPulse*/ false, Cooldown);
+	if (bShowFailureMessages)
+	{
+		SendStatusMessage(Revealed.Num() > 0
+			? FString::Printf(TEXT("Sonar: %d prop%s nearby."), Revealed.Num(), Revealed.Num() == 1 ? TEXT("") : TEXT("s"))
+			: TEXT("Sonar found nothing in range. The ping gave you away anyway."));
+	}
+	return Revealed.Num() > 0;
+}
+
+void ABHCharacter::ClientReceivePropHuntSonar_Implementation(const TArray<FVector>& PropLocations, float RevealSeconds, bool bIsPulse, float CooldownSeconds)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	const float Now = World->GetTimeSeconds();
+	PropHuntSonarMarkers = PropLocations;
+	PropHuntSonarMarkersExpireClientTime = Now + FMath::Clamp(RevealSeconds, 0.5f, 10.0f);
+	if (bIsPulse)
+	{
+		PropHuntPulseFlashClientTime = Now;
+		if (ABHPlayerController* PC = Cast<ABHPlayerController>(GetController()))
+		{
+			PC->ShowLocalStatusMessage(TEXT("REVEAL PULSE - every prop just flashed up!"), 2.0f);
+		}
+	}
+	else if (CooldownSeconds > 0.0f)
+	{
+		// Server-supplied cooldown so the HUD's ready clock can't drift from a host-tuned cvar value.
+		PropHuntSonarReadyClientTime = Now + CooldownSeconds;
+	}
+}
+
+// Escalating wrong-hit penalty (P4): each consecutive whiffed swing slows the seeker a little longer
+// (BHPropHunt::SeekerMissSlowSeconds curve), so flailing at every crate is punished while one honest miss barely
+// stings. A landed catch resets the ladder in ResolveTeacherCaptureAttackAuthority.
+void ABHCharacter::ApplyPropHuntMissPenaltyAuthority()
+{
+	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	if (!HasAuthority() || !BHGS || !BHGS->bPropHuntMode || !BHPS || !BHPS->IsAliveHunter())
+	{
+		return;
+	}
+
+	++PropHuntConsecutiveMisses;
+	const float SlowSeconds = BHPropHuntMissSlowSecondsFor(PropHuntConsecutiveMisses);
+	if (SlowSeconds <= 0.0f)
+	{
+		return;
+	}
+
+	// Stored on the replicated server clock (GetTeacherCaptureClockSeconds domain) so the owning client's
+	// RefreshMovementSpeedFromState computes the same active/expired answer as the server.
+	PropHuntMissSlowUntilServerTime = GetTeacherCaptureClockSeconds() + SlowSeconds;
+	RefreshMovementSpeedFromState();
+	// Re-derive the speed just after expiry; nothing else fires a state change at that moment.
+	GetWorldTimerManager().SetTimer(PropHuntMissSlowExpireHandle, this, &ABHCharacter::RefreshMovementSpeedFromState, SlowSeconds + 0.05f, false);
+	EmitFootstepStimulus(0.62f, TEXT("seeker whiff"), ResolveFootstepSurface());
+	SendStatusMessage(FString::Printf(TEXT("Wrong hit! Stumbling for %.1fs (miss x%d)."), SlowSeconds, PropHuntConsecutiveMisses));
+	ForceNetUpdate();
+}
+
+void ABHCharacter::OnRep_PropHuntMissSlow()
+{
+	RefreshMovementSpeedFromState();
+	// Mirror the server's expiry refresh locally so the owning client's speed snaps back on time.
+	const float Remaining = PropHuntMissSlowUntilServerTime - GetTeacherCaptureClockSeconds();
+	if (Remaining > 0.0f && GetWorld())
+	{
+		GetWorldTimerManager().SetTimer(PropHuntMissSlowExpireHandle, this, &ABHCharacter::RefreshMovementSpeedFromState, Remaining + 0.05f, false);
+	}
 }
 
 void ABHCharacter::ServerUseHunterPower_Implementation()

@@ -295,8 +295,20 @@ Each phase is independently shippable and leaves the build green + tests passing
 - **Acceptance:** `?BHPropHunt=1?BHArena=ContainersHouse` (from console/host) travels into the warehouse, spawns the
   seeker + props on valid nav, a full hide→seek round plays, nobody falls through the world. Cooked build loads it too.
 
-### P4 — Seeker kit (M)
+### P4 — Seeker kit (M) **(done — 2026-06-09)**
 **Goal:** the four seeker tools you picked, prop-tuned.
+
+> **STATUS:** all four tools live. **Sonar:** Q branches in `UseScanAuthority` → `UsePropHuntSonarAuthority`
+> (through-wall ping of every alive prop in `bh.PropHuntScanRadius`=1500 on `bh.PropHuntScanCooldown`=8s; the ping is
+> LOUD at the seeker's own spot — info flows both ways; markers delivered via `ClientReceivePropHuntSonar`).
+> **Melee catch:** the existing capture swing (unchanged). **Wrong-hit penalty:** wired into BOTH whiff branches of
+> `ResolveTeacherCaptureAttackAuthority` (no-target + timed-dodge) via `ApplyPropHuntMissPenaltyAuthority` —
+> escalating self-slow (`SeekerMissSlowSeconds` curve, `bh.PropHuntMissSlow*`, factor `bh.PropHuntMissSlowFactor`=0.55,
+> owner-only-replicated until-time folded into `RefreshMovementSpeedFromState`), reset on a landed catch.
+> **Reveal pulse:** `ForcePropHuntRevealPulse` on the TauntIntervalSeconds lerp (`bh.PropHuntPulseBase`=45 →
+> `PulseMin`=12), range-unlimited, all seekers get markers + low-alpha amber flash; props get a warning toast.
+> **Seeker HUD:** sonar ready/cooldown line, through-wall red markers with metres (project + fade), pulse flash.
+> SFX for clang/horn land in P5's audio pass. Tuning values are first-guess — playtest then record here.
 - **Heartbeat scan / sonar (Q).** Reuse `UseScanAuthority`, but in prop hunt make it a **prop sonar**: on use, briefly
   (client cue) reveal disguised props within `bh.PropHuntScanRadius` (through walls) as pulsing outlines/markers, on a
   `bh.PropHuntScanCooldown`. Server picks the targets (alive props in radius), multicasts a reveal cue to the seeker.

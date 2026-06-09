@@ -76,11 +76,86 @@ static TAutoConsoleVariable<int32> CVarBHPropHuntArenaSpawns(
 	TEXT("scatter fills the remainder (12 covers a full 10-player lobby with slack)."),
 	ECVF_Default);
 
+// --- Seeker kit (P4) -------------------------------------------------------------------------------------------
+
+static TAutoConsoleVariable<float> CVarBHPropHuntScanRadius(
+	TEXT("bh.PropHuntScanRadius"),
+	1500.0f,
+	TEXT("Prop Hunt: radius (cm) of the seeker's Q sonar -- every alive prop inside it is pinged through walls."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarBHPropHuntScanCooldown(
+	TEXT("bh.PropHuntScanCooldown"),
+	8.0f,
+	TEXT("Prop Hunt: seconds between seeker sonar pings."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarBHPropHuntPulseBase(
+	TEXT("bh.PropHuntPulseBase"),
+	45.0f,
+	TEXT("Prop Hunt: seconds between auto reveal pulses at the START of the seek (loosest cadence)."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarBHPropHuntPulseMin(
+	TEXT("bh.PropHuntPulseMin"),
+	12.0f,
+	TEXT("Prop Hunt: seconds between auto reveal pulses at the END of the seek (tightest cadence)."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarBHPropHuntMissSlowBase(
+	TEXT("bh.PropHuntMissSlowBase"),
+	0.6f,
+	TEXT("Prop Hunt: wrong-hit self-slow duration (s) on the seeker's FIRST consecutive miss."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarBHPropHuntMissSlowPerMiss(
+	TEXT("bh.PropHuntMissSlowPerMiss"),
+	0.35f,
+	TEXT("Prop Hunt: extra self-slow seconds per additional consecutive miss."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarBHPropHuntMissSlowMax(
+	TEXT("bh.PropHuntMissSlowMax"),
+	2.0f,
+	TEXT("Prop Hunt: hard cap (s) on the wrong-hit self-slow."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarBHPropHuntMissSlowFactor(
+	TEXT("bh.PropHuntMissSlowFactor"),
+	0.55f,
+	TEXT("Prop Hunt: movement-speed multiplier while the wrong-hit slow is active (0.55 = a heavy but escapable stumble)."),
+	ECVF_Default);
+
 // Free accessor so BuildRuntimeFacility (in BHGameMode.cpp) can fold the cvar into the parsed bPropHuntMode without
 // the cvar object leaking out of this translation unit. Declared in BHGameMode.h.
 bool BHIsPropHuntCVarEnabled()
 {
 	return CVarBHPropHunt.GetValueOnGameThread() != 0;
+}
+
+// Seeker-kit accessors for the pawn code in BHCharacter.cpp (declared in BHGameMode.h; cvars stay file-local).
+float BHPropHuntScanRadius()
+{
+	return FMath::Max(200.0f, CVarBHPropHuntScanRadius.GetValueOnGameThread());
+}
+
+float BHPropHuntScanCooldownSeconds()
+{
+	return FMath::Max(1.0f, CVarBHPropHuntScanCooldown.GetValueOnGameThread());
+}
+
+float BHPropHuntMissSlowSecondsFor(int32 ConsecutiveMisses)
+{
+	return BHPropHunt::SeekerMissSlowSeconds(
+		ConsecutiveMisses,
+		CVarBHPropHuntMissSlowBase.GetValueOnGameThread(),
+		CVarBHPropHuntMissSlowPerMiss.GetValueOnGameThread(),
+		CVarBHPropHuntMissSlowMax.GetValueOnGameThread());
+}
+
+float BHPropHuntMissSlowFactor()
+{
+	return FMath::Clamp(CVarBHPropHuntMissSlowFactor.GetValueOnGameThread(), 0.10f, 1.0f);
 }
 
 bool ABHGameMode::IsPropHuntMode() const
@@ -226,6 +301,7 @@ void ABHGameMode::BeginPropHuntHunt()
 		BHGS->SetRemainingTime(FMath::Max(10, CVarBHPropHuntSeekSeconds.GetValueOnGameThread()));
 	}
 	PropHuntLastTauntServerTime = Now;
+	PropHuntLastPulseServerTime = Now; // first reveal pulse lands a full interval after release
 	RefreshPropHuntGameState();
 
 	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
@@ -308,6 +384,18 @@ void ABHGameMode::TickPropHunt()
 		PropHuntLastTauntServerTime = Now;
 	}
 
+	// Auto reveal pulse (P4): same tightening-lerp shape as the taunt cadence, on its own (slower) clock. Guarantees
+	// a passive seeker still closes the round out -- by the final stretch every prop flashes up every ~PulseMin s.
+	const float PulseInterval = BHPropHunt::TauntIntervalSeconds(
+		Elapsed,
+		CVarBHPropHuntPulseBase.GetValueOnGameThread(),
+		CVarBHPropHuntPulseMin.GetValueOnGameThread());
+	if (Now - PropHuntLastPulseServerTime >= PulseInterval)
+	{
+		ForcePropHuntRevealPulse();
+		PropHuntLastPulseServerTime = Now;
+	}
+
 	RefreshPropHuntGameState();
 }
 
@@ -352,6 +440,55 @@ void ABHGameMode::ForcePropHuntTaunt()
 		{
 			PC->ClientShowStatusMessage(TEXT("A taunt rings out - the props just gave themselves away. Listen!"), 2.0f);
 		}
+	}
+}
+
+// Briefly surface EVERY alive prop's position to every seeker, range-unlimited -- the fairness valve that keeps a
+// stalled endgame moving. Marker delivery + the screen flash are client-side (ClientReceivePropHuntSonar with
+// bIsPulse); props get a warning so the reveal feels fair rather than psychic.
+void ABHGameMode::ForcePropHuntRevealPulse()
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+
+	TArray<FVector> PropLocations;
+	for (TActorIterator<ABHCharacter> It(GetWorld()); It; ++It)
+	{
+		ABHCharacter* Prop = *It;
+		const ABHPlayerState* BHPS = Prop ? Prop->GetPlayerState<ABHPlayerState>() : nullptr;
+		if (!BHPS || BHPS->PlayerRole != EBHPlayerRole::Survivor || BHPS->LifeState != EBHPlayerLifeState::Alive)
+		{
+			continue;
+		}
+		PropLocations.Add(Prop->GetActorLocation());
+		if (ABHPlayerController* PropPC = Cast<ABHPlayerController>(Prop->GetController()))
+		{
+			PropPC->ClientShowStatusMessage(TEXT("REVEAL PULSE - the seekers just glimpsed your position!"), 2.5f);
+		}
+	}
+	if (PropLocations.Num() == 0)
+	{
+		return;
+	}
+
+	int32 PulsedSeekers = 0;
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get());
+		const ABHPlayerState* BHPS = PC ? PC->GetPlayerState<ABHPlayerState>() : nullptr;
+		ABHCharacter* SeekerChar = PC ? Cast<ABHCharacter>(PC->GetPawn()) : nullptr;
+		if (!SeekerChar || !BHPS || BHPS->PlayerRole != EBHPlayerRole::Hunter || BHPS->LifeState != EBHPlayerLifeState::Alive)
+		{
+			continue;
+		}
+		SeekerChar->ClientReceivePropHuntSonar(PropLocations, /*RevealSeconds*/ 1.6f, /*bIsPulse*/ true, /*CooldownSeconds*/ 0.0f);
+		++PulsedSeekers;
+	}
+	if (PulsedSeekers > 0)
+	{
+		RecordPlaytestTelemetryMarker(TEXT("ph_pulse"), PropLocations[0], FString::Printf(TEXT("props=%d seekers=%d"), PropLocations.Num(), PulsedSeekers));
 	}
 }
 

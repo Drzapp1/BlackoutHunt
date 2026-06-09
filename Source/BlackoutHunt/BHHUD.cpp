@@ -1648,7 +1648,53 @@ void ABHHUD::DrawPropHuntOverlay(const ABHGameState* GameState, const ABHPlayerS
 	}
 	if (!RoleLine.IsEmpty())
 	{
-		DrawCentered(RoleLine, CenterX, Y, RoleColor, 0.60f * TextScale);
+		Y += DrawCentered(RoleLine, CenterX, Y, RoleColor, 0.60f * TextScale) + 3.0f * TextScale;
+	}
+
+	// --- Seeker kit readout (P4): sonar ready clock, through-wall reveal markers, reveal-pulse flash. -------------
+	if (bLocalSeeker && bSeeking && Character)
+	{
+		// Sonar status under the role prompt.
+		const float SonarReadyIn = Character->GetPropHuntSonarReadyClientTime() - Now;
+		const FString SonarText = SonarReadyIn > 0.0f
+			? FString::Printf(TEXT("SONAR %ds"), FMath::CeilToInt(SonarReadyIn))
+			: TEXT("SONAR READY (Q)");
+		DrawCentered(SonarText, CenterX, Y,
+			SonarReadyIn > 0.0f ? FLinearColor(0.82f, 0.62f, 0.42f, 0.85f) : FLinearColor(0.68f, 0.92f, 0.62f, 0.90f),
+			0.58f * TextScale);
+
+		// Reveal-pulse screen flash: a short, LOW-alpha amber wash + label (kept gentle on purpose; this is a
+		// fairness cue, not a jumpscare).
+		const float FlashAge = Now - Character->GetPropHuntPulseFlashClientTime();
+		constexpr float FlashSeconds = 0.55f;
+		if (FlashAge >= 0.0f && FlashAge < FlashSeconds)
+		{
+			const float FlashAlpha = 0.12f * (1.0f - FlashAge / FlashSeconds);
+			DrawRect(FLinearColor(0.95f, 0.72f, 0.25f, FlashAlpha), 0.0f, 0.0f, Canvas->ClipX, Canvas->ClipY);
+		}
+
+		// Through-wall markers: project each revealed prop position; pulse fades the markers out over their window.
+		const float MarkersRemaining = Character->GetPropHuntSonarMarkersExpireClientTime() - Now;
+		if (MarkersRemaining > 0.0f)
+		{
+			const float MarkerAlpha = FMath::Clamp(MarkersRemaining / 0.8f, 0.25f, 1.0f);
+			const FVector SeekerLocation = Character->GetActorLocation();
+			for (const FVector& MarkerWorld : Character->GetPropHuntSonarMarkers())
+			{
+				const FVector Projected = Canvas->Project(MarkerWorld + FVector(0.0f, 0.0f, 60.0f));
+				if (Projected.Z <= 0.0f) // behind the camera -- the next ping/pulse will catch it
+				{
+					continue;
+				}
+				const float MarkerHalf = 5.0f * TextScale;
+				DrawRect(FLinearColor(0.98f, 0.30f, 0.22f, 0.85f * MarkerAlpha),
+					Projected.X - MarkerHalf, Projected.Y - MarkerHalf, MarkerHalf * 2.0f, MarkerHalf * 2.0f);
+				const float DistanceMeters = FVector::Dist(SeekerLocation, MarkerWorld) / 100.0f;
+				DrawHudText(FString::Printf(TEXT("%.0fm"), DistanceMeters),
+					Projected.X + MarkerHalf + 2.0f, Projected.Y - 6.0f * TextScale,
+					FLinearColor(0.98f, 0.84f, 0.60f, 0.9f * MarkerAlpha), GEngine->GetSmallFont(), 0.52f * TextScale);
+			}
+		}
 	}
 }
 
