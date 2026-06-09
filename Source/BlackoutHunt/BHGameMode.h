@@ -42,6 +42,11 @@ BLACKOUTHUNT_API FString BHResolveLevelMapPackage(const FString& LevelName);
 // file-local; BuildRuntimeFacility folds this into the parsed bPropHuntMode (opt-in, reversible Prop Hunt mode).
 BLACKOUTHUNT_API bool BHIsPropHuntCVarEnabled();
 
+// Resolves a prop-hunt arena logical name (BHPropHunt::FArenaSpec registry) to the .umap package to travel to: the
+// authored arena bake (Tools/Setup-PropHuntArena.py output) when it exists, otherwise the raw imported pack demo map,
+// otherwise empty (not a registered arena, or nothing on disk/in the cook). Defined in BHGameModePropHunt.cpp.
+BLACKOUTHUNT_API FString BHResolvePropHuntArenaPackage(const FString& Token);
+
 // Indoor (non-Foggrounds) auto-exposure tuning, shared by two paths that must stay in lockstep:
 //  * ABHGameMode::AddMoodPass bakes these into the authored .umap's post-process volume at export time, and
 //  * ABHPlayerController::ClampIndoorAutoExposure re-applies them on every client at runtime, repairing the
@@ -362,6 +367,9 @@ protected:
 	void BuildFoggroundsFinalStation();
 	void BuildMapSubwayExitStation(const FVector& GateLocation, float DirectionSign, const FString& StationName, const FString& DestinationText);
 	void BuildRuntimeNavigation();
+	// Parametrized core of BuildRuntimeNavigation: places/sizes the runtime NavMeshBoundsVolume explicitly, for maps
+	// whose bounds are not one of the hardcoded level-name presets (prop-hunt arenas size this from their geometry).
+	void BuildRuntimeNavigationBounds(const FVector& Center, const FVector& Size);
 	void CompleteRuntimeNavigationBuild();
 	void SetSecurityCircuitCCTVActive(int32 CircuitId, bool bCircuitOpen);
 	void ApplyRoundCCTVVisibility(EBHRoundModifier ActiveModifier);
@@ -398,6 +406,9 @@ protected:
 	void RegisterStationSignalLight(ABHFlickerLight* Light);
 	void UpdateStationSignalState(bool bExitOpen);
 	void AddMapContainment(float HalfX, float HalfY);
+	// Containment for maps not centred at the origin (prop-hunt arenas): perimeter blockers around an explicit
+	// centre, with an explicit wall height in metres (the classic overload assumes origin + 4.2 m walls).
+	void AddMapContainmentAt(const FVector& Center, float HalfX, float HalfY, float WallHeightMeters);
 	ABHStaticBlockField* EnsureStaticBlockField();
 	void ResetStaticBlockField();
 	void FinalizeStaticBlockField();
@@ -522,6 +533,16 @@ protected:
 	// Count props (role == Survivor) and how many are still hidden (alive). Caught props keep the Survivor role
 	// in prop hunt (the Hall-Monitor conversion is suppressed), so found = total - remaining is exact.
 	void CountPropHuntProps(int32& OutTotal, int32& OutRemaining) const;
+	// P3 arena loader: when the loaded world IS a registered prop-hunt arena package (an imported pack map), build it
+	// as an arena -- collect placed PlayerStarts or floor-scatter spawns, size the runtime nav + containment + void
+	// recovery to the geometry bounds -- and skip the classroom generators entirely. Returns false when the current
+	// map is not a registered arena (the normal generators/authored discovery run as before).
+	bool TryBuildPropHuntArena();
+	// Deterministic spawn scatter for arena maps with too few placed PlayerStarts: Halton candidate points over the
+	// bounds, floor-traced and clearance-checked. Static so the automation test can exercise it on a bare test world.
+	static TArray<FVector> ScatterPropHuntSpawnPoints(UWorld* World, const FBox& Bounds, int32 DesiredCount, int32 Salt);
+	// The blocking static-geometry bounds of the loaded arena map (sky spheres/oversized shells excluded).
+	FBox ComputePropHuntArenaBounds() const;
 	void TickRoundTimer();
 	void EndRound(EBHRoundPhase ResultPhase);
 	void ResetRoundByTravel();
@@ -585,6 +606,12 @@ public:
 	void DebugRecordTrainCabinCentersForTest(float MinX, float MaxX, float FloorZ) { RecordTrainCabinCenters(MinX, MaxX, FloorZ); }
 	const TArray<FVector>& DebugGetTrainCabinCentersForTest() const { return TrainCabinCenters; }
 	FString DebugResolveTravelMapForLevelForTest(const FString& Level) const { return ResolveTravelMapForLevel(Level); }
+	// Defined in BHGameMode.cpp: NormalizeBHLevelName is file-local (anonymous namespace) there.
+	static FString DebugNormalizeBHLevelNameForTest(const FString& Level);
+	void DebugSetPropHuntModeForTest(bool bEnabled) { bPropHuntMode = bEnabled; }
+	FString DebugBuildTravelOptionsForLevelForTest(const FString& Level, int32 StageIndex) const { return BuildTravelOptionsForLevel(Level, false, StageIndex, EBHRoundPhase::Lobby); }
+	static TArray<FVector> DebugScatterPropHuntSpawnPointsForTest(UWorld* World, const FBox& Bounds, int32 DesiredCount, int32 Salt) { return ScatterPropHuntSpawnPoints(World, Bounds, DesiredCount, Salt); }
+	bool DebugTryBuildPropHuntArenaForTest() { return TryBuildPropHuntArena(); }
 protected:
 #endif
 
@@ -694,6 +721,10 @@ protected:
 	bool bPropHuntMode = false;
 	// Server time of the last forced prop taunt (drives the shrinking taunt cadence). See BHGameModePropHunt.cpp.
 	float PropHuntLastTauntServerTime = -1000.0f;
+	// Below this Z an alive pawn counts as fallen out of the world (RecoverPlayersFromVoid teleports it back). The
+	// BlackoutHunt maps are built around Z=0 so -650 is right for them; a prop-hunt arena (imported pack map) sets
+	// this from its own geometry bounds, which may sit far from the origin.
+	float VoidRecoveryZThreshold = -650.0f;
 	EBHRevisionMode RevisionMode;
 	bool bRevisionMode;
 	int32 RevisionTopicMask;

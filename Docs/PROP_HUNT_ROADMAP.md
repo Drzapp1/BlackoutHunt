@@ -105,7 +105,7 @@ regressions (full suite: only the 2 pre-existing reds).
 3. No **rotating starting seeker** and no **infection** (caught→seeker). v1 caught props go straight to spectate. **(P1)**
 4. No **best-of-N match** wrapper / role rotation / cumulative scoring / MVP. **(P6)**
 5. No **3rd-person prop camera** or 1st/3rd toggle. **(P2)**
-6. Runs on the **classroom maps** with their geometry; the imported **prop-rich arenas aren't wired**. **(P3)**
+6. Runs on the **classroom maps** with their geometry; the imported **prop-rich arenas aren't wired**. **(P3 — done: ContainersHouse + RuinedCrypt wired via the arena loader; editor spawn-bake optional)**
 7. Seeker kit is just the raw Hunter kit; no **reveal pulse**, **wrong-hit penalty wiring**, or prop-tuned scan. **(P4)**
 8. No **manual taunt** (only auto). **(P5)**
 9. No prop-hunt **audio** (taunt horn, found sting, release klaxon, hide-phase bed). **(P5/P7)**
@@ -241,8 +241,29 @@ Each phase is independently shippable and leaves the build green + tests passing
 - **Acceptance:** disguise → see yourself in 3rd person, toggle to 1st and back, lock and the prop is solid & still,
   oversized meshes are refused. No regressions to the seeker's 1st-person.
 
-### P3 — Map import: arena loader + wiring the packs (L)
+### P3 — Map import: arena loader + wiring the packs (L) **(done — code complete 2026-06-09; editor steps pending, see TODO box)**
 **Goal:** play prop hunt in the prop-rich imported environments, not just the classroom maps.
+
+> **STATUS (what landed):** the full runtime arena path needs NO editor work: `BHPropHunt::FArenaSpec` registry
+> (BHPropHuntLibrary.h) → arena names are first-class level tokens (`NormalizeBHLevelName` passthrough) → travel
+> resolves them via `BHResolvePropHuntArenaPackage` (authored `Arena_<Name>` bake preferred, raw pack demo fallback)
+> → `BuildRuntimeFacility` dispatches `TryBuildPropHuntArena()` for a loaded arena package (also FORCES prop hunt on,
+> so `open /Game/ContainersHouseCH/Maps/Map_ContainersHouse_Demo` alone works) → geometry-bounds scan (sky-sphere
+> excluded) drives Halton floor-trace spawn scatter (lowest-standable-wins, so roofs don't shadow interiors; placed
+> PlayerStarts + a "Hunter"-tagged start always win), bounds-sized runtime nav, perimeter containment, bounds-based
+> void-recovery Z. `?BHArena=<name>` implies+routes prop hunt; `?BHPropHunt=1` now rides every travel URL the mode
+> builds (URL-option-only sessions used to silently drop the mode on round 2 — fixed). Client-side
+> `EnsurePropHuntArenaExposureGuard` clamps eye adaptation on packs that ship no exposure pass (wide 0.03–2.0 band).
+> Registered arenas: **ContainersHouse** (demo map in every cook list + Verify-EOSPackage guard), **RuinedCrypt**
+> (registry-ready; NOT cooked yet — editor/dev builds only, keeps the package small until playtested).
+> Tests: `BlackoutHunt.PropHunt.ArenaTravel` + `.ArenaScatter` (+ registry/Halton/hold-pick rows in `.Library`).
+>
+> **TODO (needs the interactive editor / a human):**
+> 1. *(optional but recommended)* Run `Tools/Setup-PropHuntArena.py` (headless one-liner in its header) to bake
+>    `Arena_ContainersHouse`/`Arena_RuinedCrypt` with hand-tunable PlayerStarts; then add the baked map(s) to the
+>    cook `-map=` lists (commented pointers already sit in each Package-* script) + `Verify-EOSPackage.ps1`.
+> 2. Per-map checklist (§7.9) in the editor: eyeball spawn spread, lighting, collision holes; nudge PlayerStarts.
+> 3. Human playtest on ContainersHouse (hide spots, sightlines, round timing) — record findings here.
 - **Arena loader (the import mechanism).** Most pack demo maps have geometry + lights + (sometimes) PlayerStarts but
   **no** BlackoutHunt markers/spawns/nav and **no** `ABHLevelMarker`. Add a prop-hunt arena path:
   - Recognise an **arena travel option** `?BHArena=<LogicalName>` (or reuse `?BHLevel=`), resolved to a package via a
@@ -459,6 +480,7 @@ prop-poof transform · prop-shatter on catch · round win/lose stings · seeker 
 | `bh.PropHuntMissSlowPerMiss` | 0.35 | Wrong-hit slow per extra miss. **(P4)** |
 | `bh.PropHuntMissSlowMax` | 2.0 | Wrong-hit slow cap. **(P4)** |
 | `bh.PropHunt3pDistance` | 300 | 3rd-person spring-arm length. **(P2)** |
+| `bh.PropHuntArenaSpawns` | 12 | Target spawn count on arena maps (placed PlayerStarts first, scatter fills). **(P3 done)** |
 | `bh.PropHuntSolidProps` | 1 | Locked disguises get blocking collision. **(P2)** |
 | `bh.PropHuntMinSize` / `MaxSize` | tune | Disguise bounds clamp. **(P2)** |
 | `bh.PropHuntPointsPerSecondAlive` | 1 | Prop survival scoring. **(P6)** |

@@ -102,4 +102,102 @@ namespace BHPropHunt
 		const int32 Index = ((Salt % Count) + Count) % Count;
 		return Props[Index];
 	}
+
+	// ---------------------------------------------------------------------------------------------------------------
+	// Arena registry (P3). Prop-hunt arenas are the prop-rich imported pack maps, wired by NAME: the logical name is a
+	// first-class BHLevel token (NormalizeBHLevelName passes it through), travel resolves it to a real package, and
+	// BuildRuntimeFacility dispatches BuildPropHuntArena when the loaded map IS one of these packages. Pure data here --
+	// package existence / preference is resolved by BHResolvePropHuntArenaPackage in BHGameModePropHunt.cpp, which
+	// prefers the authored bake (the Tools/Setup-PropHuntArena.py output, hand-placed spawns) over the raw pack demo.
+	// Adding an arena = adding a row (+ cook-list entries when it should ship in packaged builds).
+	struct FArenaSpec
+	{
+		const TCHAR* LogicalName;     // canonical ?BHLevel=/?BHArena= token, e.g. "ContainersHouse"
+		const TCHAR* AuthoredPackage; // preferred authored arena map (editor-script output; may not exist yet)
+		const TCHAR* SourcePackage;   // raw imported pack demo map (in the tree today; runtime scatter handles spawns)
+		const TCHAR* DisplayName;     // host UI / HUD label
+	};
+
+	inline const FArenaSpec* ArenaSpecs(int32& OutCount)
+	{
+		static const FArenaSpec Arenas[] = {
+			{ TEXT("ContainersHouse"), TEXT("/Game/BlackoutHunt/Maps/Arena_ContainersHouse"),
+			  TEXT("/Game/ContainersHouseCH/Maps/Map_ContainersHouse_Demo"), TEXT("Container Warehouse") },
+			{ TEXT("RuinedCrypt"), TEXT("/Game/BlackoutHunt/Maps/Arena_RuinedCrypt"),
+			  TEXT("/Game/RuinedCrypt/Demo/Maps/RuinedCrypt_01/RuinedCrypt_01_P"), TEXT("Ruined Crypt") },
+		};
+		OutCount = UE_ARRAY_COUNT(Arenas);
+		return Arenas;
+	}
+
+	// Case-insensitive logical-name lookup; nullptr when the token is not a registered arena.
+	inline const FArenaSpec* FindArenaSpec(const FString& Token)
+	{
+		const FString Trimmed = Token.TrimStartAndEnd();
+		int32 Count = 0;
+		const FArenaSpec* Arenas = ArenaSpecs(Count);
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			if (Trimmed.Equals(Arenas[Index].LogicalName, ESearchCase::IgnoreCase))
+			{
+				return &Arenas[Index];
+			}
+		}
+		return nullptr;
+	}
+
+	// ---------------------------------------------------------------------------------------------------------------
+	// Spawn scatter (P3). Pack demo maps ship few/no PlayerStarts, so the arena builder samples candidate XY points
+	// over the level bounds and floor-traces each one. The candidate pattern is a deterministic low-discrepancy Halton
+	// sequence (bases 2/3): evenly spread, no clumping, reproducible for tests -- no RNG state involved.
+	inline float HaltonSequence(int32 Index, int32 Base)
+	{
+		float Result = 0.0f;
+		float Fraction = 1.0f / static_cast<float>(Base);
+		int32 Remaining = FMath::Max(0, Index);
+		while (Remaining > 0)
+		{
+			Result += Fraction * static_cast<float>(Remaining % Base);
+			Remaining /= Base;
+			Fraction /= static_cast<float>(Base);
+		}
+		return Result;
+	}
+
+	// The Index-th candidate point in the unit square (Salt offsets the sequence so different rounds can vary).
+	// Index 0 maps to sequence position 1 (Halton(0) is degenerate at the corner).
+	inline FVector2D ArenaScatterUV(int32 Index, int32 Salt = 0)
+	{
+		const int32 Position = 1 + FMath::Max(0, Index) + FMath::Max(0, Salt);
+		return FVector2D(HaltonSequence(Position, 2), HaltonSequence(Position, 3));
+	}
+
+	// The seeker's hide-phase holding spot: the spawn point farthest from the cloud's centroid, so the seeker starts
+	// at the edge of the play space rather than in the middle of the hiding props. INDEX_NONE on an empty set.
+	inline int32 PickSeekerHoldIndex(const TArray<FVector>& Points)
+	{
+		if (Points.Num() == 0)
+		{
+			return INDEX_NONE;
+		}
+		FVector Centroid = FVector::ZeroVector;
+		for (const FVector& Point : Points)
+		{
+			Centroid += Point;
+		}
+		Centroid /= static_cast<float>(Points.Num());
+
+		int32 BestIndex = 0;
+		float BestDistSq = -1.0f;
+		for (int32 Index = 0; Index < Points.Num(); ++Index)
+		{
+			const float DistSq = FVector::DistSquared2D(Points[Index], Centroid);
+			if (DistSq > BestDistSq)
+			{
+				BestDistSq = DistSq;
+				BestIndex = Index;
+			}
+		}
+		return BestIndex;
+	}
 }

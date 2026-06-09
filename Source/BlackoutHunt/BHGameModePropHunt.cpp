@@ -25,10 +25,16 @@
 #include "BHPlayerController.h"
 #include "BHPlayerState.h"
 #include "BHPropHuntLibrary.h"
+#include "CollisionQueryParams.h"
+#include "CollisionShape.h"
+#include "Components/StaticMeshComponent.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerStart.h"
 #include "GameFramework/PlayerState.h"
 #include "HAL/IConsoleManager.h"
+#include "Misc/PackageName.h"
 
 // Master opt-in fallback toggle (the URL option ?BHPropHunt=1 is the primary path). A host can flip this in the console
 // before starting and every level for the rest of the session reads it (the cvar is global and survives ServerTravel).
@@ -61,6 +67,13 @@ static TAutoConsoleVariable<int32> CVarBHPropHuntSeekSeconds(
 	TEXT("bh.PropHuntSeekSeconds"),
 	240,
 	TEXT("Prop Hunt: length of the SEEK phase (the seeker hunts; props survive the clock to win)."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarBHPropHuntArenaSpawns(
+	TEXT("bh.PropHuntArenaSpawns"),
+	12,
+	TEXT("Prop Hunt: target spawn-point count on an arena map. Placed APlayerStarts are used first; the floor-trace ")
+	TEXT("scatter fills the remainder (12 covers a full 10-player lobby with slack)."),
 	ECVF_Default);
 
 // Free accessor so BuildRuntimeFacility (in BHGameMode.cpp) can fold the cvar into the parsed bPropHuntMode without
@@ -340,4 +353,308 @@ void ABHGameMode::ForcePropHuntTaunt()
 			PC->ClientShowStatusMessage(TEXT("A taunt rings out - the props just gave themselves away. Listen!"), 2.0f);
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// P3: the arena loader. Prop-hunt arenas are the prop-rich imported pack maps (ContainersHouse warehouse, RuinedCrypt,
+// ...) wired up by NAME through the BHPropHunt::FArenaSpec registry, not re-authored: the pack demo .umap ships its own
+// geometry/lighting, and everything BlackoutHunt needs on top -- spawn points, runtime navmesh, containment, void
+// recovery -- is derived from the level's blocking static geometry at load. Hand-placing APlayerStarts (one tagged
+// "Hunter") in an authored Arena_<Name> bake (Tools/Setup-PropHuntArena.py) refines the spawns; nothing requires it.
+// ---------------------------------------------------------------------------------------------------------------------
+
+FString BHResolvePropHuntArenaPackage(const FString& Token)
+{
+	const BHPropHunt::FArenaSpec* Spec = BHPropHunt::FindArenaSpec(Token);
+	if (!Spec)
+	{
+		return FString();
+	}
+	if (FPackageName::DoesPackageExist(Spec->AuthoredPackage))
+	{
+		return Spec->AuthoredPackage;
+	}
+	if (FPackageName::DoesPackageExist(Spec->SourcePackage))
+	{
+		return Spec->SourcePackage;
+	}
+	UE_LOG(LogTemp, Warning, TEXT("BlackoutHunt PropHunt: arena '%s' is registered but neither %s nor %s exists (not on disk / not cooked)."),
+		Spec->LogicalName, Spec->AuthoredPackage, Spec->SourcePackage);
+	return FString();
+}
+
+namespace
+{
+	// Does the loaded world's map short-name match this arena spec (either the authored bake or the raw pack demo)?
+	// GetMapName() keeps the PIE prefix ("UEDPIE_0_Map_ContainersHouse_Demo"); StreamingLevelsPrefix strips it.
+	bool BHWorldMatchesArenaPackage(const UWorld* World, const BHPropHunt::FArenaSpec& Spec)
+	{
+		if (!World)
+		{
+			return false;
+		}
+		FString MapShort = World->GetMapName();
+		MapShort.RemoveFromStart(World->StreamingLevelsPrefix);
+		return MapShort.Equals(FPackageName::GetShortName(FString(Spec.AuthoredPackage)), ESearchCase::IgnoreCase)
+			|| MapShort.Equals(FPackageName::GetShortName(FString(Spec.SourcePackage)), ESearchCase::IgnoreCase);
+	}
+}
+
+// The blocking static-mesh bounds of the loaded map. Pawn-blocking, registered components only, with sky spheres /
+// world-sized shells excluded (their bounds would inflate the play space to nonsense) and door-handle-sized slivers
+// ignored. This is the frame every other arena system (spawn scatter, nav volume, containment, void recovery) hangs off.
+FBox ABHGameMode::ComputePropHuntArenaBounds() const
+{
+	FBox Bounds(ForceInit);
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return Bounds;
+	}
+
+	constexpr float MaxComponentExtent = 50000.0f; // 500 m: anything larger is a skybox/backdrop, not play space
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* Actor = *It;
+		if (!Actor || Actor->IsA<APawn>())
+		{
+			continue;
+		}
+		TInlineComponentArray<UStaticMeshComponent*> MeshComponents(Actor);
+		for (const UStaticMeshComponent* Component : MeshComponents)
+		{
+			if (!Component || !Component->IsRegistered())
+			{
+				continue;
+			}
+			if (Component->GetCollisionEnabled() == ECollisionEnabled::NoCollision
+				|| Component->GetCollisionResponseToChannel(ECC_Pawn) != ECR_Block)
+			{
+				continue;
+			}
+			const FVector Extent = Component->Bounds.BoxExtent;
+			if (Extent.GetMax() > MaxComponentExtent || Extent.GetMax() <= 2.0f)
+			{
+				continue;
+			}
+			Bounds += Component->Bounds.GetBox();
+		}
+	}
+	return Bounds;
+}
+
+// Deterministic spawn scatter for arena maps that ship too few PlayerStarts. Halton (2,3) candidates spread over the
+// bounds; each is floor-traced TOP-DOWN THROUGH the geometry collecting every standable surface (so a warehouse roof
+// does not shadow the interior floor), then the LOWEST standable point with pawn-capsule clearance wins. Points keep
+// MinSpacing apart so the props do not spawn in a clump.
+TArray<FVector> ABHGameMode::ScatterPropHuntSpawnPoints(UWorld* World, const FBox& Bounds, int32 DesiredCount, int32 Salt)
+{
+	TArray<FVector> Points;
+	if (!World || !Bounds.IsValid || DesiredCount <= 0)
+	{
+		return Points;
+	}
+
+	constexpr float EdgeMargin = 250.0f;      // keep clear of the containment walls
+	constexpr float MinSpacing = 500.0f;      // spread the spawn cloud out
+	constexpr float CapsuleRadius = 42.0f;    // matches BHResolveSpawnLocation's clearance capsule
+	constexpr float CapsuleHalfHeight = 98.0f;
+	constexpr int32 MaxFloorHops = 6;         // roof -> mezzanine -> floor is plenty
+
+	const FVector BoundsSize = Bounds.GetSize();
+	const float SpanX = FMath::Max(100.0f, BoundsSize.X - 2.0f * EdgeMargin);
+	const float SpanY = FMath::Max(100.0f, BoundsSize.Y - 2.0f * EdgeMargin);
+	const float TraceTop = Bounds.Max.Z + 500.0f;
+	const float TraceBottom = Bounds.Min.Z - 500.0f;
+	const int32 MaxCandidates = FMath::Max(DesiredCount * 12, 64);
+
+	FCollisionQueryParams TraceParams(FName(TEXT("BHPropHuntSpawnScatter")), /*bInTraceComplex*/ false);
+	const FCollisionShape ClearanceCapsule = FCollisionShape::MakeCapsule(CapsuleRadius, CapsuleHalfHeight);
+
+	for (int32 Candidate = 0; Candidate < MaxCandidates && Points.Num() < DesiredCount; ++Candidate)
+	{
+		const FVector2D UV = BHPropHunt::ArenaScatterUV(Candidate, Salt);
+		const float X = Bounds.Min.X + EdgeMargin + UV.X * SpanX;
+		const float Y = Bounds.Min.Y + EdgeMargin + UV.Y * SpanY;
+
+		// Spacing first (cheap) against already-accepted points.
+		bool bTooClose = false;
+		for (const FVector& Existing : Points)
+		{
+			if (FVector::DistSquared2D(Existing, FVector(X, Y, 0.0f)) < MinSpacing * MinSpacing)
+			{
+				bTooClose = true;
+				break;
+			}
+		}
+		if (bTooClose)
+		{
+			continue;
+		}
+
+		// Collect every standable surface under this XY by repeated down-traces through each hit.
+		TArray<FVector, TInlineAllocator<MaxFloorHops>> StandableHits;
+		FVector TraceStart(X, Y, TraceTop);
+		for (int32 Hop = 0; Hop < MaxFloorHops && TraceStart.Z > TraceBottom; ++Hop)
+		{
+			FHitResult FloorHit;
+			if (!World->LineTraceSingleByChannel(FloorHit, TraceStart, FVector(X, Y, TraceBottom), ECC_Visibility, TraceParams))
+			{
+				break;
+			}
+			if (FloorHit.ImpactNormal.Z >= 0.72f)
+			{
+				StandableHits.Add(FloorHit.ImpactPoint);
+			}
+			TraceStart = FloorHit.ImpactPoint - FVector(0.0f, 0.0f, 30.0f);
+		}
+
+		// Lowest standable surface with capsule headroom wins (interior floor beats crate-shadowed slab beats roof).
+		for (int32 HitIndex = StandableHits.Num() - 1; HitIndex >= 0; --HitIndex)
+		{
+			const FVector SpawnPoint = StandableHits[HitIndex] + FVector(0.0f, 0.0f, CapsuleHalfHeight + 12.0f);
+			if (!World->OverlapBlockingTestByChannel(SpawnPoint, FQuat::Identity, ECC_Pawn, ClearanceCapsule, TraceParams))
+			{
+				Points.Add(SpawnPoint);
+				break;
+			}
+		}
+	}
+	return Points;
+}
+
+bool ABHGameMode::TryBuildPropHuntArena()
+{
+	UWorld* World = GetWorld();
+	// The sandboxes/lobby/train never run on a pack map; checking here keeps the dispatch call site clean.
+	if (!World || bLobbyLevel || bTrainIntermissionLevel || bPracticeMode || bTestMode)
+	{
+		return false;
+	}
+
+	int32 ArenaCount = 0;
+	const BHPropHunt::FArenaSpec* Arenas = BHPropHunt::ArenaSpecs(ArenaCount);
+	const BHPropHunt::FArenaSpec* LoadedArena = nullptr;
+	for (int32 Index = 0; Index < ArenaCount; ++Index)
+	{
+		if (BHWorldMatchesArenaPackage(World, Arenas[Index]))
+		{
+			LoadedArena = &Arenas[Index];
+			break;
+		}
+	}
+	if (!LoadedArena)
+	{
+		return false;
+	}
+
+	// A loaded arena map IS prop hunt: force the mode for a direct `open <ArenaPackage>` (no URL option, no cvar) so
+	// the classroom generator can never build the procedural Facility inside a pack map. BeginPlay publishes the flag
+	// to the GameState right after BuildRuntimeFacility returns, so clients pick it up as usual.
+	if (!bPropHuntMode)
+	{
+		bPropHuntMode = true;
+		UE_LOG(LogTemp, Log, TEXT("BlackoutHunt PropHunt: arena map '%s' loaded without ?BHPropHunt=1; enabling prop hunt for it."), LoadedArena->LogicalName);
+	}
+
+	RuntimeLevelName = LoadedArena->LogicalName;
+	NextRuntimeLevelName = LoadedArena->LogicalName; // replay the same arena after the round (P6 adds rotation)
+
+	const FBox ArenaBounds = ComputePropHuntArenaBounds();
+	if (!ArenaBounds.IsValid)
+	{
+		// A registered map with zero blocking static meshes -- nothing to stand on. Build a flat emergency pen at
+		// the origin so the session is still playable, and say so loudly (this is a registry/map mistake).
+		UE_LOG(LogTemp, Error, TEXT("BlackoutHunt PropHunt: arena '%s' has no blocking static geometry; building an emergency holding pen at the origin."), LoadedArena->LogicalName);
+		SpawnBlock(FVector(0.0f, 0.0f, -15.0f), FVector(40.0f, 40.0f, 0.30f), FLinearColor(0.20f, 0.22f, 0.25f, 1.0f), FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+		SurvivorSpawns = { FVector(-600.0f, -600.0f, 120.0f), FVector(600.0f, -600.0f, 120.0f), FVector(-600.0f, 600.0f, 120.0f), FVector(600.0f, 600.0f, 120.0f) };
+		HunterSpawn = FVector(1500.0f, 0.0f, 120.0f);
+		AddMapContainment(2000.0f, 2000.0f);
+		BuildRuntimeNavigationBounds(FVector(0.0f, 0.0f, 200.0f), FVector(4200.0f, 4200.0f, 700.0f));
+		return true;
+	}
+
+	// --- Spawns: hand-placed PlayerStarts win (the authored-bake path); the floor scatter fills the remainder. ---
+	SurvivorSpawns.Reset();
+	bool bFoundHunterStart = false;
+	for (TActorIterator<APlayerStart> It(World); It; ++It)
+	{
+		APlayerStart* Start = *It;
+		if (!Start)
+		{
+			continue;
+		}
+		if (Start->PlayerStartTag == FName(TEXT("Hunter")))
+		{
+			HunterSpawn = Start->GetActorLocation();
+			bFoundHunterStart = true;
+		}
+		else
+		{
+			SurvivorSpawns.Add(Start->GetActorLocation());
+		}
+	}
+	const int32 PlacedSpawnCount = SurvivorSpawns.Num();
+
+	const int32 DesiredSpawns = FMath::Clamp(CVarBHPropHuntArenaSpawns.GetValueOnGameThread(), 4, 32);
+	if (SurvivorSpawns.Num() < DesiredSpawns)
+	{
+		const int32 Needed = DesiredSpawns - SurvivorSpawns.Num() + (bFoundHunterStart ? 0 : 1);
+		SurvivorSpawns.Append(ScatterPropHuntSpawnPoints(World, ArenaBounds, Needed, /*Salt*/ 0));
+	}
+
+	// No tagged seeker hold: take the spawn farthest from the cloud's centroid (the edge of the play space), so the
+	// frozen, screen-blacked seeker waits away from the middle of the hiding props.
+	if (!bFoundHunterStart && SurvivorSpawns.Num() > 0)
+	{
+		const int32 HoldIndex = BHPropHunt::PickSeekerHoldIndex(SurvivorSpawns);
+		if (SurvivorSpawns.IsValidIndex(HoldIndex))
+		{
+			HunterSpawn = SurvivorSpawns[HoldIndex];
+			if (SurvivorSpawns.Num() > 1)
+			{
+				SurvivorSpawns.RemoveAt(HoldIndex);
+			}
+		}
+	}
+	if (SurvivorSpawns.Num() == 0)
+	{
+		// Scatter found nothing standable (broken collision?). Drop everyone at the bounds centre, high, and let the
+		// fall + void recovery sort it out -- degraded but playable, and loud in the log for the per-map checklist.
+		UE_LOG(LogTemp, Error, TEXT("BlackoutHunt PropHunt: arena '%s' spawn scatter found no standable floor; using the bounds centre. Check the map's collision."), LoadedArena->LogicalName);
+		SurvivorSpawns.Add(FVector(ArenaBounds.GetCenter().X, ArenaBounds.GetCenter().Y, ArenaBounds.Max.Z + 150.0f));
+		if (!bFoundHunterStart)
+		{
+			HunterSpawn = SurvivorSpawns[0] + FVector(300.0f, 0.0f, 0.0f);
+		}
+	}
+
+	// --- Bounds-driven failsafes: void recovery, containment, runtime navmesh. ---
+	VoidRecoveryZThreshold = ArenaBounds.Min.Z - 600.0f;
+
+	const FVector BoundsCenter = ArenaBounds.GetCenter();
+	const FVector BoundsSize = ArenaBounds.GetSize();
+	constexpr float ContainPad = 400.0f;
+	const float WallHeightMeters = FMath::Clamp((BoundsSize.Z + 600.0f) / 100.0f, 6.0f, 60.0f);
+	AddMapContainmentAt(FVector(BoundsCenter.X, BoundsCenter.Y, ArenaBounds.Min.Z - 100.0f),
+		BoundsSize.X * 0.5f + ContainPad, BoundsSize.Y * 0.5f + ContainPad, WallHeightMeters);
+
+	// Nav band: dip below the lowest floor (Recast skips a surface sitting on the volume's bottom voxel -- see the
+	// tutorial note in BuildRuntimeNavigation) and stop a little over the roof. A roof navmesh patch may generate on
+	// enclosed maps; players don't path-follow, and the P8 bot pass owns trimming it if it ever misleads bots.
+	const float NavZMin = ArenaBounds.Min.Z - 100.0f;
+	const float NavZMax = ArenaBounds.Max.Z + 300.0f;
+	BuildRuntimeNavigationBounds(
+		FVector(BoundsCenter.X, BoundsCenter.Y, (NavZMin + NavZMax) * 0.5f),
+		FVector(BoundsSize.X + 2.0f * ContainPad, BoundsSize.Y + 2.0f * ContainPad, NavZMax - NavZMin));
+
+	UE_LOG(LogTemp, Log, TEXT("BlackoutHunt PropHunt: arena '%s' built -- bounds %s, %d placed + %d scattered spawns, seeker hold %s (%s), void-Z %.0f."),
+		LoadedArena->LogicalName,
+		*ArenaBounds.ToString(),
+		PlacedSpawnCount,
+		SurvivorSpawns.Num() - PlacedSpawnCount,
+		*HunterSpawn.ToCompactString(),
+		bFoundHunterStart ? TEXT("tagged PlayerStart") : TEXT("farthest spawn"),
+		VoidRecoveryZThreshold);
+	return true;
 }

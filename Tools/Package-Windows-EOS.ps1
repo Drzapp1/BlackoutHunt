@@ -353,7 +353,9 @@ try {
             "-serverconfig=$Configuration",
             "-cook",
             "-ddc=InstalledNoZenLocalFallback",
-            "-map=/Engine/Maps/Entry+/Game/BlackoutHunt/Maps/Facility+/Game/BlackoutHunt/Maps/Substation+/Game/BlackoutHunt/Maps/Foggrounds+/Game/BlackoutHunt/Maps/Tutorial",
+            # Prop-hunt arena: Map_ContainersHouse_Demo is the runtime fallback arena. Once Tools/Setup-PropHuntArena.py
+            # has baked /Game/BlackoutHunt/Maps/Arena_ContainersHouse, append it here too (the runtime prefers the bake).
+            "-map=/Engine/Maps/Entry+/Game/BlackoutHunt/Maps/Facility+/Game/BlackoutHunt/Maps/Substation+/Game/BlackoutHunt/Maps/Foggrounds+/Game/BlackoutHunt/Maps/Tutorial+/Game/ContainersHouseCH/Maps/Map_ContainersHouse_Demo",
             "-skipbuild",
             "-noxge",
             "-ubtargs=-WaitMutex -NoXGE -NoUBA -MaxParallelActions=1",

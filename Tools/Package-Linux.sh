@@ -42,7 +42,7 @@ bash "$run_uat" BuildCookRun \
 	-clientconfig="$configuration" \
 	-serverconfig="$configuration" \
 	-cook \
-	"-map=/Engine/Maps/Entry+/Game/BlackoutHunt/Maps/Facility+/Game/BlackoutHunt/Maps/Substation+/Game/BlackoutHunt/Maps/Foggrounds+/Game/BlackoutHunt/Maps/Tutorial" \
+	"-map=/Engine/Maps/Entry+/Game/BlackoutHunt/Maps/Facility+/Game/BlackoutHunt/Maps/Substation+/Game/BlackoutHunt/Maps/Foggrounds+/Game/BlackoutHunt/Maps/Tutorial+/Game/ContainersHouseCH/Maps/Map_ContainersHouse_Demo" \
 	-build \
 	-noxge \
 	"-ubtargs=-NoXGE -MaxParallelActions=2" \

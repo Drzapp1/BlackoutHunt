@@ -82,6 +82,59 @@ bool FBHPropHuntLibraryTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Every fallback prop has a positive scale."), Prop.Scale > 0.0f);
 	}
 
+	// --- Arena registry: rows well-formed, lookup case-insensitive, misses are null ---------------------------------
+	int32 ArenaCount = 0;
+	const BHPropHunt::FArenaSpec* Arenas = BHPropHunt::ArenaSpecs(ArenaCount);
+	TestTrue(TEXT("The arena registry is non-empty."), ArenaCount > 0);
+	for (int32 Index = 0; Index < ArenaCount; ++Index)
+	{
+		const BHPropHunt::FArenaSpec& Spec = Arenas[Index];
+		TestTrue(TEXT("Every arena has a logical name."), Spec.LogicalName && FCString::Strlen(Spec.LogicalName) > 0);
+		TestTrue(TEXT("Every arena's authored package is a /Game path."), Spec.AuthoredPackage && FString(Spec.AuthoredPackage).StartsWith(TEXT("/Game/")));
+		TestTrue(TEXT("Every arena's source package is a /Game path."), Spec.SourcePackage && FString(Spec.SourcePackage).StartsWith(TEXT("/Game/")));
+		TestTrue(TEXT("Every arena has a display name."), Spec.DisplayName && FCString::Strlen(Spec.DisplayName) > 0);
+		// Arena names must not collide with the reserved level tokens (NormalizeBHLevelName resolves those first).
+		const FString Logical(Spec.LogicalName);
+		TestFalse(TEXT("Arena names must not shadow the built-in level names."),
+			Logical.Equals(TEXT("Facility"), ESearchCase::IgnoreCase) || Logical.Equals(TEXT("Substation"), ESearchCase::IgnoreCase)
+			|| Logical.Equals(TEXT("Foggrounds"), ESearchCase::IgnoreCase) || Logical.Equals(TEXT("Tutorial"), ESearchCase::IgnoreCase)
+			|| Logical.Equals(TEXT("TrainIntermission"), ESearchCase::IgnoreCase) || Logical.Equals(TEXT("Fog"), ESearchCase::IgnoreCase));
+		for (int32 Other = Index + 1; Other < ArenaCount; ++Other)
+		{
+			TestFalse(TEXT("Arena logical names are unique."), Logical.Equals(Arenas[Other].LogicalName, ESearchCase::IgnoreCase));
+		}
+	}
+	TestTrue(TEXT("Arena lookup is case-insensitive."), BHPropHunt::FindArenaSpec(TEXT("containershouse")) == &Arenas[0]);
+	TestTrue(TEXT("Arena lookup trims whitespace."), BHPropHunt::FindArenaSpec(TEXT(" ContainersHouse ")) == &Arenas[0]);
+	TestTrue(TEXT("Unknown arena tokens miss."), BHPropHunt::FindArenaSpec(TEXT("NotAnArena")) == nullptr);
+	TestTrue(TEXT("The empty token misses."), BHPropHunt::FindArenaSpec(FString()) == nullptr);
+
+	// --- Halton scatter: deterministic, in range, well spread --------------------------------------------------------
+	TestEqual(TEXT("Halton base-2 position 1 is 1/2."), BHPropHunt::HaltonSequence(1, 2), 0.5f);
+	TestEqual(TEXT("Halton base-2 position 2 is 1/4."), BHPropHunt::HaltonSequence(2, 2), 0.25f);
+	TestEqual(TEXT("Halton base-3 position 1 is 1/3."), BHPropHunt::HaltonSequence(1, 3), 1.0f / 3.0f);
+	for (int32 Index = 0; Index < 64; ++Index)
+	{
+		const FVector2D UV = BHPropHunt::ArenaScatterUV(Index);
+		TestTrue(TEXT("Scatter UVs stay inside the unit square."), UV.X >= 0.0f && UV.X < 1.0f && UV.Y >= 0.0f && UV.Y < 1.0f);
+		TestTrue(TEXT("Scatter UVs are deterministic."), BHPropHunt::ArenaScatterUV(Index) == UV);
+	}
+	// Low-discrepancy: the first 16 candidates land in at least 10 distinct quadrant cells of a 4x4 grid.
+	TSet<int32> Cells;
+	for (int32 Index = 0; Index < 16; ++Index)
+	{
+		const FVector2D UV = BHPropHunt::ArenaScatterUV(Index);
+		Cells.Add(FMath::Clamp(static_cast<int32>(UV.X * 4.0f), 0, 3) * 4 + FMath::Clamp(static_cast<int32>(UV.Y * 4.0f), 0, 3));
+	}
+	TestTrue(TEXT("The first 16 scatter candidates spread across the space (>=10 of 16 4x4 cells)."), Cells.Num() >= 10);
+
+	// --- PickSeekerHoldIndex: farthest-from-centroid, safe on empty --------------------------------------------------
+	TestEqual(TEXT("Seeker hold pick on an empty set is INDEX_NONE."), BHPropHunt::PickSeekerHoldIndex(TArray<FVector>()), static_cast<int32>(INDEX_NONE));
+	TArray<FVector> Cluster = { FVector(0, 0, 0), FVector(100, 0, 0), FVector(0, 100, 0), FVector(5000, 5000, 0) };
+	TestEqual(TEXT("Seeker hold pick takes the outlier farthest from the centroid."), BHPropHunt::PickSeekerHoldIndex(Cluster), 3);
+	TArray<FVector> Single = { FVector(42, 42, 42) };
+	TestEqual(TEXT("Seeker hold pick on a single point returns it."), BHPropHunt::PickSeekerHoldIndex(Single), 0);
+
 	return true;
 }
 

@@ -97,6 +97,10 @@ foreach ($file in $allFiles) {
 # /Engine/Maps/Entry menu, so "every mode just returns to the menu". A bad -map= cook list silently dropped
 # them in 0.7.0 -- catch that here instead of in a player's hands.
 $requiredMaps = @("Facility", "Substation", "Foggrounds", "Tutorial")
+# Prop-hunt arena maps (cooked from their import-pack paths, e.g. /Game/ContainersHouseCH/Maps/...). The same
+# pak-listing regex covers them since it only anchors on /Maps/<name>.umap. Add Arena_ContainersHouse once
+# Tools/Setup-PropHuntArena.py has baked it and it joins the cook -map= lists.
+$requiredArenaMaps = @("Map_ContainersHouse_Demo")
 $utoc = Join-Path $resolvedPackageRoot "BlackoutHunt\Content\Paks\BlackoutHunt-Windows.utoc"
 if (-not (Test-Path -LiteralPath $utoc)) {
     Add-Failure "missing cooked pak container: BlackoutHunt\Content\Paks\BlackoutHunt-Windows.utoc"
@@ -120,6 +124,11 @@ else {
         foreach ($map in $requiredMaps) {
             if ($listing -notmatch "(?i)/Maps/$map\.umap") {
                 Add-Failure "authored map missing from cook: /Game/BlackoutHunt/Maps/$map.umap (fix the -map= list in the Package-* script and re-cook)"
+            }
+        }
+        foreach ($map in $requiredArenaMaps) {
+            if ($listing -notmatch "(?i)/Maps/$map\.umap") {
+                Add-Failure "prop-hunt arena map missing from cook: $map.umap (fix the -map= list in the Package-* script and re-cook)"
             }
         }
     }

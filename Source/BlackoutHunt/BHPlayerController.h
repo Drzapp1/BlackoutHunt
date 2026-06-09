@@ -851,6 +851,13 @@ private:
 	// The GameMode that builds fog is server-only and ExponentialHeightFog does not replicate, so each
 	// client materialises its own local floor mist for such maps. No-op once a height fog already exists.
 	void EnsureAuthoredLevelFloorFog();
+	// Prop-hunt arena maps are imported packs with arbitrary lighting and usually no exposure-tuned post-process
+	// volume; without one, UE's wide default eye-adaptation band can crush the scene to black off a bright wall
+	// (the same failure AddMoodPass's tight band prevents on the BlackoutHunt maps). When a prop-hunt round is
+	// running on a non-BlackoutHunt map and NO volume in the level overrides auto-exposure, spawn a client-local
+	// unbound clamp volume (wide enough for daylight packs, floored for blackout-dark ones). Trusts any exposure
+	// pass the pack ships. Server-spawned PP volumes do not replicate, so each client materialises its own.
+	void EnsurePropHuntArenaExposureGuard();
 	void TickAdaptiveGraphics(float DeltaSeconds);
 	void SaveGraphicsPreferences() const;
 	void EnsureAmbientMusic();

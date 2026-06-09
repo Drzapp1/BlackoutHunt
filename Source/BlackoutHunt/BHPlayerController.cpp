@@ -5732,6 +5732,82 @@ void ABHPlayerController::EnsureAuthoredLevelFloorFog()
 	}
 }
 
+void ABHPlayerController::EnsurePropHuntArenaExposureGuard()
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+	UWorld* World = GetWorld();
+	const ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
+	if (!World || !BHGS || !BHGS->bPropHuntMode)
+	{
+		return;
+	}
+
+	// Only arena maps need the guard: the BlackoutHunt maps already carry their tuned (baked or runtime) mood pass,
+	// and the lobby/menu base map has nothing to clamp. Map-name detection mirrors EnsureAuthoredLevelFloorFog.
+	const FString MapName = World->GetMapName();
+	if (MapName.Contains(TEXT("Facility")) || MapName.Contains(TEXT("Substation")) || MapName.Contains(TEXT("Foggrounds"))
+		|| MapName.Contains(TEXT("Tutorial")) || MapName.Contains(TEXT("Entry")))
+	{
+		return;
+	}
+
+	// Configure exactly once per level; the tag guard keeps the per-frame poll from re-stomping (and lets the
+	// atmosphere console retune afterwards), matching the floor-fog pattern above.
+	static const FName ExposureGuardTag(TEXT("BHPropHuntArenaExposureGuard"));
+	bool bAnyVolumeOverridesExposure = false;
+	for (TActorIterator<APostProcessVolume> It(World); It; ++It)
+	{
+		const APostProcessVolume* Volume = *It;
+		if (!Volume)
+		{
+			continue;
+		}
+		if (Volume->Tags.Contains(ExposureGuardTag))
+		{
+			return; // already guarded this level
+		}
+		if (Volume->bEnabled
+			&& (Volume->Settings.bOverride_AutoExposureMinBrightness || Volume->Settings.bOverride_AutoExposureMaxBrightness
+				|| Volume->Settings.bOverride_AutoExposureMethod || Volume->Settings.bOverride_AutoExposureBias))
+		{
+			bAnyVolumeOverridesExposure = true;
+		}
+	}
+	if (bAnyVolumeOverridesExposure)
+	{
+		// The pack ships its own exposure pass -- trust the art. Mark the level as checked with a tiny tagged
+		// no-op volume so the per-frame poll stops iterating.
+		if (APostProcessVolume* Checked = World->SpawnActor<APostProcessVolume>(FVector::ZeroVector, FRotator::ZeroRotator))
+		{
+			Checked->bEnabled = false;
+			Checked->Tags.AddUnique(ExposureGuardTag);
+		}
+		return;
+	}
+
+	if (APostProcessVolume* Guard = World->SpawnActor<APostProcessVolume>(FVector::ZeroVector, FRotator::ZeroRotator))
+	{
+		Guard->bUnbound = true;
+		// A WIDE band, not the indoor 0.20 ceiling: arenas can be genuine daylight scenes that must adapt well
+		// above indoor luminance. The floor keeps blackout-dark packs readable; the ceiling only stops the
+		// runaway bright-wall adaptation that crushes everything else to black; brisk symmetric speeds make any
+		// residual swing snap back instead of crawling (same rationale as the indoor mood pass).
+		Guard->Settings.bOverride_AutoExposureMinBrightness = true;
+		Guard->Settings.AutoExposureMinBrightness = 0.030f;
+		Guard->Settings.bOverride_AutoExposureMaxBrightness = true;
+		Guard->Settings.AutoExposureMaxBrightness = 2.0f;
+		Guard->Settings.bOverride_AutoExposureSpeedUp = true;
+		Guard->Settings.AutoExposureSpeedUp = BHAutoExposureAdaptSpeed;
+		Guard->Settings.bOverride_AutoExposureSpeedDown = true;
+		Guard->Settings.AutoExposureSpeedDown = BHAutoExposureAdaptSpeed;
+		Guard->Tags.AddUnique(ExposureGuardTag);
+		UE_LOG(LogTemp, Log, TEXT("BlackoutHunt PropHunt: arena map '%s' has no exposure-tuned post-process volume; applied the client exposure guard."), *MapName);
+	}
+}
+
 void ABHPlayerController::TickAdaptiveGraphics(float DeltaSeconds)
 {
 	if (!IsLocalController() || !bAdaptiveGraphicsEnabled || bVirtualBoxSafeApplied || DeltaSeconds <= 0.0f || DeltaSeconds > 0.25f)
@@ -7133,6 +7209,8 @@ void ABHPlayerController::HandleRoundPhaseUiState()
 
 	// Materialise the local floor mist for any authored map whose bake shipped without it (Facility).
 	EnsureAuthoredLevelFloorFog();
+	// Prop-hunt arenas (imported pack maps) get a client-local auto-exposure clamp when the pack ships none.
+	EnsurePropHuntArenaExposureGuard();
 
 	const EBHRoundPhase CurrentPhase = BHGS->RoundPhase;
 	if (!bRoundPhaseObserved)

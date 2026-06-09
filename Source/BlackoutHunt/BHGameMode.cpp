@@ -38,6 +38,7 @@
 #include "BHPanicAlarm.h"
 #include "BHPowerupLibrary.h"
 #include "BHPowerSwitch.h"
+#include "BHPropHuntLibrary.h"
 #include "BHPlayerController.h"
 #include "BHPlayerState.h"
 #include "BHPowerupShopTerminal.h"
@@ -496,6 +497,12 @@ FString NormalizeBHLevelName(FString LevelName)
 	if (LevelName.Equals(TEXT("Tutorial"), ESearchCase::IgnoreCase))
 	{
 		return TEXT("Tutorial");
+	}
+	// Prop-hunt arena logical names are first-class level tokens (so ?BHLevel=, ?BHFirstLevel=, map routes and the
+	// round-reset travel all carry them); canonicalize the casing here. Unknown names still fall back to Facility.
+	if (const BHPropHunt::FArenaSpec* Arena = BHPropHunt::FindArenaSpec(LevelName))
+	{
+		return Arena->LogicalName;
 	}
 	return LevelName.Equals(TEXT("Substation"), ESearchCase::IgnoreCase) ? TEXT("Substation") : TEXT("Facility");
 }
@@ -1039,6 +1046,13 @@ ABHGameMode::ABHGameMode()
 	StaticBlockFields.Reset();
 	AtmosphereDirector = nullptr;
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+FString ABHGameMode::DebugNormalizeBHLevelNameForTest(const FString& Level)
+{
+	return NormalizeBHLevelName(Level);
+}
+#endif
 
 void ABHGameMode::BeginPlay()
 {
@@ -6306,17 +6320,22 @@ bool ABHGameMode::DiscoverAuthoredLevel()
 
 	// Authored maps are hand-placed, so fail loudly (and recover where safe) when a required element is
 	// missing — these are the mistakes a designer makes. This is all authored-path only; the procedural
-	// builders always spawn the right counts, so none of it triggers for the generated levels.
+	// builders always spawn the right counts, so none of it triggers for the generated levels. Prop hunt has
+	// no objectives by design (props win by surviving, and StripPropHuntObjectives removes any that exist), so
+	// the missing-breaker/exit errors would be false alarms there.
 	if (BreakerActors.Num() == 0)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[BlackoutHunt] Authored level '%s' has no ABHBreaker actors; survivors cannot unlock the exit. Place breakers in the level."), *RuntimeLevelName);
+		if (!bPropHuntMode)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[BlackoutHunt] Authored level '%s' has no ABHBreaker actors; survivors cannot unlock the exit. Place breakers in the level."), *RuntimeLevelName);
+		}
 	}
 	else if (BreakerActors.Num() < RequiredBreakers)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[BlackoutHunt] Authored level '%s' has %d breakers but RequiredBreakers=%d; clamping to the placed count so the round stays winnable."), *RuntimeLevelName, BreakerActors.Num(), RequiredBreakers);
 		RequiredBreakers = FMath::Max(1, BreakerActors.Num());
 	}
-	if (ExitGates.Num() == 0)
+	if (ExitGates.Num() == 0 && !bPropHuntMode)
 	{
 		UE_LOG(LogTemp, Error, TEXT("[BlackoutHunt] Authored level '%s' has no ABHExitGate actors; survivors have no way to escape. Place at least one exit gate."), *RuntimeLevelName);
 	}
@@ -6469,6 +6488,20 @@ void ABHGameMode::BuildRuntimeFacility()
 	const FString PropHuntOption = GetWorld()->URL.GetOption(TEXT("BHPropHunt="), TEXT(""));
 	bPropHuntMode = !bPracticeMode && !bTestMode && !bTrainIntermissionLevel
 		&& (IsTrueOption(PropHuntOption) || BHIsPropHuntCVarEnabled());
+	// ?BHArena=<LogicalName> both implies prop hunt and picks the arena map: it overrides BHLevel (and, in the
+	// lobby, the round-start travel target) with the registered arena's logical name, so "prop hunt on arena X"
+	// is one knob for the host UI. The registry lives in BHPropHuntLibrary.h; resolution to a real .umap happens
+	// in the travel resolver (BHResolvePropHuntArenaPackage).
+	const FString ArenaOption = GetWorld()->URL.GetOption(TEXT("BHArena="), TEXT(""));
+	const BHPropHunt::FArenaSpec* RequestedArena = ArenaOption.IsEmpty() ? nullptr : BHPropHunt::FindArenaSpec(ArenaOption);
+	if (!ArenaOption.IsEmpty() && !RequestedArena)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("BlackoutHunt PropHunt: ?BHArena=%s is not a registered arena; ignoring the option."), *ArenaOption);
+	}
+	if (RequestedArena && !bPracticeMode && !bTestMode && !bTrainIntermissionLevel)
+	{
+		bPropHuntMode = true;
+	}
 	if (bPropHuntMode)
 	{
 		bRevisionMode = false;
@@ -6539,6 +6572,15 @@ void ABHGameMode::BuildRuntimeFacility()
 	}
 	RuntimeLevelName = bTrainIntermissionLevel ? TEXT("TrainIntermission") : NormalizeBHLevelName(RuntimeLevelName);
 	NextRuntimeLevelName = RuntimeLevelName;
+	if (RequestedArena && bPropHuntMode)
+	{
+		RuntimeLevelName = RequestedArena->LogicalName;
+		NextRuntimeLevelName = RuntimeLevelName;
+		if (bLobbyLevel)
+		{
+			LobbyFirstLevelName = RequestedArena->LogicalName;
+		}
+	}
 	const FString FogPresetOption = GetWorld()->URL.GetOption(TEXT("BHFogPreset="), TEXT("Heavy"));
 	RuntimeFogPreset = ParseFogPreset(FogPresetOption, EBHFogPreset::Heavy);
 	NextFogPreset = RuntimeFogPreset;
@@ -6563,6 +6605,15 @@ void ABHGameMode::BuildRuntimeFacility()
 		RuntimeLevelName = TEXT("TrainLobby");
 		NextRuntimeLevelName = LobbyFirstLevelName;
 		BuildTrainLobbyLevel();
+		return;
+	}
+
+	// Prop-hunt arenas: when the loaded world IS one of the registered imported pack maps, build it as an arena
+	// (spawns + nav + containment scaled to its geometry) instead of running any classroom generator or authored
+	// discovery. Checked first so a pack map can never fall through to "build the procedural Facility inside the
+	// warehouse". The check is by world package, so it also forces prop hunt ON for a directly-opened arena map.
+	if (TryBuildPropHuntArena())
+	{
 		return;
 	}
 
@@ -10118,6 +10169,27 @@ void ABHGameMode::BuildSubstationLevel()
 
 void ABHGameMode::BuildRuntimeNavigation()
 {
+	const bool bSubstation = RuntimeLevelName.Equals(TEXT("Substation"), ESearchCase::IgnoreCase);
+	const bool bFoggrounds = RuntimeLevelName.Equals(TEXT("Foggrounds"), ESearchCase::IgnoreCase);
+	const bool bTutorial = RuntimeLevelName.Equals(TEXT("Tutorial"), ESearchCase::IgnoreCase);
+	const FVector BoundsSize = bFoggrounds ? FVector(17000.0f, 13600.0f, 1000.0f)
+		: (bSubstation ? FVector(13200.0f, 10000.0f, 800.0f)
+		: (bTutorial ? FVector(13200.0f, 4400.0f, 400.0f) : FVector(12000.0f, 9600.0f, 800.0f)));
+	// The tutorial greybox is offset east (spans X[-600,11400]), so its nav volume must follow or the chase
+	// arena + exit fall outside the mesh. It is ALSO a fully enclosed box (floor at Z=0, ceiling at Z=340):
+	// a Z band of [0,800] makes Recast generate the navmesh on the CEILING ROOF (the floor sits on the very
+	// bottom voxel and is skipped), so the Teacher's path projects up to the roof and it can never move.
+	// Centre the band at Z=100 with half-height 200 -> Z[-100,300]: it dips below the floor (so the floor IS
+	// captured) and stops below the ceiling (so the roof is NOT), giving one correct ground-level navmesh.
+	const FVector BoundsCenter = bTutorial
+		? FVector(5400.0f, 0.0f, 100.0f)
+		: FVector(0.0f, 0.0f, BoundsSize.Z * 0.5f);
+
+	BuildRuntimeNavigationBounds(BoundsCenter, BoundsSize);
+}
+
+void ABHGameMode::BuildRuntimeNavigationBounds(const FVector& Center, const FVector& Size)
+{
 	if (!GetWorld())
 	{
 		return;
@@ -10137,21 +10209,8 @@ void ABHGameMode::BuildRuntimeNavigation()
 	bRuntimeNavigationReady = false;
 	FinalizeStaticBlockField();
 
-	const bool bSubstation = RuntimeLevelName.Equals(TEXT("Substation"), ESearchCase::IgnoreCase);
-	const bool bFoggrounds = RuntimeLevelName.Equals(TEXT("Foggrounds"), ESearchCase::IgnoreCase);
-	const bool bTutorial = RuntimeLevelName.Equals(TEXT("Tutorial"), ESearchCase::IgnoreCase);
-	const FVector BoundsSize = bFoggrounds ? FVector(17000.0f, 13600.0f, 1000.0f)
-		: (bSubstation ? FVector(13200.0f, 10000.0f, 800.0f)
-		: (bTutorial ? FVector(13200.0f, 4400.0f, 400.0f) : FVector(12000.0f, 9600.0f, 800.0f)));
-	// The tutorial greybox is offset east (spans X[-600,11400]), so its nav volume must follow or the chase
-	// arena + exit fall outside the mesh. It is ALSO a fully enclosed box (floor at Z=0, ceiling at Z=340):
-	// a Z band of [0,800] makes Recast generate the navmesh on the CEILING ROOF (the floor sits on the very
-	// bottom voxel and is skipped), so the Teacher's path projects up to the roof and it can never move.
-	// Centre the band at Z=100 with half-height 200 -> Z[-100,300]: it dips below the floor (so the floor IS
-	// captured) and stops below the ceiling (so the roof is NOT), giving one correct ground-level navmesh.
-	const FVector BoundsCenter = bTutorial
-		? FVector(5400.0f, 0.0f, 100.0f)
-		: FVector(0.0f, 0.0f, BoundsSize.Z * 0.5f);
+	const FVector BoundsSize = Size;
+	const FVector BoundsCenter = Center;
 
 	if (!RuntimeNavBounds)
 	{
@@ -11261,22 +11320,30 @@ void ABHGameMode::UpdateStationSignalState(bool bExitOpen)
 
 void ABHGameMode::AddMapContainment(float HalfX, float HalfY)
 {
+	// The classic generators build around the origin with floors near Z=0; -55 sinks the wall base below any
+	// floor offset, and 4.2 m clears every jump. Pack-map arenas call AddMapContainmentAt with their own frame.
+	AddMapContainmentAt(FVector(0.0f, 0.0f, -55.0f), HalfX, HalfY, 4.20f);
+}
+
+void ABHGameMode::AddMapContainmentAt(const FVector& Center, float HalfX, float HalfY, float WallHeightMeters)
+{
 	constexpr float BlockerThickness = 0.90f;
 	constexpr float CornerPlugScale = 1.85f;
-	constexpr float BlockerHeight = 4.20f;
-	const float BlockerZ = CenterZForBlockBottom(-55.0f, BlockerHeight);
+	const float WallHeight = FMath::Max(2.0f, WallHeightMeters);
+	// Center.Z is the BOTTOM of the wall band (callers pass their floor minus a sink margin).
+	const float BlockerZ = CenterZForBlockBottom(Center.Z, WallHeight);
 	const float ScaleX = (HalfX * 2.0f) / 100.0f;
 	const float ScaleY = (HalfY * 2.0f) / 100.0f;
 
-	SpawnHiddenBlocker(FVector(0.0f, -HalfY, BlockerZ), FVector(ScaleX, BlockerThickness, BlockerHeight));
-	SpawnHiddenBlocker(FVector(0.0f, HalfY, BlockerZ), FVector(ScaleX, BlockerThickness, BlockerHeight));
-	SpawnHiddenBlocker(FVector(-HalfX, 0.0f, BlockerZ), FVector(BlockerThickness, ScaleY, BlockerHeight));
-	SpawnHiddenBlocker(FVector(HalfX, 0.0f, BlockerZ), FVector(BlockerThickness, ScaleY, BlockerHeight));
+	SpawnHiddenBlocker(FVector(Center.X, Center.Y - HalfY, BlockerZ), FVector(ScaleX, BlockerThickness, WallHeight));
+	SpawnHiddenBlocker(FVector(Center.X, Center.Y + HalfY, BlockerZ), FVector(ScaleX, BlockerThickness, WallHeight));
+	SpawnHiddenBlocker(FVector(Center.X - HalfX, Center.Y, BlockerZ), FVector(BlockerThickness, ScaleY, WallHeight));
+	SpawnHiddenBlocker(FVector(Center.X + HalfX, Center.Y, BlockerZ), FVector(BlockerThickness, ScaleY, WallHeight));
 
-	SpawnHiddenBlocker(FVector(-HalfX, -HalfY, BlockerZ), FVector(CornerPlugScale, CornerPlugScale, BlockerHeight));
-	SpawnHiddenBlocker(FVector(-HalfX, HalfY, BlockerZ), FVector(CornerPlugScale, CornerPlugScale, BlockerHeight));
-	SpawnHiddenBlocker(FVector(HalfX, -HalfY, BlockerZ), FVector(CornerPlugScale, CornerPlugScale, BlockerHeight));
-	SpawnHiddenBlocker(FVector(HalfX, HalfY, BlockerZ), FVector(CornerPlugScale, CornerPlugScale, BlockerHeight));
+	SpawnHiddenBlocker(FVector(Center.X - HalfX, Center.Y - HalfY, BlockerZ), FVector(CornerPlugScale, CornerPlugScale, WallHeight));
+	SpawnHiddenBlocker(FVector(Center.X - HalfX, Center.Y + HalfY, BlockerZ), FVector(CornerPlugScale, CornerPlugScale, WallHeight));
+	SpawnHiddenBlocker(FVector(Center.X + HalfX, Center.Y - HalfY, BlockerZ), FVector(CornerPlugScale, CornerPlugScale, WallHeight));
+	SpawnHiddenBlocker(FVector(Center.X + HalfX, Center.Y + HalfY, BlockerZ), FVector(CornerPlugScale, CornerPlugScale, WallHeight));
 }
 
 void ABHGameMode::RecoverPlayersFromVoid()
@@ -11287,7 +11354,8 @@ void ABHGameMode::RecoverPlayersFromVoid()
 		return;
 	}
 
-	constexpr float VoidZThreshold = -650.0f;
+	// VoidRecoveryZThreshold defaults to -650 (the BlackoutHunt maps are built around Z=0); a prop-hunt arena
+	// (imported pack map) sets it from its own geometry bounds in BuildPropHuntArena.
 	for (APlayerState* RawPS : BaseGameState->PlayerArray)
 	{
 		ABHPlayerState* BHPS = Cast<ABHPlayerState>(RawPS);
@@ -11297,7 +11365,7 @@ void ABHGameMode::RecoverPlayersFromVoid()
 		}
 
 		ABHCharacter* Character = FindCharacterForPlayerState(BHPS);
-		if (!Character || Character->GetActorLocation().Z >= VoidZThreshold)
+		if (!Character || Character->GetActorLocation().Z >= VoidRecoveryZThreshold)
 		{
 			continue;
 		}
@@ -15145,6 +15213,13 @@ void ABHGameMode::ResetRoundByTravel()
 		{
 			TravelURL += TEXT("?BHFogOverride=1");
 		}
+		// Prop hunt must survive the round-reset travel even when it was enabled by URL option alone (the
+		// bh.PropHunt cvar path survives on its own, but a host who started via ?BHPropHunt=1 must not silently
+		// fall back to the classroom game on round 2).
+		if (bPropHuntMode)
+		{
+			TravelURL += TEXT("?BHPropHunt=1");
+		}
 		if (bBotMode)
 		{
 			TravelURL += FString::Printf(TEXT("?BHBotMode=1?BHBotCount=%d?BHBotDifficulty=%s?BHHumanRole=Survivor"),
@@ -15280,10 +15355,21 @@ FString BHResolveLevelMapPackage(const FString& LevelName)
 		const FString TutorialPath = TEXT("/Game/BlackoutHunt/Maps/Tutorial");
 		return FPackageName::DoesPackageExist(TutorialPath) ? TutorialPath : TEXT("/Engine/Maps/Entry");
 	}
+	// Prop-hunt arenas resolve by NAME, independent of bUseAuthoredLevels: the arena name itself is the opt-in
+	// (only prop-hunt travel ever produces one), and there is no procedural fallback generator for a pack map.
+	// Empty result (arena map not on disk / not cooked) falls through to the Facility procedural fallback below.
+	{
+		const FString ArenaPackage = BHResolvePropHuntArenaPackage(LevelName);
+		if (!ArenaPackage.IsEmpty())
+		{
+			return ArenaPackage;
+		}
+	}
 	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
 	if (Settings && Settings->bUseAuthoredLevels)
 	{
-		// NormalizeBHLevelName always yields one of Facility/Substation/Foggrounds, so the path is canonical.
+		// NormalizeBHLevelName yields Facility/Substation/Foggrounds here (arena names were already resolved --
+		// or failed to -- in the arena branch above; a failed arena resolves like any unknown name: to Facility).
 		const FString AuthoredPath = FString::Printf(TEXT("/Game/BlackoutHunt/Maps/%s"), *NormalizeBHLevelName(LevelName));
 		if (FPackageName::DoesPackageExist(AuthoredPath))
 		{
@@ -15327,6 +15413,13 @@ FString ABHGameMode::BuildTravelOptionsForLevel(const FString& LevelName, bool b
 		{
 			TravelURL += TEXT("?BHForceHunt=1");
 		}
+	}
+
+	// Carry prop hunt across every hop so a URL-option-only host session keeps the mode (mirrors the revision/bot
+	// option reconstruction below; the bh.PropHunt cvar path would survive anyway).
+	if (bPropHuntMode)
+	{
+		TravelURL += TEXT("?BHPropHunt=1");
 	}
 
 	if (bFogPresetOverride)

@@ -43,7 +43,9 @@ try {
         "-clientconfig=$Configuration",
         "-serverconfig=$Configuration",
         "-cook",
-        "-map=/Engine/Maps/Entry+/Game/BlackoutHunt/Maps/Facility+/Game/BlackoutHunt/Maps/Substation+/Game/BlackoutHunt/Maps/Foggrounds+/Game/BlackoutHunt/Maps/Tutorial",
+        # Prop-hunt arena: Map_ContainersHouse_Demo is the runtime fallback arena; append Arena_ContainersHouse here
+        # once Tools/Setup-PropHuntArena.py has baked it (the runtime prefers the bake when cooked).
+        "-map=/Engine/Maps/Entry+/Game/BlackoutHunt/Maps/Facility+/Game/BlackoutHunt/Maps/Substation+/Game/BlackoutHunt/Maps/Foggrounds+/Game/BlackoutHunt/Maps/Tutorial+/Game/ContainersHouseCH/Maps/Map_ContainersHouse_Demo",
         "-build",
         "-noxge",
         "-ubtargs=-NoXGE -MaxParallelActions=2",
