@@ -1,7 +1,7 @@
 param(
     [string]$PackageRoot = "$PSScriptRoot\..\Builds\Windows",
     [int]$ClientCount = 2,
-    [ValidateSet("LiveClassroom", "LiveFacility", "LiveSubstation", "LiveFoggrounds")]
+    [ValidateSet("LiveClassroom", "LiveFacility", "LiveSubstation", "LiveFoggrounds", "PropHuntFacility", "PropHuntContainersHouse")]
     [string]$HostMode = "LiveFacility",
     [int]$Port = 7777,
     [int]$AutoQuitSeconds = 150,

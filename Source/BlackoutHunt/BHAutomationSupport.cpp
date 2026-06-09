@@ -184,6 +184,18 @@ FString FBHAutomationSupport::NormalizeHostMode(FString HostMode)
 		return TEXT("Facility");
 	}
 
+	// Prop hunt (P9 smoke): host the lobby with the mode armed, on the classroom Facility map or the warehouse arena.
+	if (HostMode.Equals(TEXT("PropHunt"), ESearchCase::IgnoreCase)
+		|| HostMode.Equals(TEXT("PropHuntFacility"), ESearchCase::IgnoreCase))
+	{
+		return TEXT("PropHuntFacility");
+	}
+	if (HostMode.Equals(TEXT("PropHuntContainersHouse"), ESearchCase::IgnoreCase)
+		|| HostMode.Equals(TEXT("PropHuntWarehouse"), ESearchCase::IgnoreCase))
+	{
+		return TEXT("PropHuntContainersHouse");
+	}
+
 	return HostMode;
 }
 
@@ -195,7 +207,9 @@ bool FBHAutomationSupport::IsKnownHostMode(const FString& HostMode)
 		|| HostMode.Equals(TEXT("LiveFoggrounds"), ESearchCase::CaseSensitive)
 		|| HostMode.Equals(TEXT("Facility"), ESearchCase::CaseSensitive)
 		|| HostMode.Equals(TEXT("Substation"), ESearchCase::CaseSensitive)
-		|| HostMode.Equals(TEXT("Foggrounds"), ESearchCase::CaseSensitive);
+		|| HostMode.Equals(TEXT("Foggrounds"), ESearchCase::CaseSensitive)
+		|| HostMode.Equals(TEXT("PropHuntFacility"), ESearchCase::CaseSensitive)
+		|| HostMode.Equals(TEXT("PropHuntContainersHouse"), ESearchCase::CaseSensitive);
 }
 
 FString FBHAutomationSupport::MakeMarkerLine(const FBHAutomationConfig& Config, const FString& Marker)

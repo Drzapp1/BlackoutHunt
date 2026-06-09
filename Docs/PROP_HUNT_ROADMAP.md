@@ -1,12 +1,13 @@
 # Prop Hunt — Roadmap & Design Specification
 
-> Status: **living document**. Created 2026-06-09 on branch `feat/boot-menu-aaa`.
+> Status: **living document — P0 through P9 CODE-COMPLETE (2026-06-09)**. Created 2026-06-09 on branch `feat/boot-menu-aaa`.
 > Audience: the developer(s) building this out (you + Claude). Written to be executable: every phase lists
 > file-level tasks, CVars, replication fields, edge cases, and acceptance criteria so work can start cold.
 >
-> This is the full plan to take Prop Hunt from the current **v1 vertical slice** (already in the tree, builds green,
-> `BlackoutHunt.PropHunt.Library` passes) to a **fully working, enjoyable, polished** mode for casual multiplayer with
-> friends. It is deliberately exhaustive — small additions included — so nothing is lost between sessions.
+> Every phase below carries a **STATUS** box recording exactly what landed. What remains is the user-driven tail:
+> the editor spawn bake (optional, `Tools/Setup-PropHuntArena.py`), the cook + packaged smoke
+> (`Tools/Run-PackagedPropHuntSmoke.ps1`), and the **friend-group playtest** — record findings + tuned cvar values
+> in the §7.12 table and the per-phase boxes so the next session starts where this one ended.
 
 ---
 
@@ -440,11 +441,24 @@ Each phase is independently shippable and leaves the build green + tests passing
 - **Bot infection:** a caught bot prop converts to a bot seeker (same as humans).
 - **Acceptance:** a 2-human + 6-bot round is fun and finishes; bots hide and seek believably at Normal difficulty.
 
-### P9 — Ship & harden (S)
+### P9 — Ship & harden (S) **(code/scripts done — 2026-06-09; cook + smoke + playtest are the user's one-command steps)**
 - Cook the arenas (P3) into a Shipping EOS Windows build; run `Run-PackagedClassroomSmoke` equivalent for prop hunt
   (a packaged 3-client prop-hunt smoke). Update the cook map lists + `Verify-EOSPackage`.
 - Final automation suite green; a real **in-engine human playtest** with the friend group (the one thing v1 hasn't had).
 - Write release notes; tag a pre-release.
+
+> **STATUS:** cook lists + Verify-EOSPackage landed in P3. **`Tools/Run-PackagedPropHuntSmoke.ps1`** is the packaged
+> 3-client prop-hunt smoke: new auto-host modes `PropHuntFacility` / `PropHuntContainersHouse` (BHAutomationSupport →
+> `HostPropHuntForMenu`) ride the classroom smoke's marker gates; ROUND_STARTED = the hide phase began in the cooked
+> build. Final suite: 69 tests, only the 3 documented pre-existing reds (cosmetic/crawl/train-economy).
+>
+> **USER'S ONE-COMMAND CHECKLIST (in order):**
+> 1. `.\Tools\Package-Windows-EOS.ps1` (cook; the warehouse pack ships via the updated -map= lists)
+> 2. `.\Tools\Verify-EOSPackage.ps1` (map guard now requires Map_ContainersHouse_Demo)
+> 3. `.\Tools\Run-PackagedPropHuntSmoke.ps1 -PackageRoot ..\Builds\WindowsEOS\Windows -Arena ContainersHouse`
+> 4. *(optional, better spawns)* run `Tools/Setup-PropHuntArena.py` (headless one-liner in its header), then add
+>    `Arena_ContainersHouse` to the cook lists + re-cook
+> 5. Friend playtest (checklist §8) → record findings + tuned cvar values here → release notes + pre-release tag.
 
 ---
 
@@ -526,32 +540,40 @@ Hide-phase calm bed · release klaxon · auto/manual taunt horn (+ optional voic
 prop-poof transform · prop-shatter on catch · round win/lose stings · seeker heartbeat ramp near props · all via
 `BroadcastGameplayAudioCue` / multicast, positional where it matters. Source from existing `SoundsOfHorror` + engine.
 
-### 7.12 CVar master table (defaults; all `ECVF_Default`, read on the game thread)
+### 7.12 CVar master table (LIVE defaults — every row below is implemented; tune in playtest and record here)
 | CVar | Default | Meaning |
 |---|---|---|
-| `bh.PropHunt` | 0 | Master opt-in toggle (v1 done). |
-| `bh.PropHuntHideSeconds` | 30 | Hide-phase length (seeker frozen + blind). **(P1)** |
-| `bh.PropHuntSeekSeconds` | 240 | Seek-phase length. **(P1)** |
-| `bh.PropHuntRoundCount` | 3 | Best-of-N rounds per match. **(P6)** |
-| `bh.PropHuntSeekers` | 1 | Starting seeker count (or 0 = auto-scale). **(P1/P6)** |
-| `bh.PropHuntPlayersPerSeeker` | 6 | Auto-scale divisor when seekers=0. **(P6)** |
-| `bh.PropHuntTauntBase` | 30 | Auto-taunt interval at round start (v1 done). |
-| `bh.PropHuntTauntMin` | 10 | Auto-taunt interval at round end (v1 done). |
-| `bh.PropHuntTauntBonusPoints` | 25 | Manual-taunt reward. **(P5)** |
-| `bh.PropHuntScanRadius` | 1500 | Sonar reveal radius. **(P4)** |
-| `bh.PropHuntScanCooldown` | 8 | Sonar cooldown. **(P4)** |
-| `bh.PropHuntPulseBase` | 45 | Reveal-pulse interval early. **(P4)** |
-| `bh.PropHuntPulseMin` | 12 | Reveal-pulse interval late. **(P4)** |
-| `bh.PropHuntMissSlowBase` | 0.6 | Wrong-hit slow base (s) — matches the unit test. **(P4)** |
-| `bh.PropHuntMissSlowPerMiss` | 0.35 | Wrong-hit slow per extra miss. **(P4)** |
-| `bh.PropHuntMissSlowMax` | 2.0 | Wrong-hit slow cap. **(P4)** |
-| `bh.PropHunt3pDistance` | 300 | 3rd-person spring-arm length. **(P2)** |
-| `bh.PropHuntArenaSpawns` | 12 | Target spawn count on arena maps (placed PlayerStarts first, scatter fills). **(P3 done)** |
-| `bh.PropHuntSolidProps` | 1 | Locked disguises get blocking collision. **(P2)** |
-| `bh.PropHuntMinSize` / `MaxSize` | tune | Disguise bounds clamp. **(P2)** |
-| `bh.PropHuntPointsPerSecondAlive` | 1 | Prop survival scoring. **(P6)** |
-| `bh.PropHuntPointsPerCatch` | 75 | Seeker catch scoring. **(P6)** |
-| `bh.PropHuntReDisguiseCooldown` | 1.5 | Anti-strobe on Z. **(P7)** |
+| `bh.PropHunt` | 0 | Master opt-in toggle. |
+| `bh.PropHuntHideSeconds` | 30 | Hide-phase length (seeker frozen + blind). |
+| `bh.PropHuntSeekSeconds` | 240 | Seek-phase length. |
+| `bh.PropHuntRoundCount` | 3 | Best-of-N rounds per match (`?BHPropHuntRounds=` overrides per session). |
+| `bh.PropHuntSeekers` | 1 | STARTING seeker count per round (infection adds more). |
+| `bh.PropHuntTauntBase` | 30 | Auto-taunt interval at round start. |
+| `bh.PropHuntTauntMin` | 10 | Auto-taunt interval at round end. |
+| `bh.PropHuntTauntBonusPoints` | 25 | Manual-taunt reward. |
+| `bh.PropHuntManualTauntCooldown` | 8 | Per-prop seconds between manual taunts. |
+| `bh.PropHuntScanRadius` | 1500 | Sonar reveal radius (through walls). |
+| `bh.PropHuntScanCooldown` | 8 | Sonar cooldown. |
+| `bh.PropHuntPulseBase` | 45 | Reveal-pulse interval early in the seek. |
+| `bh.PropHuntPulseMin` | 12 | Reveal-pulse interval late in the seek. |
+| `bh.PropHuntMissSlowBase` | 0.6 | Wrong-hit slow base (s) — matches the unit test. |
+| `bh.PropHuntMissSlowPerMiss` | 0.35 | Wrong-hit slow per extra consecutive miss. |
+| `bh.PropHuntMissSlowMax` | 2.0 | Wrong-hit slow cap (s). |
+| `bh.PropHuntMissSlowFactor` | 0.55 | Movement multiplier while the wrong-hit slow is active. |
+| `bh.PropHunt3pDistance` | 300 | 3rd-person spring-arm length. |
+| `bh.PropHuntArenaSpawns` | 12 | Target spawn count on arena maps (placed PlayerStarts first, scatter fills). |
+| `bh.PropHuntSolidProps` | 1 | LOCKED disguises get blocking collision. |
+| `bh.PropHuntMinSize` | 16 | Smallest disguise (mesh bounding-sphere radius × scale, cm). |
+| `bh.PropHuntMaxSize` | 280 | Largest disguise (same units). |
+| `bh.PropHuntPointsPerSecondAlive` | 1 | Prop survival trickle (per second of the seek). |
+| `bh.PropHuntPointsPerCatch` | 75 | Seeker catch reward. |
+| `bh.PropHuntSurviveBonus` | 100 | Bonus for every prop alive when the seek timer expires. |
+| `bh.PropHuntSeekerBasePoints` | 25 | Flat score for STARTING a round as the seeker. |
+| `bh.PropHuntReDisguiseCooldown` | 1.5 | Anti-strobe between disguise swaps on Z. |
+| `bh.PropHuntHoldNoHideRadius` | 700 | No disguising this close (cm) to the seeker hold during the hide. 0 = off. |
+
+*(Dropped from the original plan: `bh.PropHuntPlayersPerSeeker` auto-scale — `bh.PropHuntSeekers` is explicit and
+infection scales pressure naturally; revisit only if big lobbies want it.)*
 
 ### 7.13 Input bindings (current + new)
 Current (v1): `PropDisguise=Z`, `PropLock=MiddleMouseButton`, `PropRotateLeft=[`, `PropRotateRight=]`.
@@ -596,14 +618,14 @@ intended.
 - **Scope creep** → phases are independently shippable; stop at any P and still have a playable mode.
 
 ## 10. Milestones & suggested sequencing
-1. **M1 "Real loop"** = P0 + P1 → hide→seek→infection on a classroom map. *(biggest single win)*
-2. **M2 "Looks right"** = P2 → 3rd-person + prop polish.
-3. **M3 "Real arenas"** = P3 → ContainersHouse + 1–2 more wired.
-4. **M4 "Real game"** = P4 + P5 → seeker kit + taunts + first audio.
-5. **M5 "With friends"** = P6 → match flow, scoring, host UI. *(the target experience)*
-6. **M6 "Polished"** = P7 → feel/UX/anti-grief, continuous.
-7. **M7 "Solo-friendly"** = P8 → bots.
-8. **M8 "Shipped"** = P9 → cook, smoke, human playtest, release notes.
+1. **M1 "Real loop"** = P0 + P1 → hide→seek→infection on a classroom map. *(biggest single win)* **✓ done**
+2. **M2 "Looks right"** = P2 → 3rd-person + prop polish. **✓ done**
+3. **M3 "Real arenas"** = P3 → ContainersHouse + 1–2 more wired. **✓ done (ContainersHouse cooked, RuinedCrypt registry-ready)**
+4. **M4 "Real game"** = P4 + P5 → seeker kit + taunts + first audio. **✓ done**
+5. **M5 "With friends"** = P6 → match flow, scoring, host UI. *(the target experience)* **✓ done**
+6. **M6 "Polished"** = P7 → feel/UX/anti-grief, continuous. **✓ core done (grab-bag stays open)**
+7. **M7 "Solo-friendly"** = P8 → bots. **✓ done**
+8. **M8 "Shipped"** = P9 → cook, smoke, human playtest, release notes. **✓ code/scripts done — cook+smoke+playtest are the user's one-command steps (see P9 box)**
 
 ## 11. Open questions / future (revisit when they matter)
 - Prop **health** (1 vs 2 hits)? Default 1; trivially a CVar.

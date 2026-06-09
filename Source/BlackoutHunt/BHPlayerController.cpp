@@ -8393,6 +8393,14 @@ void ABHPlayerController::RunAutomationStartup()
 		{
 			HostLiveClassroomForMenu(TEXT("Foggrounds"), Message);
 		}
+		else if (HostMode.Equals(TEXT("PropHuntFacility"), ESearchCase::CaseSensitive))
+		{
+			HostPropHuntForMenu(TEXT("Facility"), Message);
+		}
+		else if (HostMode.Equals(TEXT("PropHuntContainersHouse"), ESearchCase::CaseSensitive))
+		{
+			HostPropHuntForMenu(TEXT("ContainersHouse"), Message);
+		}
 		else if (HostMode.Equals(TEXT("Substation"), ESearchCase::CaseSensitive))
 		{
 			HostSubstationGame();
