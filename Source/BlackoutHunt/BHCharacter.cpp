@@ -49,6 +49,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "BHCharacterMovementComponent.h"
 #include "GameFramework/GameStateBase.h"
+#include "GameFramework/SpringArmComponent.h"
 #include "InputCoreTypes.h"
 #include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -1438,6 +1439,19 @@ bool BHFinalEscapeHunterPenaltyActive(UWorld* World, const ABHCharacter* Charact
 }
 }
 
+// Prop Hunt disguise size clamp (mesh bounding-sphere radius * scale, in cm): reject becoming a speck or a whole
+// building, so the disguise reads as a believable prop and a prop can't grief by wearing the level. Tunable live.
+static TAutoConsoleVariable<float> CVarBHPropHuntMinSize(
+	TEXT("bh.PropHuntMinSize"),
+	16.0f,
+	TEXT("Prop Hunt: smallest disguise a prop may become (mesh bounding-sphere radius * scale, cm)."),
+	ECVF_Default);
+static TAutoConsoleVariable<float> CVarBHPropHuntMaxSize(
+	TEXT("bh.PropHuntMaxSize"),
+	280.0f,
+	TEXT("Prop Hunt: largest disguise a prop may become (mesh bounding-sphere radius * scale, cm)."),
+	ECVF_Default);
+
 ABHCharacter::ABHCharacter(const FObjectInitializer& ObjectInitializer)
 	// Use the BH movement component so survivors/teacher/monitors get CS2-style air-strafing (see WS1).
 	: Super(ObjectInitializer.SetDefaultSubobjectClass<UBHCharacterMovementComponent>(ACharacter::CharacterMovementComponentName))
@@ -1482,6 +1496,18 @@ ABHCharacter::ABHCharacter(const FObjectInitializer& ObjectInitializer)
 	PropDisguiseMesh->SetUsingAbsoluteRotation(true);
 	PropDisguiseMesh->SetHiddenInGame(true);
 	PropDisguiseMesh->SetVisibility(false);
+
+	// Prop Hunt 3rd-person boom. Capsule-attached so it follows the pawn; control-rotation driven for an orbit; wall
+	// probe so the camera pulls in instead of clipping. The Camera reparents onto it only while a prop is in 3rd person.
+	PropCameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("PropCameraBoom"));
+	PropCameraBoom->SetupAttachment(GetCapsuleComponent());
+	PropCameraBoom->SetRelativeLocation(FVector(0.0f, 0.0f, 40.0f));
+	PropCameraBoom->TargetArmLength = 300.0f;
+	PropCameraBoom->bUsePawnControlRotation = true;
+	PropCameraBoom->bDoCollisionTest = true;
+	PropCameraBoom->bEnableCameraLag = true;
+	PropCameraBoom->CameraLagSpeed = 12.0f;
+	PropCameraBoom->ProbeSize = 10.0f;
 
 	RoleSkeletalMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("RoleSkeletalMesh"));
 	RoleSkeletalMesh->SetupAttachment(RoleModelRoot);
@@ -2551,6 +2577,7 @@ void ABHCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCompone
 	PlayerInputComponent->BindAction(TEXT("PropLock"), IE_Pressed, this, &ABHCharacter::TogglePropLockInPlace);
 	PlayerInputComponent->BindAction(TEXT("PropRotateLeft"), IE_Pressed, this, &ABHCharacter::RotatePropLeft);
 	PlayerInputComponent->BindAction(TEXT("PropRotateRight"), IE_Pressed, this, &ABHCharacter::RotatePropRight);
+	PlayerInputComponent->BindAction(TEXT("PropCameraToggle"), IE_Pressed, this, &ABHCharacter::TogglePropCamera);
 	PlayerInputComponent->BindKey(EKeys::F1, IE_Pressed, this, &ABHCharacter::UsePowerupSlotOne);
 	PlayerInputComponent->BindKey(EKeys::F2, IE_Pressed, this, &ABHCharacter::UsePowerupSlotTwo);
 	PlayerInputComponent->BindKey(EKeys::F3, IE_Pressed, this, &ABHCharacter::UsePowerupSlotThree);
@@ -6756,8 +6783,12 @@ void ABHCharacter::UpdatePOVAnimation(float DeltaSeconds)
 	// LOCATION offset, which survives bUsePawnControlRotation (unlike component rotation). Its matching view-PITCH
 	// wobble can't live here (component rotation is clobbered every frame); it is applied to the final POV in
 	// ABHPlayerCameraManager::ApplyCameraModifiers via GetEmoteShakePitchOffsetDeg(). Neither touches the capsule.
-	Camera->SetRelativeRotation(POVAnimRotationCurrent + ComputeJumpscareCameraFlinch());
-	Camera->SetRelativeLocation(ViewFeelCameraLocation + POVAnimLocationCurrent + ComputeEmoteShakeLocationOffset());
+	// In 3rd person the Camera is reparented onto the prop boom, which owns its transform -- don't stomp it here.
+	if (!(bPropThirdPerson && IsPropHuntProp()))
+	{
+		Camera->SetRelativeRotation(POVAnimRotationCurrent + ComputeJumpscareCameraFlinch());
+		Camera->SetRelativeLocation(ViewFeelCameraLocation + POVAnimLocationCurrent + ComputeEmoteShakeLocationOffset());
+	}
 }
 
 float ABHCharacter::GetJumpscareImpactEnvelope() const
@@ -7240,13 +7271,29 @@ void ABHCharacter::ServerSetPropDisguise_Implementation(const FString& MeshPath,
 	{
 		return;
 	}
+	ABHPlayerController* OwnerPC = Cast<ABHPlayerController>(GetController());
 	// Server-validate the mesh resolves to a real asset before replicating it to everyone -- rejects a malicious /
 	// garbage path and guarantees clients won't waste a load on something that can only fall back to the cube.
-	if (!LoadObject<UStaticMesh>(nullptr, *MeshPath))
+	UStaticMesh* PropMeshAsset = LoadObject<UStaticMesh>(nullptr, *MeshPath);
+	if (!PropMeshAsset)
 	{
-		if (ABHPlayerController* PC = Cast<ABHPlayerController>(GetController()))
+		if (OwnerPC)
 		{
-			PC->ClientShowStatusMessage(TEXT("Couldn't copy that prop - try another."), 2.0f);
+			OwnerPC->ClientShowStatusMessage(TEXT("Couldn't copy that prop - try another."), 2.0f);
+		}
+		return;
+	}
+	// Clamp the copied scale into a sane band (server-authoritative; the client only suggests it).
+	const FVector ClampedScale = (Scale.GetMax() > 0.01f) ? Scale.BoundToBox(FVector(0.1f), FVector(8.0f)) : FVector::OneVector;
+	// Size clamp: reject becoming a speck or a whole building so the disguise is always a believable prop.
+	const float Radius = PropMeshAsset->GetBounds().SphereRadius * FMath::Max(0.05f, ClampedScale.GetAbsMax());
+	const float MinSize = CVarBHPropHuntMinSize.GetValueOnGameThread();
+	const float MaxSize = CVarBHPropHuntMaxSize.GetValueOnGameThread();
+	if (Radius < MinSize || Radius > MaxSize)
+	{
+		if (OwnerPC)
+		{
+			OwnerPC->ClientShowStatusMessage(Radius < MinSize ? TEXT("That's too small to hide as.") : TEXT("That's too big to hide as."), 2.0f);
 		}
 		return;
 	}
@@ -7261,8 +7308,7 @@ void ABHCharacter::ServerSetPropDisguise_Implementation(const FString& MeshPath,
 	// path is transient and won't exist on other clients) so the disguise falls back to the copied mesh's OWN default
 	// materials -- which look correct -- instead of a broken/cube material on remote clients.
 	PropDisguiseMaterialPath = (!MaterialPath.IsEmpty() && LoadObject<UMaterialInterface>(nullptr, *MaterialPath)) ? MaterialPath : FString();
-	// Clamp the copied scale into a sane band (server-authoritative; the client only suggests it).
-	PropDisguiseScale = (Scale.GetMax() > 0.01f) ? Scale.BoundToBox(FVector(0.1f), FVector(8.0f)) : FVector::OneVector;
+	PropDisguiseScale = ClampedScale;
 	PropDisguiseYaw = GetActorRotation().Yaw;
 	ApplyPropDisguiseVisuals();
 	if (ABHPlayerController* PC = Cast<ABHPlayerController>(GetController()))
@@ -7374,7 +7420,8 @@ void ABHCharacter::ApplyPropDisguiseVisuals()
 			const FBoxSphereBounds Bounds = MeshAsset->GetBounds();
 			LocalBottomZ = (Bounds.Origin.Z - Bounds.BoxExtent.Z) * PropDisguiseScale.Z;
 		}
-		PropDisguiseMesh->SetRelativeLocation(FVector(0.0f, 0.0f, -HalfHeight - LocalBottomZ));
+		PropDisguiseBaseZ = -HalfHeight - LocalBottomZ;
+		PropDisguiseMesh->SetRelativeLocation(FVector(0.0f, 0.0f, PropDisguiseBaseZ));
 		PropDisguiseMesh->SetWorldRotation(FRotator(0.0f, PropDisguiseYaw, 0.0f));
 		PropDisguiseMesh->SetHiddenInGame(false);
 		PropDisguiseMesh->SetVisibility(true);
@@ -7398,6 +7445,58 @@ void ABHCharacter::ApplyPropDisguiseVisuals()
 		// unused role mesh). ApplyAvatarStyle is the canonical avatar rebuild, so it fixes the "showed everything" above.
 		ApplyAvatarStyle();
 	}
+
+	// Owner camera: a freshly-disguised prop should default to 3rd person (to see its disguise); un-disguising / the
+	// boom's owner-visibility flip is handled here too. Local-only -- the camera is the owning player's own.
+	if (IsLocallyControlled())
+	{
+		ApplyPropCameraMode();
+	}
+}
+
+void ABHCharacter::ApplyPropCameraMode()
+{
+	if (!IsLocallyControlled() || !Camera || !PropCameraBoom)
+	{
+		return;
+	}
+	// 3rd person only while this player is actually a prop (a live Survivor in prop-hunt mode); the seeker and every
+	// other mode stay first-person.
+	const bool bThird = bPropThirdPerson && IsPropHuntProp();
+	if (bThird)
+	{
+		Camera->AttachToComponent(PropCameraBoom, FAttachmentTransformRules::SnapToTargetNotIncludingScale, USpringArmComponent::SocketName);
+		Camera->SetRelativeLocation(FVector::ZeroVector);
+		Camera->SetRelativeRotation(FRotator::ZeroRotator);
+		Camera->bUsePawnControlRotation = false; // the boom drives the orbit rotation
+		// In 3rd person the owner SHOULD see their own disguise prop.
+		if (PropDisguiseMesh)
+		{
+			PropDisguiseMesh->SetOwnerNoSee(false);
+		}
+	}
+	else
+	{
+		Camera->AttachToComponent(GetCapsuleComponent(), FAttachmentTransformRules::KeepRelativeTransform);
+		Camera->SetRelativeLocation(FVector(0.0f, 0.0f, 64.0f));
+		Camera->bUsePawnControlRotation = true;
+		// First person: the disguise prop must NOT block the owner's view.
+		if (PropDisguiseMesh)
+		{
+			PropDisguiseMesh->SetOwnerNoSee(true);
+		}
+	}
+}
+
+void ABHCharacter::TogglePropCamera()
+{
+	if (!IsPropHuntProp())
+	{
+		return;
+	}
+	bPropThirdPerson = !bPropThirdPerson;
+	ApplyPropCameraMode();
+	SendStatusMessage(bPropThirdPerson ? TEXT("Third-person view.") : TEXT("First-person view."));
 }
 
 void ABHCharacter::OnRep_PropDisguise()

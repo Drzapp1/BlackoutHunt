@@ -22,6 +22,7 @@ class UPointLightComponent;
 class USceneComponent;
 class USkeletalMesh;
 class USkeletalMeshComponent;
+class USpringArmComponent;
 class UStaticMeshComponent;
 class USpotLightComponent;
 
@@ -306,6 +307,7 @@ protected:
 	void TogglePropLockInPlace(); // freeze perfectly still / unfreeze
 	void RotatePropLeft();
 	void RotatePropRight();
+	void TogglePropCamera();     // flip the local prop view between 1st and 3rd person
 	// bVisual = answered via the interactive visual element (a clicked diagram region); choice rows
 	// and number keys pass false. Visual answers earn extra mastery (server-side).
 	void SubmitAnswer(int32 AnswerIndex, bool bVisual = false);
@@ -527,6 +529,9 @@ protected:
 	// Apply the current replicated disguise state to the meshes (hide the body + show the prop, or restore the body).
 	// Runs on the server and (via OnRep_PropDisguise) on every client.
 	void ApplyPropDisguiseVisuals();
+	// Owner-only: reparent the first-person Camera onto the 3rd-person boom (or back to the capsule eye) per
+	// bPropThirdPerson, and flip the disguise mesh owner-visibility so a 3rd-person prop sees its own disguise.
+	void ApplyPropCameraMode();
 	// Server-side: freeze the pawn dead-still (or release it). Reuses the locker/seat movement-freeze idiom.
 	void SetPropLockedAuthority(bool bNewLocked);
 	void UpdateHunterVisualCue();
@@ -687,6 +692,12 @@ protected:
 	// their own prop. No collision (visual only) -- the capsule keeps collision so the seeker can still capture them.
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UStaticMeshComponent> PropDisguiseMesh;
+
+	// Prop Hunt 3rd-person camera boom: a spring arm the first-person Camera reparents onto while a prop is in 3rd
+	// person, so they can see + position their disguise. Capsule-attached, control-rotation driven, wall-probing.
+	// Unused (camera stays first-person on the capsule) for the seeker and in every other mode.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<USpringArmComponent> PropCameraBoom;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<USkeletalMeshComponent> RoleSkeletalMesh;
@@ -963,6 +974,13 @@ protected:
 	// client, whose predicted movement must stop too), mirroring bHiddenInLocker -- not just shown on the HUD.
 	UPROPERTY(ReplicatedUsing = OnRep_PropLockedInPlace, BlueprintReadOnly, Category = "Blackout Hunt|Prop Hunt")
 	bool bPropLockedInPlace = false;
+
+	// Client-local prop camera view (NOT replicated -- the camera is the local player's own). Defaults to 3rd person
+	// so a prop sees its disguise the moment it transforms; the toggle key flips it, the choice is then respected.
+	bool bPropThirdPerson = true;
+	// Base relative Z of the disguise mesh (floor alignment), captured in ApplyPropDisguiseVisuals; the idle bob rides
+	// on top of it each frame so a walking (unlocked) prop reads as alive while a locked prop sits perfectly still.
+	float PropDisguiseBaseZ = 0.0f;
 
 	// Server-only tutorial capture shield (see SetTutorialCaptureImmune). Not replicated -- capture is authority-decided.
 	bool bTutorialCaptureImmune = false;
