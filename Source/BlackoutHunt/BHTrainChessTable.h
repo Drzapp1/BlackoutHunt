@@ -11,6 +11,7 @@
 class UStaticMeshComponent;
 class UTextRenderComponent;
 class UPointLightComponent;
+class ABHPlayerState;
 
 // A playable, server-authoritative "fast chess" table for the train lobby. It is a 6x6 minichess (Rook,
 // Knight, Bishop, Queen, King + 6 pawns a side) so a game finishes in a couple of minutes, which suits the
@@ -58,6 +59,7 @@ protected:
 	float GetServerTimeSeconds() const;
 	int32 SquareUnderView(const ABHCharacter* Character) const;   // -1 if not looking at the board
 	void HandleSeating(ABHCharacter* Character, bool bHold);
+	void PruneSeats();   // server: free a seat whose player disconnected / walked away, reopening the table
 	void HandlePlayClick(ABHCharacter* Character, int32 Square, bool bHold);
 	void StartNewGame(bool bAgainstAI);
 	void MakeMoveAuthoritative(int32 From, int32 To);
@@ -108,6 +110,14 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UTextRenderComponent> StatusTextRender;
 
+	// Back-facing duplicates so the player seated on the far (-Y) side reads the title/status the right way round
+	// instead of mirrored.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UTextRenderComponent> TitleTextBack;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UTextRenderComponent> StatusTextBack;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPointLightComponent> TableLight;
 
@@ -147,4 +157,8 @@ protected:
 
 	// Server-only: per-player press time for the tap-vs-hold measurement (same trick as the blackjack table).
 	TMap<int32, float> PressTimeByPlayerId;
+
+	// Server-only seat owners (mirror the replicated ids) so a disconnected / departed player frees their seat.
+	TWeakObjectPtr<ABHPlayerState> WhiteOwner;
+	TWeakObjectPtr<ABHPlayerState> BlackOwner;
 };

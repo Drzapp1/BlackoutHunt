@@ -149,6 +149,8 @@ the **Farmer / Beach / Punk** outfits moved off raw XP and onto the *Centurion /
 | **Don't Panic** | ★★ (secret) | Play named `42` / `Adams`. | *Hitchhiker* title |
 | **It Still Pulls** | ★★★ (secret) | On the menu, enter the code **G 9 8 1** (`g = 9.81`). | **Falling Apple** emblem |
 | **Wall Reader** | ★★ (secret) | Read a piece of locker graffiti (egg #1). | (XP only) |
+| **Stuck in a Tree** | ★★ (secret) | Jump up into the lobby greenhouse tree and get wedged (then **press O** to climb down). | *Treehugger* title |
+| **Roll Call** | ★★ (secret) | The real teacher signs in under his name (`Alex` / `Mr. Mccaron` / variants). VIP-only; excluded from the Perfectionist roll-up. | *Faculty Lounge* title + **Gold Star** emblem |
 | **Honor Graduate** | ★★★★★ | Earn every *standard* (non-secret) achievement. | *Honor Graduate* title |
 | **Perfectionist** | ★★★★★ (secret) | Earn every achievement, secrets and all. | *Perfectionist* title |
 

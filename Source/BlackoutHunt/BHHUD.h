@@ -54,6 +54,9 @@ protected:
 	// "Press O to return to the cabin" banner shown while the local player is up on the train roof (Z > 320).
 	void DrawRoofPrompt(ABHCharacter* Character);
 	void DrawNearbyNameTags(const ABHCharacter* Character);
+	// Radial emote selector for the local player while they hold X. Drawn as a top overlay; the live wedge is
+	// highlighted from the character's selection stick (ABHCharacter::GetEmoteWheelSelection / HighlightedId).
+	void DrawEmoteWheel(const ABHCharacter* Character);
 	void DrawEquipmentStrip(const class ABHGameState* GameState);
 	void DrawSpectatorSupportPanel(const class ABHGameState* GameState, const class ABHPlayerState* PlayerState);
 	// Lobby-only roster: lists every connected player and bot with ready state, so a small group can

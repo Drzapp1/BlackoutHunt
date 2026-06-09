@@ -46,6 +46,7 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "BHCharacterMovementComponent.h"
 #include "GameFramework/GameStateBase.h"
 #include "InputCoreTypes.h"
 #include "Kismet/GameplayStatics.h"
@@ -65,6 +66,13 @@ namespace
 {
 constexpr float BHKeyboardTurnInputPerSecond = 48.0f;
 constexpr float BHKeyboardLookInputPerSecond = 36.0f;
+// How fast mouse motion sweeps the emote-wheel selection stick across the unit disc while the wheel is open.
+constexpr float BHEmoteWheelAimGain = 0.22f;
+// Angular frequency (rad/s) of the "mister ke~" emote camera shake -- ~9.2 Hz, matching the jumpscare flinch so it
+// renders smoothly above Nyquist at 30-60+ fps. A higher rate (e.g. ~24 Hz) is undersampled per render frame and
+// aliases: jagged at 60fps, reversed at 30fps, and frozen into a static tilt near ~24/12 fps. The vertical
+// translation and the view-pitch share this value so they stay in phase (a coherent up/down yank).
+constexpr float BHEmoteShakeAngularFreq = 58.0f;
 constexpr float BHHorrorThreatRange = 3600.0f;
 constexpr float BHHorrorCloseThreatRange = 950.0f;
 constexpr float BHHunterHueLightIntensity = 185.0f;
@@ -1394,7 +1402,9 @@ bool BHFinalEscapeHunterPenaltyActive(UWorld* World, const ABHCharacter* Charact
 }
 }
 
-ABHCharacter::ABHCharacter()
+ABHCharacter::ABHCharacter(const FObjectInitializer& ObjectInitializer)
+	// Use the BH movement component so survivors/teacher/monitors get CS2-style air-strafing (see WS1).
+	: Super(ObjectInitializer.SetDefaultSubobjectClass<UBHCharacterMovementComponent>(ACharacter::CharacterMovementComponentName))
 {
 	PrimaryActorTick.bCanEverTick = true;
 	bReplicates = true;
@@ -1769,6 +1779,7 @@ void ABHCharacter::Tick(float DeltaSeconds)
 		FindInteractableFromView(FocusActor, 225.0f);
 		SetClientFocusedQuestionStation(Cast<ABHObjectiveStation>(FocusActor));
 		UpdateQuestionInteractionState();
+		UpdateTreeStuckDetection(DeltaSeconds);
 	}
 
 	// Comfort (local viewer only): a remote body that crowds right up against this client's camera fades out so
@@ -2315,6 +2326,14 @@ static TAutoConsoleVariable<int32> CVarBHLockerRollExit(
 	1,
 	TEXT("1 (default) = holding Sprint on locker exit fires a forward roll; 0 = always a plain stand-up exit."),
 	ECVF_Default);
+
+// Anti-wipe capture cooldown: after the Teacher LANDS a capture, how long before they can start another capture
+// swing. Stops an instant whole-team wipe and (in revision mode) gives hall monitors a beat to keep answering.
+static TAutoConsoleVariable<float> CVarBHTeacherCaptureCooldownSeconds(
+	TEXT("bh.TeacherCaptureCooldownSeconds"),
+	5.0f,
+	TEXT("Seconds the Teacher's axe is on cooldown after a LANDED capture before another capture can start. 0 = off (only the short swing recovery applies). (Default 5)"),
+	ECVF_Default);
 // Crawl-gap dash: a dive started FROM prone uses this noise multiplier (a quieter, localizable scrape) so threading
 // a crawl gap costs information but not a full loud standing dive. 1.0 = identical to a standing dive.
 static TAutoConsoleVariable<float> CVarBHCrawlDashNoiseScale(
@@ -2460,8 +2479,10 @@ void ABHCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCompone
 	PlayerInputComponent->BindAction(TEXT("ResetToTrain"), IE_Pressed, this, &ABHCharacter::RequestResetToTrainInterior);
 	// Functional sit toggle (C). Free key -- Crouch is LeftCtrl. Pressing a movement key stands you back up.
 	PlayerInputComponent->BindKey(EKeys::C, IE_Pressed, this, &ABHCharacter::ToggleSit);
-	// Social emote (X): cycles through a few text emotes shown over your head to nearby players.
-	PlayerInputComponent->BindKey(EKeys::X, IE_Pressed, this, &ABHCharacter::CycleEmote);
+	// Social emote wheel (hold X): press opens the radial selector, release plays the highlighted emote. While
+	// the wheel is open the mouse aims the selection instead of the camera (look is frozen; see Turn/LookUp).
+	PlayerInputComponent->BindKey(EKeys::X, IE_Pressed, this, &ABHCharacter::OpenEmoteWheel);
+	PlayerInputComponent->BindKey(EKeys::X, IE_Released, this, &ABHCharacter::CloseEmoteWheelAndEmote);
 	PlayerInputComponent->BindKey(EKeys::Tab, IE_Pressed, this, &ABHCharacter::ToggleQuestionCursor);
 	PlayerInputComponent->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &ABHCharacter::OnQuestionPointerDown);
 	PlayerInputComponent->BindKey(EKeys::LeftMouseButton, IE_Released, this, &ABHCharacter::OnQuestionPointerUp);
@@ -2494,6 +2515,7 @@ void ABHCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 	DOREPLIFETIME(ABHCharacter, bHiddenInLocker);
 	DOREPLIFETIME(ABHCharacter, bOutOfPlay);
 	DOREPLIFETIME(ABHCharacter, bSeated);
+	DOREPLIFETIME(ABHCharacter, bSeatLocked);
 	DOREPLIFETIME(ABHCharacter, EmoteId);
 	DOREPLIFETIME(ABHCharacter, EmoteStartServerTime);
 }
@@ -2652,6 +2674,9 @@ void ABHCharacter::MarkCaptured()
 
 	bFlashlightOn = false;
 	bOutOfPlay = true;
+	// A player captured while seated must not keep the seated flags onto their out-of-play / respawn pawn. [live-play-hardening]
+	bSeated = false;
+	bSeatLocked = false;
 	SetActorHiddenInGame(true);
 	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	GetCharacterMovement()->DisableMovement();
@@ -2678,6 +2703,9 @@ void ABHCharacter::MarkEscaped()
 
 	bFlashlightOn = false;
 	bOutOfPlay = true;
+	// A player who escapes while seated must not keep the seated flags onto their out-of-play pawn. [live-play-hardening]
+	bSeated = false;
+	bSeatLocked = false;
 	SetActorHiddenInGame(true);
 	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	GetCharacterMovement()->DisableMovement();
@@ -2780,6 +2808,10 @@ void ABHCharacter::ResetRoleWarmupStateForRoundStart()
 	MovementSpecialState = EBHMovementSpecialState::None;
 	CosmeticMovementSpecialState = EBHMovementSpecialState::None;
 	bBHopJumpQueued = false;
+	// Clear seated / chair-lock at round reset so a player who was seated when the round/leg restarts doesn't
+	// respawn alive-and-walking but replicated as seated (lowered eye height + legless avatar). [live-play-hardening]
+	bSeated = false;
+	bSeatLocked = false;
 	bSprintInputHeld = false;
 	bProneInputHeld = false;
 	bMovementFrozenByServer = false;
@@ -3035,7 +3067,7 @@ bool ABHCharacter::DebugIsTeacherCaptureCandidateForTest(const ABHCharacter* Tar
 void ABHCharacter::MoveForward(float Value)
 {
 	// A seated player stands up the instant they try to move (see ToggleSit / ServerSetSeated).
-	if (bSeated && Value != 0.0f)
+	if (bSeated && !bSeatLocked && Value != 0.0f)
 	{
 		ServerSetSeated(false);
 		return;
@@ -3050,7 +3082,7 @@ void ABHCharacter::MoveForward(float Value)
 
 void ABHCharacter::MoveRight(float Value)
 {
-	if (bSeated && Value != 0.0f)
+	if (bSeated && !bSeatLocked && Value != 0.0f)
 	{
 		ServerSetSeated(false);
 		return;
@@ -3064,6 +3096,12 @@ void ABHCharacter::MoveRight(float Value)
 
 void ABHCharacter::Turn(float Value)
 {
+	// While the emote wheel is open the mouse aims the wedge selection, never the camera.
+	if (bEmoteWheelActive)
+	{
+		AddEmoteWheelInput(Value * BHEmoteWheelAimGain, 0.0f);
+		return;
+	}
 	// While answering a question with the mouse, the cursor owns the mouse: freeze look so moving it
 	// only moves the cursor, never the view. Otherwise the camera swings off the station, the focus
 	// trace loses it, and the question interaction drops out ("disconnects").
@@ -3076,6 +3114,12 @@ void ABHCharacter::Turn(float Value)
 
 void ABHCharacter::LookUp(float Value)
 {
+	if (bEmoteWheelActive)
+	{
+		// LookUp Value is +up; the selection stick is +Y up, so mouse-up highlights the top wedge.
+		AddEmoteWheelInput(0.0f, Value * BHEmoteWheelAimGain);
+		return;
+	}
 	if (bQuestionCursorActive)
 	{
 		return;
@@ -3125,8 +3169,8 @@ void ABHCharacter::StopKeyboardLookDown()
 
 void ABHCharacter::ApplyKeyboardLook(float DeltaSeconds)
 {
-	// Keyboard look is also frozen while the question cursor is up (see Turn()).
-	if (bQuestionCursorActive)
+	// Keyboard look is also frozen while the question cursor is up or the emote wheel is open (see Turn()).
+	if (bQuestionCursorActive || bEmoteWheelActive)
 	{
 		return;
 	}
@@ -3259,6 +3303,14 @@ void ABHCharacter::StartJump()
 {
 	if (IsSpecialMoveActive())
 	{
+		return;
+	}
+
+	// A seated player (free-sit toggle OR locked onto an interactable chair) stands up on Jump instead of jumping.
+	// This is the only way out of a chair-locked seat (movement input is ignored while locked).
+	if (bSeated)
+	{
+		ServerSetSeated(false);
 		return;
 	}
 
@@ -3595,6 +3647,116 @@ void ABHCharacter::ClientGrantAchievement_Implementation(FName AchievementId, co
 			BHPC->ShowLocalStatusMessage(ToastMessage, 3.0f);
 		}
 	}
+}
+
+void ABHCharacter::UpdateTreeStuckDetection(float DeltaSeconds)
+{
+	// Owning client only (the caller already gates on IsLocallyControlled/IsPlayerControlled). Detects when this
+	// pawn has jumped UP into the lobby greenhouse tree's canopy and got wedged: within the trunk's horizontal
+	// footprint AND clearly above standing height (so merely standing under the tree never counts). On the rising
+	// edge it unlocks the (client-local) "Stuck in a Tree" achievement and toasts the O-to-reset hint, then keeps
+	// re-toasting the hint every few seconds while they stay stuck.
+	UWorld* World = GetWorld();
+	ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
+	if (!BHGS || BHGS->LobbyTreeLocations.Num() == 0)
+	{
+		bTreeStuckActive = false;
+		TreeStuckPromptTimer = 0.0f;
+		return;
+	}
+
+	const FVector Loc = GetActorLocation();
+	bool bInTree = false;
+	for (const FVector& Tree : BHGS->LobbyTreeLocations)
+	{
+		if (FVector::Dist2D(Loc, Tree) <= 115.0f && Loc.Z > 150.0f)
+		{
+			bInTree = true;
+			break;
+		}
+	}
+
+	if (!bInTree)
+	{
+		bTreeStuckActive = false;
+		TreeStuckPromptTimer = 0.0f;
+		return;
+	}
+
+	ABHPlayerController* BHPC = Cast<ABHPlayerController>(GetController());
+	if (!bTreeStuckActive)
+	{
+		// Rising edge: just got wedged in the canopy.
+		bTreeStuckActive = true;
+		TreeStuckPromptTimer = 4.0f;
+		if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+		{
+			Account->UnlockAchievement(FName(TEXT("stuck_in_tree")));
+		}
+		if (BHPC)
+		{
+			BHPC->ShowLocalStatusMessage(TEXT("Stuck in the tree! Press O to climb down."), 4.0f);
+		}
+	}
+	else
+	{
+		// Keep nudging while they remain stuck (the toast expires on its own).
+		TreeStuckPromptTimer -= DeltaSeconds;
+		if (TreeStuckPromptTimer <= 0.0f)
+		{
+			TreeStuckPromptTimer = 4.0f;
+			if (BHPC)
+			{
+				BHPC->ShowLocalStatusMessage(TEXT("Press O to climb down from the tree."), 4.0f);
+			}
+		}
+	}
+}
+
+void ABHCharacter::RequestResetFromTreeStuckZone()
+{
+	// Owning client -> server: O was pressed. The server validates (pawn really is up in a lobby tree) and teleports.
+	if (IsLocallyControlled())
+	{
+		ServerResetFromTreeStuckZone();
+	}
+}
+
+void ABHCharacter::ServerResetFromTreeStuckZone_Implementation()
+{
+	UWorld* World = GetWorld();
+	ABHGameState* BHGS = World ? World->GetGameState<ABHGameState>() : nullptr;
+	if (!BHGS || BHGS->LobbyTreeLocations.Num() == 0)
+	{
+		return;
+	}
+
+	// Only honour the reset when the pawn is actually up near a lobby tree, so O is a harmless no-op elsewhere and
+	// can't be abused as a free teleport.
+	const FVector Loc = GetActorLocation();
+	const FVector* Nearest = nullptr;
+	float BestXY = TNumericLimits<float>::Max();
+	for (const FVector& Tree : BHGS->LobbyTreeLocations)
+	{
+		const float DistXY = FVector::Dist2D(Loc, Tree);
+		if (DistXY < BestXY)
+		{
+			BestXY = DistXY;
+			Nearest = &Tree;
+		}
+	}
+	if (!Nearest || BestXY > 220.0f || Loc.Z < 110.0f)
+	{
+		return;
+	}
+
+	// Drop them onto the lawn just beside the trunk, on the ground, carrying no velocity.
+	if (UCharacterMovementComponent* Move = GetCharacterMovement())
+	{
+		Move->StopMovementImmediately();
+	}
+	const FVector Target(Nearest->X - 250.0f, Nearest->Y, 130.0f);
+	SetActorLocation(Target, false, nullptr, ETeleportType::TeleportPhysics);
 }
 
 void ABHCharacter::ClientRecordCollectable_Implementation(FName CollectableId, const FString& ToastMessage)
@@ -6186,8 +6348,12 @@ void ABHCharacter::UpdatePOVAnimation(float DeltaSeconds)
 	{
 		ViewRollOffsetDeg = 0.0f;
 	}
+	// The "mister ke~" emote shake adds a vertical (up/down) translation impulse here -- a cosmetic camera-component
+	// LOCATION offset, which survives bUsePawnControlRotation (unlike component rotation). Its matching view-PITCH
+	// wobble can't live here (component rotation is clobbered every frame); it is applied to the final POV in
+	// ABHPlayerCameraManager::ApplyCameraModifiers via GetEmoteShakePitchOffsetDeg(). Neither touches the capsule.
 	Camera->SetRelativeRotation(POVAnimRotationCurrent + ComputeJumpscareCameraFlinch());
-	Camera->SetRelativeLocation(ViewFeelCameraLocation + POVAnimLocationCurrent);
+	Camera->SetRelativeLocation(ViewFeelCameraLocation + POVAnimLocationCurrent + ComputeEmoteShakeLocationOffset());
 }
 
 float ABHCharacter::GetJumpscareImpactEnvelope() const
@@ -6266,6 +6432,91 @@ void ABHCharacter::PlayJumpscareCameraImpact(float Intensity, float FOVPunchDegr
 	{
 		JumpscareImpactFOVPunch *= 0.4f;
 	}
+}
+
+float ABHCharacter::GetEmoteShakeEnvelope() const
+{
+	if (EmoteShakeIntensity <= 0.0f || EmoteShakeStartTime < 0.0f || !GetWorld())
+	{
+		return 0.0f;
+	}
+
+	// A couple of seconds of violent shake: a fast attack to full, a sustain, then a smooth ease-out so the view
+	// settles rather than snapping back upright. Same shape language as GetJumpscareImpactEnvelope, longer window.
+	constexpr float AttackSeconds = 0.06f;
+	constexpr float TotalSeconds = 2.4f;
+	const float Age = GetWorld()->GetTimeSeconds() - EmoteShakeStartTime;
+	if (Age < 0.0f || Age >= TotalSeconds)
+	{
+		return 0.0f;
+	}
+
+	float Env;
+	if (Age < AttackSeconds)
+	{
+		Env = Age / AttackSeconds;
+	}
+	else
+	{
+		const float Tail = FMath::Clamp((Age - AttackSeconds) / FMath::Max(KINDA_SMALL_NUMBER, TotalSeconds - AttackSeconds), 0.0f, 1.0f);
+		const float Release = FMath::Clamp((Tail - 0.55f) / 0.45f, 0.0f, 1.0f); // hold through ~55% of the window, then ease out
+		Env = FMath::Square(1.0f - Release);
+	}
+	return FMath::Clamp(Env * EmoteShakeIntensity, 0.0f, 1.0f);
+}
+
+FVector ABHCharacter::ComputeEmoteShakeLocationOffset() const
+{
+	const float Env = GetEmoteShakeEnvelope();
+	if (Env <= 0.0f || !GetWorld())
+	{
+		return FVector::ZeroVector;
+	}
+
+	float Scale = Env;
+	if (IsReducedCameraShakeLocal())
+	{
+		Scale *= 0.35f;
+	}
+
+	// Camera-relative offset in cm: a hard UP/DOWN thrash on Z (~9 Hz) with a little off-frequency lateral jitter on
+	// Y so it does not read as a clean vertical slider. X (forward) is left alone. Z is the "shaken up and down".
+	const float Age = GetWorld()->GetTimeSeconds() - EmoteShakeStartTime;
+	const float Z = FMath::Sin(Age * BHEmoteShakeAngularFreq) * 8.5f * Scale;
+	const float Y = FMath::Sin(Age * 47.0f + 0.7f) * 1.8f * Scale;
+	return FVector(0.0f, Y, Z);
+}
+
+float ABHCharacter::GetEmoteShakePitchOffsetDeg() const
+{
+	const float Env = GetEmoteShakeEnvelope();
+	if (Env <= 0.0f || !GetWorld())
+	{
+		return 0.0f;
+	}
+
+	float Scale = Env;
+	if (IsReducedCameraShakeLocal())
+	{
+		Scale *= 0.35f;
+	}
+
+	// View-pitch wobble in phase with the vertical bob (so the head feels yanked up and down), applied to the final
+	// POV by ABHPlayerCameraManager because bUsePawnControlRotation discards cosmetic camera-component rotation.
+	// Shares BHEmoteShakeAngularFreq with the Z translation so the two stay phase-locked.
+	const float Age = GetWorld()->GetTimeSeconds() - EmoteShakeStartTime;
+	return FMath::Sin(Age * BHEmoteShakeAngularFreq) * 3.5f * Scale;
+}
+
+void ABHCharacter::PlayEmoteShake(float Intensity)
+{
+	if (!IsLocallyControlled() || !GetWorld())
+	{
+		return;
+	}
+
+	EmoteShakeIntensity = FMath::Clamp(Intensity, 0.0f, 1.0f);
+	EmoteShakeStartTime = GetWorld()->GetTimeSeconds();
 }
 
 void ABHCharacter::UpdateFlashlightFeel(float DeltaSeconds)
@@ -6459,7 +6710,10 @@ void ABHCharacter::ApplyHiddenState()
 		const bool bAlive = !BHPS || BHPS->LifeState == EBHPlayerLifeState::Alive;
 		SetActorHiddenInGame(!bAlive);
 		GetCapsuleComponent()->SetCollisionEnabled(bAlive ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
-		if (bAlive)
+		// Don't silently un-freeze a seated player: a locker/life-state OnRep near a seated pawn would otherwise
+		// restore MOVE_Walking under the seated visual. The stand path (SetSeatedAuthority) owns movement while
+		// seated, so leave a seated-but-alive pawn in MOVE_None here. [live-play-hardening]
+		if (bAlive && !bSeated)
 		{
 			GetCharacterMovement()->SetMovementMode(MOVE_Walking);
 		}
@@ -7512,8 +7766,21 @@ void ABHCharacter::SetSeatedAuthority(bool bNewSeated)
 	{
 		return;
 	}
+	// Sitting must not coexist with prone or an active special move (roll/dive/vault): those own the pose and
+	// movement state, so a seat-on-top would leave the prone/special pose stuck after standing. Mirror the prone
+	// guard. Standing (bNewSeated == false) is always allowed through. [live-play-hardening]
+	if (bNewSeated && (IsProne() || IsSpecialMoveActive()))
+	{
+		return;
+	}
 
 	bSeated = bNewSeated;
+
+	// Standing up always clears any chair lock (you only reach here by Jump, or by moving from a free-sit).
+	if (!bSeated)
+	{
+		bSeatLocked = false;
+	}
 
 	// Freeze/restore movement server-side using the same idiom the rest of the class uses (DisableMovement sets
 	// MovementMode = MOVE_None). The lowered eye height is cosmetic and handled per-frame in UpdateViewFeel.
@@ -7536,11 +7803,130 @@ void ABHCharacter::SetSeatedAuthority(bool bNewSeated)
 	}
 }
 
-void ABHCharacter::CycleEmote()
+void ABHCharacter::SitOnSeatAuthority(const FVector& SeatLocation, float FacingYaw)
 {
-	// Local input -> server. Cycle through the emote set; the server timestamps + replicates it.
-	ServerEmote(LocalEmoteCycle);
-	LocalEmoteCycle = (LocalEmoteCycle + 1) % 6;
+	// Server-authoritative chair seating (called from ABHTrainSeat::BeginInteract). Unlike the free-sit toggle,
+	// this LOCKS the player to the seat: movement input is ignored (see the MoveForward/MoveRight guards) and only
+	// Jump stands them up (see StartJump). You can only sit when otherwise free to act.
+	if (!HasAuthority() || !CanAct())
+	{
+		return;
+	}
+
+	bSeated = true;
+	bSeatLocked = true;
+
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		Movement->StopMovementImmediately();
+		Movement->DisableMovement();
+	}
+
+	// Teleport onto the seat AFTER freezing movement so the client's movement component doesn't fight the placement.
+	SetActorLocation(SeatLocation, false, nullptr, ETeleportType::TeleportPhysics);
+
+	SendStatusMessage(TEXT("Seated. Press Jump to stand up."));
+	ClientFaceYaw(FacingYaw);
+}
+
+void ABHCharacter::ClientFaceYaw_Implementation(float Yaw)
+{
+	// Aim the owning client's view down the seat's facing so a chair sitter looks the right way (the body is
+	// movement-frozen, but the camera yaw is client-owned, so it must be set here rather than on the server).
+	if (AController* OwningController = GetController())
+	{
+		OwningController->SetControlRotation(FRotator(0.0f, Yaw, 0.0f));
+	}
+}
+
+namespace
+{
+	// Single source of truth for the social-emote set. Order = wheel layout (wedge 0 at the top, clockwise).
+	// The LAST entry, "mister ke~", is the inside-joke emote: the HUD thrashes its bubble up and down for the
+	// life of the emote (see ABHHUD::DrawNearbyNameTags). Keep these short + ASCII so the large HUD font renders
+	// them cleanly above a head.
+	static const TCHAR* const GBHEmoteLabels[] = {
+		TEXT("o/ HI"),
+		TEXT("GG!"),
+		TEXT("<3"),
+		TEXT("LOL"),
+		TEXT("CHEERS!"),
+		TEXT("\\o/ WOO"),
+		TEXT("FAHHH"),
+		TEXT("SHEEESH"),
+		TEXT("RATIO"),
+		TEXT("mister ke~"),
+	};
+	static constexpr int32 GBHEmoteCount = UE_ARRAY_COUNT(GBHEmoteLabels);
+	static constexpr int32 GBHShakeEmoteId = GBHEmoteCount - 1; // "mister ke~"
+	static constexpr float GBHEmoteWheelDeadzone = 0.35f;       // selection inside this radius = cancel
+}
+
+void ABHCharacter::OpenEmoteWheel()
+{
+	// Press X -> open the radial. Pure local UI; the chosen emote is server-validated in ServerEmote on release.
+	if (!CanAct())
+	{
+		return;
+	}
+	bEmoteWheelActive = true;
+	EmoteWheelSelX = 0.0f;
+	EmoteWheelSelY = 0.0f;
+}
+
+void ABHCharacter::CloseEmoteWheelAndEmote()
+{
+	if (!bEmoteWheelActive)
+	{
+		return;
+	}
+	const int32 Picked = GetEmoteWheelHighlightedId();
+	bEmoteWheelActive = false;
+	EmoteWheelSelX = 0.0f;
+	EmoteWheelSelY = 0.0f;
+	// Releasing in the dead zone (mouse never left centre) cancels with no emote played.
+	if (Picked >= 0)
+	{
+		ServerEmote(Picked);
+		// Inside joke: playing "mister ke~" also thrashes the emoter's own first-person view up and down.
+		// Local + cosmetic only; CanAct mirrors the server's ServerEmote gate so the view never shakes without
+		// an emote actually registering.
+		if (IsShakeEmote(Picked) && CanAct())
+		{
+			PlayEmoteShake(1.0f);
+		}
+	}
+}
+
+void ABHCharacter::AddEmoteWheelInput(float DeltaX, float DeltaY)
+{
+	// Accumulate mouse motion into a virtual selection stick, clamped to the unit disc. Only the angle is
+	// used for the wedge; pinning the magnitude to the edge keeps the highlight steady once aimed.
+	EmoteWheelSelX += DeltaX;
+	EmoteWheelSelY += DeltaY;
+	const float MagSq = EmoteWheelSelX * EmoteWheelSelX + EmoteWheelSelY * EmoteWheelSelY;
+	if (MagSq > 1.0f)
+	{
+		const float InvMag = 1.0f / FMath::Sqrt(MagSq);
+		EmoteWheelSelX *= InvMag;
+		EmoteWheelSelY *= InvMag;
+	}
+}
+
+int32 ABHCharacter::GetEmoteWheelHighlightedId() const
+{
+	// Dead zone in the middle = cancel. Otherwise map the stick angle to a wedge: wedge 0 at the top
+	// (12 o'clock), advancing clockwise. The HUD lays the labels out with the identical mapping.
+	const float Mag = FMath::Sqrt(EmoteWheelSelX * EmoteWheelSelX + EmoteWheelSelY * EmoteWheelSelY);
+	if (Mag < GBHEmoteWheelDeadzone)
+	{
+		return -1;
+	}
+	// Atan2 with +Y up gives 0 deg at the right, 90 at the top. Convert to a clockwise-from-top angle.
+	const float ClockDeg = FMath::Fmod(450.0f - FMath::RadiansToDegrees(FMath::Atan2(EmoteWheelSelY, EmoteWheelSelX)), 360.0f);
+	const float Wedge = 360.0f / static_cast<float>(GBHEmoteCount);
+	const int32 Id = static_cast<int32>(FMath::FloorToInt((ClockDeg + Wedge * 0.5f) / Wedge));
+	return ((Id % GBHEmoteCount) + GBHEmoteCount) % GBHEmoteCount;
 }
 
 void ABHCharacter::ServerEmote_Implementation(int32 InEmoteId)
@@ -7549,30 +7935,44 @@ void ABHCharacter::ServerEmote_Implementation(int32 InEmoteId)
 	{
 		return;
 	}
-	EmoteId = FMath::Clamp(InEmoteId, 0, 5);
+	EmoteId = FMath::Clamp(InEmoteId, 0, GBHEmoteCount - 1);
 	const AGameStateBase* BHGS = GetWorld() ? GetWorld()->GetGameState() : nullptr;
 	EmoteStartServerTime = BHGS ? BHGS->GetServerWorldTimeSeconds() : (GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f);
 }
 
 FString ABHCharacter::GetEmoteLabel(int32 Id)
 {
-	static const TCHAR* Labels[6] = { TEXT("o/ HI!"), TEXT("GG!"), TEXT("<3"), TEXT("LOL"), TEXT("CHEERS!"), TEXT("\\o/ WOO") };
-	return Labels[FMath::Clamp(Id, 0, 5)];
+	return GBHEmoteLabels[FMath::Clamp(Id, 0, GBHEmoteCount - 1)];
 }
 
-bool ABHCharacter::GetActiveEmote(FString& OutLabel) const
+int32 ABHCharacter::GetEmoteCount()
 {
+	return GBHEmoteCount;
+}
+
+bool ABHCharacter::IsShakeEmote(int32 Id)
+{
+	return Id == GBHShakeEmoteId;
+}
+
+bool ABHCharacter::GetActiveEmote(FString& OutLabel, int32& OutId, float& OutAge) const
+{
+	OutId = -1;
+	OutAge = 0.0f;
 	if (EmoteId < 0)
 	{
 		return false;
 	}
 	const AGameStateBase* BHGS = GetWorld() ? GetWorld()->GetGameState() : nullptr;
 	const float Now = BHGS ? BHGS->GetServerWorldTimeSeconds() : (GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f);
-	if (Now - EmoteStartServerTime > 3.5f)
+	const float Age = Now - EmoteStartServerTime;
+	if (Age > 3.5f)
 	{
 		return false;
 	}
 	OutLabel = GetEmoteLabel(EmoteId);
+	OutId = EmoteId;
+	OutAge = Age;
 	return true;
 }
 
@@ -8167,6 +8567,14 @@ void ABHCharacter::ResolveTeacherCaptureAttackAuthority()
 			TargetPC->ClientShowStatusMessage(TEXT("Warmup capture tag. You stay in play and reset for the Hunt."), 3.0f);
 		}
 		return;
+	}
+	// Anti-wipe: a landed (non-warmup) capture puts the axe on a longer cooldown so the Teacher can't instantly
+	// chain-grab a clustered team. Extends the swing recovery (TeacherCaptureNextAllowedServerTime takes the max),
+	// so it gates the NEXT capture start without affecting this swing's animation/movement.
+	const float CaptureCooldown = CVarBHTeacherCaptureCooldownSeconds.GetValueOnGameThread();
+	if (CaptureCooldown > 0.0f)
+	{
+		StartTeacherCaptureRecoveryAuthority(Now, CaptureCooldown);
 	}
 	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
 	{

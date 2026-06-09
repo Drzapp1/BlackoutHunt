@@ -62,6 +62,18 @@ UMaterialInterface* LoadBlockMaterial(EBHBlockMaterial Material)
 	case EBHBlockMaterial::FogSheet:
 		Path = TEXT("/Engine/EngineDebugMaterials/M_SimpleUnlitTranslucent.M_SimpleUnlitTranslucent");
 		break;
+	case EBHBlockMaterial::Wood:
+		Path = TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_Wood.M_BH_Wood");
+		break;
+	case EBHBlockMaterial::Carpet:
+		Path = TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_Carpet.M_BH_Carpet");
+		break;
+	case EBHBlockMaterial::Leather:
+		Path = TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_Leather.M_BH_Leather");
+		break;
+	case EBHBlockMaterial::Marble:
+		Path = TEXT("/Game/BlackoutHunt/Art/Materials/M_BH_Marble.M_BH_Marble");
+		break;
 	default:
 		break;
 	}

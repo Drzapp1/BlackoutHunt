@@ -101,7 +101,7 @@ bool ABHGameMode::CompleteTrainIntermission(const FString& NextMapName, bool bFi
 		return true;
 	}
 
-	const int32 NextStageIndex = FMath::Clamp(RuntimeStageIndex + 1, 0, 2);
+	const int32 NextStageIndex = FMath::Clamp(RuntimeStageIndex + 1, 0, GetMaxStageIndex());
 	if (BHGI)
 	{
 		BHGI->ClearQuestionAttemptHistory();
@@ -301,6 +301,12 @@ void ABHGameMode::TriggerFinalEscapeIfNeeded()
 
 bool ABHGameMode::IsFinalStage() const
 {
+	// With a host route, the final stage is the last route entry; otherwise the default sequence ends at
+	// Foggrounds (stage 2), and a directly-hosted Foggrounds test round is also treated as final.
+	if (RuntimeMapRoute.Num() > 0)
+	{
+		return RuntimeStageIndex >= RuntimeMapRoute.Num() - 1;
+	}
 	return RuntimeStageIndex >= 2 || RuntimeLevelName.Equals(TEXT("Foggrounds"), ESearchCase::IgnoreCase);
 }
 

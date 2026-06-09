@@ -5,9 +5,17 @@
 #include "BHTrainTunnelMotionActor.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/PointLightComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Net/UnrealNetwork.h"
 #include "UObject/ConstructorHelpers.h"
+
+namespace
+{
+	// How many sweeping exterior lights each window-side actor carries. Kept small (unshadowed, short radius) so a
+	// busy lobby of these stays cheap; spread evenly along the loop so a light is almost always mid-pass.
+	constexpr int32 BHNumPassingLights = 2;
+}
 
 ABHTrainTunnelMotionActor::ABHTrainTunnelMotionActor()
 {
@@ -61,6 +69,22 @@ ABHTrainTunnelMotionActor::ABHTrainTunnelMotionActor()
 		}
 		Pillars.Add(Pillar);
 	}
+
+	// Sweeping exterior lights: movable, unshadowed point lights that scroll along the window outside and bloom as
+	// they pass. They start dark (intensity 0) and are driven entirely in Tick. Parked just outside the glass so the
+	// wash reaches the interior.
+	for (int32 Index = 0; Index < BHNumPassingLights; ++Index)
+	{
+		UPointLightComponent* PassLight = CreateDefaultSubobject<UPointLightComponent>(*FString::Printf(TEXT("PassingLight_%02d"), Index));
+		PassLight->SetupAttachment(SceneRoot);
+		PassLight->SetMobility(EComponentMobility::Movable);
+		PassLight->SetCastShadows(false);
+		PassLight->SetIntensity(0.0f);
+		PassLight->SetAttenuationRadius(520.0f);
+		PassLight->SetSourceRadius(12.0f);
+		PassLight->SetRelativeLocation(FVector(0.0f, 0.0f, 0.0f));
+		PassingLights.Add(PassLight);
+	}
 }
 
 void ABHTrainTunnelMotionActor::BeginPlay()
@@ -83,6 +107,20 @@ void ABHTrainTunnelMotionActor::BeginPlay()
 	for (UStaticMeshComponent* Pillar : Pillars)
 	{
 		PillarMaterials.Add(Pillar ? Pillar->CreateAndSetMaterialInstanceDynamic(0) : nullptr);
+	}
+
+	// One-time per-light tint so passes vary (warm lamps vs cool platform light) between cars and lights. Position
+	// and intensity are animated in Tick; the colour only needs setting once and depends on the now-final location.
+	for (int32 Index = 0; Index < PassingLights.Num(); ++Index)
+	{
+		if (!PassingLights[Index])
+		{
+			continue;
+		}
+		const float Hue = FMath::Frac(0.37f * static_cast<float>(Index) + GetActorLocation().X * 0.0007f);
+		const FLinearColor Warm(1.0f, 0.86f, 0.66f, 1.0f);
+		const FLinearColor Cool(0.72f, 0.86f, 1.0f, 1.0f);
+		PassingLights[Index]->SetLightColor(FMath::Lerp(Warm, Cool, Hue));
 	}
 }
 
@@ -153,6 +191,28 @@ void ABHTrainTunnelMotionActor::Tick(float DeltaSeconds)
 				PillarMaterial->SetVectorParameterValue(TEXT("EmissiveColor"), Color * (bMoving ? 2.2f : 0.4f));
 			}
 		}
+	}
+
+	// Sweeping exterior lights: scroll along the window like the strips, bloom as they cross the pane centre and
+	// fade to dark toward the ends, so the carriage interior gets a moving wash that reads as lit things passing
+	// outside. Sit just inside the strips (toward the glass) so the cast reaches the interior; dark while parked.
+	const float LightLoop = FMath::Max(1.0f, LoopLength);
+	const float LightStep = LightLoop / FMath::Max(1, PassingLights.Num());
+	const float LightY = (GetActorLocation().Y >= 0.0f) ? -95.0f : 95.0f;
+	for (int32 Index = 0; Index < PassingLights.Num(); ++Index)
+	{
+		if (!PassingLights[Index])
+		{
+			continue;
+		}
+		const float LocalX = FMath::Fmod(Index * LightStep - MotionOffset + LightLoop, LightLoop) - LightLoop * 0.5f;
+		PassingLights[Index]->SetRelativeLocation(FVector(LocalX, LightY, 0.0f));
+
+		// Bloom near the pane centre (LocalX ~ 0), dark toward the ends -> a discrete lamp sweeping by, squared so
+		// it reads as a pass rather than a constant glow.
+		const float Span = FMath::Max(1.0f, LightLoop * 0.30f);
+		const float Through = FMath::Clamp(1.0f - FMath::Abs(LocalX) / Span, 0.0f, 1.0f);
+		PassingLights[Index]->SetIntensity(bMoving ? 260.0f * Through * Through : 0.0f);
 	}
 }
 

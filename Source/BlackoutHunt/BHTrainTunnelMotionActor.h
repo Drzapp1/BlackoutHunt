@@ -10,6 +10,7 @@
 
 class UStaticMeshComponent;
 class UMaterialInstanceDynamic;
+class UPointLightComponent;
 
 UCLASS()
 class BLACKOUTHUNT_API ABHTrainTunnelMotionActor : public AActor
@@ -38,6 +39,13 @@ protected:
 	// real rushing tunnel (parallax sells the motion).
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TArray<TObjectPtr<UStaticMeshComponent>> Pillars;
+
+	// A couple of MOVABLE point lights that sweep along the window outside, blooming as they pass the panes and
+	// fading at the ends -- so the carriage interior gets a moving wash of light, reading as lit things (lamps,
+	// platforms, passing trains) going by outside rather than a static glow. Unshadowed + short radius for cost;
+	// only lit while the train is moving.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TArray<TObjectPtr<UPointLightComponent>> PassingLights;
 
 	// Cached dynamic materials (created once in BeginPlay, not per tick).
 	UPROPERTY(Transient)

@@ -175,6 +175,26 @@ public:
 	// reproducible per-round variety from it (e.g. revision question selection).
 	int32 GetRoundSeed() const { return RoundSeed; }
 	EBHRevisionDifficultyMix GetRevisionDifficultyMix() const;
+	// Host lobby customization accessors (read by the question bank / objective stations during selection).
+	EBHQuestionDifficulty GetRevisionStartingDifficulty() const { return RevisionStartingDifficulty; }
+	EBHQuestionDifficulty GetRevisionMinDifficulty() const { return RevisionMinDifficulty; }
+	EBHQuestionDifficulty GetRevisionMaxDifficulty() const { return RevisionMaxDifficulty; }
+	// Clamp a difficulty tier into the host-configured [Min, Max] band.
+	EBHQuestionDifficulty ClampRevisionDifficulty(EBHQuestionDifficulty Difficulty) const
+	{
+		return static_cast<EBHQuestionDifficulty>(FMath::Clamp<uint8>(
+			static_cast<uint8>(Difficulty),
+			static_cast<uint8>(RevisionMinDifficulty),
+			static_cast<uint8>(RevisionMaxDifficulty)));
+	}
+	// Non-empty when the host pinned an exact question set; selection draws only from these ids.
+	const TArray<FString>& GetRevisionAllowedQuestionIds() const { return RevisionAllowedQuestionIds; }
+	const FString& GetRevisionQuestionSetId() const { return RevisionQuestionSetId; }
+	// Procedural layout knobs (0 = generator default) parsed from the host preset.
+	int32 GetLayoutSeed() const { return LayoutSeed; }
+	int32 GetLayoutBreakerCount() const { return LayoutBreakerCount; }
+	int32 GetLayoutDensity() const { return LayoutDensity; }
+	bool ShouldForceProceduralLayout() const { return bForceProceduralLayout; }
 	TArray<EBHPhysicsTopic> GetRevisionWeakTopics() const;
 	int32 GetRevisionQuestionTargetPerNode() const;
 	int32 GetRevisionAnswerTeamTargetSize() const;
@@ -190,6 +210,13 @@ public:
 	// changes inputs that affect the target.
 	void RefreshRevisionContributionGateTarget();
 	bool CanUseHallMonitorTools(const ABHPlayerState* PlayerState, FString& OutBlockReason) const;
+	// Revision-mode round-end enforcement (see docs/ROADMAP_MOVEMENT_REVISION.md, WS2): count hall monitors
+	// (caught survivors) still below the per-round contribution target; manage the "all survivors caught" grace
+	// window (returns true to DEFER the round-end while monitors finish, ticked once per second); and apply the
+	// proportional question-point dock to monitors who did not finish by round-end.
+	int32 CountMonitorsBelowRevisionTarget() const;
+	bool TickAllCaughtRevisionGrace();
+	void ApplyUnfinishedMonitorRevisionDock();
 	static bool IsRevisionParticipantRole(EBHPlayerRole Role);
 	static bool IsValidSpectatorRolePreference(EBHPlayerRole Role);
 	static EBHPlayerRole SanitizeSpectatorRolePreference(EBHPlayerRole Role);
@@ -267,6 +294,9 @@ protected:
 	// Procedural geometry/actor builders, one per logical level. Each is self-contained (sets spawns and
 	// spawns all gameplay actors); BuildRuntimeFacility() parses travel options then dispatches to one.
 	void BuildFacilityLevel();
+	// Spawn ~5 hidden ABHCollectable relics at the given (already-valid) world locations with stable per-site ids
+	// ("<prefix>_0".."<prefix>_N"). Called from each Build*Level. IDs must stay stable so found-state persists.
+	void SpawnMapCollectables(const FString& MapPrefix, const TArray<FVector>& Locations);
 	// Whole-map "dark liminal backrooms" layout for the Facility: a connected maze of tight rooms (randomized
 	// DFS spanning tree + extra loops, so every room is reachable), sparse dim lighting, mono concrete, with
 	// objectives/breakers/spawns/one exit distributed across the grid. Replaces the legacy hand-authored
@@ -438,6 +468,11 @@ protected:
 	int32 GetConfiguredStageIndex() const;
 	FString GetDefaultMapForStage(int32 StageIndex) const;
 	FString GetNextMapAfterStage(int32 StageIndex) const;
+	// Variable-length host map route helpers (route empty => the default 3-stage Facility/Substation/Foggrounds).
+	int32 GetRouteStageCount() const { return RuntimeMapRoute.Num() > 0 ? RuntimeMapRoute.Num() : 3; }
+	int32 GetMaxStageIndex() const { return FMath::Max(0, GetRouteStageCount() - 1); }
+	// Resolve RevisionAllowedQuestionIds from RevisionQuestionSetId (empty id => no restriction).
+	void ResolveAllowedQuestionIds();
 	FString BuildTravelOptionsForLevel(const FString& LevelName, bool bIntermission, int32 StageIndex, EBHRoundPhase ResultPhase) const;
 	// Returns the .umap package to travel to for a logical level. When bUseAuthoredLevels is enabled and an
 	// authored /Game/BlackoutHunt/Maps/<Level> asset exists it is used; otherwise the stock runtime base
@@ -586,6 +621,20 @@ protected:
 	float RevisionIndividualThreshold;
 	int32 RevisionRoundDuration;
 	int32 RevisionScareIntensity;
+	// --- Host lobby customization (parsed from URL options; reconstructed on every ServerTravel) ---
+	EBHQuestionDifficulty RevisionStartingDifficulty = EBHQuestionDifficulty::Easy;
+	EBHQuestionDifficulty RevisionMinDifficulty = EBHQuestionDifficulty::Easy;
+	EBHQuestionDifficulty RevisionMaxDifficulty = EBHQuestionDifficulty::Hard;
+	// Non-empty when the host pinned an exact question set; RevisionAllowedQuestionIds is then resolved from it.
+	FString RevisionQuestionSetId;
+	TArray<FString> RevisionAllowedQuestionIds;
+	// Ordered host map route (variable length, repeats allowed). Empty = the default 3-stage sequence.
+	TArray<FString> RuntimeMapRoute;
+	// Procedural layout knobs (0 = generator default). Applied only when the round runs the generator.
+	int32 LayoutSeed = 0;
+	int32 LayoutBreakerCount = 0;
+	int32 LayoutDensity = 0;
+	bool bForceProceduralLayout = false;
 	int32 RevisionReviewTimeRemaining;
 	bool bRevisionReportExported;
 	bool bBotMode;

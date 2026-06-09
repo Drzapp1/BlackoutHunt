@@ -30,13 +30,27 @@ public:
 	static bool ExportQuestionBankToOverrideFile(FString& OutMessage);
 
 	static bool FindQuestion(const FString& Id, FBHRevisionQuestion& OutQuestion);
-	static bool SelectQuestion(EBHPhysicsTopic Topic, EBHRevisionDifficultyMix DifficultyMix, int32 Seed, const TArray<EBHPhysicsTopic>& WeakTopics, FBHRevisionQuestion& OutQuestion);
-	static bool SelectQuestionByDifficulty(EBHPhysicsTopic Topic, EBHQuestionDifficulty Difficulty, int32 Seed, FBHRevisionQuestion& OutQuestion);
+	// Selection is constrained to the host-configured difficulty band [MinDifficulty, MaxDifficulty] and,
+	// when AllowedIds is non-null and non-empty, to that exact question set (case-insensitive id match).
+	// Defaults (Easy..Hard, no id set) reproduce the historical behaviour, so existing callers are unchanged.
+	static bool SelectQuestion(EBHPhysicsTopic Topic, EBHRevisionDifficultyMix DifficultyMix, int32 Seed, const TArray<EBHPhysicsTopic>& WeakTopics, FBHRevisionQuestion& OutQuestion,
+		EBHQuestionDifficulty MinDifficulty = EBHQuestionDifficulty::Easy, EBHQuestionDifficulty MaxDifficulty = EBHQuestionDifficulty::Hard, const TArray<FString>* AllowedIds = nullptr);
+	static bool SelectQuestionByDifficulty(EBHPhysicsTopic Topic, EBHQuestionDifficulty Difficulty, int32 Seed, FBHRevisionQuestion& OutQuestion,
+		EBHQuestionDifficulty MinDifficulty = EBHQuestionDifficulty::Easy, EBHQuestionDifficulty MaxDifficulty = EBHQuestionDifficulty::Hard, const TArray<FString>* AllowedIds = nullptr);
 	// Pick a "proper" (non-multiple-choice) drag question -- DragDropMatching or Ordering -- for a
 	// topic, preferring PreferredDifficulty but falling back to any difficulty. Used to mix proper
 	// questions into both revision and standard Hunt nodes. Returns false if the topic has none.
-	static bool SelectDragQuestion(EBHPhysicsTopic Topic, EBHQuestionDifficulty PreferredDifficulty, int32 Seed, FBHRevisionQuestion& OutQuestion);
+	static bool SelectDragQuestion(EBHPhysicsTopic Topic, EBHQuestionDifficulty PreferredDifficulty, int32 Seed, FBHRevisionQuestion& OutQuestion,
+		EBHQuestionDifficulty MinDifficulty = EBHQuestionDifficulty::Easy, EBHQuestionDifficulty MaxDifficulty = EBHQuestionDifficulty::Hard, const TArray<FString>* AllowedIds = nullptr);
 	static EBHPhysicsTopic TopicForStationType(EBHObjectiveStationType StationType);
+
+	// Host "exact question set" support: named id lists saved under Saved/ClassroomPresets/QuestionSets/<id>.json.
+	static FString GetQuestionSetFilePath(const FString& SetId);
+	static bool LoadQuestionSetIds(const FString& SetId, TArray<FString>& OutQuestionIds, FString& OutMessage);
+	static bool SaveQuestionSet(const FString& SetId, const FString& DisplayName, const TArray<FString>& QuestionIds, FString& OutMessage);
+	static void GetAvailableQuestionSetIds(TArray<FString>& OutSetIds);
+	// Drop the cached active bank so the next GetQuestions() reloads the JSON override (host live re-edit).
+	static void InvalidateQuestionCache();
 
 	// Parse a matching/ordering choice string into the player-facing slots (fixed drop targets /
 	// positions) and the canonical pieces (the correct content for each slot, in slot order). Drives

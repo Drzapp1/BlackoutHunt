@@ -11,6 +11,7 @@
 class UStaticMeshComponent;
 class UTextRenderComponent;
 class UPointLightComponent;
+class ABHPlayerState;
 
 // A playable, server-authoritative tic-tac-toe table for the train lobby. Solo vs a (perfect) AI or human PvP,
 // using the same look-and-tap flow as the chess table: look at a cell and TAP to place your mark. X goes
@@ -50,6 +51,7 @@ protected:
 	float GetServerTimeSeconds() const;
 	int32 CellUnderView(const ABHCharacter* Character) const;   // -1 if not looking at the board
 	void HandleSeating(ABHCharacter* Character, bool bHold);
+	void PruneSeats();   // server: free a seat whose player disconnected / walked away, reopening the table
 	void HandlePlayClick(ABHCharacter* Character, int32 Cell);
 	void StartNewGame(bool bAgainstAI);
 	void MakeMove(int32 Cell, int32 Side);
@@ -84,6 +86,13 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UTextRenderComponent> StatusTextRender;
+
+	// Back-facing duplicates so the player on the far (-Y) side reads the title/status the right way round.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UTextRenderComponent> TitleTextBack;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UTextRenderComponent> StatusTextBack;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPointLightComponent> TableLight;
@@ -124,4 +133,8 @@ protected:
 
 	// Server-only: per-player press time (we measure tap/hold ourselves, same as the other tables).
 	TMap<int32, float> PressTimeByPlayerId;
+
+	// Server-only seat owners (mirror the replicated ids) so a disconnected / departed player frees their seat.
+	TWeakObjectPtr<ABHPlayerState> XOwner;
+	TWeakObjectPtr<ABHPlayerState> OOwner;
 };

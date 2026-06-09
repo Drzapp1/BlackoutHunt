@@ -24,9 +24,9 @@ namespace
 	constexpr int32 BHChessINF = 1000000000;
 
 	// Piece encoding: 0 empty; +ve white, -ve black; magnitude 1=Pawn 2=Knight 3=Bishop 4=Rook 5=Queen 6=King.
-	const FLinearColor BJWin(0.30f, 1.0f, 0.52f, 1.0f);
-	const FLinearColor BJLose(1.0f, 0.40f, 0.26f, 1.0f);
-	const FLinearColor BJNeutral(0.55f, 0.78f, 1.0f, 1.0f);
+	const FLinearColor BHChessWin(0.30f, 1.0f, 0.52f, 1.0f);
+	const FLinearColor BHChessLose(1.0f, 0.40f, 0.26f, 1.0f);
+	const FLinearColor BHChessNeutral(0.55f, 0.78f, 1.0f, 1.0f);
 
 	FVector SquareLocal(int32 Index, float ZOffset)
 	{
@@ -107,6 +107,15 @@ ABHTrainChessTable::ABHTrainChessTable()
 	StatusTextRender->SetupAttachment(SceneRoot);
 	BHConfigureChessText(StatusTextRender, FVector(0.0f, 60.0f, 128.0f), 7.0f, FColor(206, 226, 244));
 
+	// Mirrored copies facing the opposite (-Y) seat so both players read the text the right way round.
+	TitleTextBack = CreateDefaultSubobject<UTextRenderComponent>(TEXT("TitleTextBack"));
+	TitleTextBack->SetupAttachment(SceneRoot);
+	BHPropVisuals::ConfigureReadableText(TitleTextBack, FVector(0.0f, -60.0f, 150.0f), FRotator(0.0f, -90.0f, 0.0f), 12.0f, FColor(236, 226, 200));
+
+	StatusTextBack = CreateDefaultSubobject<UTextRenderComponent>(TEXT("StatusTextBack"));
+	StatusTextBack->SetupAttachment(SceneRoot);
+	BHPropVisuals::ConfigureReadableText(StatusTextBack, FVector(0.0f, -60.0f, 128.0f), FRotator(0.0f, -90.0f, 0.0f), 7.0f, FColor(206, 226, 244));
+
 	TableLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("TableLight"));
 	TableLight->SetupAttachment(SceneRoot);
 	TableLight->SetRelativeLocation(FVector(0.0f, 0.0f, 165.0f));
@@ -124,6 +133,10 @@ ABHTrainChessTable::ABHTrainChessTable()
 void ABHTrainChessTable::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	if (HasAuthority())
+	{
+		PruneSeats();
+	}
 	RefreshBoardVisuals();
 }
 
@@ -178,15 +191,18 @@ void ABHTrainChessTable::EndInteract_Implementation(ABHCharacter* Character)
 		return;
 	}
 	ABHPlayerState* BHPS = Character->GetBHPlayerState();
-	if (!BHPS || BHPS->LifeState != EBHPlayerLifeState::Alive)
+	if (!BHPS)
 	{
 		return;
 	}
-
 	const int32 MyId = BHPS->GetPlayerId();
 	const float* PressTime = PressTimeByPlayerId.Find(MyId);
 	const float HeldFor = PressTime ? (GetServerTimeSeconds() - *PressTime) : 0.0f;
-	PressTimeByPlayerId.Remove(MyId);
+	PressTimeByPlayerId.Remove(MyId);   // always clear, even if the player died mid-hold
+	if (BHPS->LifeState != EBHPlayerLifeState::Alive)
+	{
+		return;
+	}
 	const bool bHold = HeldFor >= BHChessHoldSeconds;
 
 	const EChessPhase CurrentPhase = static_cast<EChessPhase>(Phase);
@@ -325,10 +341,11 @@ void ABHTrainChessTable::HandleSeating(ABHCharacter* Character, bool bHold)
 	{
 		WhitePlayerId = MyId;
 		WhiteName = MyName;
+		WhiteOwner = BHPS;
 		bVsAI = false;
 		BHPS->SetActiveMinigameTable(this);
 		StatusText = TEXT("White seated - waiting for an opponent.");
-		StatusAccent = BJNeutral;
+		StatusAccent = BHChessNeutral;
 		ForceNetUpdate();
 		RefreshBoardVisuals();
 		StatusToPlayer(Character, TEXT("You are White. Tap again with a friend as Black, or HOLD to play the AI."), 3.5f);
@@ -355,6 +372,7 @@ void ABHTrainChessTable::HandleSeating(ABHCharacter* Character, bool bHold)
 	{
 		BlackPlayerId = MyId;
 		BlackName = MyName;
+		BlackOwner = BHPS;
 		bVsAI = false;
 		BHPS->SetActiveMinigameTable(this);
 		StartNewGame(false);
@@ -450,7 +468,7 @@ void ABHTrainChessTable::StartNewGame(bool bAgainstAI)
 	bVsAI = bAgainstAI;
 	Phase = static_cast<uint8>(EChessPhase::Playing);
 	StatusText = bAgainstAI ? TEXT("Your move (White) vs the AI.") : TEXT("White to move.");
-	StatusAccent = BJNeutral;
+	StatusAccent = BHChessNeutral;
 	ForceNetUpdate();
 	RefreshBoardVisuals();
 }
@@ -470,13 +488,13 @@ void ABHTrainChessTable::MakeMoveAuthoritative(int32 From, int32 To)
 		const FString Winner = (Mover > 0)
 			? (WhiteName.IsEmpty() ? TEXT("White") : WhiteName)
 			: (BlackName.IsEmpty() ? TEXT("Black") : BlackName);
-		EndGame(FString::Printf(TEXT("%s wins - king captured!"), *Winner), BJWin);
+		EndGame(FString::Printf(TEXT("%s wins - king captured!"), *Winner), BHChessWin);
 		return;
 	}
 
 	Turn = (Turn == 0) ? 1 : 0;
 	StatusText = (Turn == 0) ? TEXT("White to move.") : TEXT("Black to move.");
-	StatusAccent = BJNeutral;
+	StatusAccent = BHChessNeutral;
 	ForceNetUpdate();
 	RefreshBoardVisuals();
 
@@ -492,7 +510,7 @@ void ABHTrainChessTable::DoAIMove()
 	PseudoLegalMoves(Board, -1, Moves);
 	if (Moves.Num() == 0)
 	{
-		EndGame(TEXT("Black has no moves - White wins."), BJWin);
+		EndGame(TEXT("Black has no moves - White wins."), BHChessWin);
 		return;
 	}
 
@@ -515,7 +533,11 @@ void ABHTrainChessTable::DoAIMove()
 		}
 	}
 
-	const int32 Chosen = BestMoves[FMath::RandRange(0, BestMoves.Num() - 1)];
+	// Slip up sometimes so a human can actually win instead of facing flawless play: with this chance the AI makes
+	// a deliberate blunder (any legal move) rather than its best one.
+	const int32 Chosen = (FMath::FRand() < 0.22f)
+		? Moves[FMath::RandRange(0, Moves.Num() - 1)]
+		: BestMoves[FMath::RandRange(0, BestMoves.Num() - 1)];
 	MakeMoveAuthoritative(Chosen / BHChessCells, Chosen % BHChessCells);
 }
 
@@ -525,6 +547,61 @@ void ABHTrainChessTable::EndGame(const FString& Result, const FLinearColor& Acce
 	SelectedSquare = -1;
 	StatusText = Result;
 	StatusAccent = Accent;
+	ForceNetUpdate();
+	RefreshBoardVisuals();
+}
+
+void ABHTrainChessTable::PruneSeats()
+{
+	// A human seat is "gone" if its owning PlayerState was destroyed (disconnect) or its pawn walked away. AI
+	// (-2) and empty (-1) seats are never pruned.
+	constexpr float SeatRange = 900.0f;
+	auto SeatGone = [this](int32 SeatId, const TWeakObjectPtr<ABHPlayerState>& SeatOwnerPtr) -> bool
+	{
+		if (SeatId < 0)
+		{
+			return false;
+		}
+		const ABHPlayerState* PS = SeatOwnerPtr.Get();
+		if (!PS)
+		{
+			return true;
+		}
+		const APawn* Pawn = PS->GetPawn();
+		return !Pawn || FVector::Dist(Pawn->GetActorLocation(), GetActorLocation()) > SeatRange;
+	};
+
+	if (!SeatGone(WhitePlayerId, WhiteOwner) && !SeatGone(BlackPlayerId, BlackOwner))
+	{
+		return;
+	}
+
+	// A seated human left: release both seats and reopen the table so anyone can play.
+	auto ReleaseOwner = [this](TWeakObjectPtr<ABHPlayerState>& SeatOwnerPtr)
+	{
+		if (ABHPlayerState* PS = SeatOwnerPtr.Get())
+		{
+			if (PS->GetActiveMinigameTable() == this)
+			{
+				PS->SetActiveMinigameTable(nullptr);
+			}
+		}
+		SeatOwnerPtr = nullptr;
+	};
+	ReleaseOwner(WhiteOwner);
+	ReleaseOwner(BlackOwner);
+	PressTimeByPlayerId.Empty();
+	WhitePlayerId = -1;
+	BlackPlayerId = -1;
+	WhiteName.Reset();
+	BlackName.Reset();
+	InitBoard(Board);
+	Turn = 0;
+	SelectedSquare = -1;
+	bVsAI = false;
+	Phase = static_cast<uint8>(EChessPhase::Idle);
+	StatusText = TEXT("Open table - tap to take a seat.");
+	StatusAccent = BHChessNeutral;
 	ForceNetUpdate();
 	RefreshBoardVisuals();
 }
@@ -859,8 +936,8 @@ void ABHTrainChessTable::ApplyTableVisuals()
 
 	const FLinearColor Wood(0.20f, 0.13f, 0.08f, 1.0f);
 	const float BoardSpan = BHChessN * BHSquareSize;   // ~96cm
-	BHPropVisuals::ConfigurePart(Base, BHPropVisuals::CylinderMesh(), BHPropVisuals::PaintedMetalMaterial(), FVector(0.0f, 0.0f, 41.0f), FRotator::ZeroRotator, FVector(0.34f, 0.34f, 0.82f), true);
-	BHPropVisuals::ConfigurePart(BoardBody, BHPropVisuals::CubeMesh(), BHPropVisuals::PaintedMetalMaterial(), FVector(0.0f, 0.0f, 82.0f), FRotator::ZeroRotator, FVector(BoardSpan / 100.0f + 0.06f, BoardSpan / 100.0f + 0.06f, 0.06f), true);
+	BHPropVisuals::ConfigurePart(Base, BHPropVisuals::CylinderMesh(), BHPropVisuals::WoodMaterial(), FVector(0.0f, 0.0f, 41.0f), FRotator::ZeroRotator, FVector(0.34f, 0.34f, 0.82f), true);
+	BHPropVisuals::ConfigurePart(BoardBody, BHPropVisuals::CubeMesh(), BHPropVisuals::WoodMaterial(), FVector(0.0f, 0.0f, 82.0f), FRotator::ZeroRotator, FVector(BoardSpan / 100.0f + 0.06f, BoardSpan / 100.0f + 0.06f, 0.06f), true);
 	BHPropVisuals::TintPart(Base, Wood);
 	BHPropVisuals::TintPart(BoardBody, Wood * 1.3f);
 
@@ -990,9 +1067,18 @@ void ABHTrainChessTable::RefreshBoardVisuals()
 	{
 		TitleText->SetText(FText::FromString(TEXT("CHESS")));
 	}
+	if (TitleTextBack)
+	{
+		TitleTextBack->SetText(FText::FromString(TEXT("CHESS")));
+	}
 	if (StatusTextRender)
 	{
 		StatusTextRender->SetText(FText::FromString(StatusText));
 		StatusTextRender->SetTextRenderColor(StatusAccent.ToFColor(true));
+	}
+	if (StatusTextBack)
+	{
+		StatusTextBack->SetText(FText::FromString(StatusText));
+		StatusTextBack->SetTextRenderColor(StatusAccent.ToFColor(true));
 	}
 }

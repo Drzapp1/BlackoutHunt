@@ -37,6 +37,17 @@ private:
 	// Seconds the shake has been running; drives every oscillator term.
 	float ElapsedSeconds = 0.0f;
 
+	// Occasional "rough rail joint / points crossing" JOLT layered over the continuous sway: a brief, sharp,
+	// damped lurch every ~17-36s (sometimes a quick cluster) so the ride feels like real track instead of a
+	// constant hum. Scheduled and shaped entirely in UpdateShakePatternImpl; it rides the same ShakeScale
+	// (interior/roof/reduced comfort) and blend as the base sway, so no separate plumbing is needed.
+	float NextJoltTime = 8.0f;        // ElapsedSeconds at which the next jolt fires
+	float JoltStartTime = -1.0f;      // start time of the active jolt, or < 0 when idle
+	float JoltDuration = 0.0f;        // length of the active jolt
+	float JoltStrength = 0.0f;        // per-jolt magnitude (some bumps notably bigger than others)
+	float JoltLateralSign = 1.0f;     // which way the car lurches this time (+/-1)
+	int32 PendingQuickBumps = 0;      // queued quick follow-up bumps in the current cluster
+
 	// Lifecycle/blend bookkeeping, mirroring USimpleCameraShakePattern (kept local to avoid the plugin dep).
 	FCameraShakeState State;
 };

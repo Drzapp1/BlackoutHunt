@@ -171,6 +171,11 @@ public:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Minigame")
 	TObjectPtr<AActor> ActiveMinigameTable;
 
+	// Train jukebox track this player has selected (PER-PERSON: each client plays only its own choice). -1 = off,
+	// else an index into the jukebox playlist. Owner-only -- only the player's own client needs it to play locally.
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Blackout Hunt|Train")
+	int32 JukeboxTrackIndex = -1;
+
 	// Server-side only (deliberately NOT replicated): the secret per-client reconnect token. Set from the
 	// join URL in ABHGameMode::InitNewPlayer when a client echoes a prior token, or freshly generated in
 	// PostLogin and pushed to the owning client via ABHPlayerController::ClientReceiveReconnectToken. The

@@ -420,7 +420,12 @@ TSharedRef<SWidget> SBHBootConsole::BuildLogBody()
 			SNew(STextBlock)
 			.Font(BootFont(10))
 			.ColorAndOpacity(FSlateColor(BootDim))
-			.Text(FText::FromString(TEXT("firmware 0.8.1   -   cold start   -   press any key to skip")))
+			.Text(TAttribute<FText>::Create([this]()
+			{
+				return FText::FromString(bSkipArmed
+					? TEXT("firmware 0.8.1   -   cold start   -   press a key AGAIN to skip")
+					: TEXT("firmware 0.8.1   -   cold start   -   press a key TWICE to skip"));
+			}))
 		];
 	Root->AddSlot()
 		.AutoHeight()
@@ -953,12 +958,37 @@ void SBHBootConsole::UpdateBootSounds()
 		PlayBootSound(SfxHum, 0.30f, 0.80f);
 	}
 
-	// Sparse POST beeps / data ticks while the log floods (until the crash begins).
-	if (Elapsed < GlitchStartTime() && Elapsed >= NextBeepTime)
+	// Sparse data ticks while the RAW boot log floods during the pre-roll (before the structured asset stream).
+	if (Elapsed < PrerollSeconds && Elapsed >= NextBeepTime)
 	{
 		const uint32 R = BHHash(static_cast<uint32>(FMath::FloorToInt(Elapsed * 1000.0f)));
 		NextBeepTime = Elapsed + 0.45f + static_cast<float>(R & 0xFF) / 255.0f * 0.7f;
 		PlayBootSound(SfxBeep, 0.14f, 0.85f + static_cast<float>(R & 0x7) * 0.06f);
+	}
+
+	// CHECKLIST: as the structured boot stream confirms each asset, tick once per line the instant it completes.
+	// Green/teal "OK / ONLINE / DONE" lines (and the progress bars) get a light, crisp confirm tick; amber
+	// "DEGRADED / OFFLINE / ARMED" warnings get a low dull blip; and the red "FAIL / NOT RESPONDING / KERNEL
+	// PANIC" lines near the end get a heavy, descending fail thunk -- the audible collapse just before the crash.
+	while (NextChecklistLine < BootLines.Num() && LineFraction(NextChecklistLine) >= 1.0f)
+	{
+		const FString DoneTagUpper = BootLines[NextChecklistLine].DoneTag.ToUpper();
+		const bool bFail = DoneTagUpper.Contains(TEXT("FAIL")) || DoneTagUpper.Contains(TEXT("RESPONDING")) || DoneTagUpper.Contains(TEXT("PANIC"));
+		const bool bWarn = DoneTagUpper.Contains(TEXT("DEGRADED")) || DoneTagUpper.Contains(TEXT("OFFLINE")) || DoneTagUpper.Contains(TEXT("ARMED"));
+		if (bFail)
+		{
+			PlayBootSound(SfxImpact, 0.45f, 0.55f);
+			PlayBootSound(SfxStatic, 0.20f, 0.90f);
+		}
+		else if (bWarn)
+		{
+			PlayBootSound(SfxBeep, 0.30f, 0.55f);
+		}
+		else
+		{
+			PlayBootSound(SfxBeep, 0.22f, 1.18f);
+		}
+		++NextChecklistLine;
 	}
 
 	// SYSTEM FAILURE: a hard impact + a burst of static as it crashes.
@@ -1125,13 +1155,19 @@ void SBHBootConsole::RequestSkip()
 
 FReply SBHBootConsole::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
 {
+	// Key-only, double-press skip: the first key ARMS the skip (the hint updates); the second key skips.
+	if (!bSkipArmed)
+	{
+		bSkipArmed = true;
+		return FReply::Handled();
+	}
 	RequestSkip();
 	return FReply::Handled();
 }
 
 FReply SBHBootConsole::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
-	RequestSkip();
+	// Mouse clicks do NOT skip the intro (skipping is key-only, by design). Consume the click so it has no effect.
 	return FReply::Handled();
 }
 

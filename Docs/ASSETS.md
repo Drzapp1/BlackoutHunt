@@ -33,7 +33,7 @@ The Windows classroom beta cooks only the documented package-safe content paths.
 
 Current cook policy is controlled by `Config/DefaultGame.ini`:
 
-- Always cook: `/Game/BlackoutHunt/Art/Textures`, `/Game/BlackoutHunt/Art/Materials`, `/Game/BlackoutHunt/Art/UI`, `/Game/BlackoutHunt/Audio`, `/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Animations`, `/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Materials`, `/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Meshes`, `/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Sounds`, `/Game/BlackoutHunt/Art/Characters/Quaternius`, `/Game/BlackoutHunt/Art/Characters/FreeAnimationLibrary`, `/Game/BlackoutHunt/Art/Weapons/KayKit`, `/Game/BlackoutHunt/Data`, `/Game/SmartBasicInterfaces`, `/Game/A_Surface_Footstep/Niagara_FX`, `/Game/ResidentHorrorV1/Audio`, `/Game/FlashLight_System/Sound`, `/Game/SecurityCameras/Sounds`, `/Game/SoundsOfHorror/Impacts/CUE`, and `/Game/SoundsOfHorror/Rumbles/CUE`.
+- Always cook: `/Game/BlackoutHunt/Art/Textures`, `/Game/BlackoutHunt/Art/Materials`, `/Game/BlackoutHunt/Art/UI`, `/Game/BlackoutHunt/Audio`, `/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Animations`, `/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Materials`, `/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Meshes`, `/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Sounds`, `/Game/BlackoutHunt/Art/Characters/Quaternius`, `/Game/BlackoutHunt/Art/Characters/FreeAnimationLibrary`, `/Game/BlackoutHunt/Art/Weapons/KayKit`, `/Game/BlackoutHunt/Data`, `/Game/BlackoutHunt/AI` (project-owned Hunter StateTree, e.g. `ST_BH_HunterAtmosphere`), `/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Textures` (Fab Free Customizable Jumpscares textures, same license as the rest of that pack), `/Game/SmartBasicInterfaces`, `/Game/A_Surface_Footstep/Niagara_FX`, `/Game/ResidentHorrorV1/Audio`, `/Game/FlashLight_System/Sound`, `/Game/SecurityCameras/Sounds`, `/Game/SoundsOfHorror/Impacts/CUE`, and `/Game/SoundsOfHorror/Rumbles/CUE`.
 - Never cook: `/Game/BlackoutHunt/Art/Characters/Hider`, `/Game/BlackoutHunt/Art/Characters/Hunter`, `/Game/BlackoutHunt/Art/Downloaded`, `/Game/BlackoutHunt/Art/SCP096`, `/Game/BlackoutHunt/Art/Jumpscares/Whisper`, `/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Input`, `/Game/BlackoutHunt/Art/Jumpscares/FreeCustomizableJumpscares/Blueprints/FirstPerson`, and the original `/Game/Free_Jumpscares` source pack root.
 - Always stage as Non-UFS: `BlackoutHunt/Art/UI` for menu/background image access outside cooked packages.
 - Disallowed staged config files: `BlackoutHunt/Config/EOS/EOSValues.local.ini` and `BlackoutHunt/Config/Steam/SteamValues.local.ini` so local online-service credentials do not ship in classroom builds.
@@ -67,8 +67,24 @@ Attribution text for current package:
 ```text
 Created using assets from ambientCG.com, licensed under the Creative Commons CC0 1.0 Universal License.
 Includes CC0 assets by Quaternius and KayKit/Kay Lousberg.
+Includes CC0 assets by Kenney (kenney.nl) -- Space Kit (train-roof stargazing props) and Nature Kit.
 Includes processed CC0 audio sources from OpenGameArt.
 ```
+
+## Kenney Space Kit (train-roof props)
+
+The train-roof stargazing area uses a few CC0 meshes imported from the Kenney **Space Kit** (the satellite dish
+reads as an observatory "telescope", plus an antenna, rocks, a meteor, and a stool).
+
+- source page: `https://kenney.nl/assets/space-kit`
+- license: **CC0 1.0 Universal** (public domain).
+- source files: `Content/BlackoutHunt/Art/Downloaded/Kenney/SpaceKit/` (never-cooked source folder).
+- imported assets: `/Game/BlackoutHunt/Art/Roof/SM_BH_Telescope|RoofAntenna|RoofRocks|RoofMeteor|RoofStool`
+  (added to **always-cook** in `Config/DefaultGame.ini`).
+- importer: `Tools/ImportRoofProps.py` (run via `UnrealEditor-Cmd ... -ExecutePythonScript=...`, same pattern as
+  the KayKit/Quaternius importers).
+- runtime: referenced by `ABHGameMode::BuildTrainRoofExtras` through `SpawnRuntimeMeshProp` with procedural-block
+  fallbacks, so the roof still works if the assets are absent.
 
 The package script copies `Docs/THIRD_PARTY_NOTICES.txt` to the classroom package root as `THIRD-PARTY-NOTICES.txt` for future Windows classroom builds.
 

@@ -185,7 +185,10 @@ try {
         "-map=/Engine/Maps/Entry+/Game/BlackoutHunt/Maps/Facility+/Game/BlackoutHunt/Maps/Substation+/Game/BlackoutHunt/Maps/Foggrounds+/Game/BlackoutHunt/Maps/Tutorial",
         "-build",
         "-noxge",
-        "-ubtargs=-WaitMutex -NoXGE -NoUBA -MaxParallelActions=$MaxParallel",
+        # -NoHotReloadFromIDE: skip UBT's "Live Coding is active" guard so a headless package cook
+        # is not blocked by a concurrent editor session on the same engine (correct for packaging,
+        # which never wants IDE hot-reload). [live-play-hardening]
+        "-ubtargs=-WaitMutex -NoXGE -NoUBA -NoHotReloadFromIDE -MaxParallelActions=$MaxParallel",
         "-stage",
         "-pak",
         "-archive",

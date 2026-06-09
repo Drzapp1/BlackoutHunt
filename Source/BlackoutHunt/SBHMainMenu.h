@@ -187,6 +187,10 @@ private:
 	// Theme STRENGTH presets (faint/normal/strong): set the active global + persist, like OnThemeClicked.
 	FReply OnThemeStrengthClicked(float Strength);
 	FSlateColor GetThemeStrengthButtonColor(float Strength) const;
+	// Per-section CONTRAST dial (very faint -> very high): live slider that sets the active global + persists.
+	void OnSectionContrastChanged(float NewContrast);
+	float GetSectionContrastValue() const;
+	FText GetSectionContrastLabel() const;
 	FReply OnAvatarTitleClicked(int32 TitleIndex);
 	FReply OnAvatarEmblemClicked(int32 EmblemIndex);
 	FReply OnMenuTabClicked(EBHMainMenuTab NewTab);
@@ -204,6 +208,7 @@ private:
 	FReply OnAdaptiveFrameRateGoalClicked(int32 FpsGoal);
 	FReply OnRenderScaleClicked(int32 Percent);
 	FReply OnTextureQualityClicked(int32 Quality);
+	FReply OnTexturePreloadClicked(int32 Mode);
 	FReply OnShadowQualityClicked(int32 Quality);
 	FReply OnEffectsQualityClicked(int32 Quality);
 	FReply OnResolutionClicked(int32 Width, int32 Height, bool bFullscreen);
@@ -427,6 +432,11 @@ private:
 	int32 RecolorSelectedSlot = INDEX_NONE;
 	// Rebuildable container for the recolour parts, so switching skin re-enumerates the new skin's slots.
 	TSharedPtr<SBox> RecolorSectionBox;
+	// Sticky character preview: the Character tab's scroll container + the box wrapping the avatar preview. Each
+	// Tick the preview is render-transformed by the scroll offset so it follows the view (stays on-screen) instead
+	// of scrolling away / sitting fixed in the middle. Built once with the tab and live for the menu's lifetime.
+	TSharedPtr<class SScrollBox> CharacterTabScrollBox;
+	TSharedPtr<class SBox> AvatarPreviewStickyBox;
 	// When the local player is the listen-server host, leaving ends the whole class session,
 	// so the first LEAVE press only arms a confirm prompt; the second press actually leaves.
 	bool bLeaveConfirmPending = false;

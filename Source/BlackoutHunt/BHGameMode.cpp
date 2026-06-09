@@ -8,6 +8,7 @@
 #include "BHAtmosphereDirector.h"
 #include "BHAmbientEmitter.h"
 #include "BHBatteryPickup.h"
+#include "BHCollectable.h"
 #include "BHBreakableGlassPane.h"
 #include "BHEscapeStationManager.h"
 #include "BHBlockActor.h"
@@ -78,6 +79,8 @@
 #include "Engine/PointLight.h"
 #include "Components/PointLightComponent.h"
 #include "BHTrainTunnelMotionActor.h"
+#include "BHTrainSeat.h"
+#include "BHTrainStopCord.h"
 #include "Components/BoxComponent.h"
 #include "Components/BrushComponent.h"
 #include "Components/DirectionalLightComponent.h"
@@ -404,17 +407,50 @@ FVector BHResolveSpawnLocation(const UWorld* World, const FVector& DesiredLocati
 
 	const int32 StartOffset = FMath::Abs(PlayerIndex) % UE_ARRAY_COUNT(Rings);
 	const FCollisionShape Capsule = FCollisionShape::MakeCapsule(42.0f, 98.0f);
+	auto IsClear = [&](const FVector& P) -> bool
+	{
+		// Tests against pawns that have ALREADY spawned, so sequential joins stack OUTWARD instead of on top of
+		// each other. (Two players who modulo to the same SurvivorSpawns index still get separated here.)
+		return !World->OverlapBlockingTestByChannel(P, FQuat::Identity, ECC_Pawn, Capsule);
+	};
+
+	// 1) The fixed close-in ring first: keeps everyone in the intended cluster when there is room.
 	for (int32 Attempt = 0; Attempt < UE_ARRAY_COUNT(Rings); ++Attempt)
 	{
 		const FVector2D Offset2D = Rings[(StartOffset + Attempt) % UE_ARRAY_COUNT(Rings)];
 		const FVector Candidate = DesiredLocation + FVector(Offset2D.X, Offset2D.Y, 0.0f);
-		if (!World->OverlapBlockingTestByChannel(Candidate, FQuat::Identity, ECC_Pawn, Capsule))
+		if (IsClear(Candidate))
 		{
 			return Candidate;
 		}
 	}
 
-	return DesiredLocation + FVector(static_cast<float>((PlayerIndex % 5) - 2) * 180.0f, static_cast<float>((PlayerIndex / 5) % 5) * 180.0f, 0.0f);
+	// 2) Ring full -> spiral outward in widening rings until a genuinely clear spot is found. This is the real
+	//    guard against "everyone spawned on the same point and the physics exploded": we never knowingly return an
+	//    occupied transform. Up to ~20 m out is ample even for a full 32-player lobby. Each ring's start angle is
+	//    offset by the player index so two players resolving at once probe different spokes first.
+	for (int32 Ring = 2; Ring <= 8; ++Ring)
+	{
+		const float Radius = 260.0f * static_cast<float>(Ring);
+		const int32 Spokes = 8 + Ring * 4;
+		const float StartAngle = (static_cast<float>(PlayerIndex) * 0.61803f + static_cast<float>(Ring) * 0.27f) * 2.0f * PI;
+		for (int32 Spoke = 0; Spoke < Spokes; ++Spoke)
+		{
+			const float Angle = StartAngle + (2.0f * PI * static_cast<float>(Spoke)) / static_cast<float>(Spokes);
+			const FVector Candidate = DesiredLocation + FVector(FMath::Cos(Angle) * Radius, FMath::Sin(Angle) * Radius, 0.0f);
+			if (IsClear(Candidate))
+			{
+				return Candidate;
+			}
+		}
+	}
+
+	// 3) Everything within 20 m is boxed in (pathological). Last resort: a per-player vertical + lateral stagger so
+	//    no two pawns can ever share the exact transform and interpenetrate -- a brief drop-in is far better than
+	//    two fused capsules, which is what hitches/crashes the physics.
+	const float LateralStagger = static_cast<float>((PlayerIndex % 6) - 3) * 110.0f;
+	const float HeightStagger = 220.0f + static_cast<float>(PlayerIndex % 12) * 95.0f;
+	return DesiredLocation + FVector(LateralStagger, -LateralStagger, HeightStagger);
 }
 
 FString CompassFromDelta(const FVector& Delta)
@@ -1721,6 +1757,13 @@ void ABHGameMode::NotifySurvivorCaptured(ABHCharacter* Survivor, ABHCharacter* C
 			&& CapturingHunterPS->PlayerRole == EBHPlayerRole::Hunter && !CapturingHunterPS->IsABot())
 		{
 			CapturingHunter->ClientGrantAchievement(FName(TEXT("flawless_hunt")), TEXT("Flawless hunt -- nobody escaped."));
+		}
+		// Revision mode: the Teacher catching everyone must NOT skip the class's revision. If hall monitors still
+		// owe contributions, hold the round open (the per-second TickRoundTimer drives the grace countdown and the
+		// eventual end + dock). Returns false (resolve now) when not in revision mode or monitors are already done.
+		if (TickAllCaughtRevisionGrace())
+		{
+			return;
 		}
 		// Evacuate-together: when the last alive survivor is caught, the class still wins if anyone already
 		// reached the exit. Hard-coding HunterWin here would discard survivors who escaped and are waiting.
@@ -3510,6 +3553,138 @@ int32 ABHGameMode::GetRevisionMinimumContributionTarget() const
 	return FMath::Clamp(RevisionContributionGateTarget, 1, 6);
 }
 
+// --- Revision-mode round-end enforcement (docs/ROADMAP_MOVEMENT_REVISION.md WS2) ----------------------------
+static TAutoConsoleVariable<float> CVarBHAllCaughtGraceSeconds(
+	TEXT("bh.AllCaughtGraceSeconds"),
+	75.0f,
+	TEXT("Revision mode: when ALL survivors are caught, hold the round open this many seconds so hall monitors can finish their revision contributions before it ends. 0 = end immediately. (Default 75)"),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarBHMonitorDockPctPerQuestion(
+	TEXT("bh.MonitorDockPctPerQuestion"),
+	0.12f,
+	TEXT("Revision mode: fraction of a monitor's question points docked per contribution they are SHORT of the round target when the round ends unfinished (scales with how much they missed, so a monitor who could not reach the nodes is not over-punished). (Default 0.12)"),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarBHMonitorDockMaxPct(
+	TEXT("bh.MonitorDockMaxPct"),
+	0.6f,
+	TEXT("Revision mode: hard cap on the unfinished-revision monitor point dock. (Default 0.6)"),
+	ECVF_Default);
+
+int32 ABHGameMode::CountMonitorsBelowRevisionTarget() const
+{
+	if (!bRevisionMode)
+	{
+		return 0;
+	}
+	const int32 Target = GetRevisionMinimumContributionTarget();
+	int32 Count = 0;
+	if (!GetWorld())
+	{
+		return 0;
+	}
+	// Iterate CONNECTED player controllers (not GameState->PlayerArray) so this stays symmetric with
+	// ApplyUnfinishedMonitorRevisionDock, which can only message/dock players that have a controller. A monitor who
+	// disconnected mid-revision is then neither counted (so they can't hold the grace window open for its full
+	// duration) nor docked. Bots have AIControllers, not player controllers, so they are excluded here too.
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		const ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get());
+		const ABHPlayerState* BHPS = PC ? PC->GetPlayerState<ABHPlayerState>() : nullptr;
+		if (BHPS && BHPS->PlayerRole == EBHPlayerRole::FakeHunter
+			&& BHPS->LifeState == EBHPlayerLifeState::Alive && !BHPS->IsABot()
+			&& BHPS->RevisionStats.ContributionCount < Target)
+		{
+			++Count;
+		}
+	}
+	return Count;
+}
+
+bool ABHGameMode::TickAllCaughtRevisionGrace()
+{
+	ABHGameState* BHGS = GetGameState<ABHGameState>();
+	if (!bRevisionMode || !BHGS)
+	{
+		if (BHGS)
+		{
+			BHGS->SetAllCaughtGraceRemaining(-1);
+		}
+		return false;
+	}
+
+	const int32 GraceSeconds = FMath::Max(0, FMath::RoundToInt(CVarBHAllCaughtGraceSeconds.GetValueOnGameThread()));
+	const int32 Unfinished = CountMonitorsBelowRevisionTarget();
+	if (Unfinished <= 0 || GraceSeconds <= 0)
+	{
+		// Monitors are done (end early -- never waste class time) or the grace is disabled: allow the end.
+		BHGS->SetAllCaughtGraceRemaining(-1);
+		return false;
+	}
+
+	int32 Remaining = BHGS->AllCaughtGraceRemaining;
+	if (Remaining < 0)
+	{
+		// First detection of all-caught + unfinished: open the window. No decrement this call, so monitors get the
+		// full window whether it was first hit on the capture event or on the 1s tick.
+		Remaining = GraceSeconds;
+		BroadcastStatus(FString::Printf(TEXT("All students caught -- hall monitors must finish revision (%d still short). %ds left, then a point dock."), Unfinished, Remaining), 5.0f);
+	}
+	else
+	{
+		// Subsequent (1s-cadence) calls tick the window down.
+		Remaining = FMath::Max(0, Remaining - 1);
+	}
+	BHGS->SetAllCaughtGraceRemaining(Remaining);
+	// Hold the round open while time remains; once it expires, allow the end (EndRound applies the dock).
+	return Remaining > 0;
+}
+
+void ABHGameMode::ApplyUnfinishedMonitorRevisionDock()
+{
+	if (!bRevisionMode || !GetWorld())
+	{
+		return;
+	}
+	const int32 Target = GetRevisionMinimumContributionTarget();
+	const float PctPerQuestion = FMath::Max(0.0f, CVarBHMonitorDockPctPerQuestion.GetValueOnGameThread());
+	const float MaxPct = FMath::Clamp(CVarBHMonitorDockMaxPct.GetValueOnGameThread(), 0.0f, 1.0f);
+	if (PctPerQuestion <= 0.0f || MaxPct <= 0.0f)
+	{
+		return;
+	}
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		ABHPlayerController* PC = Cast<ABHPlayerController>(It->Get());
+		ABHPlayerState* BHPS = PC ? PC->GetPlayerState<ABHPlayerState>() : nullptr;
+		// Mirror CountMonitorsBelowRevisionTarget exactly (incl. the alive check) so we only ever dock a monitor the
+		// gate actually counted as holding the round open -- never an eliminated/converted one.
+		if (!BHPS || BHPS->PlayerRole != EBHPlayerRole::FakeHunter || BHPS->IsABot()
+			|| BHPS->LifeState != EBHPlayerLifeState::Alive)
+		{
+			continue;
+		}
+		const int32 ShortBy = Target - BHPS->RevisionStats.ContributionCount;
+		if (ShortBy <= 0)
+		{
+			continue;
+		}
+		// Proportional to the shortfall (per missing contribution), capped -- fair to a monitor who genuinely
+		// could not reach enough nodes, harsh on one who ignored revision entirely.
+		const float DockPct = FMath::Clamp(PctPerQuestion * static_cast<float>(ShortBy), 0.0f, MaxPct);
+		if (DockPct <= 0.0f)
+		{
+			continue;
+		}
+		const int32 Lost = BHPS->ApplyCaughtQuestionPointPenalty(DockPct);
+		if (Lost > 0)
+		{
+			PC->ClientShowStatusMessage(FString::Printf(TEXT("Revision unfinished (%d/%d) -- docked %d question points."), BHPS->RevisionStats.ContributionCount, Target, Lost), 5.0f);
+		}
+	}
+}
+
 void ABHGameMode::RefreshRevisionContributionGateTarget()
 {
 	RevisionContributionGateTarget = ComputeLiveRevisionContributionTarget();
@@ -4003,7 +4178,17 @@ bool ABHGameMode::CanUseTesterShortcut(ABHPlayerController* RequestingController
 		return false;
 	}
 
-	const bool bTesterContext = bTestMode
+	// Dev/playtest bypass: in any non-Shipping build the HOST may use tester shortcuts outside a Test Round, so they
+	// work in an ordinary dev playtest (this is why F9 / Ctrl+Alt+F9 now work in dev). Host-only is already enforced
+	// above, so this never lets a joined client hijack. Compiled to false in the public Shipping build.
+#if !UE_BUILD_SHIPPING
+	const bool bDevBypass = true;
+#else
+	const bool bDevBypass = false;
+#endif
+
+	const bool bTesterContext = bDevBypass
+		|| bTestMode
 		|| (BHGS && BHGS->bTestMode)
 		|| (BHPS && BHPS->PlayerRole == EBHPlayerRole::Tester);
 	if (!bTesterContext)
@@ -6247,6 +6432,24 @@ void ABHGameMode::BuildRuntimeFacility()
 	BuildFacilityLevel();
 }
 
+void ABHGameMode::SpawnMapCollectables(const FString& MapPrefix, const TArray<FVector>& Locations)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	for (int32 Index = 0; Index < Locations.Num(); ++Index)
+	{
+		if (ABHCollectable* Relic = World->SpawnActor<ABHCollectable>(ABHCollectable::StaticClass(), Locations[Index] + FVector(0.0f, 0.0f, 45.0f), FRotator::ZeroRotator, Params))
+		{
+			Relic->Configure(FName(*FString::Printf(TEXT("%s_%d"), *MapPrefix, Index)));
+		}
+	}
+}
+
 void ABHGameMode::BuildTutorialLevel()
 {
 	// The Escape-from-menu easter egg reuses this tutorial map slot but builds its own hidden HUB instead of the
@@ -6720,6 +6923,12 @@ void ABHGameMode::BuildBackroomsFacility()
 		}
 	}
 
+	SpawnMapCollectables(TEXT("tutorial"), {
+		NodeXY(Cols / 4, Rows / 4) + FVector(0.0f, 0.0f, 110.0f), NodeXY(Cols / 2, Rows / 4) + FVector(0.0f, 0.0f, 110.0f),
+		NodeXY(Cols * 3 / 4, Rows / 2) + FVector(0.0f, 0.0f, 110.0f), NodeXY(Cols / 4, Rows * 3 / 4) + FVector(0.0f, 0.0f, 110.0f),
+		NodeXY(Cols / 2, Rows * 3 / 4) + FVector(0.0f, 0.0f, 110.0f)
+	});
+
 	UE_LOG(LogTemp, Display, TEXT("[Backrooms] Facility hall %dx%d nodes: %d pillars, %d partitions (+%d run segs), %d lockers, %d crawl tunnels, %d blue panels, %d stations, %d breakers, %d switches, %d lights, %d spawns."),
 		Cols, Rows, PillarCount, PartCount, RunSegs, LockerCount, CrawlCount, PanelCount, StationCount, BreakerCount, SwitchCount, LightCount, SurvivorSpawns.Num());
 }
@@ -7014,6 +7223,11 @@ void ABHGameMode::BuildFacilityLevel()
 	{
 		GetWorld()->SpawnActor<ABHBatteryPickup>(Location, FRotator(0.0f, 90.0f, 0.0f));
 	}
+
+	SpawnMapCollectables(TEXT("facility"), {
+		FVector(-3600.0f, -2000.0f, 70.0f), FVector(3900.0f, -1900.0f, 70.0f), FVector(-3900.0f, 1700.0f, 70.0f),
+		FVector(3650.0f, 1500.0f, 70.0f), FVector(-650.0f, -2750.0f, 70.0f)
+	});
 
 	const FVector AlarmLocations[] = {
 		FVector(-4100.0f, -1150.0f, 105.0f), FVector(-4050.0f, 1150.0f, 105.0f),
@@ -7614,6 +7828,11 @@ void ABHGameMode::BuildFoggroundsLevel()
 		GetWorld()->SpawnActor<ABHBatteryPickup>(Location, FRotator::ZeroRotator);
 	}
 
+	SpawnMapCollectables(TEXT("foggrounds"), {
+		FVector(-7200.0f, -3100.0f, 70.0f), FVector(-3500.0f, -5200.0f, 70.0f), FVector(1200.0f, -5200.0f, 70.0f),
+		FVector(5200.0f, -4800.0f, 70.0f), FVector(-6300.0f, 3200.0f, 70.0f)
+	});
+
 	const FVector FoggroundAlarms[] = {
 		FVector(7100.0f, -3100.0f, 105.0f), FVector(5200.0f, -5050.0f, 105.0f),
 		FVector(2650.0f, -3650.0f, 105.0f), FVector(-700.0f, -1200.0f, 105.0f),
@@ -8077,8 +8296,11 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 	// caps, an opaque tunnel backdrop behind the windows, and architectural trim so it reads as a real
 	// carriage. CenterX for car i = -3000 + i*1500.
 	// =============================================================================================
-	const float TubeMinX = -3750.0f;
-	const float TubeMaxX = 3750.0f;
+	// Extended symmetrically to +/-5250 (was +/-3750) to add a LOUNGE/seating car at each end (CenterX +/-4500). Most
+	// tube geometry below is parameterised by TubeMin/Max/Len so it grows automatically; the few hardcoded pieces
+	// (walkable substrate floor, outer enclosure, gangways) are widened in step and the two cars are dressed below.
+	const float TubeMinX = -5250.0f;
+	const float TubeMaxX = 5250.0f;
 	const float TubeLen = (TubeMaxX - TubeMinX) / 100.0f;   // 75 units = 7500cm
 	const float WallY = 300.0f;   // interior side-wall plane
 	const float CeilZ = 300.0f;   // interior ceiling underside
@@ -8094,15 +8316,16 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 	const FLinearColor CoveTint(0.40f, 0.66f, 0.70f, 1.0f);
 	const FLinearColor SkirtTint(0.05f, 0.055f, 0.05f, 1.0f);
 
-	// Substrate floor (kept) + a flush finished interior floor for the cars.
-	SpawnBlock(FVector(0.0f, 0.0f, CenterZForBlockTop(0.0f, 0.20f)), FVector(80.0f, 24.0f, 0.20f), FloorTint, FRotator::ZeroRotator, true, EBHBlockMaterial::DiamondPlate);
+	// Substrate floor (the COLLIDABLE walkable floor; widened to 110u so it covers the two new end cars -- the finished
+	// veneer below it is non-colliding) + a flush finished interior floor for the cars.
+	SpawnBlock(FVector(0.0f, 0.0f, CenterZForBlockTop(0.0f, 0.20f)), FVector(110.0f, 24.0f, 0.20f), FloorTint, FRotator::ZeroRotator, true, EBHBlockMaterial::DiamondPlate);
 	SpawnBlock(FVector(0.0f, 0.0f, CenterZForBlockTop(2.0f, 0.05f)), FVector(TubeLen, 6.1f, 0.05f), FLinearColor(0.085f, 0.098f, 0.104f, 1.0f), FRotator::ZeroRotator, false, EBHBlockMaterial::DiamondPlate);
 
 	// Outer enclosure (kept as the far bound; never seen once the tube is sealed). Raised above the backdrop.
-	SpawnBlock(FVector(0.0f, -1180.0f, CenterZForBlockBottom(0.0f, 3.4f)), FVector(80.0f, 0.22f, 3.4f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
-	SpawnBlock(FVector(0.0f, 1180.0f, CenterZForBlockBottom(0.0f, 3.4f)), FVector(80.0f, 0.22f, 3.4f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
-	SpawnBlock(FVector(-4000.0f, 0.0f, CenterZForBlockBottom(0.0f, 3.4f)), FVector(0.22f, 24.0f, 3.4f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
-	SpawnBlock(FVector(4000.0f, 0.0f, CenterZForBlockBottom(0.0f, 3.4f)), FVector(0.22f, 24.0f, 3.4f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(0.0f, -1180.0f, CenterZForBlockBottom(0.0f, 3.4f)), FVector(110.0f, 0.22f, 3.4f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(0.0f, 1180.0f, CenterZForBlockBottom(0.0f, 3.4f)), FVector(110.0f, 0.22f, 3.4f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(-5500.0f, 0.0f, CenterZForBlockBottom(0.0f, 3.4f)), FVector(0.22f, 24.0f, 3.4f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	SpawnBlock(FVector(5500.0f, 0.0f, CenterZForBlockBottom(0.0f, 3.4f)), FVector(0.22f, 24.0f, 3.4f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
 
 	// Continuous ceiling over the whole tube + a recessed glowing light cove down the centreline.
 	SpawnBlock(FVector(0.0f, 0.0f, CenterZForBlockBottom(CeilZ, 0.16f)), FVector(TubeLen, 6.2f, 0.16f), RoofTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
@@ -8155,15 +8378,17 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 	}
 
 	// Opaque tunnel backdrop just behind the windows so the moving strips read as a real tunnel rather
-	// than floating sticks on an open platform. Full length on +Y; on -Y it stops short of the station.
+	// than floating sticks on an open platform. Full length on BOTH walls now: every car (incl. the rear
+	// cars + both lounges) shows a moving tunnel through its windows, so the -Y backdrop no longer stops
+	// short of the station -- the station-peek on the rear -Y windows is replaced by consistent motion.
 	SpawnBlock(FVector(0.0f, BackdropY, CenterZForBlockBottom(0.0f, 3.2f)), FVector(TubeLen, 0.2f, 3.2f), TunnelWallTint, FRotator::ZeroRotator, false, EBHBlockMaterial::Concrete);
-	SpawnBlock(FVector((TubeMinX + 2000.0f) * 0.5f, -BackdropY, CenterZForBlockBottom(0.0f, 3.2f)), FVector((2000.0f - TubeMinX) / 100.0f, 0.2f, 3.2f), TunnelWallTint, FRotator::ZeroRotator, false, EBHBlockMaterial::Concrete);
+	SpawnBlock(FVector(0.0f, -BackdropY, CenterZForBlockBottom(0.0f, 3.2f)), FVector(TubeLen, 0.2f, 3.2f), TunnelWallTint, FRotator::ZeroRotator, false, EBHBlockMaterial::Concrete);
 
 	// Gangway bulkheads between the five cars: full-height transverse walls with a centred open archway
 	// so players can always move car to car (no door that could trap them during the moving phases).
 	const float ArchHalf = 95.0f;
 	const float ArchTopZ = 215.0f;
-	for (float GangwayX : {-2250.0f, -750.0f, 750.0f, 2250.0f})
+	for (float GangwayX : {-3750.0f, -2250.0f, -750.0f, 750.0f, 2250.0f, 3750.0f})
 	{
 		const float PanelSpan = WallY - ArchHalf;
 		const float PanelCtr = ArchHalf + PanelSpan * 0.5f;
@@ -8230,10 +8455,10 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 			}
 		}
 
-		// Scrolling tunnel-motion strips seen through the windows: +Y on every car; -Y only on the front
-		// cars (BOARDING/RECAP/SHOP, CarIndex<3). The two rear cars (SOCIAL, STATION) sit alongside the
-		// station, so their -Y windows look onto the station scenery rather than a moving tunnel, and the
-		// -Y backdrop ends at x2000 (clear of the station's west wall at x2018) to avoid clipping it.
+		// Scrolling tunnel-motion strips seen through the windows: now on BOTH walls of EVERY car. The two
+		// rear cars (SOCIAL, STATION) used to be -Y-bare because their windows looked onto the station, but
+		// that left "front 3 + last cabin" with no motion on one wall; the full-length -Y backdrop (above)
+		// now backs every car so the moving tunnel reads through all windows on both sides.
 		auto AddTunnelSide = [&](float SideY)
 		{
 			// The window glass is permanently sealed now, so the old opaque "shutter" that used to slide
@@ -8252,10 +8477,7 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 			}
 		};
 		AddTunnelSide(430.0f);
-		if (CarIndex < 3)
-		{
-			AddTunnelSide(-430.0f);
-		}
+		AddTunnelSide(-430.0f);
 	}
 
 	for (int32 CarIndex = 0; CarIndex < 5; ++CarIndex)
@@ -8397,14 +8619,13 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 		// low rail straight down at the moving-tunnel strips (y=+/-430) and the trench -- the "outside mechanics
 		// visible from the roof". The underside (z304) is above the window header (z212), so the strips still show
 		// through the windows from INSIDE but are capped from ABOVE. Real metro cars overhang their windows the
-		// same way. The +Y eave runs the full length (the +Y backdrop does too); the -Y eave stops at x2000 to
-		// match the -Y backdrop and stay clear of the station (whose scenery occupies the -Y side beyond x2000).
+		// same way. BOTH eaves now run the full length (both backdrops do too): the -Y backdrop was extended
+		// to cover every car, so the -Y eave must match or a roof passenger past x2000 would look over the
+		// rail straight down at the newly-added rear -Y strips/trench.
 		const float EaveCenterY = 0.5f * (303.0f + BackdropY);
 		const float EaveScaleY = (BackdropY - 303.0f + 6.0f) / 100.0f;
 		SpawnBlock(FVector(0.0f, EaveCenterY, CenterZForBlockTop(316.0f, 0.12f)), FVector(TubeLen, EaveScaleY, 0.12f), RoofTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
-		const float NegEaveCenterX = (TubeMinX + 2000.0f) * 0.5f;
-		const float NegEaveLen = (2000.0f - TubeMinX) / 100.0f;
-		SpawnBlock(FVector(NegEaveCenterX, -EaveCenterY, CenterZForBlockTop(316.0f, 0.12f)), FVector(NegEaveLen, EaveScaleY, 0.12f), RoofTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(0.0f, -EaveCenterY, CenterZForBlockTop(316.0f, 0.12f)), FVector(TubeLen, EaveScaleY, 0.12f), RoofTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
 
 		// Roof-light breaker: tucked off to the +Y side a fair walk from the hatch (secretish, but reachable and
 		// pingable with N). Sits ON the roof slab (top ~z316). Throwing it toggles that player's OWN client-local
@@ -8426,6 +8647,101 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 	SpawnBlock(FVector(2300.0f, -760.0f, 95.0f), FVector(0.38f, 0.38f, 1.9f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
 	SpawnBlock(FVector(3100.0f, -760.0f, 95.0f), FVector(0.38f, 0.38f, 1.9f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
 	SpawnBlock(FVector(3900.0f, -760.0f, 95.0f), FVector(0.38f, 0.38f, 1.9f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
+
+	// =====================================================================================================
+	// Two EXTRA lounge cars, one at each end (CenterX -4500 / +4500), so the intermission train has a bit more
+	// room and PLENTY of seating to relax in between stages. The tube was extended symmetrically above, so the
+	// floor / ceiling / walls / end caps already cover them and the new gangways at +/-3750 connect them -- here we
+	// just dress the interiors as comfortable lounges (benches with backs, a coffee table, planters, warm light).
+	// =====================================================================================================
+	const FLinearColor LoungeWarm(1.0f, 0.72f, 0.42f, 1.0f);
+	const FLinearColor LoungeWood(0.22f, 0.16f, 0.11f, 1.0f);
+	const FLinearColor LoungePlant(0.16f, 0.42f, 0.20f, 1.0f);
+	for (const float LoungeX : {-4500.0f, 4500.0f})
+	{
+		// Generous bench seating with low backs down both walls -- this is the "place to sit".
+		for (const float BenchXOffset : {-470.0f, 0.0f, 470.0f})
+		{
+			for (const float BenchY : {-255.0f, 255.0f})
+			{
+				SpawnBlock(FVector(LoungeX + BenchXOffset, BenchY, 70.0f), FVector(1.7f, 0.46f, 0.40f), SeatTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Leather);
+				SpawnBlock(FVector(LoungeX + BenchXOffset, BenchY > 0.0f ? 286.0f : -286.0f, 104.0f), FVector(1.7f, 0.06f, 0.34f), SeatTint, FRotator::ZeroRotator, false, EBHBlockMaterial::Leather);
+			}
+		}
+		// A low coffee table down the centre with two facing stools.
+		SpawnBlock(FVector(LoungeX, 0.0f, 44.0f), FVector(1.4f, 0.9f, 0.06f), LoungeWood, FRotator::ZeroRotator, true, EBHBlockMaterial::Wood);
+		SpawnBlock(FVector(LoungeX, 0.0f, 22.0f), FVector(0.5f, 0.5f, 0.42f), LoungeWood, FRotator::ZeroRotator, true, EBHBlockMaterial::Wood);
+		for (const float StoolX : {-150.0f, 150.0f})
+		{
+			SpawnBlock(FVector(LoungeX + StoolX, 0.0f, 36.0f), FVector(0.4f, 0.4f, 0.36f), SeatTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Leather);
+		}
+		// A leafy planter in each far corner for a relaxed lounge feel.
+		for (const float PlantX : {-560.0f, 560.0f})
+		{
+			SpawnBlock(FVector(LoungeX + PlantX, -250.0f, 30.0f), FVector(0.4f, 0.4f, 0.60f), LoungeWood, FRotator::ZeroRotator, true, EBHBlockMaterial::Wood);
+			SpawnBlock(FVector(LoungeX + PlantX, -250.0f, 92.0f), FVector(0.7f, 0.7f, 0.55f), LoungePlant, FRotator::ZeroRotator, false, EBHBlockMaterial::Tinted);
+		}
+		// Hand poles + overhead grab rails, matching the other cars.
+		for (int32 PoleIndex = 0; PoleIndex < 2; ++PoleIndex)
+		{
+			const float PoleX = LoungeX - 420.0f + PoleIndex * 840.0f;
+			SpawnBlock(FVector(PoleX, -72.0f, 150.0f), FVector(0.07f, 0.07f, 2.7f), PoleTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+			SpawnBlock(FVector(PoleX, 72.0f, 150.0f), FVector(0.07f, 0.07f, 2.7f), PoleTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		}
+		SpawnBlock(FVector(LoungeX, -72.0f, 248.0f), FVector(8.2f, 0.05f, 0.05f), PoleTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(LoungeX, 72.0f, 248.0f), FVector(8.2f, 0.05f, 0.05f), PoleTint, FRotator::ZeroRotator, false, EBHBlockMaterial::PaintedMetal);
+		// Warm lounge accent light (the centreline service-light loop already gives the baseline).
+		if (APointLight* L = GetWorld()->SpawnActor<APointLight>(FVector(LoungeX, 0.0f, 250.0f), FRotator::ZeroRotator))
+		{
+			L->SetMobility(EComponentMobility::Movable);
+			if (UPointLightComponent* PLC = Cast<UPointLightComponent>(L->GetLightComponent()))
+			{
+				PLC->SetLightColor(LoungeWarm);
+				PLC->SetIntensity(180.0f);
+				PLC->SetAttenuationRadius(640.0f);
+				PLC->SetCastShadows(false);
+			}
+		}
+		// A friendly LOUNGE board (left static -- NOT registered with the recap manager, so it never disturbs the
+		// recap display-index mapping the two car loops above rely on).
+		if (ABHTrainDisplayActor* Display = GetWorld()->SpawnActor<ABHTrainDisplayActor>(FVector(LoungeX - 250.0f, -290.0f, 178.0f), FRotator(0.0f, 0.0f, 0.0f)))
+		{
+			Display->SetDisplayProfile(EBHTrainDisplayProfile::TrainWallRecap);
+			Display->ConfigureDisplay(TEXT("LOUNGE"), TEXT("Relax and stretch out before the next stop."), FLinearColor(0.95f, 0.72f, 0.42f, 1.0f));
+		}
+		// Moving-tunnel strips on BOTH walls (both are full-length backdropped now) so the lounge windows
+		// read as the train rolling on either side, matching the rest of the cars.
+		for (const float LoungeSideY : {430.0f, -430.0f})
+		{
+			if (ABHTrainTunnelMotionActor* Tunnel = GetWorld()->SpawnActor<ABHTrainTunnelMotionActor>(FVector(LoungeX, LoungeSideY, 165.0f), FRotator::ZeroRotator))
+			{
+				Tunnel->ConfigureMotion(1500.0f, 740.0f);
+				if (TrainIntermissionManager) { TrainIntermissionManager->RegisterTunnelMotion(Tunnel); }
+			}
+		}
+
+		// Make the lounge BENCHES + STOOLS sittable (invisible interaction volumes; the leather seating is the
+		// visual). Press E to sit, Jump to stand. Benches face the aisle; stools face the centre coffee table.
+		for (const float SeatBenchX : {-470.0f, 0.0f, 470.0f})
+		{
+			for (const float SeatWallY : {-255.0f, 255.0f})
+			{
+				if (ABHTrainSeat* Seat = GetWorld()->SpawnActor<ABHTrainSeat>(FVector(LoungeX + SeatBenchX, SeatWallY, 34.0f), FRotator::ZeroRotator))
+				{
+					Seat->ConfigureSeat(FVector(1.75f, 0.66f, 0.92f), (SeatWallY > 0.0f) ? -90.0f : 90.0f);
+				}
+			}
+		}
+		for (const float SeatStoolX : {-150.0f, 150.0f})
+		{
+			if (ABHTrainSeat* Seat = GetWorld()->SpawnActor<ABHTrainSeat>(FVector(LoungeX + SeatStoolX, 0.0f, 34.0f), FRotator::ZeroRotator))
+			{
+				Seat->ConfigureSeat(FVector(0.55f, 0.55f, 0.85f), (SeatStoolX < 0.0f) ? 0.0f : 180.0f);
+			}
+		}
+	}
+	// (The old rear-lounge -Y backdrop cap is gone -- the -Y backdrop is now full length, so it already
+	// covers the rear lounge; a separate cap would only z-fight with it.)
 
 	// Teal ceiling-cove accents, kept but DIMMED to a subtle wash: the comfortable baseline now comes from the
 	// warm service-light modules below, so these just add a bit of transit-car colour without flickering harshly.
@@ -8604,6 +8920,25 @@ void ABHGameMode::BuildTrainLobbyLevel()
 				Tunnel->ConfigureMotion(1500.0f, 520.0f);
 			}
 		}
+
+		// Make the WALL BENCHES sittable: an invisible interaction volume on each bench segment, sized just over the
+		// bench so the look-trace catches it before the bench's static block. Press E to sit (teleport onto the
+		// bench, turn to the aisle) and Jump to stand; the bench geometry is the visual. Stays axis-aligned (facing
+		// is applied to the sitter's view, not the box) so the box matches the long bench.
+		for (const float SeatBenchX : {-360.0f, 360.0f})
+		{
+			for (const float SeatWallY : {-262.0f, 262.0f})
+			{
+				if (ABHTrainSeat* Seat = GetWorld()->SpawnActor<ABHTrainSeat>(FVector(CenterX + SeatBenchX, SeatWallY, 34.0f), FRotator::ZeroRotator))
+				{
+					Seat->ConfigureSeat(FVector(1.55f, 0.62f, 0.92f), (SeatWallY > 0.0f) ? -90.0f : 90.0f);
+				}
+			}
+		}
+
+		// A subway stop-request pull-cord at the car end (a social flavour toy): tap E to light the STOP REQUESTED
+		// sign for the whole carriage to see (replicated); tap again to cancel. One per car on the +Y wall.
+		GetWorld()->SpawnActor<ABHTrainStopCord>(FVector(CenterX + 620.0f, 292.0f, 70.0f), FRotator::ZeroRotator);
 
 		// Spawn points along the aisle. The two GAME cars (CarIndex 2 & 4) carry a centred feature table, so skip
 		// their centre spawn to avoid materialising a player on top of the table; the side spawns stay clear.
@@ -8812,6 +9147,12 @@ void ABHGameMode::BuildTrainLobbyLevel()
 		// Central tree.
 		SpawnBlock(FVector(TX, 0.0f, 70.0f), FVector(0.28f, 0.28f, 1.4f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Wood);
 		SpawnBlock(FVector(TX, 0.0f, 170.0f), FVector(1.8f, 1.8f, 1.6f), PlantGreen, FRotator::ZeroRotator, false, EBHBlockMaterial::Tiles);
+		// Register the trunk base so the owning client can detect a player who jumps up into the canopy and gets
+		// wedged ("Stuck in a Tree" egg + the O-to-reset drop). Replicated via the game state.
+		if (ABHGameState* BHGS = GetGameState<ABHGameState>())
+		{
+			BHGS->LobbyTreeLocations.Add(FVector(TX, 0.0f, 0.0f));
+		}
 		for (float BX : {TX - 360.0f, TX + 360.0f})
 		{
 			SpawnBlock(FVector(BX, 0.0f, 40.0f), FVector(1.2f, 0.4f, 0.10f), FLinearColor::White, FRotator::ZeroRotator, true, EBHBlockMaterial::Wood);   // bench
@@ -9481,6 +9822,11 @@ void ABHGameMode::BuildSubstationLevel()
 	{
 		GetWorld()->SpawnActor<ABHBatteryPickup>(Location, FRotator(0.0f, 90.0f, 0.0f));
 	}
+
+	SpawnMapCollectables(TEXT("substation"), {
+		FVector(-5650.0f, -700.0f, 70.0f), FVector(-5650.0f, 700.0f, 70.0f), FVector(-3500.0f, 0.0f, 70.0f),
+		FVector(2850.0f, 0.0f, 70.0f), FVector(-1900.0f, -1900.0f, 70.0f)
+	});
 
 	const FVector Alarms[] = {
 		FVector(-5650.0f, -2400.0f, 105.0f), FVector(-5650.0f, 2400.0f, 105.0f),
@@ -14376,10 +14722,18 @@ void ABHGameMode::TickRoundTimer()
 
 		if (CountAliveSurvivors() <= 0)
 		{
+			// Revision mode: hold the round open while hall monitors finish their contributions -- the Teacher
+			// catching everyone must not skip the class's revision. Ticks the grace countdown once per second and
+			// returns false once monitors finish, the window expires, or we're not in revision mode; then resolve
+			// normally below (EndRound applies the proportional dock to any monitor still short).
+			if (TickAllCaughtRevisionGrace())
+			{
+				// Holding for monitor revision -- do not resolve this tick.
+			}
 			// Evacuate-together: everyone still inside has either escaped or been caught. Survivors win only
 			// if at least one student made it out to the exit; if every survivor was captured, the hunters
 			// win. (The first survivor to escape no longer ends the round for the whole class.)
-			if (CountEscapedSurvivors() > 0)
+			else if (CountEscapedSurvivors() > 0)
 			{
 				EndRound(EBHRoundPhase::SurvivorsWin);
 			}
@@ -14441,6 +14795,12 @@ void ABHGameMode::EndRound(EBHRoundPhase ResultPhase)
 		BroadcastStatus(bTestMode ? TEXT("Test Round blocked the round end.") : TEXT("Practice Lab blocked the round end."), 2.5f);
 		return;
 	}
+
+	// Revision mode: dock any hall monitor who did not finish their contributions by round-end. Centralized here so
+	// EVERY end path (all-caught grace expiry, hunt timer, no-hunter resolve, etc.) docks exactly once -- EndRound is
+	// idempotent (the guard above bails on a second call). Also clear the all-caught grace countdown.
+	ApplyUnfinishedMonitorRevisionDock();
+	BHGS->SetAllCaughtGraceRemaining(-1);
 
 	BHGS->SetRoundPhase(ResultPhase);
 	BHGS->SetRemainingTime(0);

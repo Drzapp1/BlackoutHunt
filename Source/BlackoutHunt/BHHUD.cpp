@@ -1033,7 +1033,14 @@ void ABHHUD::DrawHUD()
 	}
 	else if (BHGS)
 	{
-		const FString TimerText = BHGS->bTestMode ? FString(TEXT("TEST LOOP")) : (BHGS->bPracticeMode ? FString(TEXT("PRACTICE")) : FString::Printf(TEXT("T-%s"), *FormatClock(BHGS->RemainingTime)));
+		// When all survivors are caught but hall monitors are still finishing revision, the round is held open on a
+		// grace window (see ROADMAP_MOVEMENT_REVISION.md WS2). Show that countdown to EVERYONE so the whole room sees
+		// how long the monitors have left before the point dock; otherwise show the normal round timer.
+		const bool bRevisionGrace = BHGS->AllCaughtGraceRemaining >= 0;
+		const FString TimerText = BHGS->bTestMode ? FString(TEXT("TEST LOOP"))
+			: (BHGS->bPracticeMode ? FString(TEXT("PRACTICE"))
+			: (bRevisionGrace ? FString::Printf(TEXT("REVISION T-%s"), *FormatClock(BHGS->AllCaughtGraceRemaining))
+			: FString::Printf(TEXT("T-%s"), *FormatClock(BHGS->RemainingTime))));
 		const FString ExitText = BHGS->bExitUnlocked ? FString(TEXT("EXIT OPEN")) : FString(TEXT("EXIT LOCKED"));
 		const FString ActionLine = BuildHudActionLine(GetWorld(), BHGS, BHPS, Character).ToUpper();
 		const FString DetailLine = BuildHudDetailLine(BHGS, BHPS).ToUpper();
@@ -1203,6 +1210,27 @@ void ABHHUD::DrawHUD()
 							{
 								Account->UnlockAchievement(FName(TEXT("dont_panic")));
 							}
+						}
+					}
+				}
+
+				// Secret VIP egg: the real teacher signs in (-> Roll Call + the Faculty Lounge title / Gold Star
+				// emblem + a one-time welcome whisper). Kept separate from the physicist greeting so it gets its own
+				// line and award. Same one-time + bh.EasterEggs gating as the block above.
+				if (LowerName == TEXT("alex") || LowerName == TEXT("mccaron")
+					|| LowerName == TEXT("mr. mccaron") || LowerName == TEXT("mr.mccaron")
+					|| LowerName == TEXT("mr mccaron") || LowerName == TEXT("mister mccaron")
+					|| LowerName == TEXT("alex mccaron"))
+				{
+					if (ABHPlayerController* GreetPC = Cast<ABHPlayerController>(PlayerOwner))
+					{
+						GreetPC->ShowLocalStatusMessage(TEXT("The whole class goes quiet. Welcome, Mr. Mccaron."), 5.0f);
+					}
+					if (UWorld* World = GetWorld())
+					{
+						if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+						{
+							Account->UnlockAchievement(FName(TEXT("roll_call")));
 						}
 					}
 				}
@@ -1461,6 +1489,8 @@ void ABHHUD::DrawHUD()
 	DrawDiagramPreview();
 	// Tutorial guidance gets its own top banner so the shared status toast (noise/round alerts) can't cut it off.
 	DrawTutorialPrompt(BHPC);
+	// Emote wheel sits above the live HUD while the local player holds X to pick an emote.
+	DrawEmoteWheel(Character);
 	// Drawn last so the transition snapshot sits on top of the whole HUD.
 	DrawTutorialCard(BHPC);
 }
@@ -2855,9 +2885,94 @@ namespace
 		case 9:  return FLinearColor(1.00f, 0.42f, 0.10f); // Phoenix (fiery orange)
 		case 10: return FLinearColor(0.92f, 0.78f, 0.32f); // Hall Pass (brass)
 		case 11: return FLinearColor(0.40f, 0.84f, 0.92f); // Atom (cyan)
+		case 12: return FLinearColor(1.00f, 0.84f, 0.20f); // Gold Star (gold)
 		default: return FLinearColor(0.72f, 0.74f, 0.70f);
 		}
 	}
+}
+
+void ABHHUD::DrawEmoteWheel(const ABHCharacter* Character)
+{
+	if (!Canvas || !GEngine || !Character || !Character->IsEmoteWheelActive())
+	{
+		return;
+	}
+
+	const int32 Count = ABHCharacter::GetEmoteCount();
+	if (Count <= 0)
+	{
+		return;
+	}
+
+	const float CenterX = Canvas->ClipX * 0.5f;
+	const float CenterY = Canvas->ClipY * 0.5f;
+	const float UiScale = FMath::Max(HudWidgetScale, HudTextScale);
+	const float Radius = FMath::Clamp(Canvas->ClipY * 0.20f, 150.0f, 320.0f) * UiScale;
+
+	// Dim the world a touch so the ring reads, then draw the ring + an inner dead-zone circle.
+	DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, 0.34f), 0.0f, 0.0f, Canvas->ClipX, Canvas->ClipY);
+	DrawCircle(CenterX, CenterY, Radius, FLinearColor(0.86f, 0.82f, 0.70f, 0.55f), 2.0f, 64);
+	DrawCircle(CenterX, CenterY, Radius * 0.30f, FLinearColor(0.70f, 0.66f, 0.56f, 0.40f), 1.5f, 40);
+
+	float SelX = 0.0f;
+	float SelY = 0.0f;
+	Character->GetEmoteWheelSelection(SelX, SelY);
+	const int32 Highlighted = Character->GetEmoteWheelHighlightedId();
+
+	// Pointer "stick" from the centre toward the live aim (screen Y is +down, selection Y is +up).
+	const float SelMag = FMath::Min(1.0f, FMath::Sqrt(SelX * SelX + SelY * SelY));
+	if (SelMag > 0.02f)
+	{
+		const float Inv = 1.0f / FMath::Max(SelMag, KINDA_SMALL_NUMBER);
+		const float DirX = SelX * Inv;
+		const float DirY = SelY * Inv;
+		const float PointerLen = Radius * (0.30f + 0.62f * SelMag);
+		DrawLine(CenterX, CenterY, CenterX + DirX * PointerLen, CenterY - DirY * PointerLen, FLinearColor(1.0f, 0.86f, 0.42f, 0.9f), 2.5f);
+	}
+
+	// One label per wedge: wedge i at the top (12 o'clock) advancing clockwise -- the identical mapping used by
+	// ABHCharacter::GetEmoteWheelHighlightedId, so the highlight always matches where the player is aiming.
+	const float LabelRadius = Radius * 0.74f;
+	for (int32 Index = 0; Index < Count; ++Index)
+	{
+		const float ClockDeg = (360.0f / static_cast<float>(Count)) * static_cast<float>(Index);
+		const float Rad = FMath::DegreesToRadians(90.0f - ClockDeg); // back to math angle (+Y up, 0deg = right)
+		const float Lx = CenterX + FMath::Cos(Rad) * LabelRadius;
+		const float Ly = CenterY - FMath::Sin(Rad) * LabelRadius;
+
+		const FString Label = ABHCharacter::GetEmoteLabel(Index);
+		const bool bSel = (Index == Highlighted);
+		const bool bShake = ABHCharacter::IsShakeEmote(Index);
+		const float LabelScale = (bSel ? 1.15f : 0.92f) * HudTextScale;
+		float Lw = 0.0f;
+		float Lh = 0.0f;
+		Canvas->TextSize(GEngine->GetLargeFont(), Label, Lw, Lh, LabelScale, LabelScale);
+
+		FLinearColor LabelColor = bSel ? FLinearColor(1.0f, 0.96f, 0.66f, 1.0f) : FLinearColor(0.72f, 0.70f, 0.62f, 0.78f);
+		if (bShake)
+		{
+			// Tease the inside joke even at rest: the "mister ke~" wedge always glows red, brighter when aimed.
+			LabelColor = bSel ? FLinearColor(1.0f, 0.34f, 0.28f, 1.0f) : FLinearColor(0.78f, 0.30f, 0.26f, 0.82f);
+		}
+		DrawHudText(Label, Lx - Lw * 0.5f, Ly - Lh * 0.5f, LabelColor, GEngine->GetLargeFont(), LabelScale);
+	}
+
+	// Centre readout: name the live pick, or show CANCEL while the aim sits in the dead zone.
+	const FString CenterText = (Highlighted >= 0) ? ABHCharacter::GetEmoteLabel(Highlighted) : FString(TEXT("CANCEL"));
+	const FLinearColor CenterColor = (Highlighted >= 0) ? FLinearColor(0.96f, 0.92f, 0.74f, 0.96f) : FLinearColor(0.80f, 0.42f, 0.36f, 0.92f);
+	float Cw = 0.0f;
+	float Ch = 0.0f;
+	const float CenterScale = 0.82f * HudTextScale;
+	Canvas->TextSize(GEngine->GetSmallFont(), CenterText, Cw, Ch, CenterScale, CenterScale);
+	DrawHudText(CenterText, CenterX - Cw * 0.5f, CenterY - Ch * 0.5f, CenterColor, GEngine->GetSmallFont(), CenterScale);
+
+	// Hint under the ring.
+	const FString Hint = TEXT("AIM TO PICK  -  RELEASE TO EMOTE");
+	float Hw = 0.0f;
+	float Hh = 0.0f;
+	const float HintScale = 0.62f * HudTextScale;
+	Canvas->TextSize(GEngine->GetSmallFont(), Hint, Hw, Hh, HintScale, HintScale);
+	DrawHudText(Hint, CenterX - Hw * 0.5f, CenterY + Radius + 10.0f * UiScale, FLinearColor(0.70f, 0.68f, 0.60f, 0.74f), GEngine->GetSmallFont(), HintScale);
 }
 
 void ABHHUD::DrawNearbyNameTags(const ABHCharacter* Character)
@@ -2914,15 +3029,32 @@ void ABHHUD::DrawNearbyNameTags(const ABHCharacter* Character)
 			continue;
 		}
 
-		// Social emote bubble, drawn just above the nameplate when the player recently emoted (press X).
+		// Social emote bubble, drawn just above the nameplate when the player recently emoted (hold X for the wheel).
 		FString EmoteLabel;
-		if (OtherCharacter->GetActiveEmote(EmoteLabel))
+		int32 EmoteId = -1;
+		float EmoteAge = 0.0f;
+		if (OtherCharacter->GetActiveEmote(EmoteLabel, EmoteId, EmoteAge))
 		{
-			const float EmoteScale = 1.1f * HudTextScale;
+			float EmoteScale = 1.1f * HudTextScale;
 			float EmoteW = 0.0f;
 			float EmoteH = 0.0f;
 			Canvas->TextSize(GEngine->GetLargeFont(), EmoteLabel, EmoteW, EmoteH, EmoteScale, EmoteScale);
-			DrawHudText(EmoteLabel, ScreenPosition.X - EmoteW * 0.5f, ScreenPosition.Y - 36.0f * HudTextScale, FLinearColor(1.0f, 0.95f, 0.5f, 1.0f), GEngine->GetLargeFont(), EmoteScale);
+			float EmoteX = ScreenPosition.X - EmoteW * 0.5f;
+			float EmoteY = ScreenPosition.Y - 36.0f * HudTextScale;
+			FLinearColor EmoteColor(1.0f, 0.95f, 0.5f, 1.0f);
+			if (ABHCharacter::IsShakeEmote(EmoteId))
+			{
+				// The "mister ke~" inside joke: thrash the bubble aggressively up and down (with a little
+				// horizontal jitter + a scale pulse) for the whole emote, in alarm red. Driven purely off the
+				// replicated EmoteAge, so every client sees the same shake without any extra net traffic.
+				const float ShakeOmega = 12.0f * 2.0f * PI; // ~12 Hz -- fast violent vibration kept well below Nyquist so it won't strobe/alias at 30-60fps (the horizontal harmonic below stays ~16 Hz)
+				const float Amp = 16.0f * HudTextScale;
+				EmoteY += FMath::Sin(EmoteAge * ShakeOmega) * Amp;
+				EmoteX += FMath::Sin(EmoteAge * ShakeOmega * 1.35f) * (Amp * 0.4f);
+				EmoteScale *= 1.0f + 0.14f * FMath::Sin(EmoteAge * ShakeOmega * 0.5f);
+				EmoteColor = FLinearColor(1.0f, 0.22f, 0.18f, 1.0f);
+			}
+			DrawHudText(EmoteLabel, EmoteX, EmoteY, EmoteColor, GEngine->GetLargeFont(), EmoteScale);
 		}
 
 		FString Label = OtherPS->GetPlayerName().IsEmpty() ? FString(TEXT("PLAYER")) : OtherPS->GetPlayerName().ToUpper();

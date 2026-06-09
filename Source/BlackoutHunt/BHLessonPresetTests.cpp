@@ -265,4 +265,111 @@ bool FBHLessonPresetValidationTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHLessonPresetHostCustomizationTest,
+	"BlackoutHunt.Classroom.LessonPresetHostCustomization",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHLessonPresetHostCustomizationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	// --- Difficulty enum <-> string round-trip ---
+	TestEqual(TEXT("Question difficulty string round-trips."),
+		FBHLessonPresetStore::ParseQuestionDifficulty(FBHLessonPresetStore::QuestionDifficultyToString(EBHQuestionDifficulty::Hard), EBHQuestionDifficulty::Easy),
+		EBHQuestionDifficulty::Hard);
+	TestEqual(TEXT("Unknown difficulty string uses the supplied default."),
+		FBHLessonPresetStore::ParseQuestionDifficulty(TEXT("Nonsense"), EBHQuestionDifficulty::Medium),
+		EBHQuestionDifficulty::Medium);
+
+	// --- Map route parse / normalize / serialize ---
+	const TArray<FString> Route = FBHLessonPresetStore::ParseMapRoute(TEXT("Foggrounds, Bogus , substation"));
+	TestEqual(TEXT("Map route parses three entries."), Route.Num(), 3);
+	if (Route.Num() == 3)
+	{
+		TestEqual(TEXT("Route entry normalizes by alias."), Route[0], FString(TEXT("Foggrounds")));
+		TestEqual(TEXT("Unknown route entry falls back to Facility."), Route[1], FString(TEXT("Facility")));
+		TestEqual(TEXT("Route entry normalizes case-insensitively."), Route[2], FString(TEXT("Substation")));
+	}
+	TestEqual(TEXT("Map route serializes back to a comma list."),
+		FBHLessonPresetStore::MapRouteToString(Route), FString(TEXT("Foggrounds,Facility,Substation")));
+
+	// --- ValidatePreset clamps the new host-customization fields ---
+	FBHLessonPreset Stale;
+	Stale.DisplayName = TEXT("Host Custom");
+	Stale.MinDifficulty = EBHQuestionDifficulty::Hard;   // inverted band on purpose
+	Stale.MaxDifficulty = EBHQuestionDifficulty::Easy;
+	Stale.StartingDifficulty = EBHQuestionDifficulty::Easy;
+	Stale.QuestionSetId = TEXT("set/../escape\\bad name");
+	Stale.MapRoute = { TEXT("Facility"), TEXT(""), TEXT("Nope"), TEXT("Foggrounds") };
+	Stale.LayoutSeed = -5;
+	Stale.BreakerCount = 99;
+	Stale.LayoutDensity = 5;
+	const FBHLessonPreset Clean = FBHLessonPresetStore::ValidatePreset(Stale);
+	TestTrue(TEXT("Inverted difficulty band is corrected to Min<=Max."),
+		static_cast<uint8>(Clean.MinDifficulty) <= static_cast<uint8>(Clean.MaxDifficulty));
+	TestEqual(TEXT("Min difficulty becomes Easy after swap."), Clean.MinDifficulty, EBHQuestionDifficulty::Easy);
+	TestEqual(TEXT("Max difficulty becomes Hard after swap."), Clean.MaxDifficulty, EBHQuestionDifficulty::Hard);
+	TestFalse(TEXT("Question set id drops path separators."), Clean.QuestionSetId.Contains(TEXT("/")) || Clean.QuestionSetId.Contains(TEXT("\\")));
+	TestEqual(TEXT("Map route drops blanks and normalizes unknowns to 3 entries."), Clean.MapRoute.Num(), 3);
+	TestEqual(TEXT("Negative layout seed clamps to 0 (default)."), Clean.LayoutSeed, 0);
+	TestEqual(TEXT("Excessive breaker count clamps to 12."), Clean.BreakerCount, 12);
+	TestEqual(TEXT("Too-low layout density clamps to the 50% floor."), Clean.LayoutDensity, 50);
+
+	// Starting difficulty pins into a raised band floor.
+	FBHLessonPreset StartClamp;
+	StartClamp.DisplayName = TEXT("Start Clamp");
+	StartClamp.MinDifficulty = EBHQuestionDifficulty::Medium;
+	StartClamp.MaxDifficulty = EBHQuestionDifficulty::Hard;
+	StartClamp.StartingDifficulty = EBHQuestionDifficulty::Easy;
+	const FBHLessonPreset CleanStart = FBHLessonPresetStore::ValidatePreset(StartClamp);
+	TestEqual(TEXT("Starting difficulty pins up to the band floor."), CleanStart.StartingDifficulty, EBHQuestionDifficulty::Medium);
+
+	// --- Named layout presets expand into the procedural knobs (host picks a vibe, not a raw seed) ---
+	TestTrue(TEXT("Layout preset list includes Standard."), FBHLessonPresetStore::GetLayoutPresetNames().Contains(TEXT("Standard")));
+	FBHLessonPreset LayoutByName;
+	LayoutByName.DisplayName = TEXT("Layout By Name");
+	LayoutByName.LayoutPresetName = TEXT("Dense Maze");
+	const FBHLessonPreset CleanLayout = FBHLessonPresetStore::ValidatePreset(LayoutByName);
+	TestEqual(TEXT("Named layout preset expands the cover density."), CleanLayout.LayoutDensity, 150);
+	TestTrue(TEXT("Named layout preset forces the procedural generator."), CleanLayout.bForceProcedural);
+	FBHLessonPreset UnknownLayout;
+	UnknownLayout.DisplayName = TEXT("Unknown Layout");
+	UnknownLayout.LayoutPresetName = TEXT("Nonexistent Vibe");
+	const FBHLessonPreset CleanUnknownLayout = FBHLessonPresetStore::ValidatePreset(UnknownLayout);
+	TestTrue(TEXT("Unknown layout preset name is dropped."), CleanUnknownLayout.LayoutPresetName.IsEmpty());
+
+	// --- BuildRevisionLaunchOptions carries the new options when set ---
+	FBHLessonPreset Launch;
+	Launch.DisplayName = TEXT("Launch Custom");
+	Launch.MinDifficulty = EBHQuestionDifficulty::Medium;
+	Launch.MaxDifficulty = EBHQuestionDifficulty::Hard;
+	Launch.StartingDifficulty = EBHQuestionDifficulty::Medium;
+	Launch.QuestionSetId = TEXT("mock_test_1");
+	Launch.MapRoute = { TEXT("Foggrounds"), TEXT("Facility") };
+	Launch.LayoutSeed = 4242;
+	Launch.BreakerCount = 8;
+	Launch.LayoutDensity = 130;
+	Launch.bForceProcedural = true;
+	const FString Options = FBHLessonPresetStore::BuildRevisionLaunchOptions(Launch, false);
+	TestTrue(TEXT("Launch options carry the starting difficulty."), Options.Contains(TEXT("BHStartDifficulty=Medium")));
+	TestTrue(TEXT("Launch options carry the min difficulty."), Options.Contains(TEXT("BHMinDifficulty=Medium")));
+	TestTrue(TEXT("Launch options carry the max difficulty."), Options.Contains(TEXT("BHMaxDifficulty=Hard")));
+	TestTrue(TEXT("Launch options carry the question set id."), Options.Contains(TEXT("BHQuestionSet=mock_test_1")));
+	TestTrue(TEXT("Launch options carry the map route."), Options.Contains(TEXT("BHMapRoute=Foggrounds,Facility")));
+	TestTrue(TEXT("Launch options carry the layout seed."), Options.Contains(TEXT("BHLayoutSeed=4242")));
+	TestTrue(TEXT("Launch options carry the breaker count."), Options.Contains(TEXT("BHBreakerCount=8")));
+	TestTrue(TEXT("Launch options carry the layout density."), Options.Contains(TEXT("BHLayoutDensity=130")));
+	TestTrue(TEXT("Launch options carry the force-procedural flag."), Options.Contains(TEXT("BHForceProcedural=1")));
+
+	// An untouched preset stays byte-compatible: difficulty band still travels, but no optional knobs.
+	FBHLessonPreset Default;
+	Default.DisplayName = TEXT("Default");
+	const FString DefaultOptions = FBHLessonPresetStore::BuildRevisionLaunchOptions(Default, false);
+	TestFalse(TEXT("Default preset omits a question set option."), DefaultOptions.Contains(TEXT("BHQuestionSet=")));
+	TestFalse(TEXT("Default preset omits a map route option."), DefaultOptions.Contains(TEXT("BHMapRoute=")));
+	TestFalse(TEXT("Default preset omits the force-procedural flag."), DefaultOptions.Contains(TEXT("BHForceProcedural=")));
+
+	return true;
+}
+
 #endif

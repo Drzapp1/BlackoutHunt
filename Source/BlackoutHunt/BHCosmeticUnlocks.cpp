@@ -119,7 +119,10 @@ const FBHCosmeticUnlockDefinition* BHCosmeticDefinitions(EBHCosmeticCategory Cat
 		{ TEXT("Night Owl"), 0, TEXT("night_owl") },
 		{ TEXT("Hitchhiker"), 0, TEXT("dont_panic") },
 		{ TEXT("Honor Graduate"), 0, TEXT("honor_graduate") },
-		{ TEXT("Perfectionist"), 0, TEXT("perfectionist") }
+		{ TEXT("Perfectionist"), 0, TEXT("perfectionist") },
+		{ TEXT("Treasure Hunter"), 0, TEXT("relic_collector") },
+		{ TEXT("Faculty Lounge"), 0, TEXT("roll_call") },   // VIP egg: the real teacher
+		{ TEXT("Treehugger"), 0, TEXT("stuck_in_tree") }
 	};
 	static const FBHCosmeticUnlockDefinition EmblemDefinitions[] = {
 		{ TEXT("No Emblem"), 0 },
@@ -134,7 +137,8 @@ const FBHCosmeticUnlockDefinition* BHCosmeticDefinitions(EBHCosmeticCategory Cat
 		{ TEXT("Static"), 0, TEXT("did_you_see_that") },      // 8
 		{ TEXT("Phoenix"), 0, TEXT("comeback_kid") },         // 9
 		{ TEXT("Hall Pass"), 0, TEXT("truant_officer") },     // 10
-		{ TEXT("Atom"), 0, TEXT("subject_expert") }           // 11
+		{ TEXT("Atom"), 0, TEXT("subject_expert") },          // 11
+		{ TEXT("Gold Star"), 0, TEXT("roll_call") }           // 12 (VIP egg: the real teacher)
 	};
 
 	switch (Category)

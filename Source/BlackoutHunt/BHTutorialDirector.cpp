@@ -2014,7 +2014,7 @@ void ABHTutorialDirector::EnterTeacherStep(ETeacherStep NewStep)
 	{
 	case ETeacherStep::Intro:
 		SetAllInputLocked(true);
-		ShowTutorialCard(TEXT("TEACHER TRAINING"), TEXT("Now you're the Hunter. Swing your axe, scan for heartbeats, and capture the student."), 4.5f);
+		ShowTutorialCard(TEXT("TEACHER TRAINING"), TEXT("Now you're the Teacher. Scan for heartbeats, swing your axe, capture the student, and run the room."), 4.5f);
 		Broadcast(TEXT("Now you're the TEACHER - hunt the student down before they escape. Watch a moment; your controls unlock shortly."), 5.0f);
 		break;
 	case ETeacherStep::Sprint:
@@ -2059,7 +2059,7 @@ void ABHTutorialDirector::EnterTeacherStep(ETeacherStep NewStep)
 		Broadcast(TEXT("You're on them - now LAND IT. Swing your AXE (LEFT MOUSE) while you're right next to the student to capture them. A swing at empty air won't grab; stay close and time it."), 16.0f);
 		break;
 	case ETeacherStep::Blackout:
-		Broadcast(TEXT("Press R for a BLACKOUT - it kills the lights so students lose their bearings."), 14.0f);
+		Broadcast(TEXT("Press R for a BLACKOUT. It kills the lights - students must burn flashlight battery just to see, and their fear climbs in the dark. Hit them while they're disoriented."), 14.0f);
 		break;
 	case ETeacherStep::Exit:
 		// Bring the demonstration blackout back up so the run to the exit isn't in the dark.
@@ -2304,8 +2304,8 @@ void ABHTutorialDirector::EnterMonitorStep(EMonitorStep NewStep)
 	{
 	case EMonitorStep::Intro:
 		SetAllInputLocked(true);
-		ShowTutorialCard(TEXT("HALL MONITOR TRAINING"), TEXT("You can't catch anyone. Revise to unlock tools, then mislead the Teacher and slow the students."), 4.5f);
-		Broadcast(TEXT("Last lesson: the HALL MONITOR. You can't catch anyone - you mislead the Teacher and slow the students. Watch a moment..."), 5.0f);
+		ShowTutorialCard(TEXT("HALL MONITOR TRAINING"), TEXT("You can't capture anyone. Revise to unlock your tools, then mislead the Teacher and trap the routes."), 4.5f);
+		Broadcast(TEXT("Last lesson: the HALL MONITOR. You can't capture anyone - but you can bend the hunt your way. Watch a moment..."), 5.0f);
 		break;
 	case EMonitorStep::Unlock:
 		// First step after the (locked) intro now that the WASD lesson is skipped - hand back control here.
@@ -2328,7 +2328,7 @@ void ABHTutorialDirector::EnterMonitorStep(EMonitorStep NewStep)
 		Broadcast(TEXT("Now AIM down an empty corridor and press R to drop a FALSE marker. Watch the Teacher peel off and chase the marker instead of the student."), 16.0f);
 		break;
 	case EMonitorStep::Trap:
-		Broadcast(TEXT("Press G to set a TRAP on the floor. Watch - a student who doesn't dodge it walks right in and trips the alarm, lighting up their position."), 16.0f);
+		Broadcast(TEXT("Press G to drop a TRAP. A student who doesn't dodge it trips the alarm and lights up their position. Place traps on objective routes and exit choke-points, not open space where they're easy to spot and avoid."), 16.0f);
 		break;
 	case EMonitorStep::Exit:
 		// The Monitor never repairs a breaker, so force the gate green to match the "GREEN EXIT" prompt.

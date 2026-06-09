@@ -35,6 +35,9 @@ public:
 
 #if WITH_DEV_AUTOMATION_TESTS
 	bool DebugCanCharacterUseCrawlSpace(const ABHCharacter* Character) const;
+	// Test hook for the auto-prone-or-eject decision: true == admitted (already sheltering or just auto-proned),
+	// false == will be ejected. Used to prove the Teacher is never admitted and a survivor is auto-proned in.
+	bool DebugTryAdmitOrAutoProneForTest(ABHCharacter* Character) { return TryAdmitOrAutoProne(Character); }
 #endif
 
 protected:
@@ -48,6 +51,13 @@ protected:
 	void OnVolumeEndOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex);
 
 	bool CanCharacterUseCrawlSpace(const ABHCharacter* Character) const;
+	// Role/life gate only (alive Survivor/Tester), WITHOUT the low-profile pose check -- a character that may use
+	// the crawl once it is in a sheltering pose. CanCharacterUseCrawlSpace == this AND a low-profile pose.
+	bool IsCharacterEligibleSurvivor(const ABHCharacter* Character) const;
+	// Returns true if the character now shelters (already low-profile, or just auto-proned into cover); false if it
+	// must be ejected. Auto-prones an eligible survivor at the mouth so a fleeing player flows in instead of being
+	// bounced off the lip. The Teacher / Hall Monitor / dead are never auto-proned -- they always eject.
+	bool TryAdmitOrAutoProne(ABHCharacter* Character);
 	void QueueRejectCharacter(ABHCharacter* Character);
 	void RejectCharacter(ABHCharacter* Character);
 

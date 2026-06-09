@@ -167,7 +167,7 @@ inline FBHRoleIntroCopy BHGetRoleIntroCopy(EBHPlayerRole Role, bool bRevisionMod
 	case EBHPlayerRole::Hunter:
 		Copy.Title = bRevisionMode ? TEXT("YOU ARE THE TEACHER") : TEXT("YOU ARE THE HUNTER");
 		Copy.Goal = TEXT("Catch the students before they finish their tasks and escape.");
-		Copy.Keys = { TEXT("Q: scan for heartbeats"), TEXT("Mouse: swing to capture"), TEXT("G: blackout"), TEXT("F: flashlight") };
+		Copy.Keys = { TEXT("Q: scan for heartbeats"), TEXT("Mouse1: swing to capture"), TEXT("R: blackout"), TEXT("F: flashlight") };
 		Copy.Tip = TEXT("Capture only starts in the Hunt. Listen for noise and cut off the exits.");
 		break;
 	case EBHPlayerRole::FakeHunter:
@@ -186,9 +186,9 @@ inline FBHRoleIntroCopy BHGetRoleIntroCopy(EBHPlayerRole Role, bool bRevisionMod
 	case EBHPlayerRole::Tester:
 	default:
 		Copy.Title = TEXT("YOU ARE A SURVIVOR");
-		Copy.Goal = TEXT("Answer questions to power the exits, finish the tasks, then reach a green exit.");
-		Copy.Keys = { TEXT("E: interact / hold to work"), TEXT("1-4: answer"), TEXT("F: flashlight"), TEXT("E: hide in a locker") };
-		Copy.Tip = TEXT("Watch your Fear. When the Teacher is near, hide in a locker and stay quiet.");
+		Copy.Goal = TEXT("Repair power, answer stations, finish tasks, and escape through a green exit before you're caught.");
+		Copy.Keys = { TEXT("E: interact, hold to work, tap to hide in lockers"), TEXT("1-4: answer"), TEXT("F: flashlight"), TEXT("G: noise decoy") };
+		Copy.Tip = TEXT("Watch your Fear. When the Teacher is near, duck into a locker and stay still.");
 		break;
 	}
 	return Copy;
