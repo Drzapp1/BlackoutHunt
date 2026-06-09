@@ -453,9 +453,6 @@ protected:
 	// down. Gated by ResolveFirstPersonBodyEnabled(); re-applies when the avatar mesh changes; hidden while seated / hidden.
 	void UpdateFirstPersonBodyMesh();
 	bool ResolveFirstPersonBodyEnabled() const;
-	// Local-only camera jolt on a hard landing (reuses the jumpscare-impact envelope: a downward flinch + FOV punch).
-	// FallSpeed is the downward speed (cm/s, positive) at touchdown; the magnitude is mapped from the POV tuning.
-	void PlayLandingCameraImpact(float FallSpeed);
 	// Transient jumpscare-impact envelope (0..1) shared by the FOV punch and camera flinch.
 	float GetJumpscareImpactEnvelope() const;
 	float ComputeJumpscareFOVPunch() const;

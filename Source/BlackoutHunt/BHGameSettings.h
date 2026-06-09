@@ -25,6 +25,12 @@ public:
 	// the ?MaxPlayers= URL option so the engine AGameSession cap (default 16) matches the configured size.
 	static int32 GetClampedClassMaxPlayers();
 
+	// The real bot-roster cap: one short of the clamped class size (the host always occupies a slot). The menu
+	// label and the replicated TargetBotCount clamp both read this, so they can never disagree with how many
+	// bots the gamemode actually spawns (a hardcoded 11 made the label read 11/11 while a 32-player class
+	// spawned 31).
+	static int32 GetClampedClassMaxBots();
+
 	// Appends ?MaxPlayers=<GetClampedClassMaxPlayers()> to a listen/travel URL if not already present. Every
 	// listen-host and ServerTravel URL must carry this; otherwise the engine silently caps the session at 16
 	// connections after the first level transition and rejects later students at login.

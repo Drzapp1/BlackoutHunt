@@ -194,6 +194,29 @@ inline FBHRoleIntroCopy BHGetRoleIntroCopy(EBHPlayerRole Role, bool bRevisionMod
 	return Copy;
 }
 
+// --- Catch-pressure pure math (docs/CATCH_PRESSURE.md) --------------------------------------------------------
+// These are deliberately parameter-only (no world / no CVar reads) so the headless tests can pin the curves
+// exactly. The ABHGameMode wrappers read the bh.* CVars and call these. Definitions kept byte-identical with the
+// feat/catch-pressure branch so the eventual merge resolves trivially.
+
+// Escalating recapture tax: the fraction of unspent question points lost on the Nth capture. Climbs by Step each
+// catch from Base, hard-capped at MaxFrac. With (0.25, 0.15, 0.60): 1->0.25, 2->0.40, 3->0.55, 4+->0.60.
+inline float BHComputeRecaptureTaxFraction(int32 TimesCaught, float Base, float Step, float MaxFrac)
+{
+	const int32 PriorCatches = FMath::Max(0, TimesCaught - 1);
+	const float Raw = Base + static_cast<float>(PriorCatches) * Step;
+	return FMath::Clamp(Raw, 0.0f, FMath::Clamp(MaxFrac, 0.0f, 1.0f));
+}
+
+// Detention ransom/hold window in seconds, shortening on each re-catch (a repeat offender gets grabbed faster)
+// but never below MinSeconds. With (12, 2.5, 6): 1->12, 2->9.5, 3->7, 4+->6.
+inline float BHComputeDetentionHoldSeconds(float BaseSeconds, int32 TimesCaught, float ReducePerPriorCatch, float MinSeconds)
+{
+	const int32 PriorCatches = FMath::Max(0, TimesCaught - 1);
+	const float Raw = BaseSeconds - static_cast<float>(PriorCatches) * FMath::Max(0.0f, ReducePerPriorCatch);
+	return FMath::Max(FMath::Max(1.0f, MinSeconds), Raw);
+}
+
 UENUM(BlueprintType)
 enum class EBHMovementSpecialState : uint8
 {

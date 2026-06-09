@@ -2477,26 +2477,6 @@ void ABHCharacter::Landed(const FHitResult& Hit)
 {
 	Super::Landed(Hit);
 
-	// Local "raw" landing jolt: a hard touchdown punches the view, scaled by fall speed. This runs on the owning
-	// client BEFORE the authority gate below, so a remote player (who never reaches the server-only code) still feels
-	// it. Suppressed when the landing converts into a drop-roll (held Sprint+Crouch) or a special move is already
-	// running -- those play the smooth roll instead. GetVelocity().Z still holds the impact speed at this notify.
-	if (IsLocallyControlled() && !IsSpecialMoveActive() && !IsProne())
-	{
-		// Suppress the jolt when this landing converts into a drop-roll -- either the reliable held path (Sprint+Crouch
-		// down through the fall) or a roll tapped within the buffer window just before touchdown -- so the smooth roll
-		// plays instead of a jolt-then-roll. (On a remote client the buffered stamp isn't set, but the held path is.)
-		const float DropRollWindow = CVarBHDropRollWindow.GetValueOnGameThread();
-		const float NowSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
-		const bool bBufferedDropRoll = DropRollWindow > 0.0f
-			&& (NowSeconds - LastDropRollInputTime) >= 0.0f && (NowSeconds - LastDropRollInputTime) <= DropRollWindow;
-		const bool bConvertsToDropRoll = (bSprintInputHeld && bCrouchInputHeld) || bBufferedDropRoll;
-		if (!bConvertsToDropRoll)
-		{
-			PlayLandingCameraImpact(-GetVelocity().Z);
-		}
-	}
-
 	if (!HasAuthority())
 	{
 		return;
@@ -6484,50 +6464,6 @@ void ABHCharacter::UpdateViewFeel(float DeltaSeconds)
 	}
 	SmoothedStrafeAlpha = FMath::FInterpTo(SmoothedStrafeAlpha, StrafeTarget, DeltaSeconds, 7.5f);
 
-	// ---- "Raw" camera layer setup (local/cosmetic). bRawCamera gates the speed FOV kick, lean, heavier sprint bob,
-	// footplant kick and rumble. The shaky parts respect reduced-camera-shake (ReducedMotionScale) and the Intensity
-	// level; the steady FOV widen is left at the gentle baseline under reduced shake instead of being amplified. ----
-	const FBHPOVAnimationTuning POVTuning = BHResolvePOVAnimationTuning();
-	const bool bReducedShake = IsReducedCameraShakeLocal();
-	const bool bRawCamera = POVTuning.bEnableRawCamera;
-	const float RawLevelScale = BHPOVIntensityScale(POVTuning.Intensity);
-	const float RawComfortScale = bReducedShake ? POVTuning.ReducedMotionScale : 1.0f;
-	const float RawShakeScale = bRawCamera ? RawLevelScale * RawComfortScale : 0.0f;
-
-	// View lean (local owner only): bank into a strafe and into the direction the look-yaw is sweeping. The turn rate is
-	// the per-second change in control yaw, smoothed (and clamped so a frame hitch can't spike it). Published to
-	// ABHPlayerCameraManager, which is the LOCAL view target -- only the locally-controlled pawn has a meaningful
-	// control rotation and is ever read, so skip the work (and reset the state) on every other pawn. The lean is also
-	// suppressed during a somersault so the two cosmetic view rolls don't compound into a disorienting tumble.
-	float LeanTarget = 0.0f;
-	if (IsLocallyControlled())
-	{
-		if (DeltaSeconds > KINDA_SMALL_NUMBER)
-		{
-			const float ControlYaw = GetControlRotation().Yaw;
-			const float TurnRateDegPerSec = bHasLastControlYaw
-				? FMath::Clamp(FMath::FindDeltaAngleDegrees(LastControlYaw, ControlYaw) / DeltaSeconds, -720.0f, 720.0f)
-				: 0.0f;
-			LastControlYaw = ControlYaw;
-			bHasLastControlYaw = true;
-			SmoothedTurnRate = FMath::FInterpTo(SmoothedTurnRate, TurnRateDegPerSec, DeltaSeconds, POVTuning.LeanInterpSpeed);
-		}
-		const bool bRollingNow = MovementSpecialState == EBHMovementSpecialState::Rolling
-			|| CosmeticMovementSpecialState == EBHMovementSpecialState::Rolling;
-		if (bRawCamera && !bRollingNow)
-		{
-			const float StrafeLean = -SmoothedStrafeAlpha * POVTuning.StrafeLeanDeg;
-			const float TurnLean = -FMath::Clamp(SmoothedTurnRate * POVTuning.TurnLeanScale, -POVTuning.TurnLeanMaxDeg, POVTuning.TurnLeanMaxDeg);
-			LeanTarget = (StrafeLean + TurnLean) * RawLevelScale * RawComfortScale;
-		}
-	}
-	else
-	{
-		bHasLastControlYaw = false;
-		SmoothedTurnRate = 0.0f;
-	}
-	ViewLeanRollDeg = FMath::FInterpTo(ViewLeanRollDeg, LeanTarget, DeltaSeconds, POVTuning.LeanInterpSpeed);
-
 	if (SmoothedMoveAlpha > 0.025f && bGrounded)
 	{
 		const float BobFrequency = FMath::Lerp(6.4f, 10.8f, SmoothedSprintAlpha);
@@ -6538,13 +6474,8 @@ void ABHCharacter::UpdateViewFeel(float DeltaSeconds)
 	const float FearPanicAlpha = BHFearPanicAlpha(this);
 	const float DreadStrainAlpha = BHDreadStrainAlpha(this);
 	const float BobScale = SmoothedMoveAlpha * (bIsCrouched ? 0.44f : 1.0f);
-	// Raw layer: heavier bob the faster you sprint (only the EXTRA over the baseline is comfort-scaled, so the stock
-	// feel is untouched for everyone else), a sharp downward kick at each footplant, and a low rumble at top speed.
-	const float SprintBobBoost = 1.0f + (POVTuning.SprintBobScale - 1.0f) * SmoothedSprintAlpha * RawShakeScale;
-	const float BobZ = FMath::Sin(CameraBobTime * 2.0f) * FMath::Lerp(0.8f, 1.85f, SmoothedSprintAlpha) * BobScale * SprintBobBoost;
-	const float BobY = FMath::Sin(CameraBobTime) * FMath::Lerp(0.45f, 1.05f, SmoothedSprintAlpha) * BobScale * SprintBobBoost;
-	const float StepKick = -FMath::Abs(FMath::Sin(CameraBobTime * 2.0f)) * POVTuning.StepKickCm * SmoothedSprintAlpha * BobScale * RawShakeScale;
-	const float SprintRumble = FMath::Sin(FlashlightPulseTime * 7.0f) * POVTuning.SprintRumbleCm * SmoothedSprintAlpha * RawShakeScale;
+	const float BobZ = FMath::Sin(CameraBobTime * 2.0f) * FMath::Lerp(0.8f, 1.85f, SmoothedSprintAlpha) * BobScale;
+	const float BobY = FMath::Sin(CameraBobTime) * FMath::Lerp(0.45f, 1.05f, SmoothedSprintAlpha) * BobScale;
 	const float StressTremor = (FMath::Sin(FlashlightPulseTime * 13.0f) + FMath::Sin(FlashlightPulseTime * 19.7f) * 0.45f)
 		* (FearPanicAlpha * 0.82f + DreadStrainAlpha * 0.34f);
 	const float CrouchOffset = bIsCrouched ? -14.0f : 0.0f;
@@ -6559,7 +6490,7 @@ void ABHCharacter::UpdateViewFeel(float DeltaSeconds)
 			? BHSlideCameraOffsetZ
 			: (VisualSpecialState == EBHMovementSpecialState::Diving ? BHDiveCameraOffsetZ : 0.0f));
 	const FVector TargetCameraLocation = DefaultCameraLocation
-		+ FVector(0.0f, BobY - SmoothedStrafeAlpha * 1.65f, CrouchOffset + SeatedOffset + SpecialOffset + BobZ + StressTremor + StepKick + SprintRumble);
+		+ FVector(0.0f, BobY - SmoothedStrafeAlpha * 1.65f, CrouchOffset + SeatedOffset + SpecialOffset + BobZ + StressTremor);
 
 	// Interpolate the base view-feel location into a member; UpdatePOVAnimation owns the single
 	// final SetRelativeLocation so the additive POV punch doesn't fight the bob interpolation.
@@ -6568,17 +6499,10 @@ void ABHCharacter::UpdateViewFeel(float DeltaSeconds)
 	const float HiddenFOVPenalty = bHiddenInLocker ? 3.5f : 0.0f;
 	const float ExhaustionThreshold = MaxStamina * 0.22f;
 	const float ExhaustionAlpha = ExhaustionThreshold > 0.0f ? FMath::Clamp((ExhaustionThreshold - Stamina) / ExhaustionThreshold, 0.0f, 1.0f) : 0.0f;
-	// Raw layer: a bigger sprint FOV widen, and an ASYMMETRIC interp -- fast to widen (punches out the instant you
-	// break into a sprint), slower to settle back -- which is what reads as a "speed kick". Reduced-camera-shake keeps
-	// the gentle baseline widen and its symmetric ease, since a steady FOV change is comfortable but a hard snap isn't.
-	const float SprintFOVTerm = (bRawCamera && !bReducedShake) ? POVTuning.SprintFOVKickDeg : 4.8f;
-	const float DesiredFOV = DefaultCameraFOV + SmoothedSprintAlpha * SprintFOVTerm - HiddenFOVPenalty - HorrorAlpha * 6.8f - ExhaustionAlpha * 1.4f;
+	const float DesiredFOV = DefaultCameraFOV + SmoothedSprintAlpha * 4.8f - HiddenFOVPenalty - HorrorAlpha * 6.8f - ExhaustionAlpha * 1.4f;
 	// Track the smoothed "base" FOV in a member so the transient jumpscare punch layers on top
 	// without feeding back into the interpolation each frame.
-	const float FOVInterpSpeed = (bRawCamera && !bReducedShake)
-		? (DesiredFOV > SmoothedBaseFOV ? POVTuning.FOVKickAttackSpeed : POVTuning.FOVKickReturnSpeed)
-		: 4.2f;
-	SmoothedBaseFOV = FMath::FInterpTo(SmoothedBaseFOV, DesiredFOV, DeltaSeconds, FOVInterpSpeed);
+	SmoothedBaseFOV = FMath::FInterpTo(SmoothedBaseFOV, DesiredFOV, DeltaSeconds, 4.2f);
 	Camera->SetFieldOfView(FMath::Clamp(SmoothedBaseFOV - ComputeJumpscareFOVPunch(), 30.0f, 140.0f));
 
 	UpdatePOVAnimation(DeltaSeconds);
@@ -6867,35 +6791,6 @@ void ABHCharacter::PlayJumpscareCameraImpact(float Intensity, float FOVPunchDegr
 	{
 		JumpscareImpactFOVPunch *= 0.4f;
 	}
-}
-
-void ABHCharacter::PlayLandingCameraImpact(float FallSpeed)
-{
-	if (!IsLocallyControlled() || !GetWorld())
-	{
-		return;
-	}
-
-	const FBHPOVAnimationTuning Tuning = BHResolvePOVAnimationTuning();
-	if (!Tuning.bEnableRawCamera)
-	{
-		return;
-	}
-
-	const float MinSpeed = FMath::Max(0.0f, Tuning.LandingMinFallSpeed);
-	const float MaxSpeed = FMath::Max(MinSpeed + 1.0f, Tuning.LandingMaxFallSpeed);
-	if (FallSpeed <= MinSpeed)
-	{
-		return; // a soft step-down -- no jolt
-	}
-
-	const float Alpha = FMath::Clamp((FallSpeed - MinSpeed) / (MaxSpeed - MinSpeed), 0.0f, 1.0f);
-	const float Intensity = Alpha * Tuning.LandingMaxIntensity * BHPOVIntensityScale(Tuning.Intensity);
-	// Pass the FOV punch UN-scaled by Alpha: ComputeJumpscareFOVPunch already multiplies it by the impact envelope
-	// (which carries the Alpha-derived Intensity), so the effective punch is linear in fall speed -- pre-scaling here
-	// too would make it quadratic. Reuse the jumpscare envelope (downward pitch flinch + FOV zoom); that path clamps
-	// the intensity and applies the reduced-camera-shake comfort scaling, so a hard landing honours the comfort setting.
-	PlayJumpscareCameraImpact(Intensity, Tuning.LandingFOVPunchDeg);
 }
 
 float ABHCharacter::GetEmoteShakeEnvelope() const

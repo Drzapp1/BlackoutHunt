@@ -179,6 +179,11 @@ int32 UBHGameSettings::GetClampedClassMaxPlayers()
 	return Settings ? FMath::Clamp(Settings->MaxPlayers, 2, 64) : 32;
 }
 
+int32 UBHGameSettings::GetClampedClassMaxBots()
+{
+	return FMath::Max(1, GetClampedClassMaxPlayers() - 1);
+}
+
 void UBHGameSettings::AppendMaxPlayersOption(FString& Options)
 {
 	// Boundary-aware check: a bare Contains("MaxPlayers=") would also match a colliding option key

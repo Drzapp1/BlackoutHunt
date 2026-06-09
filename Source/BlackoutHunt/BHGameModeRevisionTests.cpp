@@ -25,12 +25,15 @@ bool FBHGameModeRevisionTuningTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Revision node target clamps to available stations."),
 		ABHGameMode::ResolveRevisionNodeTargetFor(10, 0, 12),
 		12);
-	TestEqual(TEXT("Ten-student stage one nodes use two normal questions."),
+	// The per-node question targets were raised by one across the board ("was 2-3" -- see
+	// ResolveRevisionQuestionTargetFor): mastery is cumulative across the session's stages, so more questions
+	// per node means more genuine retrievals, not a steeper one-off bar. These expectations pin the raised values.
+	TestEqual(TEXT("Ten-student stage one nodes use three normal questions."),
 		ABHGameMode::ResolveRevisionQuestionTargetFor(10, 0),
-		2);
-	TestEqual(TEXT("Ten-student later stages use three normal questions."),
-		ABHGameMode::ResolveRevisionQuestionTargetFor(10, 2),
 		3);
+	TestEqual(TEXT("Ten-student later stages use four normal questions."),
+		ABHGameMode::ResolveRevisionQuestionTargetFor(10, 2),
+		4);
 	TestTrue(TEXT("Hall Monitors count as revision participants for mastery and contribution gates."),
 		ABHGameMode::IsRevisionParticipantRole(EBHPlayerRole::FakeHunter));
 	TestTrue(TEXT("Survivors count as revision participants for mastery and contribution gates."),
