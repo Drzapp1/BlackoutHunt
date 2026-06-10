@@ -272,6 +272,12 @@ FBHWhisperDiscoveryBuckets BHDiscoverWhisperAssets()
 	FARFilter Filter;
 	Filter.PackagePaths.Add(FName(BHWhisperJumpscareRoot));
 	Filter.bRecursivePaths = true;
+	// On-disk registry state only: in-memory enumeration walks every live UObject (GetAssetRegistryTags on
+	// each) and adds nothing here — imported Whisper art is always in the cooked registry, and the editor
+	// path rescans the root above. It also ran at boot (menu construction resolves variants during the
+	// first LoadMap), where it was the first victim of the 2026-06 Development heap-corruption crash; see
+	// the regression note in Docs/CLASSROOM_DEPLOYMENT.md.
+	Filter.bIncludeOnlyOnDiskAssets = true;
 
 	TArray<FAssetData> Assets;
 	AssetRegistry.GetAssets(Filter, Assets);
