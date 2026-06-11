@@ -139,12 +139,21 @@ FVector ABHCrawlSpaceVolume::GetConfiguredExtent() const
 bool ABHCrawlSpaceVolume::IsCharacterSheltering(const ABHCharacter* Character) const
 {
 	// Reuse CanCharacterUseCrawlSpace so "is sheltered" stays in lockstep with "is allowed to stay" -- the same
-	// predicate the Tick uses to decide whom to reject. Overlap is server-authoritative (the volume tracks pawn
-	// overlaps even though it never replicates), and the Teacher's capture path that calls this runs on authority.
-	return Character
-		&& Volume
-		&& Volume->IsOverlappingActor(Character)
-		&& CanCharacterUseCrawlSpace(Character);
+	// predicate the Tick uses to decide whom to reject. Containment is computed geometrically (capsule center
+	// inside the box) rather than from stored overlap-event state: capture immunity must stay correct across
+	// teleports (spawn restores, reconnect placement), where overlap bookkeeping can lag the actual poses.
+	// Center-inside is deliberately the conservative read of "in the tunnel" -- a survivor straddling the
+	// mouth is not yet sheltered. The capture path that calls this runs on authority.
+	if (!Character || !Volume || !CanCharacterUseCrawlSpace(Character))
+	{
+		return false;
+	}
+
+	const FVector LocalLocation = Volume->GetComponentTransform().InverseTransformPosition(Character->GetActorLocation());
+	const FVector Extent = Volume->GetUnscaledBoxExtent();
+	return FMath::Abs(LocalLocation.X) <= Extent.X
+		&& FMath::Abs(LocalLocation.Y) <= Extent.Y
+		&& FMath::Abs(LocalLocation.Z) <= Extent.Z;
 }
 
 #if WITH_DEV_AUTOMATION_TESTS

@@ -2597,12 +2597,15 @@ void ABHCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCompone
 	PlayerInputComponent->BindKey(EKeys::End, IE_Pressed, this, &ABHCharacter::TesterLoadFinalStation);
 	PlayerInputComponent->BindKey(EKeys::PageDown, IE_Pressed, this, &ABHCharacter::TesterTriggerFinalEscape);
 	PlayerInputComponent->BindKey(EKeys::Delete, IE_Pressed, this, &ABHCharacter::TesterForceFinalRecap);
-	PlayerInputComponent->BindKey(EKeys::NumPadFive, IE_Pressed, this, &ABHCharacter::TesterGrantTrainResources);
-	PlayerInputComponent->BindKey(EKeys::NumPadSix, IE_Pressed, this, &ABHCharacter::TesterOpenTrainIntermission);
-	PlayerInputComponent->BindKey(EKeys::NumPadSeven, IE_Pressed, this, &ABHCharacter::TesterAdvanceTrainPhase);
-	PlayerInputComponent->BindKey(EKeys::NumPadEight, IE_Pressed, this, &ABHCharacter::TesterLoadFinalStation);
-	PlayerInputComponent->BindKey(EKeys::NumPadNine, IE_Pressed, this, &ABHCharacter::TesterTriggerFinalEscape);
-	PlayerInputComponent->BindKey(EKeys::NumPadZero, IE_Pressed, this, &ABHCharacter::TesterForceFinalRecap);
+	// NumPad5-9/0 dual-route (mirroring how NumPad1-4 reach digit entry through the answer handlers below): while a
+	// Calculation question's keypad is focused the key types its digit, otherwise the tester hotkey fires -- a
+	// student typing "150" on the numpad must get all three digits, not the "1" plus two tester actions.
+	PlayerInputComponent->BindKey(EKeys::NumPadFive, IE_Pressed, this, &ABHCharacter::NumPadFiveOrTester);
+	PlayerInputComponent->BindKey(EKeys::NumPadSix, IE_Pressed, this, &ABHCharacter::NumPadSixOrTester);
+	PlayerInputComponent->BindKey(EKeys::NumPadSeven, IE_Pressed, this, &ABHCharacter::NumPadSevenOrTester);
+	PlayerInputComponent->BindKey(EKeys::NumPadEight, IE_Pressed, this, &ABHCharacter::NumPadEightOrTester);
+	PlayerInputComponent->BindKey(EKeys::NumPadNine, IE_Pressed, this, &ABHCharacter::NumPadNineOrTester);
+	PlayerInputComponent->BindKey(EKeys::NumPadZero, IE_Pressed, this, &ABHCharacter::NumPadZeroOrTester);
 	PlayerInputComponent->BindKey(EKeys::One, IE_Pressed, this, &ABHCharacter::SubmitAnswerOne);
 	PlayerInputComponent->BindKey(EKeys::Two, IE_Pressed, this, &ABHCharacter::SubmitAnswerTwo);
 	PlayerInputComponent->BindKey(EKeys::Three, IE_Pressed, this, &ABHCharacter::SubmitAnswerThree);
@@ -2665,6 +2668,9 @@ void ABHCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 	DOREPLIFETIME(ABHCharacter, bInDetentionHold);
 	DOREPLIFETIME(ABHCharacter, DetentionRescueProgress);
 	DOREPLIFETIME(ABHCharacter, MovementSpecialState);
+	// The special-move cooldown stamp is read only by the owning player's HUD meter (server-clock domain, see the
+	// member's comment) -- owner-only keeps it off everyone else's wire, like the meters above.
+	DOREPLIFETIME_CONDITION(ABHCharacter, SpecialMoveCooldownEndTime, COND_OwnerOnly);
 	DOREPLIFETIME(ABHCharacter, bTeacherCaptureAttackActive);
 	DOREPLIFETIME(ABHCharacter, TeacherCaptureAttackStartServerTime);
 	DOREPLIFETIME(ABHCharacter, TeacherCaptureAttackResolveServerTime);
@@ -3165,8 +3171,10 @@ EBHMovementSpecialState ABHCharacter::GetCosmeticMovementSpecialState() const
 
 float ABHCharacter::GetRemainingSpecialMoveCooldown() const
 {
-	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
-	return FMath::Max(0.0f, SpecialMoveCooldownEndTime - Now);
+	// Compare in the SERVER clock domain (the Teacher-capture timestamp idiom right below): the stamp is written on
+	// authority in server world time, so a remote owning client must read it against the replicated server clock --
+	// against its own world clock the meter always read "ready". On the server/listen host the two clocks coincide.
+	return FMath::Max(0.0f, SpecialMoveCooldownEndTime - GetTeacherCaptureClockSeconds());
 }
 
 FString ABHCharacter::GetLastMovementFailureReason() const
@@ -4643,8 +4651,20 @@ void ABHCharacter::FinishSpecialMoveAuthority()
 	// it just hit (it would shove the player into/along the obstacle). A clean move keeps its momentum below.
 	const bool bHitWallExit = bSpecialMoveHitWall;
 
-	const bool bShouldEndProne = bSpecialMoveEndsProne && (!bSpecialMoveEndProneRequiresInput || bProneInputHeld);
-	const bool bShouldEndCrouched = bSpecialMoveEarlyBrake && !bShouldEndProne; // silent slide-stop
+	const bool bRequestedEndProne = bSpecialMoveEndsProne && (!bSpecialMoveEndProneRequiresInput || bProneInputHeld);
+	// Slides/dives ran (and space-validated) at PRONE capsule height, so ending them upright must re-check headroom
+	// HERE: ApplyMovementSpecialState restores the full-height capsule with an unswept SetActorLocation (it cannot
+	// depenetrate), so finishing under a desk/low lip wedged the pawn into the geometry. Mirror the manual stand-up
+	// gate in SetProneAuthority: no room to stand -> settle prone (the move's own validated height). The early-brake
+	// crouch transits through the SAME full-height restore before Crouch() shrinks it, so it must pass the check too.
+	const bool bCanStandNow = !bProneCollisionApplied || CanStandFromProne();
+	const FBHSpecialMoveEndState EndState = ResolveSpecialMoveEndState(bRequestedEndProne, bSpecialMoveEarlyBrake, bProneCollisionApplied, bCanStandNow);
+	const bool bShouldEndProne = EndState.bEndProne;
+	const bool bShouldEndCrouched = EndState.bEndCrouched; // silent slide-stop
+	if (bShouldEndProne && !bRequestedEndProne)
+	{
+		SetMovementFailureReason(TEXT("No room to stand up."));
+	}
 	MovementSpecialState = bShouldEndProne ? EBHMovementSpecialState::Prone : EBHMovementSpecialState::None;
 	SpecialMoveStartTime = -999.0f;
 	SpecialMoveEndTime = -999.0f;
@@ -4663,6 +4683,10 @@ void ABHCharacter::FinishSpecialMoveAuthority()
 		&& GetCharacterMovement() && GetCharacterMovement()->IsMovingOnGround() && GetCharacterMovement()->CanEverCrouch())
 	{
 		Crouch();
+		// Mirror the crouch intent onto the owning client: this authority-side Crouch() never reaches a remote
+		// client's saved moves (bWantsToCrouch=false there), so its next move replayed an un-crouch and the brake-to-
+		// crouch only ever stuck for the listen host. On the host this RPC runs locally and the repeat is a no-op.
+		ClientSettleSlideStopCrouch();
 	}
 	// Re-inject the captured momentum so the move flows into a run instead of dead-stopping. Skip when ending prone
 	// or braking to a crouch (those intentionally stop). Cap at the player's current MaxWalkSpeed (which reflects
@@ -4697,6 +4721,31 @@ void ABHCharacter::FinishSpecialMoveAuthority()
 		}
 	}
 	ForceNetUpdate();
+}
+
+FBHSpecialMoveEndState ABHCharacter::ResolveSpecialMoveEndState(bool bEndsProneRequested, bool bEarlyBrake, bool bLowCapsuleApplied, bool bCanStandNow)
+{
+	// Pure decision (unit-tested in BHCharacterMoveTests.cpp); see FinishSpecialMoveAuthority for the WHY. Prone wins
+	// over the early-brake crouch because the crouch path transits the full-height capsule restore first.
+	FBHSpecialMoveEndState Result;
+	Result.bEndProne = bEndsProneRequested || (bLowCapsuleApplied && !bCanStandNow);
+	Result.bEndCrouched = bEarlyBrake && !Result.bEndProne;
+	return Result;
+}
+
+void ABHCharacter::ClientSettleSlideStopCrouch_Implementation()
+{
+	// Owning-client half of the server's slide-stop Crouch() (see FinishSpecialMoveAuthority): set the same crouch
+	// intent locally so this client's saved moves carry bWantsToCrouch and the server's crouch is never replayed
+	// away. The listen host already crouched on the authority path -- skip so its behavior is untouched.
+	if (HasAuthority())
+	{
+		return;
+	}
+	if (GetCharacterMovement() && GetCharacterMovement()->CanEverCrouch())
+	{
+		Crouch();
+	}
 }
 
 bool ABHCharacter::SetProneAuthority(bool bNewProne, bool bShowFailureMessages)
@@ -4927,7 +4976,11 @@ void ABHCharacter::SubmitAnswer(int32 AnswerIndex, bool bVisual)
 		return;
 	}
 
-	ServerSubmitAnswer(AnswerIndex, bVisual);
+	// Echo the question step this client was LOOKING AT when they pressed (key 1-4 or a diagram/choice click): any
+	// teammate's answer reloads the shared replicated question, so an in-flight answer could otherwise grade against
+	// the NEW question and burn the sender's once-per-node attempt. The station rejects a stale echoed step.
+	const ABHObjectiveStation* FocusedStation = ClientFocusedQuestionStation.Get();
+	ServerSubmitAnswer(AnswerIndex, bVisual, FocusedStation ? FocusedStation->GetRevisionQuestionStep() : INDEX_NONE);
 }
 
 void ABHCharacter::SetClientFocusedQuestionStation(ABHObjectiveStation* Station)
@@ -5291,13 +5344,15 @@ void ABHCharacter::ConfirmNumericAnswer()
 		return;
 	}
 	const float Value = FCString::Atof(*NumericAnswerEntry);
-	ServerSubmitNumericAnswer(Value);
+	// Same step echo as SubmitAnswer: IsCalculationEntryActive() above guarantees a live focused station here.
+	const ABHObjectiveStation* FocusedStation = ClientFocusedQuestionStation.Get();
+	ServerSubmitNumericAnswer(Value, FocusedStation ? FocusedStation->GetRevisionQuestionStep() : INDEX_NONE);
 	NumericAnswerEntry.Reset();
 }
 
-void ABHCharacter::ServerSubmitNumericAnswer_Implementation(float Value)
+void ABHCharacter::ServerSubmitNumericAnswer_Implementation(float Value, int32 ClientQuestionStep)
 {
-	SubmitNumericAnswerAuthority(Value);
+	SubmitNumericAnswerAuthority(Value, ClientQuestionStep);
 }
 
 void ABHCharacter::SubmitAnswerOne()
@@ -5401,6 +5456,22 @@ void ABHCharacter::TesterForceFinalRecap()
 	if (ABHPlayerController* BHPC = Cast<ABHPlayerController>(Controller))
 	{
 		BHPC->TesterForceFinalRecap();
+	}
+}
+
+void ABHCharacter::NumPadDigitOrTester(int32 Digit, void (ABHCharacter::*TesterAction)())
+{
+	// Calculation keypad focus wins: a student typing "150" must get every numpad digit, not just 1-4. This is the
+	// same gate NumericEntryDigit itself enforces, checked here so a host OUTSIDE a question still gets the tester
+	// hotkey (the tester routes are themselves host/Test-Round gated on the controller).
+	if (IsCalculationEntryActive())
+	{
+		NumericEntryDigit(Digit);
+		return;
+	}
+	if (TesterAction)
+	{
+		(this->*TesterAction)();
 	}
 }
 
@@ -6915,6 +6986,14 @@ void ABHCharacter::PlayEmoteShake(float Intensity)
 	EmoteShakeStartTime = GetWorld()->GetTimeSeconds();
 }
 
+float ABHCharacter::DecodeRemoteViewPitchDegrees(uint16 CompressedPitch)
+{
+	// APawn::SetRemoteViewPitch packs the owner's view pitch via FRotator::CompressAxisToShort; invert it with the
+	// engine's own decompress and normalize so a downward look (raw ~270deg) comes back as ~-90deg instead of an
+	// out-of-band +270. Pure (unit-tested).
+	return FRotator::NormalizeAxis(FRotator::DecompressAxisFromShort(CompressedPitch));
+}
+
 void ABHCharacter::UpdateFlashlightFeel(float DeltaSeconds)
 {
 	if (!Flashlight)
@@ -6969,7 +7048,23 @@ void ABHCharacter::UpdateFlashlightFeel(float DeltaSeconds)
 			? BHSlideCameraOffsetZ
 			: (FlashlightVisualSpecialState == EBHMovementSpecialState::Diving ? BHDiveCameraOffsetZ : 0.0f));
 	const FVector StableEyeLocation = GetActorLocation() + FVector(0.0f, 0.0f, DefaultCameraLocation.Z + (bIsCrouched ? -14.0f : 0.0f) + FlashlightSpecialOffset);
-	const FRotator StableViewRotation = Controller ? Controller->GetControlRotation() : (Camera ? Camera->GetComponentRotation() : GetActorRotation());
+	// Simulated proxies have no Controller, and the capsule-attached Camera carries only the replicated body yaw, so
+	// remote players' beams rendered pitch-flattened -- a survivor aiming a light up a stairwell read as aiming level.
+	// The engine replicates each pawn's view pitch byte-compressed (APawn::RemoteViewPitch); decode it and combine
+	// with the actor yaw so a remote beam tracks where its owner is actually looking. Owner/authority paths unchanged.
+	FRotator StableViewRotation;
+	if (Controller)
+	{
+		StableViewRotation = Controller->GetControlRotation();
+	}
+	else if (GetLocalRole() == ROLE_SimulatedProxy)
+	{
+		StableViewRotation = FRotator(DecodeRemoteViewPitchDegrees(GetRemoteViewPitch()), GetActorRotation().Yaw, 0.0f);
+	}
+	else
+	{
+		StableViewRotation = Camera ? Camera->GetComponentRotation() : GetActorRotation();
+	}
 	Flashlight->SetWorldLocationAndRotation(StableEyeLocation, StableViewRotation);
 
 	const float UnevenPulse = 1.0f
@@ -7281,7 +7376,9 @@ void ABHCharacter::ServerSetPropDisguise_Implementation(const FString& MeshPath,
 
 void ABHCharacter::TogglePropLockInPlace()
 {
-	if (!IsPropHuntProp())
+	// Seat and prop-lock both freeze via MOVE_None; letting them stack means whichever releases first
+	// re-walks a pawn the other still claims is frozen. Mutually exclusive by construction.
+	if (!IsPropHuntProp() || bSeated)
 	{
 		return;
 	}
@@ -7290,7 +7387,7 @@ void ABHCharacter::TogglePropLockInPlace()
 
 void ABHCharacter::ServerSetPropLocked_Implementation(bool bNewLocked)
 {
-	if (!HasAuthority() || !IsPropHuntProp())
+	if (!HasAuthority() || !IsPropHuntProp() || (bNewLocked && bSeated))
 	{
 		return;
 	}
@@ -7316,7 +7413,9 @@ void ABHCharacter::SetPropLockedAuthority(bool bNewLocked)
 			PC->ClientShowStatusMessage(TEXT("Locked dead-still. Middle-mouse to break free."), 2.0f);
 		}
 	}
-	else
+	// Unlock re-walks only a pawn no OTHER freeze still claims (seat, locker, capture) — mirroring the
+	// OnRep guard so server and client agree on who owns the MOVE_None.
+	else if (!bSeated && !bHiddenInLocker && !bOutOfPlay)
 	{
 		GetCharacterMovement()->SetMovementMode(MOVE_Walking);
 	}
@@ -7510,7 +7609,7 @@ void ABHCharacter::ApplyPropCameraMode()
 
 void ABHCharacter::TogglePropCamera()
 {
-	if (!IsPropHuntProp())
+	if (!IsPropHuntProp() || IsLocalGameMenuOpen())
 	{
 		return;
 	}
@@ -7521,11 +7620,20 @@ void ABHCharacter::TogglePropCamera()
 
 void ABHCharacter::PropTaunt()
 {
-	if (!IsPropHuntProp())
+	// The menu gate matters: the V/T controller binds are non-consuming (so these pawn handlers can fire
+	// at all), and the in-game menu runs GameAndUI — a 't' typed into the feedback box would otherwise
+	// emit a server-side taunt, an audible position ping that outs a hidden prop to the seeker.
+	if (!IsPropHuntProp() || IsLocalGameMenuOpen())
 	{
 		return;
 	}
 	ServerPropTaunt();
+}
+
+bool ABHCharacter::IsLocalGameMenuOpen() const
+{
+	const ABHPlayerController* PC = Cast<ABHPlayerController>(GetController());
+	return PC && PC->IsGameMenuOpen();
 }
 
 void ABHCharacter::ServerPropTaunt_Implementation()
@@ -7555,9 +7663,10 @@ void ABHCharacter::OnRep_PropLockedInPlace()
 		Move->StopMovementImmediately();
 		Move->DisableMovement();
 	}
-	// Only un-freeze if we are actually still in play: a captured/escaped/locker-hidden pawn is frozen by its own
-	// path (ApplyHiddenState), so re-walking it here would wrongly animate an out-of-play prop.
-	else if (Move->MovementMode == MOVE_None && !bHiddenInLocker && !bOutOfPlay)
+	// Only un-freeze if we are actually still in play AND no other freeze owns the pawn: a captured/escaped/
+	// locker-hidden pawn is frozen by its own path (ApplyHiddenState), and a SEATED pawn by the seat — re-walking
+	// here would wrongly release a pawn another system froze.
+	else if (Move->MovementMode == MOVE_None && !bHiddenInLocker && !bOutOfPlay && !bSeated)
 	{
 		const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
 		if (!BHPS || BHPS->LifeState == EBHPlayerLifeState::Alive)
@@ -8719,7 +8828,9 @@ void ABHCharacter::SetSeatedAuthority(bool bNewSeated)
 		return;
 	}
 	// You can only sit when otherwise free to act (not captured/frozen/in a locker); standing is always allowed.
-	if (bNewSeated && !CanAct())
+	// A locked-dead-still prop must break its lock first — seat and prop-lock both freeze via MOVE_None, and
+	// stacking them lets whichever releases first walk a pawn the other still claims is frozen.
+	if (bNewSeated && (bPropLockedInPlace || !CanAct()))
 	{
 		return;
 	}
@@ -8741,7 +8852,7 @@ void ABHCharacter::SetSeatedAuthority(bool bNewSeated)
 			Movement->StopMovementImmediately();
 			Movement->DisableMovement();
 		}
-		else if (Movement->MovementMode == MOVE_None)
+		else if (Movement->MovementMode == MOVE_None && !bPropLockedInPlace)
 		{
 			Movement->SetMovementMode(MOVE_Walking);
 		}
@@ -8786,6 +8897,33 @@ void ABHCharacter::ClientFaceYaw_Implementation(float Yaw)
 	if (AController* OwningController = GetController())
 	{
 		OwningController->SetControlRotation(FRotator(0.0f, Yaw, 0.0f));
+	}
+}
+
+void ABHCharacter::OnRep_SeatedState()
+{
+	// Mirror the server-side seat freeze on clients (the OnRep_PropLockedInPlace idiom): without this the seat
+	// freeze existed only on authority, so a seat-locked owning client's held movement keys kept replaying predicted
+	// moves against the server's MOVE_None for ~RTT -- a rubber-band fight on every chair sit.
+	UCharacterMovementComponent* Move = GetCharacterMovement();
+	if (!Move)
+	{
+		return;
+	}
+	if (bSeated)
+	{
+		Move->StopMovementImmediately();
+		Move->DisableMovement();
+	}
+	// Only un-freeze if we are actually still in play: a captured/escaped/locker-hidden pawn is frozen by its own
+	// path (ApplyHiddenState), so re-walking it here would wrongly release a pawn another system froze.
+	else if (Move->MovementMode == MOVE_None && !bHiddenInLocker && !bOutOfPlay && !bPropLockedInPlace)
+	{
+		const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+		if (!BHPS || BHPS->LifeState == EBHPlayerLifeState::Alive)
+		{
+			Move->SetMovementMode(MOVE_Walking);
+		}
 	}
 }
 
@@ -9106,8 +9244,16 @@ void ABHCharacter::ServerSetSprinting_Implementation(bool bNewSprinting)
 	// Every other movement RPC bails when the pawn cannot act; this one must too, or a modified
 	// client can sprint while input-frozen/captured/in the final-escape cutscene (the stamina drain
 	// is CanAct()-gated, so it would cost them nothing). Mirror ServerSetProne's authority guard.
+	// The gate applies to ENABLING only: the release must always land, because a player who lets go
+	// of Shift inside a locker (CanAct false while hidden) otherwise keeps a stale bSprintInputHeld
+	// server-side -- a phantom roll-out-of-locker plus a sprint-noise ping on the exit they never asked
+	// for. Just drop the flag while frozen; speeds are recomputed by the normal paths once they can act.
 	if (!CanAct())
 	{
+		if (!bNewSprinting)
+		{
+			bSprintInputHeld = false;
+		}
 		return;
 	}
 
@@ -10225,9 +10371,9 @@ bool ABHCharacter::DropDecoyAuthority(bool bShowFailureMessages)
 	return false;
 }
 
-void ABHCharacter::ServerSubmitAnswer_Implementation(int32 AnswerIndex, bool bVisualAnswer)
+void ABHCharacter::ServerSubmitAnswer_Implementation(int32 AnswerIndex, bool bVisualAnswer, int32 ClientQuestionStep)
 {
-	SubmitAnswerAuthority(nullptr, AnswerIndex, true, true, bVisualAnswer);
+	SubmitAnswerAuthority(nullptr, AnswerIndex, true, true, bVisualAnswer, ClientQuestionStep);
 }
 
 void ABHCharacter::ServerUsePowerup_Implementation(EBHPowerupType Type)
@@ -10251,7 +10397,7 @@ void ABHCharacter::ServerUsePowerup_Implementation(EBHPowerupType Type)
 	}
 }
 
-bool ABHCharacter::SubmitAnswerAuthority(ABHObjectiveStation* Station, int32 AnswerIndex, bool bUseViewFallback, bool bShowFailureMessages, bool bVisualAnswer)
+bool ABHCharacter::SubmitAnswerAuthority(ABHObjectiveStation* Station, int32 AnswerIndex, bool bUseViewFallback, bool bShowFailureMessages, bool bVisualAnswer, int32 ClientQuestionStep)
 {
 	if (!CanAct())
 	{
@@ -10304,10 +10450,10 @@ bool ABHCharacter::SubmitAnswerAuthority(ABHObjectiveStation* Station, int32 Ans
 		return false;
 	}
 
-	return Station->SubmitAnswer(this, AnswerIndex, bVisualAnswer);
+	return Station->SubmitAnswer(this, AnswerIndex, bVisualAnswer, ClientQuestionStep);
 }
 
-bool ABHCharacter::SubmitNumericAnswerAuthority(float Value)
+bool ABHCharacter::SubmitNumericAnswerAuthority(float Value, int32 ClientQuestionStep)
 {
 	if (!CanAct())
 	{
@@ -10325,7 +10471,7 @@ bool ABHCharacter::SubmitNumericAnswerAuthority(float Value)
 		return false;
 	}
 
-	return Station->SubmitNumericAnswer(this, Value);
+	return Station->SubmitNumericAnswer(this, Value, ClientQuestionStep);
 }
 
 // Heading to a scanned target expressed relative to where the player is LOOKING (yaw), so the readout reads

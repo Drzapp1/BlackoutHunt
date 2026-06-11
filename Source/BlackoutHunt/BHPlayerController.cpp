@@ -1547,6 +1547,49 @@ void ABHPlayerController::Tick(float DeltaSeconds)
 	TickAutomation();
 }
 
+void ABHPlayerController::OnPossess(APawn* InPawn)
+{
+	Super::OnPossess(InPawn);
+	ResetTransientInputModesForPawnChange();
+}
+
+void ABHPlayerController::OnUnPossess()
+{
+	Super::OnUnPossess();
+	ResetTransientInputModesForPawnChange();
+}
+
+void ABHPlayerController::SetPawn(APawn* InPawn)
+{
+	APawn* PreviousPawn = GetPawn();
+	Super::SetPawn(InPawn);
+	// OnPossess/OnUnPossess run only on the authority side, but the cursor input mode lives on the machine
+	// that owns the viewport: a remote client learns about its pawn swap through replication (OnRep_Pawn ->
+	// SetPawn), so this is the one hook that sees every swap where it matters. Guarded on an actual change --
+	// the engine calls SetPawn redundantly with the same pawn along several possession paths.
+	if (InPawn != PreviousPawn)
+	{
+		ResetTransientInputModesForPawnChange();
+	}
+}
+
+void ABHPlayerController::ResetTransientInputModesForPawnChange()
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+	// A pawn swap (hunt-start RestartPlayer, caught->monitor conversion, late-join respawn) destroys the pawn
+	// that armed the GameAndUI+cursor mode for its question panel or emote wheel, and nothing else clears the
+	// controller-side mode: the player is left with a stuck visible cursor, a frozen look, and the pawn-side
+	// Tab toggle inverted (the fresh pawn starts with its cursor flag off). Drop both transient cursor modes
+	// and any held behind-you directive; the setters re-apply gameplay input only when no real UI
+	// (menu/console/loading/boot) owns the cursor, so open menus are never stomped.
+	CancelBehindYouScare();
+	SetQuestionCursorMode(false);
+	SetEmoteWheelCursorMode(false);
+}
+
 void ABHPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	if (UWorld* World = GetWorld())
@@ -1605,11 +1648,20 @@ void ABHPlayerController::SetupInputComponent()
 	{
 		InputComponent->BindAction(TEXT("Menu"), IE_Pressed, this, &ABHPlayerController::ToggleMainMenu);
 		InputComponent->BindAction(TEXT("Map"), IE_Pressed, this, &ABHPlayerController::ToggleHudMap);
-		InputComponent->BindAction(TEXT("CycleCrosshair"), IE_Pressed, this, &ABHPlayerController::CycleCrosshairStyle);
+		// V doubles as the pawn's PropCameraToggle. Controller InputComponents process BEFORE the pawn's and
+		// FInputActionBinding::bConsumeInput defaults to true, so a default bind here would eat the press and a
+		// disguised prop could never flip its camera (same engine mechanism as the numpad note below). Register
+		// non-consuming so the pawn handler co-fires; the extra cosmetic reticle cycle is harmless.
+		FInputActionBinding& CycleCrosshairBinding = InputComponent->BindAction(TEXT("CycleCrosshair"), IE_Pressed, this, &ABHPlayerController::CycleCrosshairStyle);
+		CycleCrosshairBinding.bConsumeInput = false;
 		InputComponent->BindAction(TEXT("ForceStartRound"), IE_Pressed, this, &ABHPlayerController::ForceStartRound);
 		InputComponent->BindAction(TEXT("ClassroomBoard"), IE_Pressed, this, &ABHPlayerController::ToggleClassroomBoard);
 		InputComponent->BindAction(TEXT("SpectatorEncourage"), IE_Pressed, this, &ABHPlayerController::SpectatorEncourage);
-		InputComponent->BindAction(TEXT("SpectatorQueueTeacher"), IE_Pressed, this, &ABHPlayerController::SpectatorQueueTeacher);
+		// T doubles as the pawn's PropTaunt; same consume-order trap as CycleCrosshair above, so this bind is
+		// also non-consuming. The handler itself is client-gated to out-of-play spectators (see
+		// SpectatorQueueTeacher) so a live prop's taunt never fires the role-request RPC.
+		FInputActionBinding& QueueTeacherBinding = InputComponent->BindAction(TEXT("SpectatorQueueTeacher"), IE_Pressed, this, &ABHPlayerController::SpectatorQueueTeacher);
+		QueueTeacherBinding.bConsumeInput = false;
 		InputComponent->BindAction(TEXT("SpectatorQueueSurvivor"), IE_Pressed, this, &ABHPlayerController::SpectatorQueueSurvivor);
 		InputComponent->BindAction(TEXT("SpectatorQueueMonitor"), IE_Pressed, this, &ABHPlayerController::SpectatorQueueMonitor);
 		InputComponent->BindKey(EKeys::F7, IE_Pressed, this, &ABHPlayerController::TesterGrantTrainResources);
@@ -1625,7 +1677,9 @@ void ABHPlayerController::SetupInputComponent()
 		// "Stuck in a Tree" egg: O drops the pawn back onto the ground if it jumped up into the lobby greenhouse
 		// tree and got wedged. A harmless no-op anywhere else (the character + server both validate proximity).
 		InputComponent->BindKey(EKeys::O, IE_Pressed, this, &ABHPlayerController::ResetFromTreeStuck);
-		InputComponent->BindKey(EKeys::F11, IE_Pressed, this, &ABHPlayerController::ToggleAtmosphereConsole);
+		// Atmosphere console on Pause/Backslash only. F11 is deliberately NOT bound: the viewport's
+		// bF11TogglesFullscreen handler consumes F11 before any action/key binding ever sees it, so an
+		// F11 bind here would be dead weight that *looks* like a working shortcut.
 		InputComponent->BindKey(EKeys::Pause, IE_Pressed, this, &ABHPlayerController::ToggleAtmosphereConsole);
 		InputComponent->BindKey(EKeys::Backslash, IE_Pressed, this, &ABHPlayerController::ToggleAtmosphereConsole);
 		InputComponent->BindKey(EKeys::F12, IE_Pressed, this, &ABHPlayerController::TesterForceFinalRecap);
@@ -1635,12 +1689,10 @@ void ABHPlayerController::SetupInputComponent()
 		InputComponent->BindKey(EKeys::End, IE_Pressed, this, &ABHPlayerController::TesterLoadFinalStation);
 		InputComponent->BindKey(EKeys::PageDown, IE_Pressed, this, &ABHPlayerController::TesterTriggerFinalEscape);
 		InputComponent->BindKey(EKeys::Delete, IE_Pressed, this, &ABHPlayerController::TesterForceFinalRecap);
-		InputComponent->BindKey(EKeys::NumPadFive, IE_Pressed, this, &ABHPlayerController::TesterGrantTrainResources);
-		InputComponent->BindKey(EKeys::NumPadSix, IE_Pressed, this, &ABHPlayerController::TesterOpenTrainIntermission);
-		InputComponent->BindKey(EKeys::NumPadSeven, IE_Pressed, this, &ABHPlayerController::TesterAdvanceTrainPhase);
-		InputComponent->BindKey(EKeys::NumPadEight, IE_Pressed, this, &ABHPlayerController::TesterLoadFinalStation);
-		InputComponent->BindKey(EKeys::NumPadNine, IE_Pressed, this, &ABHPlayerController::TesterTriggerFinalEscape);
-		InputComponent->BindKey(EKeys::NumPadZero, IE_Pressed, this, &ABHPlayerController::TesterForceFinalRecap);
+		// The numpad is reserved for the pawn: BHCharacter routes NumPad0-9 into the calculation-answer
+		// numeric entry, and a controller bind here would consume the press first (controller InputComponents
+		// process before the pawn's and bConsumeInput defaults to true), silently eating typed digits.
+		// Tester shortcuts therefore live only on the F-row and nav-cluster keys above.
 
 		// Apply any saved Attack (Capture) key rebinding from the Controls tab so it carries across sessions.
 		FKey SavedCaptureKey;
@@ -2309,6 +2361,16 @@ void ABHPlayerController::SpectatorEncourage()
 
 void ABHPlayerController::SpectatorQueueTeacher()
 {
+	// T's bind is non-consuming so it co-fires with the pawn's PropTaunt (see SetupInputComponent). Without a
+	// client-side gate every live prop taunt would also send this RPC and bounce the server's "Only late-join
+	// spectators..." rejection toast back on each press. Mirror the server's role gate
+	// (ABHGameMode::QueueSpectatorRolePreference): only out-of-play spectators send. Y/U stay ungated — they
+	// share no pawn key, so the server toast remains useful one-shot feedback there.
+	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
+	if (!BHPS || BHPS->PlayerRole != EBHPlayerRole::Spectator)
+	{
+		return;
+	}
 	ServerSetSpectatorRolePreference(EBHPlayerRole::Hunter);
 }
 
@@ -2943,7 +3005,9 @@ bool ABHPlayerController::HostPropHuntForMenu(const FString& ArenaOrLevelName, F
 bool ABHPlayerController::HostBotGameForMenu(const FString& LevelName, FString& OutMessage)
 {
 	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
-	const int32 BotCount = FMath::Clamp(Settings ? Settings->DefaultBotCount : 5, 0, 11);
+	// Clamp to the real roster cap (MaxPlayers-1), not a hardcoded 11 -- it must match what the
+	// gamemode will actually spawn and what the menu label advertises.
+	const int32 BotCount = FMath::Clamp(Settings ? Settings->DefaultBotCount : 5, 0, UBHGameSettings::GetClampedClassMaxBots());
 	const EBHBotDifficulty Difficulty = Settings ? Settings->DefaultBotDifficulty : EBHBotDifficulty::Normal;
 	const FString NormalizedLevel = BHNormalizeRuntimeLevelName(LevelName);
 	const FString Options = BHMakeListenOptions(NormalizedLevel, FString::Printf(TEXT("?BHBotMode=1?BHBotCount=%d?BHBotDifficulty=%s?BHHumanRole=Survivor"),
@@ -3819,7 +3883,9 @@ bool ABHPlayerController::SetObjectiveIntensityForMenu(int32 Intensity, FString&
 
 bool ABHPlayerController::SetBotCountForMenu(int32 BotCount, FString& OutMessage)
 {
-	const int32 ClampedCount = FMath::Clamp(BotCount, 0, 11);
+	// Same cap as the server-side TargetBotCount clamp (ABHGameState::SetBotOptions), so the request
+	// the menu sends can never disagree with what the round will spawn.
+	const int32 ClampedCount = FMath::Clamp(BotCount, 0, UBHGameSettings::GetClampedClassMaxBots());
 	ServerSetBotCount(ClampedCount);
 	if (UBHGameSettings* Settings = GetMutableDefault<UBHGameSettings>())
 	{
@@ -5833,6 +5899,90 @@ void ABHPlayerController::EnsurePropHuntArenaExposureGuard()
 	}
 }
 
+void ABHPlayerController::ClampIndoorAutoExposure()
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	// Map-name detection mirrors EnsureAuthoredLevelFloorFog (robust against the PIE prefix and against
+	// ActiveLevelName not having replicated yet). Only the indoor authored maps want the indoor band:
+	// Foggrounds pins a FIXED exposure (min == max, see AddMoodPass) that never adapts, and prop-hunt arena
+	// packs get EnsurePropHuntArenaExposureGuard's deliberately wider daylight band instead.
+	const FString MapName = World->GetMapName();
+	const bool bIndoorAuthoredMap = MapName.Contains(TEXT("Facility"))
+		|| MapName.Contains(TEXT("Substation"))
+		|| MapName.Contains(TEXT("Tutorial"));
+	if (!bIndoorAuthoredMap)
+	{
+		return;
+	}
+
+	// The shipped indoor bakes predate the tight adaptation ceiling (they carry the old 0.95 baked into
+	// their mood-pass volume), the live authored-map path never re-runs AddMoodPass, and re-exporting the
+	// maps would discard the mesh/lighting art pass layered on the seed -- so each client repairs its own
+	// loaded copy of the baked volume(s) at runtime instead (the export-time half of the contract at
+	// BHGameMode.h: AddMoodPass and this function must stay in lockstep). Post-process volumes do not
+	// replicate, hence client-side and run for the listen host too. The tag guard keeps the per-frame poll
+	// from re-stomping (and lets the atmosphere console retune afterwards), matching the sibling guards.
+	static const FName IndoorExposureClampTag(TEXT("BHIndoorAutoExposureClamped"));
+	const auto ApplyIndoorExposureBand = [](APostProcessVolume& Volume)
+	{
+		Volume.Settings.bOverride_AutoExposureMinBrightness = true;
+		Volume.Settings.AutoExposureMinBrightness = 0.030f;
+		Volume.Settings.bOverride_AutoExposureMaxBrightness = true;
+		Volume.Settings.AutoExposureMaxBrightness = BHIndoorAutoExposureMaxBrightness;
+		Volume.Settings.bOverride_AutoExposureSpeedUp = true;
+		Volume.Settings.AutoExposureSpeedUp = BHAutoExposureAdaptSpeed;
+		Volume.Settings.bOverride_AutoExposureSpeedDown = true;
+		Volume.Settings.AutoExposureSpeedDown = BHAutoExposureAdaptSpeed;
+		Volume.Tags.AddUnique(IndoorExposureClampTag);
+	};
+
+	bool bClampedExisting = false;
+	for (TActorIterator<APostProcessVolume> It(World); It; ++It)
+	{
+		APostProcessVolume* Volume = *It;
+		if (!Volume)
+		{
+			continue;
+		}
+		if (Volume->Tags.Contains(IndoorExposureClampTag))
+		{
+			return; // already repaired this level
+		}
+		// Retune every enabled volume that takes any stance on the adaptation band; volumes that leave
+		// exposure alone (e.g. a purely tonal local pass) keep their authored settings untouched.
+		if (Volume->bEnabled
+			&& (Volume->Settings.bOverride_AutoExposureMinBrightness || Volume->Settings.bOverride_AutoExposureMaxBrightness
+				|| Volume->Settings.bOverride_AutoExposureSpeedUp || Volume->Settings.bOverride_AutoExposureSpeedDown))
+		{
+			ApplyIndoorExposureBand(*Volume);
+			bClampedExisting = true;
+		}
+	}
+	if (bClampedExisting)
+	{
+		return;
+	}
+
+	// No exposure-tuned volume in this bake at all (the 0.7.0 Facility bake stripped actors before): the
+	// engine's wide default band is then live, which is the same bright-wall crush failure. Materialise an
+	// unbound client-local volume carrying the indoor band, mirroring the arena guard's fallback.
+	if (APostProcessVolume* Clamp = World->SpawnActor<APostProcessVolume>(FVector::ZeroVector, FRotator::ZeroRotator))
+	{
+		Clamp->bUnbound = true;
+		ApplyIndoorExposureBand(*Clamp);
+		UE_LOG(LogTemp, Log, TEXT("BlackoutHunt: indoor map '%s' has no exposure-tuned post-process volume; spawned the client auto-exposure clamp."), *MapName);
+	}
+}
+
 void ABHPlayerController::TickAdaptiveGraphics(float DeltaSeconds)
 {
 	if (!IsLocalController() || !bAdaptiveGraphicsEnabled || bVirtualBoxSafeApplied || DeltaSeconds <= 0.0f || DeltaSeconds > 0.25f)
@@ -7236,6 +7386,9 @@ void ABHPlayerController::HandleRoundPhaseUiState()
 	EnsureAuthoredLevelFloorFog();
 	// Prop-hunt arenas (imported pack maps) get a client-local auto-exposure clamp when the pack ships none.
 	EnsurePropHuntArenaExposureGuard();
+	// Indoor authored maps: re-apply the AddMoodPass adaptation band onto the baked post-process volume(s)
+	// (the bakes carry the old wide ceiling and are never re-exported -- see ClampIndoorAutoExposure).
+	ClampIndoorAutoExposure();
 
 	const EBHRoundPhase CurrentPhase = BHGS->RoundPhase;
 	if (!bRoundPhaseObserved)
@@ -8165,26 +8318,37 @@ void ABHPlayerController::TickHorrorCueEffects(float DeltaSeconds)
 	// it from triggering instantly if they happened to already be facing that way when it armed.
 	if (bBehindYouActive)
 	{
-		bool bSpring = Now >= BehindYouDeadline;
-		if (!bSpring && Now >= BehindYouArmTime + 0.45f)
+		// A player who left play mid-hold must not have the slam sprung on their spectator/monitor view.
+		// The pawn-change hooks already cancel on swaps; this per-tick guard also catches life-state flips
+		// that keep the same controller (caught, evacuated, round resolved) and outright pawn loss.
+		const ABHPlayerState* LifeStatePS = GetPlayerState<ABHPlayerState>();
+		if (!GetPawn() || !LifeStatePS || LifeStatePS->LifeState != EBHPlayerLifeState::Alive)
 		{
-			FVector ViewLocation = FVector::ZeroVector;
-			FRotator ViewRotation = FRotator::ZeroRotator;
-			GetPlayerViewPoint(ViewLocation, ViewRotation);
-			FVector ToFocus = BehindYouFocusLocation - ViewLocation;
-			if (!ToFocus.IsNearlyZero())
+			CancelBehindYouScare();
+		}
+		else
+		{
+			bool bSpring = Now >= BehindYouDeadline;
+			if (!bSpring && Now >= BehindYouArmTime + 0.45f)
 			{
-				ToFocus.Normalize();
-				if (FVector::DotProduct(ViewRotation.Vector(), ToFocus) >= BehindYouTurnCosThreshold)
+				FVector ViewLocation = FVector::ZeroVector;
+				FRotator ViewRotation = FRotator::ZeroRotator;
+				GetPlayerViewPoint(ViewLocation, ViewRotation);
+				FVector ToFocus = BehindYouFocusLocation - ViewLocation;
+				if (!ToFocus.IsNearlyZero())
 				{
-					bSpring = true;
+					ToFocus.Normalize();
+					if (FVector::DotProduct(ViewRotation.Vector(), ToFocus) >= BehindYouTurnCosThreshold)
+					{
+						bSpring = true;
+					}
 				}
 			}
-		}
 
-		if (bSpring)
-		{
-			TriggerBehindYouPayoff();
+			if (bSpring)
+			{
+				TriggerBehindYouPayoff();
+			}
 		}
 	}
 
@@ -9517,7 +9681,18 @@ void ABHPlayerController::ReleaseJumpscareInput()
 	}
 	if (!MainMenuWidget.IsValid() && !AtmosphereConsoleWidget.IsValid())
 	{
-		ApplyGameplayInputMode();
+		// A scare can land while the pawn is mid-mouse-answer: its question cursor is still active, so the
+		// release must restore the GameAndUI+cursor mode that panel owns. Forcing game-only input here left
+		// the player with a frozen look and an invisible cursor until they cycled Tab twice.
+		const ABHCharacter* CursorCharacter = Cast<ABHCharacter>(GetPawn());
+		if (CursorCharacter && CursorCharacter->IsQuestionCursorActive())
+		{
+			SetQuestionCursorMode(true);
+		}
+		else
+		{
+			ApplyGameplayInputMode();
+		}
 	}
 }
 
@@ -9742,8 +9917,15 @@ void ABHPlayerController::ClientPlayHorrorCue_Implementation(const FBHClientHorr
 				FActorSpawnParameters SpawnParams;
 				SpawnParams.Owner = this;
 				SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+				// Presentation-only spawn for the victim's screen. On a listen host this runs in the
+				// authoritative world, so a replicating visual class (ABHJumpscareMonster ships
+				// bReplicates=true) would pop up in front of every nearby bystander. Defer construction and
+				// switch replication off before FinishSpawning so the actor never enters the net driver's lists.
+				SpawnParams.bDeferConstruction = true;
 				if (AActor* VisualActor = GetWorld() ? GetWorld()->SpawnActor<AActor>(VisualClass, VisualSpawnLocation, SpawnRotation, SpawnParams) : nullptr)
 				{
+					VisualActor->SetReplicates(false);
+					VisualActor->FinishSpawning(FTransform(SpawnRotation, VisualSpawnLocation));
 					bSpawnedCueVisual = true;
 					VisualActor->SetActorEnableCollision(false);
 					if (Cue.bCloseRangeFocus)
@@ -9799,8 +9981,14 @@ void ABHPlayerController::ClientPlayHorrorCue_Implementation(const FBHClientHorr
 			FActorSpawnParameters SpawnParams;
 			SpawnParams.Owner = this;
 			SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			// Same listen-host rule as the cue-visual spawn above: this close-up is for the victim's eyes
+			// only, and ABHJumpscareMonster replicates by default -- strip replication before FinishSpawning
+			// or every bystander near a scared HOST sees a creature floating at the host's face.
+			SpawnParams.bDeferConstruction = true;
 			if (ABHJumpscareMonster* CloseMonster = GetWorld() ? GetWorld()->SpawnActor<ABHJumpscareMonster>(VisualSpawnLocation, SpawnRotation, SpawnParams) : nullptr)
 			{
+				CloseMonster->SetReplicates(false);
+				CloseMonster->FinishSpawning(FTransform(SpawnRotation, VisualSpawnLocation));
 				CloseMonster->ConfigureCloseupPresentation(CueVariant, FMath::Clamp(Cue.DurationSeconds, 0.2f, 5.0f), Cue.bUpperBodyCloseVisual);
 			}
 		}
@@ -9878,20 +10066,30 @@ void ABHPlayerController::ClientPlayHorrorCue_Implementation(const FBHClientHorr
 			HorrorCueRumbleHandle);
 	}
 
-	if (Cue.HitStopSeconds > 0.0f && !bReducedJumpscares && GetWorld())
+	// Global time dilation is a WORLD effect: on a listen host this controller's world IS the authoritative
+	// one and AWorldSettings::TimeDilation replicates, so a host-side hit-stop would hiccup every connected
+	// player whenever the HOST is scared. Restrict the dilation to worlds where it stays local (a pure
+	// client's mirror world, or Standalone where there is nobody else to dilate); a listen-host victim keeps
+	// every other cue effect, just not the global slow-motion.
+	const ENetMode CueNetMode = GetNetMode();
+	if (Cue.HitStopSeconds > 0.0f && !bReducedJumpscares && GetWorld()
+		&& (CueNetMode == NM_Client || CueNetMode == NM_Standalone))
 	{
 		// Client-local micro slow-motion for the "jolt". A game-time timer fires after
 		// HitStopSeconds of real time when the delay is scaled by the dilation factor.
 		constexpr float HitStopDilation = 0.12f;
 		UGameplayStatics::SetGlobalTimeDilation(this, HitStopDilation);
 
-		TWeakObjectPtr<ABHPlayerController> WeakThis(this);
+		// Restore on the WORLD, not this controller: the controller can die inside the window (caught ->
+		// conversion, disconnect), and a restore gated on its validity would strand the whole world at 0.12x.
+		// The lambda holds no UObject, so the timer manager fires it regardless of this controller's fate.
+		TWeakObjectPtr<UWorld> WeakWorld(GetWorld());
 		FTimerDelegate RestoreDilation;
-		RestoreDilation.BindLambda([WeakThis]()
+		RestoreDilation.BindLambda([WeakWorld]()
 		{
-			if (WeakThis.IsValid())
+			if (UWorld* DilatedWorld = WeakWorld.Get())
 			{
-				UGameplayStatics::SetGlobalTimeDilation(WeakThis.Get(), 1.0f);
+				UGameplayStatics::SetGlobalTimeDilation(DilatedWorld, 1.0f);
 			}
 		});
 		const float RealStop = FMath::Clamp(Cue.HitStopSeconds, 0.0f, 0.25f);
@@ -9967,6 +10165,24 @@ void ABHPlayerController::TriggerBehindYouPayoff()
 	// full impact path (scream, face slam, flash, blink, FOV punch, brief hard lock that self-restores).
 	ReleaseJumpscareInput();
 	ClientPlayHorrorCue_Implementation(BehindYouPayoffCue);
+}
+
+void ABHPlayerController::CancelBehindYouScare()
+{
+	if (!bBehindYouActive)
+	{
+		return;
+	}
+
+	// Drop the held directive WITHOUT the slam: the player lost their pawn or left play mid-hold (caught ->
+	// conversion, eliminated, round resolved), so the payoff would land on a spectator/monitor view. Fade the
+	// banner immediately, forget the pending payoff cue, and free the held movement-only lock -- the payoff
+	// path normally does all three.
+	bBehindYouActive = false;
+	BehindYouPayoffCue = FBHClientHorrorCue();
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	HorrorDirectiveEndTime = FMath::Min(HorrorDirectiveEndTime, Now);
+	ReleaseJumpscareInput();
 }
 
 void ABHPlayerController::ClientRecordRoundResult_Implementation(EBHPlayerRole AccountRole, EBHPlayerLifeState LifeState, EBHRoundPhase ResultPhase)

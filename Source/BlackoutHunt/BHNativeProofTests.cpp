@@ -756,8 +756,9 @@ bool FBHCosmeticUnlockThresholdTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// Locks the achievement-gating path added for the prestige tints, the Top Hat headwear, and the new
-// Title / Emblem nameplate-flair categories: these ignore XP entirely and are gated on an achievement id.
+// Locks the achievement-gating path for the prestige tints and the Title / Emblem nameplate-flair categories
+// (these ignore XP entirely and are gated on an achievement id), plus the headwear retirement: the category is
+// None-only, so the achievements that used to grant hats now reward flair instead.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHCosmeticAchievementGateTest,
 	"BlackoutHunt.Account.CosmeticAchievementGating",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -784,11 +785,19 @@ bool FBHCosmeticAchievementGateTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Chalk tint is locked when no achievement set is supplied (null = locked)."),
 		BHCosmeticIsUnlocked(EBHCosmeticCategory::ShirtColor, 8, MAX_int32, nullptr));
 
-	// The Top Hat headwear (index 5) is gated on roof_rider.
-	TestFalse(TEXT("Top Hat is locked without roof_rider."),
-		BHCosmeticIsUnlocked(EBHCosmeticCategory::Headwear, 5, MAX_int32, &NoAchievements));
-	TestTrue(TEXT("Top Hat unlocks with roof_rider."),
-		BHCosmeticIsUnlocked(EBHCosmeticCategory::Headwear, 5, 0, &WithRoofRider));
+	// Headwear is RETIRED to a None-only category (the procedural hats clashed with the Quaternius skins'
+	// baked-in headwear): the old Top Hat slot no longer exists, every saved index sanitizes to the always-on
+	// "None", and roof_rider grants no headwear -- its reward moved to the "Roof Rider" title (checked below).
+	TestEqual(TEXT("Headwear is a None-only category."),
+		BHCosmeticMaxIndex(EBHCosmeticCategory::Headwear), 0);
+	TestEqual(TEXT("Former Top Hat slot sanitizes to None even with roof_rider."),
+		BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Headwear, 5, MAX_int32, &WithRoofRider), 0);
+	TestEqual(TEXT("Title index 6 is the Roof Rider reward."),
+		FString(BHCosmeticItemName(EBHCosmeticCategory::Title, 6)), FString(TEXT("Roof Rider")));
+	TestFalse(TEXT("'Roof Rider' title is locked without roof_rider, even at max XP."),
+		BHCosmeticIsUnlocked(EBHCosmeticCategory::Title, 6, MAX_int32, &NoAchievements));
+	TestTrue(TEXT("'Roof Rider' title unlocks with roof_rider, at zero XP."),
+		BHCosmeticIsUnlocked(EBHCosmeticCategory::Title, 6, 0, &WithRoofRider));
 
 	// Title / Emblem flair categories: index 0 ("None") is always available; index 1+ is achievement-gated.
 	TestTrue(TEXT("'No Title' (index 0) is always available."),
@@ -1226,7 +1235,11 @@ bool FBHCrawlSpaceAccessTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
 
-	FBHScopedAutomationWorld TestWorld(TEXT("BlackoutHuntCrawlSpace"));
+	// Physics scene REQUIRED: the capture-immunity half of this test runs the real Teacher capture candidate
+	// path, whose LOS trace and the survivor's stand-up overlap sweep both query the physics scene. (Shelter
+	// containment itself is geometric -- IsCharacterSheltering checks the pose against the volume's box -- so
+	// it works with or without one.)
+	FBHScopedAutomationWorld TestWorld(TEXT("BlackoutHuntCrawlSpace"), true);
 	UWorld* World = TestWorld.Get();
 	TestNotNull(TEXT("Test world is created."), World);
 	if (!World)
@@ -1277,7 +1290,10 @@ bool FBHCrawlSpaceAccessTest::RunTest(const FString& Parameters)
 
 		// --- Capture immunity: the Teacher cannot tag a survivor sheltering prone in a tunnel. ---
 		Survivor->SetActorLocation(FVector(0.0f, 0.0f, 140.0f));
-		Hunter->SetActorLocation(FVector(-60.0f, 0.0f, 140.0f));  // in capture range, facing +X toward the survivor
+		// In capture range (CaptureDistance 220 + 28 forgiveness), facing +X toward the survivor. Kept beyond
+		// 2x the 34uu capsule radius: pawn capsules BLOCK each other in the physics scene, so a closer Teacher
+		// would wedge the survivor's stand-up overlap sweep in the standing control at the end.
+		Hunter->SetActorLocation(FVector(-120.0f, 0.0f, 140.0f));
 		Hunter->SetActorRotation(FRotator::ZeroRotator);
 		CrawlSpace->UpdateOverlaps();
 		TestTrue(TEXT("Survivor drops prone for shelter."), Survivor->TrySetProneForTest(true));

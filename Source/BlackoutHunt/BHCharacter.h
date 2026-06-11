@@ -26,6 +26,15 @@ class USpringArmComponent;
 class UStaticMeshComponent;
 class USpotLightComponent;
 
+// End-state decision of a finishing transient special move (FinishSpecialMoveAuthority), extracted pure so the
+// headroom matrix is headlessly testable (BHCharacterMoveTests.cpp). bEndProne wins over bEndCrouched: a slide that
+// cannot stand settles prone (its own validated height) instead of transiting the full-height capsule restore.
+struct FBHSpecialMoveEndState
+{
+	bool bEndProne = false;
+	bool bEndCrouched = false;
+};
+
 UCLASS()
 class BLACKOUTHUNT_API ABHCharacter : public ACharacter
 {
@@ -272,6 +281,16 @@ public:
 	// the lip by the volume. Returns true if now (or already) in a sheltering pose. Called by ABHCrawlSpaceVolume.
 	bool TryEnterCrawlSpacePose();
 
+	// --- Pure, headlessly-testable helpers (covered by BHCharacterMoveTests.cpp). -----------------------------------
+	// Resolve how a finishing roll/slide/dive ends (stand / prone / early-brake crouch). bLowCapsuleApplied = the move
+	// ran at prone capsule height (slide/dive); bCanStandNow = the standing capsule fits at the current location.
+	// Forces prone whenever ending standing -- or the early-brake crouch's transit THROUGH the full-height capsule
+	// restore -- would wedge the capsule into low geometry. See FinishSpecialMoveAuthority.
+	static FBHSpecialMoveEndState ResolveSpecialMoveEndState(bool bEndsProneRequested, bool bEarlyBrake, bool bLowCapsuleApplied, bool bCanStandNow);
+	// Decode APawn::GetRemoteViewPitch (the owner's view pitch, short-compressed over 0..360 deg) to a normalized
+	// [-180,180] pitch in degrees, for rendering a simulated proxy's view-driven attachments (the flashlight beam).
+	static float DecodeRemoteViewPitchDegrees(uint16 CompressedPitch);
+
 #if WITH_DEV_AUTOMATION_TESTS
 	bool TryStartSpecialMoveForTest(EBHMovementSpecialState RequestedState, bool bEndProne);
 	bool TrySetProneForTest(bool bNewProne);
@@ -345,6 +364,18 @@ protected:
 	void NumericEntrySeven() { NumericEntryDigit(7); }
 	void NumericEntryEight() { NumericEntryDigit(8); }
 	void NumericEntryNine() { NumericEntryDigit(9); }
+	// NumPad5-9/0 dispatcher: these numpad keys double as the train tester hotkeys (Insert/Home/PageUp/... mirrors),
+	// and the tester route used to win unconditionally -- typing "150" on the numpad entered only the "1" (NumPad1-4
+	// reach the answer handlers, which already fall through to digit entry). While a Calculation question is focused
+	// (the exact gate NumericEntryDigit applies) the key types its digit; otherwise it falls through to the tester
+	// action, so the host's Test Round hotkeys keep working outside questions.
+	void NumPadDigitOrTester(int32 Digit, void (ABHCharacter::*TesterAction)());
+	void NumPadFiveOrTester() { NumPadDigitOrTester(5, &ABHCharacter::TesterGrantTrainResources); }
+	void NumPadSixOrTester() { NumPadDigitOrTester(6, &ABHCharacter::TesterOpenTrainIntermission); }
+	void NumPadSevenOrTester() { NumPadDigitOrTester(7, &ABHCharacter::TesterAdvanceTrainPhase); }
+	void NumPadEightOrTester() { NumPadDigitOrTester(8, &ABHCharacter::TesterLoadFinalStation); }
+	void NumPadNineOrTester() { NumPadDigitOrTester(9, &ABHCharacter::TesterTriggerFinalEscape); }
+	void NumPadZeroOrTester() { NumPadDigitOrTester(0, &ABHCharacter::TesterForceFinalRecap); }
 	bool IsCalculationEntryActive() const;
 	void SetClientFocusedQuestionStation(class ABHObjectiveStation* Station);
 	// --- Mouse-driven question interaction (client-only) ---
@@ -450,8 +481,12 @@ protected:
 	bool UseScanAuthority(bool bShowFailureMessages);
 	bool UseHunterPowerAuthority(bool bShowFailureMessages);
 	bool DropDecoyAuthority(bool bShowFailureMessages);
-	bool SubmitAnswerAuthority(ABHObjectiveStation* Station, int32 AnswerIndex, bool bUseViewFallback, bool bShowFailureMessages, bool bVisualAnswer = false);
-	bool SubmitNumericAnswerAuthority(float Value);
+	// ClientQuestionStep: the station's replicated RevisionQuestionStep as the SUBMITTING CLIENT saw it at press/click
+	// time, echoed through the submit RPCs so the station can reject an in-flight answer that raced a teammate's
+	// question reload (it would otherwise grade against the NEW question and burn the sender's once-per-node attempt).
+	// INDEX_NONE = no focused station/step known (bots, view-fallback paths) -> the station skips the staleness check.
+	bool SubmitAnswerAuthority(ABHObjectiveStation* Station, int32 AnswerIndex, bool bUseViewFallback, bool bShowFailureMessages, bool bVisualAnswer = false, int32 ClientQuestionStep = INDEX_NONE);
+	bool SubmitNumericAnswerAuthority(float Value, int32 ClientQuestionStep = INDEX_NONE);
 	void EmitFootstepStimulus(float Strength, const FString& Reason, EBHFootstepSurface Surface = EBHFootstepSurface::Default);
 	EBHFootstepSurface ResolveFootstepSurface(const FHitResult* KnownGroundHit = nullptr) const;
 	FBHFootstepSurfaceProfile GetFootstepSurfaceProfile(EBHFootstepSurface Surface) const;
@@ -536,6 +571,10 @@ protected:
 	// True when this player should be acting as a prop right now (a live Survivor while the GameState is in prop-hunt
 	// mode). The single gate every prop-hunt input handler / RPC checks, so the keys are inert in any other mode.
 	bool IsPropHuntProp() const;
+	// True while the owning player's in-game menu / atmosphere console is up. The prop-hunt V/T handlers gate on
+	// this because their controller-level co-binds are non-consuming and the menu runs GameAndUI — typed text
+	// would otherwise leak into gameplay actions (a 't' in the feedback box firing an audible taunt).
+	bool IsLocalGameMenuOpen() const;
 	// Server-side: line-trace from the pawn's (replicated) aim for a static-mesh world actor to copy. Returns its mesh
 	// path, material path, world scale and a short label. False when nothing copyable is in view.
 	bool ResolvePropDisguiseTargetFromView(FString& OutMeshPath, FString& OutMaterialPath, FVector& OutScale, FString& OutLabel) const;
@@ -602,6 +641,13 @@ protected:
 	UFUNCTION(Client, Reliable)
 	void ClientNotifyPerfectChain(int32 ChainCount, EBHMovementSpecialState ChainedMove);
 
+	// Silent slide-stop settle: the server's end-of-slide Crouch() sets bWantsToCrouch only on AUTHORITY, and the
+	// owning client's very next predicted move replays bWantsToCrouch=false and stands it back up -- the brake-to-
+	// crouch was effectively listen-host-only. The server sends this the moment it decides the crouch end-state so
+	// the owning client sets the same crouch intent and its saved moves keep the server in agreement.
+	UFUNCTION(Client, Reliable)
+	void ClientSettleSlideStopCrouch();
+
 	UFUNCTION(Server, Reliable)
 	void ServerTryCapture();
 
@@ -624,11 +670,13 @@ protected:
 	UFUNCTION(Server, Reliable)
 	void ServerRotateProp(float DeltaYaw);
 
+	// ClientQuestionStep on both submit RPCs: see SubmitAnswerAuthority -- the step the client saw when they pressed,
+	// so the station can reject an answer that raced a teammate's question reload instead of grading it stale.
 	UFUNCTION(Server, Reliable)
-	void ServerSubmitAnswer(int32 AnswerIndex, bool bVisualAnswer);
+	void ServerSubmitAnswer(int32 AnswerIndex, bool bVisualAnswer, int32 ClientQuestionStep);
 
 	UFUNCTION(Server, Reliable)
-	void ServerSubmitNumericAnswer(float Value);
+	void ServerSubmitNumericAnswer(float Value, int32 ClientQuestionStep);
 
 	// Drag/drop answer for matching/ordering questions: SlotToPiece[slot] is the chosen piece index.
 	UFUNCTION(Server, Reliable)
@@ -661,6 +709,12 @@ protected:
 	// predicted movement actually stops, and a captured/escaped/unlocked prop isn't left frozen).
 	UFUNCTION()
 	void OnRep_PropLockedInPlace();
+
+	// Seat freeze mirror (same idiom as OnRep_PropLockedInPlace): apply / release the seated movement freeze on
+	// clients when bSeated/bSeatLocked change, so a seat-locked owning client's held movement keys stop fighting the
+	// server-side freeze for ~RTT. Both seat fields point here so a late-arriving lock still re-applies.
+	UFUNCTION()
+	void OnRep_SeatedState();
 
 	UFUNCTION()
 	void OnRep_OutOfPlay();
@@ -1045,13 +1099,16 @@ protected:
 	bool bOutOfPlay;
 
 	// Functional first-person sit: replicated so the lowered eye height applies on the owning client
-	// (read each frame in UpdateViewFeel). Movement is frozen server-side while true.
-	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Movement")
+	// (read each frame in UpdateViewFeel). Movement is frozen server-side while true; ReplicatedUsing so the freeze
+	// is APPLIED on the owning client too (its predicted movement must stop, mirroring bPropLockedInPlace) rather
+	// than just shown on the HUD.
+	UPROPERTY(ReplicatedUsing = OnRep_SeatedState, BlueprintReadOnly, Category = "Movement")
 	bool bSeated = false;
 
 	// Set when seated via an interactable chair (ABHTrainSeat): movement input no longer stands you up; only Jump
-	// does. Replicated so the owning client's "move to stand" shortcut respects the lock.
-	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Movement")
+	// does. Replicated so the owning client's "move to stand" shortcut respects the lock; shares OnRep_SeatedState
+	// with bSeated so a lock arriving after the seat flag still re-applies the freeze.
+	UPROPERTY(ReplicatedUsing = OnRep_SeatedState, BlueprintReadOnly, Category = "Movement")
 	bool bSeatLocked = false;
 
 	// Cosmetic seated-pose tracking for the third-person avatar (not replicated; derived from bSeated).
@@ -1198,6 +1255,10 @@ protected:
 	float LastBHopJumpInputTime;
 	float SpecialMoveStartTime;
 	float SpecialMoveEndTime;
+	// Server-clock stamp (GetTeacherCaptureClockSeconds domain; on authority that equals world time, which is what
+	// TryStartSpecialMoveAuthority writes/compares) the special-move cooldown ends. Replicated: as a plain member it
+	// was only ever written on authority, so a remote client's HUD cooldown meter always read "ready".
+	UPROPERTY(Replicated)
 	float SpecialMoveCooldownEndTime;
 	// Momentum "flow chain" tech (survivor-side, bh.MomentumTech): a frame-perfect transient move right as the
 	// previous one ends bypasses the cooldown once and preserves momentum. See Docs/EASTER_EGGS.md.

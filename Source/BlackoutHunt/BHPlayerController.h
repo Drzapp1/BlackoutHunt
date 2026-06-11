@@ -40,6 +40,13 @@ public:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void PreClientTravel(const FString& PendingURL, ETravelType TravelType, bool bIsSeamlessTravel) override;
 	virtual void SetupInputComponent() override;
+	// Pawn lifecycle hooks: every swap (hunt-start RestartPlayer, caught->monitor conversion, respawn) must
+	// drop the transient GameAndUI cursor modes the OLD pawn armed, or the new pawn starts with a stuck
+	// visible cursor and an inverted Tab toggle. OnPossess/OnUnPossess cover the authority side; SetPawn is
+	// the hook a remote client's swap actually reaches (OnRep_Pawn), see ResetTransientInputModesForPawnChange.
+	virtual void OnPossess(APawn* InPawn) override;
+	virtual void OnUnPossess() override;
+	virtual void SetPawn(APawn* InPawn) override;
 
 	UFUNCTION(Exec)
 	void HostGame();
@@ -814,6 +821,13 @@ private:
 	void OnBootConsoleFinished();
 	void FinishBootConsole();
 	void ApplyGameplayInputMode();
+public:
+	// True while this player's in-game menu or atmosphere console is up (GameAndUI input). Pawn-side
+	// handlers whose keys co-fire with non-consuming controller binds gate on this so typed menu text
+	// can't leak into gameplay actions.
+	bool IsGameMenuOpen() const { return MainMenuWidget.IsValid() || AtmosphereConsoleWidget.IsValid(); }
+
+private:
 	// Locks move/look input for a jumpscare and arms a self-restoring safety timer so the
 	// owning client always frees itself even if the explicit unlock RPC is dropped/reordered.
 	// bLockLook=false locks movement only and leaves look/turn free (the "behind you" scare).
@@ -825,6 +839,12 @@ private:
 	// a close-range cue through ClientPlayHorrorCue so it reuses the full impact path.
 	void BeginBehindYouScare(const FBHClientHorrorCue& Cue);
 	void TriggerBehindYouPayoff();
+	// Drops a held "behind you" directive WITHOUT the slam (pawn loss / player out of play mid-hold):
+	// clears the armed state and pending payoff cue, fades the banner, frees the movement-only lock.
+	void CancelBehindYouScare();
+	// Shared body of the pawn lifecycle hooks above: cancels a held behind-you directive and clears the
+	// question-cursor/emote-wheel input modes so a fresh pawn always starts from clean gameplay input.
+	void ResetTransientInputModesForPawnChange();
 	void EnsureAudioPreferencesLoaded();
 	void SaveAudioPreference(const TCHAR* Key, float Value) const;
 	void EnsureComfortPreferencesLoaded();
@@ -861,6 +881,12 @@ private:
 	// unbound clamp volume (wide enough for daylight packs, floored for blackout-dark ones). Trusts any exposure
 	// pass the pack ships. Server-spawned PP volumes do not replicate, so each client materialises its own.
 	void EnsurePropHuntArenaExposureGuard();
+	// Runtime half of the indoor auto-exposure contract (BHGameMode.h, BHIndoorAutoExposureMaxBrightness):
+	// the shipped indoor bakes (Facility/Substation/Tutorial) carry the OLD wide adaptation ceiling baked
+	// into their mood-pass volume and are never re-exported, so each client re-clamps its loaded copy of the
+	// baked volume(s) to the AddMoodPass band on map load (tag-guarded, polled from HandleRoundPhaseUiState).
+	// Skips Foggrounds (fixed exposure) and prop-hunt arenas (EnsurePropHuntArenaExposureGuard's wider band).
+	void ClampIndoorAutoExposure();
 	void TickAdaptiveGraphics(float DeltaSeconds);
 	void SaveGraphicsPreferences() const;
 	void EnsureAmbientMusic();

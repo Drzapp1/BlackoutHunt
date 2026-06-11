@@ -7144,7 +7144,9 @@ FReply SBHMainMenu::OnBotCountStepClicked(int32 Delta)
 			}
 		}
 		FString Message;
-		PC->SetBotCountForMenu(FMath::Clamp(Current + Delta, 0, 11), Message);
+		// Step against the real roster cap (MaxPlayers-1) so the stepper can reach every count the
+		// gamemode will actually fill -- a hardcoded 11 stranded large classes at "11/11".
+		PC->SetBotCountForMenu(FMath::Clamp(Current + Delta, 0, UBHGameSettings::GetClampedClassMaxBots()), Message);
 		StatusText = FText::FromString(Message);
 	}
 
@@ -10958,7 +10960,9 @@ TSharedRef<SWidget> SBHMainMenu::BuildRoundOptionsPanel()
 								}
 							}
 						}
-						return FText::FromString(FString::Printf(TEXT("Bots %d/11"), Count));
+						// Show the cap the server actually enforces (ABHGameState::SetBotOptions clamps to the
+						// same accessor), so "Fill" can never produce a count above the advertised maximum.
+						return FText::FromString(FString::Printf(TEXT("Bots %d/%d"), Count, UBHGameSettings::GetClampedClassMaxBots()));
 					})
 				]
 				+ SHorizontalBox::Slot()

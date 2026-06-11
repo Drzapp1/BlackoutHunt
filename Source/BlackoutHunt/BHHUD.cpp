@@ -57,6 +57,46 @@ FBHTrainWalletReadout BHBuildTrainWalletReadout(EBHPlayerRole Role, int32 Hunter
 	return Readout;
 }
 
+// Pure label -> choice mapping for clickable diagram elements (see BHHUD.h for the ambiguity rule). Defined
+// at file scope (NOT inside the anonymous namespace below) so BHHudMappingTests can link against it.
+int32 BHMapDiagramLabelToChoice(const FString& Label, const TArray<FString>& Choices)
+{
+	if (Label.IsEmpty())
+	{
+		return INDEX_NONE;
+	}
+	// True/false questions can never be answered by clicking a diagram element — yet the bank's TF rows
+	// routinely name a band exactly once, inside a WRONG distractor ("Only radio waves ionise"), which the
+	// uniqueness rule alone would happily map. If the displayed choice set contains a bare True/False, the
+	// whole diagram is illustration only.
+	for (const FString& Choice : Choices)
+	{
+		const FString Trimmed = Choice.TrimStartAndEnd();
+		if (Trimmed.Equals(TEXT("True"), ESearchCase::IgnoreCase) || Trimmed.Equals(TEXT("False"), ESearchCase::IgnoreCase))
+		{
+			return INDEX_NONE;
+		}
+	}
+	int32 MappedChoice = INDEX_NONE;
+	for (int32 Index = 0; Index < Choices.Num(); ++Index)
+	{
+		// Leading-token match only: an identify answer NAMES the band up front ("Radio waves",
+		// "Infrared - thermal imaging"); a distractor that merely mentions the band mid-sentence
+		// ("Microwaves are ionising like gamma rays") must not become click-submittable.
+		if (Choices[Index].TrimStartAndEnd().StartsWith(Label, ESearchCase::IgnoreCase))
+		{
+			if (MappedChoice != INDEX_NONE)
+			{
+				// A second choice also leads with this label (ordering/matching banks list several
+				// bands per row): there is no unique answer for the click, so the element maps to nothing.
+				return INDEX_NONE;
+			}
+			MappedChoice = Index;
+		}
+	}
+	return MappedChoice;
+}
+
 namespace
 {
 	// Survivor stress warning thresholds (fear/dread are 0..100 meters). These cutoffs
@@ -597,6 +637,20 @@ namespace
 				: FString(TEXT("Press Enter to ready up for the classroom round."));
 		case EBHRoundPhase::Prep:
 		{
+			// Prop hunt rides Prep as the HIDE phase: the hide SURVIVES the seeker's release, so the
+			// classroom "resets everyone" coaching below is not just irrelevant but actively tells props
+			// that building a hide is pointless. Replace the whole line.
+			if (GameState->bPropHuntMode)
+			{
+				const FString HideLine = PlayerState && PlayerState->PlayerRole == EBHPlayerRole::Hunter
+					? FString(TEXT("Hold tight - the props are hiding. You are released when the timer ends."))
+					: FString(TEXT("Look at a prop and press Z to become it, lock with middle-mouse, hold still. Your hide carries into the seek."));
+				if (GameState->RemainingTime > 0 && GameState->RemainingTime <= 5)
+				{
+					return FString::Printf(TEXT("Seeker releases in %ds. %s"), GameState->RemainingTime, *HideLine);
+				}
+				return HideLine;
+			}
 			// Guided warmup checklist: a short, role-specific "N/M - next step" line computed from
 			// the player's tried-actions mask (EBHWarmupStep). Replaces the old static strings so a
 			// new student always sees the next thing to try, and a clear "you're ready" when done.
@@ -3928,22 +3982,23 @@ void ABHHUD::DrawQuestionPanel(const ABHObjectiveStation* Station)
 			TArray<FBHDiagramClickRegion> DiagramRegions;
 			FBHDiagramRenderer::GetClickableRegions(Station->GetQuestionDiagramType(), Station->GetQuestionDiagram(),
 				PanelX + 24.0f * S, PanelY + 108.0f * S, PanelW - 48.0f * S, DiagramH - 10.0f * S, RegionCtx, DiagramRegions);
+			TArray<FString> DisplayedChoices;
+			DisplayedChoices.Reserve(ChoiceCount);
+			for (int32 Index = 0; Index < ChoiceCount; ++Index)
+			{
+				DisplayedChoices.Add(Station->GetQuestionChoice(Index));
+			}
 			for (const FBHDiagramClickRegion& DR : DiagramRegions)
 			{
 				if (!DR.Rect.bIsValid)
 				{
 					continue;
 				}
-				// Map the element label to the choice whose text names it (e.g. band "infrared" -> "Infrared").
-				int32 MappedChoice = INDEX_NONE;
-				for (int32 Index = 0; Index < ChoiceCount; ++Index)
-				{
-					if (Station->GetQuestionChoice(Index).Contains(DR.Label, ESearchCase::IgnoreCase))
-					{
-						MappedChoice = Index;
-						break;
-					}
-				}
+				// Map the element label to the choice whose text names it (band "infrared" -> "Infrared"),
+				// but only when exactly one choice does: on ordering/matching/true-false questions several
+				// choices can name the same band, and submitting the first hit graded an arbitrary row off
+				// an exploratory click. Unmapped elements simply draw no brackets and take no clicks.
+				const int32 MappedChoice = BHMapDiagramLabelToChoice(DR.Label, DisplayedChoices);
 				if (MappedChoice == INDEX_NONE)
 				{
 					continue;
@@ -4151,8 +4206,18 @@ void ABHHUD::DrawPhaseBanner(const ABHGameState* GameState, const ABHCharacter* 
 	switch (GameState->RoundPhase)
 	{
 	case EBHRoundPhase::Prep:
-		Title = TEXT("ROLE WARMUP");
-		Subtitle = TEXT("Try flashlight, lockers, questions, decoys, scans, captures, and Hall Monitor tools. Hunt start resets everyone.");
+		// Prop hunt's Prep IS the hide phase and the hide persists into the seek — never show the
+		// classroom "resets everyone" promise there (it tells props that hiding now is wasted).
+		if (GameState->bPropHuntMode)
+		{
+			Title = TEXT("HIDE PHASE");
+			Subtitle = TEXT("Disguise (Z on a prop), lock (middle-mouse), and hold position. The seeker is released when the timer ends.");
+		}
+		else
+		{
+			Title = TEXT("ROLE WARMUP");
+			Subtitle = TEXT("Try flashlight, lockers, questions, decoys, scans, captures, and Hall Monitor tools. Hunt start resets everyone.");
+		}
 		Accent = FLinearColor(0.95f, 0.76f, 0.36f, 1.0f);
 		break;
 	case EBHRoundPhase::Hunt:

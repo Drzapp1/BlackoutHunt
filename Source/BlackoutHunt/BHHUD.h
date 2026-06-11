@@ -30,6 +30,18 @@ struct FBHTrainWalletReadout
 
 FBHTrainWalletReadout BHBuildTrainWalletReadout(EBHPlayerRole Role, int32 HunterPoints, int32 QuestionPoints);
 
+// Maps a clickable diagram element label (e.g. the EM-spectrum band "infrared") to the answer choice whose
+// display text NAMES it as the answer. Three rules, each closing a real misfire in the shipped bank:
+//  * a bare "True"/"False" anywhere in the choice set disables diagram answers entirely (TF rows name a band
+//    exactly once — inside a wrong distractor like "Only radio waves ionise" — so uniqueness alone fails);
+//  * the label must lead the choice text ("Radio waves" maps; "Only radio waves" / "...like gamma rays" do
+//    not — distractors that merely mention a band are not click-submittable);
+//  * the match must be UNIQUE — two leading matches (ordering/matching rows) return INDEX_NONE.
+// Unmatched/ambiguous labels mean the region is simply not answer-clickable; single-band identify questions
+// keep their mapping, since their choices each lead with a different band name. Pure free function defined
+// in BHHUD.cpp OUTSIDE the anonymous namespace so BHHudMappingTests can link against it.
+int32 BHMapDiagramLabelToChoice(const FString& Label, const TArray<FString>& Choices);
+
 UCLASS()
 class BLACKOUTHUNT_API ABHHUD : public AHUD
 {
