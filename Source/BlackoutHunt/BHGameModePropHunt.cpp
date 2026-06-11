@@ -319,7 +319,7 @@ void ABHGameMode::RefreshPropHuntGameState()
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	const float Base = CVarBHPropHuntTauntBase.GetValueOnGameThread();
 	const float Min = CVarBHPropHuntTauntMin.GetValueOnGameThread();
-	const float Elapsed = (HuntSeconds > 0) ? static_cast<float>(HuntSeconds - BHGS->RemainingTime) / static_cast<float>(HuntSeconds) : 0.0f;
+	const float Elapsed = BHPropHunt::SeekElapsedFraction(PropHuntSeekClockSeconds, BHGS->RemainingTime);
 	const float Interval = BHPropHunt::TauntIntervalSeconds(Elapsed, Base, Min);
 	const float NextTaunt = (PropHuntLastTauntServerTime > -100.0f) ? PropHuntLastTauntServerTime + Interval : Now + Interval;
 	BHGS->SetPropHuntState(true, Remaining, Total, NextTaunt);
@@ -403,11 +403,15 @@ void ABHGameMode::BeginPropHuntHunt()
 	}
 	ABHGameState* BHGS = GetGameState<ABHGameState>();
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	// Record the seek length the clock is actually armed with: the taunt/pulse cadence lerps normalize by this.
+	// HuntSeconds (classroom, 900 default) is NOT the prop-hunt clock — dividing by it started the tightening
+	// curve ~73% spent at release (H2), roughly doubling prop exposure for the whole seek.
+	PropHuntSeekClockSeconds = FMath::Max(10, CVarBHPropHuntSeekSeconds.GetValueOnGameThread());
 	if (BHGS)
 	{
 		// Release everyone: seeker un-frozen, capture on.
 		BHGS->SetIntermissionLocks(false, false, false);
-		BHGS->SetRemainingTime(FMath::Max(10, CVarBHPropHuntSeekSeconds.GetValueOnGameThread()));
+		BHGS->SetRemainingTime(PropHuntSeekClockSeconds);
 	}
 	PropHuntLastTauntServerTime = Now;
 	PropHuntLastPulseServerTime = Now; // first reveal pulse lands a full interval after release
@@ -472,13 +476,19 @@ void ABHGameMode::HandlePropHuntCapture(ABHCharacter* Survivor, ABHCharacter* Ca
 	BroadcastGameplayAudioCue(BHMakePropHuntAudioCue(BHPropHuntFoundStingSoundPath, Loc, 0.7f, 1.0f, 0.0f, /*bSpatial*/ false));
 
 	// Infection: props remain -> the caught prop joins the seeker team. Otherwise that was the last prop -> seekers win.
-	if (CountAliveSurvivors() > 0 && Ctrl)
+	if (CountAliveSurvivors() > 0)
 	{
-		PS->SetRole(EBHPlayerRole::Hunter);
-		PS->SetLifeState(EBHPlayerLifeState::Alive);
-		PS->SetHiddenInLocker(false);
-		BroadcastStatus(FString::Printf(TEXT("%s joined the hunt!"), *PS->GetPlayerName()), 3.0f);
-		RestartPlayer(Ctrl);
+		// A momentarily controller-less catch (possession churn / mid-leave) must NOT end the round while other
+		// props are still hidden: MarkCaptured above already took this prop out of play and keeps the count math
+		// exact, so just skip the infection conversion and let the round continue.
+		if (Ctrl)
+		{
+			PS->SetRole(EBHPlayerRole::Hunter);
+			PS->SetLifeState(EBHPlayerLifeState::Alive);
+			PS->SetHiddenInLocker(false);
+			BroadcastStatus(FString::Printf(TEXT("%s joined the hunt!"), *PS->GetPlayerName()), 3.0f);
+			RestartPlayer(Ctrl);
+		}
 	}
 	else
 	{
@@ -500,7 +510,8 @@ void ABHGameMode::TickPropHunt()
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	const float Base = CVarBHPropHuntTauntBase.GetValueOnGameThread();
 	const float Min = CVarBHPropHuntTauntMin.GetValueOnGameThread();
-	const float Elapsed = (HuntSeconds > 0) ? static_cast<float>(HuntSeconds - BHGS->RemainingTime) / static_cast<float>(HuntSeconds) : 0.0f;
+	// Normalize by the armed seek clock (0.0 at release -> 1.0 at timeout), never the classroom HuntSeconds (H2).
+	const float Elapsed = BHPropHunt::SeekElapsedFraction(PropHuntSeekClockSeconds, BHGS->RemainingTime);
 	const float Interval = BHPropHunt::TauntIntervalSeconds(Elapsed, Base, Min);
 
 	if (Now - PropHuntLastTauntServerTime >= Interval)
@@ -666,6 +677,18 @@ void ABHGameMode::HandlePropHuntManualTaunt(ABHCharacter* Prop)
 		return;
 	}
 
+	// The taunt bonus pays for risking a BUILT hide. Without this gate an undisguised prop sprinting around could
+	// farm +Bonus per cooldown while kiting the seeker (out-earning the survival trickle ~3:1). Reject with feedback
+	// rather than playing a free zero-point horn: a silent no-op reads as a dead key.
+	if (!Prop->IsDisguisedAsProp())
+	{
+		if (PropPC)
+		{
+			PropPC->ClientShowStatusMessage(TEXT("Taunting needs a disguise - press Z on a prop first."), 2.5f);
+		}
+		return;
+	}
+
 	const float Now = GetWorld()->GetTimeSeconds();
 	const float Cooldown = FMath::Max(1.0f, CVarBHPropHuntManualTauntCooldown.GetValueOnGameThread());
 	if (Now - Prop->LastManualTauntServerTime < Cooldown)
@@ -764,16 +787,25 @@ TArray<ABHPlayerState*> ABHGameMode::ChoosePropHuntStartingSeekers(const TArray<
 		Candidates.RemoveAt(PickIndex);
 	}
 
-	const int32 SeekerBase = FMath::Max(0, CVarBHPropHuntSeekerBasePoints.GetValueOnGameThread());
 	for (ABHPlayerState* Seeker : Chosen)
 	{
-		++Seeker->PropHuntTimesSeeker;
-		if (SeekerBase > 0)
-		{
-			Seeker->AddPropHuntScore(SeekerBase);
-		}
+		GrantPropHuntSeekerCredit(Seeker);
 	}
 	return Chosen;
+}
+
+void ABHGameMode::GrantPropHuntSeekerCredit(ABHPlayerState* Seeker)
+{
+	if (!Seeker)
+	{
+		return;
+	}
+	++Seeker->PropHuntTimesSeeker;
+	const int32 SeekerBase = FMath::Max(0, CVarBHPropHuntSeekerBasePoints.GetValueOnGameThread());
+	if (SeekerBase > 0)
+	{
+		Seeker->AddPropHuntScore(SeekerBase);
+	}
 }
 
 // Match wrapper (P6), on the idempotent EndRound seam: survive bonuses, the round-MVP banner, the persisted round

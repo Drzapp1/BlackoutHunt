@@ -51,6 +51,19 @@ namespace BHPropHunt
 		return FMath::Lerp(SafeBase, SafeMin, Alpha);
 	}
 
+	// Fraction of the SEEK that has elapsed, from the seek-clock length armed at release and the replicated countdown.
+	// The cadence lerps normalize by the ACTUAL seek length (bh.PropHuntSeekSeconds at arm time), never the classroom
+	// HuntSeconds: 0.0 at seek start, 1.0 at timeout. Clamped on degenerate inputs — an unarmed/zero clock (or time
+	// added mid-seek) reads as "seek just started" so the cadence stays at its loosest, never divides by zero.
+	inline float SeekElapsedFraction(int32 SeekClockSeconds, int32 RemainingTime)
+	{
+		if (SeekClockSeconds <= 0)
+		{
+			return 0.0f;
+		}
+		return FMath::Clamp(static_cast<float>(SeekClockSeconds - RemainingTime) / static_cast<float>(SeekClockSeconds), 0.0f, 1.0f);
+	}
+
 	// A seeker who swings at empty air / the wrong prop gets a short self-slow that grows with consecutive misses, so
 	// frantic flailing is punished but a single honest miss barely stings. Climbs Base + (misses-1)*PerExtraMiss, capped.
 	// With (0.6, 0.35, 2.0): 1->0.60, 2->0.95, 3->1.30, 4->1.65, 5+->2.00.

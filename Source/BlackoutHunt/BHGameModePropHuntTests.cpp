@@ -168,4 +168,51 @@ bool FBHPropHuntArenaScatterTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// The seek cadence clock (H2 regression). The taunt/pulse tightening lerps normalize by the seek length armed in
+// BeginPropHuntHunt (bh.PropHuntSeekSeconds), NEVER the classroom HuntSeconds: dividing by HuntSeconds (900 default)
+// with a 240 s seek started the curve at Elapsed = 660/900 = ~0.73 — forced taunts ran ~15s->10s instead of 30s->10s
+// for the whole round. SeekElapsedFraction is the pure helper both live sites (TickPropHunt cadences and the
+// RefreshPropHuntGameState HUD hint) now share.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHPropHuntSeekCadenceClockTest,
+	"BlackoutHunt.PropHunt.SeekCadenceClock",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHPropHuntSeekCadenceClockTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	constexpr int32 SeekSeconds = 240;   // bh.PropHuntSeekSeconds default
+	constexpr int32 ClassroomHunt = 900; // HuntSeconds classroom default — must play no part in the cadence
+	constexpr float TauntBase = 30.0f;   // bh.PropHuntTauntBase default
+	constexpr float TauntMin = 10.0f;    // bh.PropHuntTauntMin default
+
+	// Seek start: the full clock remains -> 0.0 elapsed -> the loose Base interval.
+	TestEqual(TEXT("Elapsed is 0.0 at seek start."), BHPropHunt::SeekElapsedFraction(SeekSeconds, SeekSeconds), 0.0f);
+	TestEqual(TEXT("The taunt interval at seek start is the loose Base."),
+		BHPropHunt::TauntIntervalSeconds(BHPropHunt::SeekElapsedFraction(SeekSeconds, SeekSeconds), TauntBase, TauntMin), TauntBase);
+
+	// The regression shape: normalized by the CLASSROOM clock, the same instant read as ~73% spent and the interval
+	// opened at ~15.3 s instead of 30 s. Pin both so a revert of the clock source fails loudly.
+	const float WrongClockElapsed = static_cast<float>(ClassroomHunt - SeekSeconds) / static_cast<float>(ClassroomHunt);
+	TestTrue(TEXT("(Regression) the classroom-clock fraction at seek start really was ~0.733."),
+		FMath::IsNearlyEqual(WrongClockElapsed, 0.7333f, 0.001f));
+	TestTrue(TEXT("(Regression) the classroom-clock interval at seek start was ~15.3 s, not Base."),
+		BHPropHunt::TauntIntervalSeconds(WrongClockElapsed, TauntBase, TauntMin) < 16.0f);
+
+	// Mid-seek and timeout.
+	TestEqual(TEXT("Elapsed is 0.5 at half the seek."), BHPropHunt::SeekElapsedFraction(SeekSeconds, SeekSeconds / 2), 0.5f);
+	TestEqual(TEXT("Elapsed is 1.0 at timeout."), BHPropHunt::SeekElapsedFraction(SeekSeconds, 0), 1.0f);
+	TestEqual(TEXT("The taunt interval at timeout is the tight Min."),
+		BHPropHunt::TauntIntervalSeconds(BHPropHunt::SeekElapsedFraction(SeekSeconds, 0), TauntBase, TauntMin), TauntMin);
+
+	// Degenerate inputs: never divide by zero, always clamped to [0,1].
+	TestEqual(TEXT("An unarmed (zero) seek clock reads as seek start."), BHPropHunt::SeekElapsedFraction(0, 100), 0.0f);
+	TestEqual(TEXT("A negative seek clock reads as seek start."), BHPropHunt::SeekElapsedFraction(-5, 100), 0.0f);
+	TestEqual(TEXT("Remaining time above the clock clamps to 0 (time added mid-seek)."),
+		BHPropHunt::SeekElapsedFraction(SeekSeconds, SeekSeconds + 60), 0.0f);
+	TestEqual(TEXT("Negative remaining time clamps to 1 (clock overrun)."), BHPropHunt::SeekElapsedFraction(SeekSeconds, -30), 1.0f);
+
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS
