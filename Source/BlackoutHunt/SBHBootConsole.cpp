@@ -423,8 +423,8 @@ TSharedRef<SWidget> SBHBootConsole::BuildLogBody()
 			.Text(TAttribute<FText>::Create([this]()
 			{
 				return FText::FromString(bSkipArmed
-					? TEXT("firmware 0.9.1   -   cold start   -   press a key AGAIN to skip")
-					: TEXT("firmware 0.9.1   -   cold start   -   press a key TWICE to skip"));
+					? TEXT("firmware 0.9.9   -   cold start   -   press a key AGAIN to skip")
+					: TEXT("firmware 0.9.9   -   cold start   -   press a key TWICE to skip"));
 			}))
 		];
 	Root->AddSlot()

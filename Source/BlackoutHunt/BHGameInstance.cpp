@@ -40,7 +40,7 @@ namespace
 	// Gates EOS/Steam session discovery/matching only (direct-IP/LAN/tunnel use the engine's native net
 	// version check). MUST be bumped with ProjectVersion in Config/DefaultGame.ini so mismatched online
 	// builds don't match — and so a half-updated build can still find sessions. Keep these in lockstep.
-	const FString BHOnlineBuildId(TEXT("BlackoutHunt-0.9.1"));
+	const FString BHOnlineBuildId(TEXT("BlackoutHunt-0.9.9"));
 	constexpr int32 BHOnlineMaxSearchResults = 25;
 
 	FString NormalizeRuntimeLevelName(FString LevelName)

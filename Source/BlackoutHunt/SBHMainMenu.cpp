@@ -5548,7 +5548,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildStartScreen()
 						const FLinearColor Danger = BHResolveActiveThemeColor(&FBHMenuTheme::Danger);
 						return FSlateColor(FMath::Lerp(Danger, Dim, FlickerAlpha));
 					}))
-					.Text(FText::FromString(TEXT("BUILD 0.9.1      //      SIGNAL: UNSECURED      //      POWER: FAILING")))
+					.Text(FText::FromString(TEXT("BUILD 0.9.9      //      SIGNAL: UNSECURED      //      POWER: FAILING")))
 				]
 				+ SVerticalBox::Slot()
 				.AutoHeight()
