@@ -1158,6 +1158,9 @@ void ABHGameMode::BeginPlay()
 				: RosterBHGI->CountRecentlyPersistedHumanPlayers(90.0);
 		}
 		AutoPrepRosterWaitStartSeconds = FPlatformTime::Seconds();
+		UE_LOG(LogTemp, Log, TEXT("BlackoutHunt AutoPrep: roster gate armed (expected humans=%d, timeout=%.0fs)."),
+			ExpectedAutoPrepHumanCount,
+			GetDefault<UBHGameSettings>() ? GetDefault<UBHGameSettings>()->AutoPrepRosterTimeoutSeconds : 45.0f);
 		GetWorldTimerManager().SetTimer(AutoPrepRosterTimerHandle, this, &ABHGameMode::PollAutoPrepRosterGate, 1.0f, true);
 	}
 
@@ -1207,6 +1210,7 @@ void ABHGameMode::PollAutoPrepRosterGate()
 	{
 		// The round already started by another path (host force-start, ready-up) or the phase moved on;
 		// the gate has nothing left to decide.
+		UE_LOG(LogTemp, Log, TEXT("BlackoutHunt AutoPrep: roster gate released (phase moved on)."));
 		GetWorldTimerManager().ClearTimer(AutoPrepRosterTimerHandle);
 		return;
 	}
@@ -15972,7 +15976,11 @@ FString ABHGameMode::BuildTravelOptionsForLevel(const FString& LevelName, bool b
 {
 	const FString NormalizedLevel = bIntermission ? TEXT("TrainIntermission") : NormalizeBHLevelName(LevelName);
 	const FString BaseMap = ResolveTravelMapForLevel(NormalizedLevel);
-	FString TravelURL = FString::Printf(TEXT("%s?listen?BHFogPreset=%s?BHStageIndex=%d"),
+	// Pin the game mode on EVERY travel URL: third-party pack maps (the prop-hunt arenas) ship with their
+	// own WorldSettings GameMode override, which beats GlobalDefaultGameMode when the URL carries no ?game=.
+	// Landing in a non-BH game mode means no phases, no AutoPrep, no round flow — the world soft-bricks at
+	// "Game class is 'GameModeBase'". BH-authored maps are unaffected (same class either way).
+	FString TravelURL = FString::Printf(TEXT("%s?listen?game=/Script/BlackoutHunt.BHGameMode?BHFogPreset=%s?BHStageIndex=%d"),
 		*BaseMap,
 		*FogPresetToString(NextFogPreset),
 		FMath::Clamp(StageIndex, 0, GetMaxStageIndex()));
