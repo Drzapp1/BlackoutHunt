@@ -10,6 +10,7 @@
 #include "BHCharacter.h"
 #include "Engine/World.h"
 #include "Components/StaticMeshComponent.h"
+#include "Net/UnrealNetwork.h"
 
 ABHPowerSwitch::ABHPowerSwitch()
 {
@@ -36,6 +37,13 @@ ABHPowerSwitch::ABHPowerSwitch()
 	BHPropVisuals::TintPart(SwitchLever, FLinearColor(0.08f, 0.085f, 0.09f, 1.0f));
 	BHPropVisuals::TintPart(CircuitLight, FLinearColor(0.18f, 0.86f, 0.62f, 1.0f), 1.8f);
 	BHPropVisuals::TintPart(WarningLabel, FLinearColor(0.88f, 0.62f, 0.10f, 1.0f));
+}
+
+void ABHPowerSwitch::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(ABHPowerSwitch, CircuitId);
+	DOREPLIFETIME(ABHPowerSwitch, SwitchLabel);
 }
 
 void ABHPowerSwitch::Configure(int32 NewCircuitId, const FText& NewLabel)

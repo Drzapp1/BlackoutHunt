@@ -5,6 +5,7 @@
 #include "BHSecurityShutter.h"
 #include "BHCharacter.h"
 #include "BHGameMode.h"
+#include "BHGameState.h"
 #include "BHPlayerController.h"
 #include "BHPlayerState.h"
 #include "BHPropVisuals.h"
@@ -126,15 +127,29 @@ bool ABHSecurityShutter::IsOpen() const
 bool ABHSecurityShutter::CanInteract_Implementation(ABHCharacter* Character) const
 {
 	const ABHPlayerState* BHPS = Character ? Character->GetBHPlayerState() : nullptr;
-	return BHPS && BHPS->LifeState == EBHPlayerLifeState::Alive;
+	if (!BHPS || BHPS->LifeState != EBHPlayerLifeState::Alive)
+	{
+		return false;
+	}
+	// In-round control only: no toggling shutters / blinding the CCTV circuit in the lobby or on results.
+	const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+	return BHGS
+		&& BHGS->RoundPhase != EBHRoundPhase::Lobby
+		&& BHGS->RoundPhase != EBHRoundPhase::SurvivorsWin
+		&& BHGS->RoundPhase != EBHRoundPhase::HunterWin;
 }
 
 void ABHSecurityShutter::BeginInteract_Implementation(ABHCharacter* Character)
 {
-	if (!HasAuthority())
+	// Anti-grief: require alive + in-round (CanInteract) AND throttle to one toggle/sec per shutter,
+	// mirroring its sibling terminal — a circuit-wired shutter toggles the SAME circuit-wide state the
+	// terminal does, so leaving this direct path ungated would just move the spam one prop over.
+	const float NowToggleTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	if (!HasAuthority() || !CanInteract_Implementation(Character) || (NowToggleTime - LastToggleServerTime < 1.0f))
 	{
 		return;
 	}
+	LastToggleServerTime = NowToggleTime;
 
 	if (CircuitId > 0)
 	{

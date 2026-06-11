@@ -36,6 +36,13 @@ public:
 	static FBHInternetTunnelResult GetInternetTunnelStatus(int32 LocalPort = 7777);
 	static FString NormalizeJoinAddress(const FString& Address, int32 DefaultPort = 7777);
 	static FString NormalizePreferredJoinEndpoint(const TArray<FString>& Endpoints, int32 DefaultPort = 7777);
+	// Tunnel-agent log triage (pure text policy, exposed for tests): true when an agent session marker
+	// ("udp session details received" / "agent registered") appears within the LAST TailCharsToScan
+	// characters of the log text. The playit agent log only accumulates — a dead session that keeps
+	// appending reconnect errors still CONTAINS markers from when it was healthy (and that spam keeps
+	// the file mtime fresh, defeating any mtime gate) — while a live agent re-logs its session marker
+	// every ~10 seconds. Requiring the marker in the recent tail makes the marker itself prove recency.
+	static bool LogTextShowsRecentAgentSession(const FString& LogText, int32 TailCharsToScan = 64 * 1024);
 	static FString MakeJoinInviteCode(const FString& Address, int32 DefaultPort = 7777);
 	static FString ResolveLocalJoinAddress(int32 LocalPort = 7777);
 	static FString MakeDefaultGameSsid();

@@ -519,10 +519,13 @@ void ABHTrainIntermissionManager::AutoBoardPlayers()
 		// Continuity: only pull in players who are actually OUTSIDE the carriage (up on the roof, fallen into the
 		// trench, etc.). A player already standing inside keeps their exact spot, so the doors-close transition no
 		// longer yanks ("respawns") everyone right as the train starts moving and the ride sway blends in.
+		// The X band must cover the WHOLE seven-car interior: the tube runs +/-5250 with lounge cars centred at
+		// +/-4500 (ABHGameMode::BuildTrainIntermissionLevel), so a band any narrower treats every lounge sitter
+		// as "outside" and teleports them mid-train at each doors-close. 5230 insets the 18cm end-cap walls.
 		const FVector Location = Character->GetActorLocation();
 		const bool bAlreadyAboard =
 			FMath::Abs(Location.Y) <= 290.0f &&
-			Location.X >= -3720.0f && Location.X <= 3720.0f &&
+			Location.X >= -5230.0f && Location.X <= 5230.0f &&
 			Location.Z >= 40.0f && Location.Z <= 330.0f;
 		if (bAlreadyAboard)
 		{

@@ -13,6 +13,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "Net/UnrealNetwork.h"
 
 ABHSecurityTerminal::ABHSecurityTerminal()
 {
@@ -69,6 +70,13 @@ void ABHSecurityTerminal::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 	RefreshCircuitVisuals();
+}
+
+void ABHSecurityTerminal::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(ABHSecurityTerminal, CircuitId);
+	DOREPLIFETIME(ABHSecurityTerminal, TerminalLabel);
 }
 
 void ABHSecurityTerminal::Configure(int32 NewCircuitId, const FText& NewLabel)

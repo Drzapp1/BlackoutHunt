@@ -63,7 +63,7 @@ bool FBHTrainEconomyTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Null player state cannot buy train items."), ABHPowerupShopTerminal::IsRoleAllowedForPowerup(nullptr, EBHPowerupType::StaminaBoost));
 	const FString TeacherShopSummary = ABHPowerupShopTerminal::BuildShopItemSummary(EBHPowerupType::TeacherScanFocus);
 	TestTrue(TEXT("Teacher shop summary includes capture currency."), TeacherShopSummary.Contains(TEXT("capture pts")));
-	TestTrue(TEXT("Teacher shop summary includes charge cap."), TeacherShopSummary.Contains(TEXT("Max charges")));
+	TestTrue(TEXT("Teacher shop summary includes charge cap."), TeacherShopSummary.Contains(TEXT("Max x")));
 	TestTrue(TEXT("Teacher shop summary describes passive upgrades."), TeacherShopSummary.Contains(TEXT("Passive upgrade")));
 	TestTrue(TEXT("Survivor buying Teacher upgrade gets a role-specific failure."), ABHPowerupShopTerminal::BuildPurchaseStatusText(SurvivorPS, EBHPowerupType::TeacherScanFocus).Contains(TEXT("Teacher-only")));
 

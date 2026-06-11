@@ -52,8 +52,24 @@ void ABHDoor::BeginInteract_Implementation(ABHCharacter* Character)
 		return;
 	}
 
+	// Anti-grief throttle in the style of the sliding gate's, but on the CLOSE only: the slam is the
+	// half with teeth (free swing interrupt + Teacher noise ping below), so E-spam could otherwise
+	// machine-gun 1.2s Teacher recoveries back to back in a doorway standoff. Opens stay free — they
+	// have no gameplay side effects, and gating them would also rob a survivor who just ran through
+	// of the legitimate open-then-immediately-slam play. 0.7s is shorter than the gate's 1s so a
+	// deliberately timed single slam still feels snappy.
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	if (bOpen && Now - LastCloseServerTime < 0.7f)
+	{
+		return;
+	}
+
 	const bool bWasOpen = bOpen;
 	SetOpen(!bOpen);
+	if (bWasOpen && !bOpen)
+	{
+		LastCloseServerTime = Now;
+	}
 	if (bWasOpen && !bOpen && Character)
 	{
 		if (ABHPlayerState* DoorUserPS = Character->GetPlayerState<ABHPlayerState>())

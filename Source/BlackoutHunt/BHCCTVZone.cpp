@@ -48,6 +48,7 @@ ABHCCTVZone::ABHCCTVZone()
 	bRoundOffline = false;
 	CircuitId = 0;
 	AlertLabel = TEXT("CCTV zone");
+	ZoneExtent = ZoneTrigger->GetUnscaledBoxExtent();
 
 	RefreshMarkerScale(ZoneTrigger->GetUnscaledBoxExtent());
 	ApplyZoneVisuals();
@@ -60,6 +61,14 @@ void ABHCCTVZone::BeginPlay()
 	if (HasAuthority() && ZoneTrigger)
 	{
 		ZoneTrigger->OnComponentBeginOverlap.AddDynamic(this, &ABHCCTVZone::OnZoneBeginOverlap);
+	}
+
+	if (!HasAuthority())
+	{
+		// Late joiners / initial replication: the configured extent rode in with the spawn bunch, but
+		// the components were built at the constructor default — size the box and stripes before the
+		// visuals pass below paints them (OnRep only covers changes received after this point).
+		OnRep_ZoneExtent();
 	}
 
 	SetActorTickEnabled(HasAuthority());
@@ -102,6 +111,7 @@ void ABHCCTVZone::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifet
 	DOREPLIFETIME(ABHCCTVZone, bZoneVisible);
 	DOREPLIFETIME(ABHCCTVZone, CircuitId);
 	DOREPLIFETIME(ABHCCTVZone, AlertLabel);
+	DOREPLIFETIME(ABHCCTVZone, ZoneExtent);
 }
 
 void ABHCCTVZone::ConfigureZone(ABHSecurityCamera* NewCamera, int32 NewCircuitId, const FString& NewAlertLabel, const FVector& NewBoxExtent, bool bNewVisible)
@@ -115,6 +125,7 @@ void ABHCCTVZone::ConfigureZone(ABHSecurityCamera* NewCamera, int32 NewCircuitId
 		FMath::Max(240.0f, NewBoxExtent.X),
 		FMath::Max(180.0f, NewBoxExtent.Y),
 		FMath::Max(80.0f, NewBoxExtent.Z));
+	ZoneExtent = SafeExtent;
 	if (ZoneTrigger)
 	{
 		ZoneTrigger->SetBoxExtent(SafeExtent);
@@ -186,6 +197,18 @@ ABHSecurityCamera* ABHCCTVZone::GetLinkedCamera() const
 
 void ABHCCTVZone::OnRep_ZoneState()
 {
+	ApplyZoneVisuals();
+}
+
+void ABHCCTVZone::OnRep_ZoneExtent()
+{
+	if (ZoneTrigger)
+	{
+		ZoneTrigger->SetBoxExtent(ZoneExtent);
+	}
+	// RefreshMarkerScale repositions the stripes but leaves them hidden/untinted, so re-run the
+	// visuals pass afterwards — same ordering ConfigureZone uses on the server.
+	RefreshMarkerScale(ZoneExtent);
 	ApplyZoneVisuals();
 }
 

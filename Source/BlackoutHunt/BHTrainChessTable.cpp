@@ -493,6 +493,25 @@ void ABHTrainChessTable::MakeMoveAuthoritative(int32 From, int32 To)
 	}
 
 	Turn = (Turn == 0) ? 1 : 0;
+
+	// In this simplified ruleset (win by king capture, no check) a side with zero moves loses outright —
+	// the AI path already applies that rule in DoAIMove, but a PvP game reaching the same position would
+	// otherwise soft-stall forever: every click answers "can't move there" and the table stays claimed
+	// until both players walk away. Apply the rule for whoever is to move, regardless of opponent type.
+	const int32 SideToMove = (Turn == 0) ? 1 : -1;
+	TArray<int32> AvailableMoves;
+	PseudoLegalMoves(Board, SideToMove, AvailableMoves);
+	if (AvailableMoves.Num() == 0)
+	{
+		const FString Winner = (Mover > 0)
+			? (WhiteName.IsEmpty() ? TEXT("White") : WhiteName)
+			: (BlackName.IsEmpty() ? TEXT("Black") : BlackName);
+		EndGame(FString::Printf(TEXT("%s has no moves - %s wins."),
+			SideToMove > 0 ? TEXT("White") : TEXT("Black"),
+			*Winner), BHChessWin);
+		return;
+	}
+
 	StatusText = (Turn == 0) ? TEXT("White to move.") : TEXT("Black to move.");
 	StatusAccent = BHChessNeutral;
 	ForceNetUpdate();

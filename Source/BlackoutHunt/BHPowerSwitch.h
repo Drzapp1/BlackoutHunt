@@ -16,6 +16,8 @@ class BLACKOUTHUNT_API ABHPowerSwitch : public ABHInteractableActor
 public:
 	ABHPowerSwitch();
 
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
 	void Configure(int32 NewCircuitId, const FText& NewLabel);
 
 	virtual void BeginInteract_Implementation(ABHCharacter* Character) override;
@@ -35,10 +37,14 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UStaticMeshComponent> WarningLabel;
 
-	UPROPERTY(EditAnywhere, Category = "Power")
+	// Replicated: Configure() runs on the server at spawn, but the interaction prompt is built
+	// client-side (GetInteractionLabel returns SwitchLabel directly), so without replication remote
+	// clients read the constructor-default "Toggle Lights" on every switch. Set-before-first-replication
+	// means plain Replicated suffices — no visual derives from these, so no OnRep.
+	UPROPERTY(Replicated, EditAnywhere, Category = "Power")
 	int32 CircuitId;
 
-	UPROPERTY(EditAnywhere, Category = "Power")
+	UPROPERTY(Replicated, EditAnywhere, Category = "Power")
 	FText SwitchLabel;
 
 	// Server time of the last accepted toggle. Throttles toggles so a griefing student can't strobe a

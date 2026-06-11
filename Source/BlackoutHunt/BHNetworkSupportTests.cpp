@@ -75,6 +75,57 @@ bool FBHNetworkSupportNormalizeJoinAddressTest::RunTest(const FString& Parameter
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHNetworkSupportTunnelAgentLogTailTest,
+	"BlackoutHunt.Network.TunnelAgentLogTail",
+	EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter)
+
+bool FBHNetworkSupportTunnelAgentLogTailTest::RunTest(const FString& Parameters)
+{
+	// The playit agent log only accumulates: a dead session that keeps appending reconnect errors still
+	// contains the session markers from when it WAS healthy (and the spam keeps the file mtime fresh).
+	// The health verdict therefore must require the marker in the recent tail, not anywhere in the file.
+	const FString SessionMarker = TEXT("udp session details received");
+
+	TestFalse(TEXT("Empty log text is not a healthy session"),
+		FBHNetworkSupport::LogTextShowsRecentAgentSession(FString()));
+
+	TestFalse(TEXT("Reconnect spam without any session marker is not a healthy session"),
+		FBHNetworkSupport::LogTextShowsRecentAgentSession(TEXT("ERROR control channel lost: failed to connect, retrying in 5s\n")));
+
+	TestTrue(TEXT("Marker in a short log (entirely inside the tail window) is healthy"),
+		FBHNetworkSupport::LogTextShowsRecentAgentSession(SessionMarker));
+
+	TestTrue(TEXT("Registration marker variant is also accepted"),
+		FBHNetworkSupport::LogTextShowsRecentAgentSession(TEXT("2026-06-11T08:00:00 INFO agent registered, control channel up\n")));
+
+	// A long-dead session's log: healthy markers were written once at the head, then the agent appended
+	// well over the 64KB default tail window of reconnect errors.
+	const FString SpamLine = TEXT("ERROR control channel lost: failed to connect, retrying in 5s\n");
+	FString ReconnectSpam;
+	ReconnectSpam.Reserve(96 * 1024 + SpamLine.Len());
+	while (ReconnectSpam.Len() < 96 * 1024)
+	{
+		ReconnectSpam += SpamLine;
+	}
+
+	TestFalse(TEXT("Marker only in the old head of a large log is NOT healthy"),
+		FBHNetworkSupport::LogTextShowsRecentAgentSession(SessionMarker + TEXT("\n") + ReconnectSpam));
+
+	TestTrue(TEXT("Marker in the recent tail of a large log is healthy"),
+		FBHNetworkSupport::LogTextShowsRecentAgentSession(ReconnectSpam + SessionMarker + TEXT("\n")));
+
+	// Explicit tail policy: the window is honoured exactly, and a window larger than the text degrades
+	// to scanning the whole text rather than misbehaving.
+	TestFalse(TEXT("Custom tail window excludes a marker buried before it"),
+		FBHNetworkSupport::LogTextShowsRecentAgentSession(SessionMarker + ReconnectSpam, 256));
+	TestTrue(TEXT("Custom tail window includes a marker inside it"),
+		FBHNetworkSupport::LogTextShowsRecentAgentSession(ReconnectSpam + SessionMarker, 256));
+	TestTrue(TEXT("Tail window larger than the log scans the whole log"),
+		FBHNetworkSupport::LogTextShowsRecentAgentSession(SessionMarker, 1024 * 1024));
+
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHLocalPlayerClassConfiguredTest,
 	"BlackoutHunt.Network.LocalPlayerClassConfigured",
 	EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter)

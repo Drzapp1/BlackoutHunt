@@ -49,6 +49,9 @@ protected:
 	void OnRep_ZoneState();
 
 	UFUNCTION()
+	void OnRep_ZoneExtent();
+
+	UFUNCTION()
 	void OnZoneBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult);
 
 	void TryAlertForActor(AActor* OtherActor);
@@ -89,4 +92,11 @@ protected:
 
 	UPROPERTY(Replicated, EditAnywhere, Category = "Security")
 	FString AlertLabel;
+
+	// The detection box is sized per zone on the server (ConfigureZone, up to ~30% longer than the
+	// constructor default on the big maps). Without replicating it, clients keep painting the
+	// constructor-default 1200x650 stripes while the authoritative trigger is larger — survivors get
+	// pinged standing visibly outside the painted area. Clients mirror it in the OnRep and BeginPlay.
+	UPROPERTY(ReplicatedUsing = OnRep_ZoneExtent)
+	FVector ZoneExtent;
 };

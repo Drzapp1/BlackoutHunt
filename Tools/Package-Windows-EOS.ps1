@@ -3,10 +3,19 @@ param(
     [string]$Configuration = "Development",
     [string]$EOSValuesPath,
     [switch]$InitLocalValues,
-    [switch]$ValidateOnly
+    [switch]$ValidateOnly,
+    [switch]$Fast
 )
 
 $ErrorActionPreference = "Stop"
+
+# Build/cook speed controls. The default path stays conservative for release-grade reproducibility:
+# single-action UBT compiles + a clean (full) Shipping cook. -Fast trades that for iteration speed:
+#   * 8 parallel compile actions -- the safe ceiling on this 32-core/32GB box (full parallel OOMs MSVC C1076).
+#   * an iterative cook (-iterate) that reuses the previously cooked packages and only recooks what changed,
+#     which turns a code-only cook from a full ~1700-package recook into a near-instant pass.
+# Use -Fast for quick playtest cooks; omit it for the build you actually ship.
+$maxParallel = if ($Fast) { 8 } else { 1 }
 
 $projectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $project = Join-Path $projectRoot "BlackoutHunt.uproject"
@@ -201,7 +210,7 @@ function Invoke-UnrealBuildTarget {
         "-notinstalledengine",
         "-NoXGE",
         "-NoUBA",
-        "-MaxParallelActions=1"
+        "-MaxParallelActions=$maxParallel"
     )
 
     if ($TargetName -eq "BlackoutHuntEditor") {
@@ -358,17 +367,25 @@ try {
             "-map=/Engine/Maps/Entry+/Game/BlackoutHunt/Maps/Facility+/Game/BlackoutHunt/Maps/Substation+/Game/BlackoutHunt/Maps/Foggrounds+/Game/BlackoutHunt/Maps/Tutorial+/Game/ContainersHouseCH/Maps/Map_ContainersHouse_Demo",
             "-skipbuild",
             "-noxge",
-            "-ubtargs=-WaitMutex -NoXGE -NoUBA -MaxParallelActions=1",
+            "-ubtargs=-WaitMutex -NoXGE -NoUBA -MaxParallelActions=$maxParallel",
             "-stage",
             "-pak",
             "-archive",
             "-archivedirectory=$archive"
         )
 
+        if ($Fast) {
+            # Iterative cook: reuse the previously cooked packages and only recook what changed.
+            # The engine suppresses -clean when -iterate is set, so this also drops the full-recook below.
+            $uatArgs += "-iterate"
+        }
+
         if ($Configuration -eq "Shipping") {
             $uatArgs += "-distribution"
             $uatArgs += "-nodebuginfo"
-            $uatArgs += "-clean"
+            if (-not $Fast) {
+                $uatArgs += "-clean"
+            }
         }
 
         & $unreal.RunUAT @uatArgs

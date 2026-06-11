@@ -462,6 +462,22 @@ TArray<FBHJumpscareVariant> GetResolvedWhisperJumpscareVariants()
 		Variants.Add(Variant);
 	}
 
+	if (Variants.IsEmpty())
+	{
+		// Announce the "works in editor, absent in package" trap: whisper art that exists in Content but
+		// was stripped from the cook (a DirectoriesToNeverCook entry, or an asset-registry miss) resolves
+		// to zero variants here with no other symptom — the whisper scare pool just silently never grows.
+		// Warn once per process so a cooked session log states WHY the whisper scares are missing.
+		static bool bWarnedNoWhisperVariants = false;
+		if (!bWarnedNoWhisperVariants)
+		{
+			bWarnedNoWhisperVariants = true;
+			UE_LOG(LogTemp, Warning,
+				TEXT("BlackoutHunt Jumpscare: whisper discovery resolved ZERO variants under %s. If whisper art has been imported, verify the folder is actually cooked (not in DirectoriesToNeverCook) and present in the on-disk asset registry."),
+				BHWhisperJumpscareRoot);
+		}
+	}
+
 	return Variants;
 }
 

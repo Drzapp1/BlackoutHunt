@@ -598,6 +598,19 @@ namespace
 		return Token;
 	}
 
+	bool IsAgentControlPlaneLogLine(const FString& Line)
+	{
+		// playitd 1.x logs control-plane diagnostics that contain host:port tokens which are NOT the
+		// public tunnel allocation: the tunnel server address ("got initial pong ... tunnel_addr:
+		// 69.9.185.1:5525") and our own public address ("client_addr: x.x.x.x:port" inside Pong {...}).
+		// Harvesting a join address from those lines would hand students the playit control server or
+		// the host's raw WAN address. Skip them entirely.
+		return Line.Contains(TEXT("pong"), ESearchCase::IgnoreCase)
+			|| Line.Contains(TEXT("address_selector"), ESearchCase::IgnoreCase)
+			|| Line.Contains(TEXT("client_addr"), ESearchCase::IgnoreCase)
+			|| Line.Contains(TEXT("tunnel_addr"), ESearchCase::IgnoreCase);
+	}
+
 	bool TryExtractTunnelAddressFromLog(const FString& TunnelLogPath, int32 LocalPort, FString& OutAddress)
 	{
 		FString LogText;
@@ -606,33 +619,79 @@ namespace
 			return false;
 		}
 
-		LogText.ReplaceInline(TEXT("\r"), TEXT(" "));
-		LogText.ReplaceInline(TEXT("\n"), TEXT(" "));
+		TArray<FString> LogLines;
+		LogText.ParseIntoArrayLines(LogLines);
 
-		TArray<FString> Tokens;
-		LogText.ParseIntoArrayWS(Tokens);
 		// Keep the LAST valid allocation in the log, not the first. The agent appends to (or rotates) this
 		// log, so after a tunnel restart the file still contains the OLD allocation earlier in the file;
 		// returning the first match would hand out a dead address. The newest line is the live one.
 		bool bFound = false;
-		for (FString Token : Tokens)
+		for (const FString& Line : LogLines)
 		{
-			Token = StripLogTokenDelimiters(Token);
-
-			if (!Token.Contains(TEXT(":")) || Token.Contains(TEXT("://")))
+			if (IsAgentControlPlaneLogLine(Line))
 			{
 				continue;
 			}
 
-			const FString Candidate = FBHNetworkSupport::NormalizeJoinAddress(Token, LocalPort);
-			if (!Candidate.IsEmpty() && !IsLocalTunnelAddress(Candidate))
+			TArray<FString> Tokens;
+			Line.ParseIntoArrayWS(Tokens);
+			for (FString Token : Tokens)
 			{
-				OutAddress = Candidate;
-				bFound = true;
+				Token = StripLogTokenDelimiters(Token);
+
+				if (!Token.Contains(TEXT(":")) || Token.Contains(TEXT("://")))
+				{
+					continue;
+				}
+
+				const FString Candidate = FBHNetworkSupport::NormalizeJoinAddress(Token, LocalPort);
+				if (!Candidate.IsEmpty() && !IsLocalTunnelAddress(Candidate))
+				{
+					OutAddress = Candidate;
+					bFound = true;
+				}
 			}
 		}
 
 		return bFound;
+	}
+
+	// playitd 1.x (the daemon shipped as playit.exe since v1.0) never logs the public allocation
+	// address, so TryExtractTunnelAddressFromLog can never succeed against it. The reliable in-log
+	// signal that the tunnel is being serviced is a fresh agent session: while connected the agent
+	// re-authenticates its UDP channel and logs "udp session details received" every ~10 seconds.
+	// Healthy = that marker exists in the RECENT TAIL of the log AND the agent wrote to the log within
+	// the last 90 seconds. When healthy, callers should treat the tunnel as ready and use the
+	// CONFIGURED classroom endpoint (ClassroomJoinEndpoints) as the join address.
+	bool LogShowsHealthyAgentSession(const FString& TunnelLogPath)
+	{
+		if (TunnelLogPath.IsEmpty())
+		{
+			return false;
+		}
+
+		const FDateTime LastWriteUtc = IFileManager::Get().GetTimeStamp(*TunnelLogPath);
+		if (LastWriteUtc == FDateTime::MinValue())
+		{
+			return false;
+		}
+
+		const FTimespan SinceLastWrite = FDateTime::UtcNow() - LastWriteUtc;
+		if (SinceLastWrite > FTimespan::FromSeconds(90.0) || SinceLastWrite < FTimespan::FromSeconds(-90.0))
+		{
+			return false;
+		}
+
+		FString LogText;
+		if (!FFileHelper::LoadFileToString(LogText, *TunnelLogPath))
+		{
+			return false;
+		}
+
+		// The mtime window above only proves SOMETHING wrote recently — a dead session spamming
+		// reconnect errors satisfies it indefinitely. The marker scan therefore has to be tail-only;
+		// see LogTextShowsRecentAgentSession for the policy.
+		return FBHNetworkSupport::LogTextShowsRecentAgentSession(LogText);
 	}
 
 #endif
@@ -865,10 +924,57 @@ FBHInternetTunnelResult FBHNetworkSupport::StartInternetTunnel(int32 LocalPort)
 			return Result;
 		}
 
+		if (LogShowsHealthyAgentSession(Result.LogPath))
+		{
+			Result.bTunnelReady = true;
+			Result.Message = FString::Printf(
+				TEXT("Tunnel agent session is healthy (control + UDP channel up). Students join via the configured classroom endpoint. Local game port: 127.0.0.1:%d. Agent log: %s"),
+				Result.LocalPort,
+				*Result.LogPath);
+			return Result;
+		}
+
 		Result.Message = FString::Printf(
 			TEXT("Internet tunnel agent is already running, but no usable allocation was found yet. Use OPEN TUNNEL SETUP only if you need to change the playit tunnel. It must be Custom UDP to local 127.0.0.1:%d. Agent path: %s. Agent log: %s"),
 			Result.LocalPort,
 			Result.AgentPath.IsEmpty() ? TEXT("already running") : *Result.AgentPath,
+			*Result.LogPath);
+		return Result;
+	}
+
+	// Single-owner rule: one playit secret backs ONE live agent process. If a playit.exe is already
+	// running outside our process handle (the playit desktop app / playitd service, an orphan from a
+	// crashed game instance, or a second copy of the game), spawning another agent on the same secret
+	// makes the two instances fight over the UDP session. Adopt the existing agent instead.
+	if (FPlatformProcess::IsApplicationRunning(TEXT("playit.exe")))
+	{
+		Result.bSuccess = true;
+		if (TryExtractTunnelAddressFromLog(Result.LogPath, Result.LocalPort, Result.TunnelAddress))
+		{
+			Result.bTunnelReady = true;
+			Result.Message = FString::Printf(
+				TEXT("Adopted an external playit agent. Tunnel ready: %s. Agent log: %s"),
+				*Result.TunnelAddress,
+				*Result.LogPath);
+			return Result;
+		}
+
+		if (LogShowsHealthyAgentSession(Result.LogPath))
+		{
+			Result.bTunnelReady = true;
+			Result.Message = FString::Printf(
+				TEXT("Adopted an external playit agent with a healthy session. Students join via the configured classroom endpoint. Local game port: 127.0.0.1:%d. Agent log: %s"),
+				Result.LocalPort,
+				*Result.LogPath);
+			return Result;
+		}
+
+		// An EXTERNAL agent writes its own log elsewhere, so the game-log health probes above can never
+		// confirm it — this branch realistically only resolves once the user closes the outside copy.
+		// Say so: a bare "waiting" with no actionable step left hosts stuck at class start.
+		Result.Message = FString::Printf(
+			TEXT("A playit agent is already running outside the game (desktop app or service); not starting a second one (one secret backs one live agent). Close the playit app/service and retry hosting so the game can run its own agent. Tunnel must be Custom UDP to local 127.0.0.1:%d. Agent log: %s"),
+			Result.LocalPort,
 			*Result.LogPath);
 		return Result;
 	}
@@ -982,6 +1088,20 @@ FBHInternetTunnelResult FBHNetworkSupport::GetInternetTunnelStatus(int32 LocalPo
 		return Result;
 	}
 
+	// playitd 1.x never logs the allocation address; a fresh, authenticated session in the log is the
+	// readiness signal. The log freshness window (90s) also guarantees SOME agent process is alive,
+	// covering agents the game did not spawn itself (external/adopted ones).
+	if (LogShowsHealthyAgentSession(Result.LogPath))
+	{
+		Result.bSuccess = true;
+		Result.bTunnelReady = true;
+		Result.Message = FString::Printf(
+			TEXT("Tunnel agent session is healthy (control + UDP channel up). Students join via the configured classroom endpoint. Local game port: 127.0.0.1:%d. Agent log: %s"),
+			Result.LocalPort,
+			*Result.LogPath);
+		return Result;
+	}
+
 	Result.Message = Result.bSuccess
 		? FString::Printf(TEXT("Tunnel agent running, but no usable allocation address was found yet. Create/select a Custom UDP tunnel to local 127.0.0.1:%d. Agent path: %s. Agent log: %s"),
 			Result.LocalPort,
@@ -1005,4 +1125,15 @@ FBHInternetTunnelResult FBHNetworkSupport::OpenInternetTunnelSetup(int32 LocalPo
 		TEXT("Opened tunnel setup. Create a Custom UDP tunnel to local 127.0.0.1:%d, put its allocation host/port in the menu, then copy a join code."),
 		Result.LocalPort);
 	return Result;
+}
+
+bool FBHNetworkSupport::LogTextShowsRecentAgentSession(const FString& LogText, int32 TailCharsToScan)
+{
+	// 64KB of tail is hours of idle keep-alive lines but only minutes of reconnect spam — plenty for a
+	// marker the live agent rewrites every ~10 seconds, and small enough that a marker stranded in the
+	// old head of a long-running log (from a previous, now dead session) falls out of the window.
+	const int32 TailLen = FMath::Clamp(TailCharsToScan, 0, LogText.Len());
+	const FString Tail = LogText.Right(TailLen);
+	return Tail.Contains(TEXT("udp session details received"))
+		|| Tail.Contains(TEXT("agent registered"));
 }

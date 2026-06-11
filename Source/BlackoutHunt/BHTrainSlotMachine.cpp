@@ -179,7 +179,11 @@ void ABHTrainSlotMachine::Spin(ABHCharacter* Character)
 	const int32 MyId = BHPS->GetPlayerId();
 
 	int32& Credits = CreditsByPlayer.FindOrAdd(MyId);
-	if (Credits <= 0)
+	// Play money: re-buy whenever the balance can't cover the bet, not only at exactly zero — the
+	// deduction below runs unconditionally, so a partial balance would otherwise display as negative
+	// credits for the spin. (Today every payout is a bet multiple, but that invariant is one constant
+	// tweak away from breaking; this keeps the displayed balance non-negative regardless.)
+	if (Credits < BHSlotBet)
 	{
 		Credits = BHSlotStartingCredits;   // free re-buy
 	}
