@@ -906,7 +906,7 @@ void ABHObjectiveStation::SetDirectorActive(bool bNewActive)
 	ApplyStationVisuals();
 }
 
-bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerIndex, bool bVisualAnswer)
+bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerIndex, bool bVisualAnswer, int32 ClientQuestionStep)
 {
 	if (!HasAuthority())
 	{
@@ -946,6 +946,21 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 				2.75f);
 		}
 		return true;
+	}
+
+	// Step echo: the shared question can be swapped by any teammate's answer between this client
+	// reading it and their RPC arriving (question fields replicate at a low rate), so an in-flight
+	// answer would otherwise grade against a question the sender never saw — and spend their
+	// once-per-node attempt on it. Reject the stale step BEFORE any state is touched (throttle
+	// stamp, node slot, hold, mastery) so re-answering the freshly shown question costs nothing.
+	// INDEX_NONE (bots, server-side calls, arrangements) skips the check.
+	if (ClientQuestionStep != INDEX_NONE && ClientQuestionStep != RevisionQuestionStep)
+	{
+		if (PC)
+		{
+			PC->ClientShowStatusMessage(TEXT("The question just changed — read the new one and answer again."), 2.75f);
+		}
+		return false;
 	}
 
 	if (!QuestionChoices.IsValidIndex(AnswerIndex))
@@ -1011,16 +1026,20 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 		return bCorrect;
 	}
 
-	// Firm-but-safe anti-gaming: after a wrong answer the station holds answer submission for a
-	// few seconds so the student actually reads the correction instead of cycling 1-4. The hold
+	// Firm-but-safe anti-gaming: after a wrong answer the station holds THIS student's submissions
+	// for a few seconds so they actually read the correction instead of cycling 1-4. Per player by
+	// design — a shared hold let one wrong answer lock the whole class out of the node. The hold
 	// only delays input — the player is never pinned and can walk away and return.
-	if (Now < CorrectionHoldUntil)
+	if (const float* HoldUntil = CorrectionHoldUntilByPlayerId.Find(ThrottlePlayerId))
 	{
-		if (PC)
+		if (Now < *HoldUntil)
 		{
-			PC->ClientShowStatusMessage(FString::Printf(TEXT("Read the correction first. Retry in %.0fs."), FMath::Max(0.0f, CorrectionHoldUntil - Now) + 0.5f), 2.0f);
+			if (PC)
+			{
+				PC->ClientShowStatusMessage(FString::Printf(TEXT("Read the correction first. Retry in %.0fs."), FMath::Max(0.0f, *HoldUntil - Now) + 0.5f), 2.0f);
+			}
+			return false;
 		}
-		return false;
 	}
 
 	int32 EvaluatedAnswerIndex = AnswerIndex;
@@ -1030,20 +1049,23 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 	{
 		// Individual revision -- no answer teams. Each student answers their OWN question and is graded on it
 		// alone: no voting, no majority, no carry. A student may answer any one node only ONCE per round, so they
-		// spread across the (now all-active) nodes for coverage; a wrong answer still spends the attempt and is
-		// re-queued for spaced review elsewhere. Students may still travel together -- only the shared vote is gone.
+		// spread across the (now all-active) nodes for coverage. The slot is only spent by a CORRECT answer
+		// (recorded in FinalizeRevisionAnswer): a miss is re-queued for spaced review and may be retried here
+		// after the per-player correction hold, so one wrong answer can never make a node permanently
+		// unreachable for a small class. Students may still travel together -- only the shared vote is gone.
+		// The cap itself is enforced only while it is satisfiable: with fewer live human students than the
+		// node's distinct-answer target (bots never fill quotas), the game mode relaxes it so the present
+		// humans can re-answer. Default to enforcing if no game mode resolves — that is the strict rule.
+		const ABHGameMode* CapBHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr;
+		const bool bEnforceNodeAnswerCap = !CapBHGM || CapBHGM->ShouldEnforceRevisionNodeAnswerCap();
 		const int32 PlayerId = BHPS ? BHPS->GetPlayerId() : INDEX_NONE;
-		if (PlayerId != INDEX_NONE && AnsweredThisNodePlayerIds.Contains(PlayerId))
+		if (bEnforceNodeAnswerCap && PlayerId != INDEX_NONE && AnsweredThisNodePlayerIds.Contains(PlayerId))
 		{
 			if (PC)
 			{
 				PC->ClientShowStatusMessage(TEXT("You already answered this node. Find another to keep building mastery."), 3.0f);
 			}
 			return false;
-		}
-		if (PlayerId != INDEX_NONE)
-		{
-			AnsweredThisNodePlayerIds.Add(PlayerId);
 		}
 		EvaluatedAnswerIndex = AnswerIndex;
 		RevisionParticipants.Add(TPair<ABHCharacter*, bool>(Character, AnswerIndex == CorrectAnswerIndex));
@@ -1059,12 +1081,49 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 // analytics), advances the revision node, applies feedback, and handles the wrong path.
 bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPlayerController* PC, bool bCorrect, const FString& EvaluatedSelectedAnswer, TArray<TPair<ABHCharacter*, bool>>& RevisionParticipants, bool bActiveRevisionMode, bool bVisualAnswer)
 {
+	const ABHPlayerState* SubmitterPS = Character ? Character->GetBHPlayerState() : nullptr;
+	const int32 SubmitterPlayerId = SubmitterPS ? SubmitterPS->GetPlayerId() : INDEX_NONE;
+	const bool bSubmitterIsBot = SubmitterPS && SubmitterPS->IsABot();
+
 	// Per-player learning record (cosmetic/local): the answer streak / topic mask behind the Honor Roll and
 	// Polymath achievements. This is the live grade path -- the warmup path returns earlier and is excluded.
 	// Never affects scoring, the revision mastery model, or classroom reports.
 	if (Character)
 	{
 		Character->ClientRecordQuestionResult(static_cast<uint8>(FBHRevisionQuestionBank::TopicForStationType(StationType)), bCorrect);
+	}
+
+	// Bot answers in revision are flavor only. They never advance the node (bots are excluded from
+	// every revision score, so quota credit from bots would mask the human shortfall the answer-cap
+	// relaxation detects) — and since a camping bot answers indefinitely, letting its answers reload
+	// the SHARED question / overwrite the feedback / dock work progress would churn the node state
+	// under the humans actually reading it. The bot keeps its own character effects and the station
+	// still emits the noise cue, so bots stay audible participants without authority over the
+	// class's question flow.
+	if (bActiveRevisionMode && bSubmitterIsBot)
+	{
+		if (Character)
+		{
+			if (bCorrect)
+			{
+				Character->ClearDetentionMark();
+				Character->AddFear(-12.0f);
+				Character->AddDread(-18.0f);
+				Character->RecoverStamina(12.0f);
+				Character->RefillFlashlight(5.0f);
+			}
+			else
+			{
+				Character->AddFear(15.0f);
+				Character->AddDread(22.0f);
+				Character->ApplyDetentionMark(38.0f);
+			}
+		}
+		if (ABHGameMode* NoiseBHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr)
+		{
+			NoiseBHGM->NotifyLoudNoise(GetActorLocation(), bCorrect ? TEXT("correct answer") : TEXT("wrong answer"));
+		}
+		return bCorrect;
 	}
 
 	if (bCorrect)
@@ -1089,9 +1148,6 @@ bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPla
 					// Solo / numeric / drag answer: the submitter is the only participant, graded on the evaluated result.
 					RevisionParticipants.Add(TPair<ABHCharacter*, bool>(Character, bCorrect));
 				}
-				// A correct answer counts as a correction when the loaded question was itself a
-				// re-surfaced review (a question the targeted student had previously missed).
-				const bool bCorrection = bRevisionReviewQuestion;
 				// Reward the interactive visual answer (drag arrangement / clicked diagram element) with
 				// more mastery than a multiple-choice pick of the same question. RecordRevisionAnswer's
 				// clamp ceiling is raised so this scaled weight is not clipped.
@@ -1101,15 +1157,35 @@ bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPla
 				}
 				for (const TPair<ABHCharacter*, bool>& Participant : RevisionParticipants)
 				{
-					// Per-voter credit: each student's own correctness drives their mastery + contribution; a
-					// correction only counts when THEY personally got the re-surfaced review question right.
-					BHGM->RecordRevisionAnswer(Participant.Key, RevisionQuestion, Participant.Value, bCorrection && Participant.Value, Participant.Value ? EvaluatedSelectedAnswer : FString(), RevisionTeamSummary);
+					// Per-voter credit: each student's own correctness drives their mastery + contribution.
+					// Correction credit (half points + CorrectionsCompleted) belongs only to the student whose
+					// review queue surfaced this question AND who personally answered it right — anyone else
+					// answering a re-surfaced review never missed it, so they are graded as a normal answer
+					// and the targeted student's queued review stays pending for them.
+					const ABHPlayerState* ParticipantPS = Participant.Key ? Participant.Key->GetBHPlayerState() : nullptr;
+					const bool bParticipantCorrection = bRevisionReviewQuestion
+						&& ParticipantPS
+						&& ReviewQuestionTargetPlayerId != INDEX_NONE
+						&& ParticipantPS->GetPlayerId() == ReviewQuestionTargetPlayerId;
+					BHGM->RecordRevisionAnswer(Participant.Key, RevisionQuestion, Participant.Value, bParticipantCorrection && Participant.Value, Participant.Value ? EvaluatedSelectedAnswer : FString(), RevisionTeamSummary);
 				}
 				PendingCorrectionCharacters.Reset();
 			}
 
 			RevisionQuestionsRequired = FMath::Max(1, RevisionQuestionsRequired);
-			RevisionQuestionsSolved = FMath::Clamp(RevisionQuestionsSolved + 1, 0, RevisionQuestionsRequired);
+			// Once-per-node bookkeeping happens HERE, on a correct answer only: a miss must not
+			// permanently spend a student's single attempt at this node (the per-player correction
+			// hold is the retry pacing), or a small class could be locked out of the exit by one
+			// wrong press each. The bot gate is defense-in-depth behind the flavor-only early-out
+			// above: a bot must never claim a slot or fill the node's distinct-answer quota.
+			if (!bSubmitterIsBot)
+			{
+				if (SubmitterPlayerId != INDEX_NONE)
+				{
+					AnsweredThisNodePlayerIds.Add(SubmitterPlayerId);
+				}
+				RevisionQuestionsSolved = FMath::Clamp(RevisionQuestionsSolved + 1, 0, RevisionQuestionsRequired);
+			}
 			bRevisionNodeUnlocked = RevisionQuestionsSolved >= RevisionQuestionsRequired;
 			WorkProgress = FMath::Max(WorkProgress, bRevisionNodeUnlocked ? 0.72f : 0.12f + 0.48f * (static_cast<float>(RevisionQuestionsSolved) / static_cast<float>(RevisionQuestionsRequired)));
 			RevisionTeamVotes.Reset();
@@ -1117,9 +1193,12 @@ bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPla
 			RevisionTeamSummary = TEXT("");
 		}
 
-		// A correct answer clears the anti-gaming hold/streak for this station.
-		ConsecutiveWrongAtStation = 0;
-		CorrectionHoldUntil = 0.0f;
+		// A correct answer clears the anti-gaming hold/streak for this student at this station.
+		if (SubmitterPlayerId != INDEX_NONE)
+		{
+			ConsecutiveWrongByPlayerId.Remove(SubmitterPlayerId);
+			CorrectionHoldUntilByPlayerId.Remove(SubmitterPlayerId);
+		}
 
 		const FString ActionVerb = GetActionVerb().ToLower();
 		if (Character)
@@ -1220,17 +1299,25 @@ bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPla
 				// Per-voter grading: a student who personally picked the right answer inside a team whose
 				// majority went wrong still earns their correct credit; everyone else takes the miss
 				// (spaced-review enqueue + topic-mastery decay are handled in RecordRevisionAnswer).
-				BHGM->RecordRevisionAnswer(Participant.Key, RevisionQuestion, Participant.Value, bRevisionReviewQuestion && Participant.Value, Participant.Value ? FString() : EvaluatedSelectedAnswer, RevisionTeamSummary);
+				// Correction credit follows the same rule as the correct path: only the student whose
+				// review queue surfaced this question can complete it as a correction.
+				const ABHPlayerState* ParticipantPS = Participant.Key ? Participant.Key->GetBHPlayerState() : nullptr;
+				const bool bParticipantCorrection = bRevisionReviewQuestion
+					&& ParticipantPS
+					&& ReviewQuestionTargetPlayerId != INDEX_NONE
+					&& ParticipantPS->GetPlayerId() == ReviewQuestionTargetPlayerId;
+				BHGM->RecordRevisionAnswer(Participant.Key, RevisionQuestion, Participant.Value, bParticipantCorrection && Participant.Value, Participant.Value ? FString() : EvaluatedSelectedAnswer, RevisionTeamSummary);
 			}
 		}
 	}
 
-	// Shared wrong-answer pressure (retained); the detention mark scales on repeated misses.
+	// Shared wrong-answer pressure (retained); the detention mark scales on THIS student's repeated misses.
+	const int32 PriorWrongStreak = SubmitterPlayerId != INDEX_NONE ? ConsecutiveWrongByPlayerId.FindRef(SubmitterPlayerId) : 0;
 	if (Character)
 	{
 		Character->AddFear(15.0f);
 		Character->AddDread(22.0f);
-		Character->ApplyDetentionMark(38.0f + 8.0f * static_cast<float>(FMath::Min(ConsecutiveWrongAtStation, 3)));
+		Character->ApplyDetentionMark(38.0f + 8.0f * static_cast<float>(FMath::Min(PriorWrongStreak, 3)));
 	}
 	WorkProgress = FMath::Max(0.0f, WorkProgress - 0.18f);
 	if (ABHGameMode* BHGM = GetWorld()->GetAuthGameMode<ABHGameMode>())
@@ -1238,11 +1325,16 @@ bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPla
 		BHGM->NotifyLoudNoise(GetActorLocation(), TEXT("wrong answer"));
 	}
 
-	// Escalating correction hold: each consecutive wrong answer extends the time the student must
-	// spend reading the correction before answering again. Input-only; the player can walk away.
-	++ConsecutiveWrongAtStation;
-	const float HoldSeconds = FMath::Clamp(3.0f + 1.5f * static_cast<float>(ConsecutiveWrongAtStation - 1), 3.0f, 9.0f);
-	CorrectionHoldUntil = Now + HoldSeconds;
+	// Escalating correction hold: each of the wrong-answerer's consecutive misses extends the time
+	// THEY must spend reading the correction before answering again; teammates are never held by
+	// someone else's miss. Input-only; the player can walk away.
+	const int32 WrongStreak = PriorWrongStreak + 1;
+	const float HoldSeconds = FMath::Clamp(3.0f + 1.5f * static_cast<float>(WrongStreak - 1), 3.0f, 9.0f);
+	if (SubmitterPlayerId != INDEX_NONE)
+	{
+		ConsecutiveWrongByPlayerId.Add(SubmitterPlayerId, WrongStreak);
+		CorrectionHoldUntilByPlayerId.Add(SubmitterPlayerId, Now + HoldSeconds);
+	}
 	bQuestionFeedbackCorrect = false;
 
 	if (bActiveRevisionMode)
@@ -1281,7 +1373,7 @@ bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPla
 	return false;
 }
 
-bool ABHObjectiveStation::SubmitNumericAnswer(ABHCharacter* Character, float Value)
+bool ABHObjectiveStation::SubmitNumericAnswer(ABHCharacter* Character, float Value, int32 ClientQuestionStep)
 {
 	if (!HasAuthority())
 	{
@@ -1316,6 +1408,17 @@ bool ABHObjectiveStation::SubmitNumericAnswer(ABHCharacter* Character, float Val
 	if (bQuestionSolved)
 	{
 		return true;
+	}
+
+	// Step echo (see SubmitAnswer): a typed value aimed at an already-swapped question must be
+	// rejected BEFORE any state is touched, so the student can re-answer the new question freely.
+	if (ClientQuestionStep != INDEX_NONE && ClientQuestionStep != RevisionQuestionStep)
+	{
+		if (PC)
+		{
+			PC->ClientShowStatusMessage(TEXT("The question just changed — read the new one and answer again."), 2.75f);
+		}
+		return false;
 	}
 
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
@@ -1370,15 +1473,35 @@ bool ABHObjectiveStation::SubmitNumericAnswer(ABHCharacter* Character, float Val
 		return bWithinTolerance;
 	}
 
-	// Correction hold (see SubmitAnswer): block resubmission until the student has had a few
-	// seconds with the correction after a wrong answer.
-	if (Now < CorrectionHoldUntil)
+	// Correction hold (see SubmitAnswer): block THIS student's resubmission until they have had a
+	// few seconds with the correction after their wrong answer. Per player — teammates are not held.
+	if (const float* HoldUntil = CorrectionHoldUntilByPlayerId.Find(ThrottlePlayerId))
 	{
-		if (PC)
+		if (Now < *HoldUntil)
 		{
-			PC->ClientShowStatusMessage(FString::Printf(TEXT("Read the correction first. Retry in %.0fs."), FMath::Max(0.0f, CorrectionHoldUntil - Now) + 0.5f), 2.0f);
+			if (PC)
+			{
+				PC->ClientShowStatusMessage(FString::Printf(TEXT("Read the correction first. Retry in %.0fs."), FMath::Max(0.0f, *HoldUntil - Now) + 0.5f), 2.0f);
+			}
+			return false;
 		}
-		return false;
+	}
+
+	// Same once-per-node discipline as the choice path (the typed path used to skip it entirely,
+	// letting one student farm a Calculation node solo): when the cap is enforced, a student who
+	// already answered this node must move on. Recording stays on-correct in FinalizeRevisionAnswer.
+	if (BHGS->bRevisionMode)
+	{
+		const ABHGameMode* CapBHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr;
+		const bool bEnforceNodeAnswerCap = !CapBHGM || CapBHGM->ShouldEnforceRevisionNodeAnswerCap();
+		if (bEnforceNodeAnswerCap && ThrottlePlayerId != INDEX_NONE && AnsweredThisNodePlayerIds.Contains(ThrottlePlayerId))
+		{
+			if (PC)
+			{
+				PC->ClientShowStatusMessage(TEXT("You already answered this node. Find another to keep building mastery."), 3.0f);
+			}
+			return false;
+		}
 	}
 
 	// Numeric entry is individual (you type your own value), so credit the submitter
@@ -1657,6 +1780,52 @@ int32 ABHObjectiveStation::GetRevisionQuestionsRequired() const
 	return RevisionQuestionsRequired;
 }
 
+int32 ABHObjectiveStation::GetRevisionQuestionStep() const
+{
+	return RevisionQuestionStep;
+}
+
+bool ABHObjectiveStation::HasPlayerAnsweredThisNode(int32 PlayerId) const
+{
+	return PlayerId != INDEX_NONE && AnsweredThisNodePlayerIds.Contains(PlayerId);
+}
+
+void ABHObjectiveStation::RemapAnsweredNodePlayerId(int32 OldPlayerId, int32 NewPlayerId)
+{
+	if (!HasAuthority() || OldPlayerId == NewPlayerId || OldPlayerId == INDEX_NONE || NewPlayerId == INDEX_NONE)
+	{
+		return;
+	}
+	// Carry every per-PlayerId record across the reconnect: the once-per-node slot (so a rejoin
+	// cannot re-farm a node already answered), the answer throttle stamp, and the correction
+	// hold/streak (so plug-pulling never clears an active reading hold).
+	if (AnsweredThisNodePlayerIds.Remove(OldPlayerId) > 0)
+	{
+		AnsweredThisNodePlayerIds.Add(NewPlayerId);
+	}
+	float ThrottleStamp = 0.0f;
+	if (LastAnswerTimeByPlayerId.RemoveAndCopyValue(OldPlayerId, ThrottleStamp))
+	{
+		LastAnswerTimeByPlayerId.Add(NewPlayerId, ThrottleStamp);
+	}
+	float HoldUntil = 0.0f;
+	if (CorrectionHoldUntilByPlayerId.RemoveAndCopyValue(OldPlayerId, HoldUntil))
+	{
+		CorrectionHoldUntilByPlayerId.Add(NewPlayerId, HoldUntil);
+	}
+	int32 WrongStreak = 0;
+	if (ConsecutiveWrongByPlayerId.RemoveAndCopyValue(OldPlayerId, WrongStreak))
+	{
+		ConsecutiveWrongByPlayerId.Add(NewPlayerId, WrongStreak);
+	}
+	// The review-target id is per-player state too: keep correction credit pointed at the same
+	// student across their reconnect.
+	if (ReviewQuestionTargetPlayerId == OldPlayerId)
+	{
+		ReviewQuestionTargetPlayerId = NewPlayerId;
+	}
+}
+
 EBHRevisionCounterNodeType ABHObjectiveStation::GetRevisionCounterType() const
 {
 	return RevisionCounterType;
@@ -1725,6 +1894,7 @@ void ABHObjectiveStation::QueueAdaptiveQuestionForParticipants(const TArray<ABHC
 	}
 
 	PendingReviewQuestionId.Reset();
+	ReviewQuestionTargetPlayerId = INDEX_NONE;
 	bUseAdaptiveQuestionOverride = false;
 
 	// The station shows ONE shared question, so we must pick whose profile it targets. Always
@@ -1763,8 +1933,28 @@ void ABHObjectiveStation::QueueAdaptiveQuestionForParticipants(const TArray<ABHC
 	BHGM->GetAdaptiveRevisionPlan(TargetPS, bLastAnswerCorrect, PlanTopic, PlanDifficulty, PlanReason);
 	AdaptiveQuestionTopic = PlanTopic;
 	AdaptiveQuestionDifficulty = PlanDifficulty;
-	// Re-test the targeted player on a question they previously missed (spaced repetition).
-	PendingReviewQuestionId = TargetPS->PeekRevisionReview();
+	// Re-test the targeted player on a question they previously missed (spaced repetition) — but
+	// never the question that was JUST graded in this same submission: its correction/explanation
+	// text (which contains the answer) is on everyone's screen, so an immediate re-ask would hand
+	// out free mastery. The excluded id stays queued and resurfaces at a later node/step; if it is
+	// the only queued review, the normal adaptive pick below serves instead.
+	PendingReviewQuestionId = TargetPS->PeekRevisionReview(RevisionQuestionId);
+	// Host Topics filter: a queued miss from a topic the host has since masked off must not resurface —
+	// answering it cannot raise the class MasteryPercent (the mean runs over ENABLED topics only), so
+	// re-serving it would waste the student's attempt. The id stays queued untouched and resurfaces if
+	// the host re-enables the topic later in the session.
+	if (!PendingReviewQuestionId.IsEmpty())
+	{
+		FBHRevisionQuestion ReviewQuestion;
+		const ABHGameState* MaskBHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
+		const int32 TopicMask = (MaskBHGS && MaskBHGS->RevisionTopicMask != 0) ? MaskBHGS->RevisionTopicMask : 0x0F;
+		if (FBHRevisionQuestionBank::FindQuestion(PendingReviewQuestionId, ReviewQuestion)
+			&& (TopicMask & FBHRevisionQuestionBank::TopicMaskBit(ReviewQuestion.Topic)) == 0)
+		{
+			PendingReviewQuestionId.Empty();
+		}
+	}
+	ReviewQuestionTargetPlayerId = PendingReviewQuestionId.IsEmpty() ? INDEX_NONE : TargetPS->GetPlayerId();
 	bUseAdaptiveQuestionOverride = true;
 }
 
@@ -1821,6 +2011,11 @@ void ABHObjectiveStation::ApplyRevisionQuestion(const FBHRevisionQuestion& Selec
 void ABHObjectiveStation::ConfigureQuestion()
 {
 	bRevisionReviewQuestion = false;
+	// The pending review target travels with PendingReviewQuestionId: keep it only if the review
+	// question is actually the one selected below, so correction credit can never outlive the
+	// question it was staged for.
+	const int32 PendingReviewTargetPlayerId = ReviewQuestionTargetPlayerId;
+	ReviewQuestionTargetPlayerId = INDEX_NONE;
 	// Cleared up front so a stale matching/ordering tray never lingers onto a non-arrangement
 	// question; rebuilt below only when a DragDropMatching/Ordering revision question loads.
 	InteractivePieces.Reset();
@@ -1863,8 +2058,38 @@ void ABHObjectiveStation::ConfigureQuestion()
 						? FBHRevisionQuestionBank::SelectQuestionByDifficulty(Topic, AdaptiveQuestionDifficulty, LocationSeed, Selected, MinDiff, MaxDiff, AllowedIds)
 						: FBHRevisionQuestionBank::SelectQuestion(Topic, BHGM->GetRevisionDifficultyMix(), LocationSeed, BHGM->GetRevisionWeakTopics(), Selected, MinDiff, MaxDiff, AllowedIds);
 				}
+				// A pinned question set (or a narrow host band) with a gap for this topic must not bounce
+				// the node out of revision selection: the non-revision fallback below would silently swap
+				// in an out-of-set question AND reset the node's answer target to 1. Recover inside
+				// revision instead — first widen the difficulty band WITHIN the host's set for this topic,
+				// then (only if the set truly has nothing for the topic) draw from the full bank with a
+				// server log so the host learns their set has a hole. The configured per-node target is
+				// preserved either way.
+				if (!bSelected)
+				{
+					const bool bHasIdSet = AllowedIds && AllowedIds->Num() > 0;
+					if (bHasIdSet)
+					{
+						bSelected = FBHRevisionQuestionBank::SelectQuestion(Topic, BHGM->GetRevisionDifficultyMix(), LocationSeed, BHGM->GetRevisionWeakTopics(), Selected, EBHQuestionDifficulty::Easy, EBHQuestionDifficulty::Hard, AllowedIds);
+					}
+					if (!bSelected)
+					{
+						UE_LOG(LogTemp, Warning, TEXT("[BHObjectiveStation] %s has no question for topic '%s'; serving from the full bank instead."),
+							bHasIdSet ? TEXT("The host's pinned question set") : TEXT("The host difficulty band"),
+							*FBHRevisionQuestionBank::TopicToString(Topic));
+						bSelected = FBHRevisionQuestionBank::SelectQuestion(Topic, BHGM->GetRevisionDifficultyMix(), LocationSeed, BHGM->GetRevisionWeakTopics(), Selected, MinDiff, MaxDiff, nullptr);
+						if (!bSelected)
+						{
+							bSelected = FBHRevisionQuestionBank::SelectQuestion(Topic, BHGM->GetRevisionDifficultyMix(), LocationSeed, BHGM->GetRevisionWeakTopics(), Selected, EBHQuestionDifficulty::Easy, EBHQuestionDifficulty::Hard, nullptr);
+						}
+					}
+				}
 			}
 			bRevisionReviewQuestion = bReviewSelected;
+			if (bReviewSelected)
+			{
+				ReviewQuestionTargetPlayerId = PendingReviewTargetPlayerId;
+			}
 			PendingReviewQuestionId.Reset();
 			bUseAdaptiveQuestionOverride = false;
 			if (bSelected)

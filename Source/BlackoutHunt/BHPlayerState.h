@@ -61,7 +61,11 @@ public:
 	// incorrectly, oldest first, re-surfaced until answered correctly.
 	void EnqueueRevisionReview(const FString& QuestionId);
 	bool DequeueRevisionReview(const FString& QuestionId);
-	FString PeekRevisionReview() const;
+	// Returns the oldest queued review id, skipping ExcludeQuestionId (case-insensitive). The
+	// exclusion lets a station avoid re-serving the question that was JUST missed while its
+	// correction text (containing the answer) is still on screen; the excluded id stays queued
+	// and surfaces on a later peek. Empty result = nothing (else) to review.
+	FString PeekRevisionReview(const FString& ExcludeQuestionId = FString()) const;
 	void AddQuestionPoints(int32 Points);
 	bool SpendQuestionPoints(int32 Points);
 	int32 ApplyCaughtQuestionPointPenalty(float PenaltyFraction = 0.25f);

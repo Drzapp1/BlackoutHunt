@@ -4,12 +4,95 @@
 
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "BHAutomationTestWorld.h"
+#include "BHCharacter.h"
 #include "BHDiagramRenderer.h"
 #include "BHGameMode.h"
+#include "BHGameState.h"
+#include "BHObjectiveStation.h"
 #include "BHPlayerState.h"
 #include "BHRevisionQuestionBank.h"
 #include "BHTypes.h"
+#include "Engine/World.h"
+#include "HAL/IConsoleManager.h"
 #include "Misc/AutomationTest.h"
+
+namespace
+{
+// Minimal revision-mode test stage: a Game world whose game state reports an active revision Hunt.
+// There is deliberately NO game mode (UWorld::AuthorityGameMode cannot be installed in a bare
+// automation world), so station code must take its documented no-game-mode defaults: the
+// once-per-node cap stays enforced and the per-node question target resolves to 1.
+ABHGameState* BHCreateRevisionTestGameState(UWorld* World)
+{
+	ABHGameState* GameState = World ? World->SpawnActor<ABHGameState>() : nullptr;
+	if (World && GameState)
+	{
+		World->SetGameState(GameState);
+		GameState->SetRoundPhase(EBHRoundPhase::Hunt);
+		GameState->bRevisionMode = true;
+	}
+	return GameState;
+}
+
+ABHPlayerState* BHAttachRevisionTestPlayerState(UWorld* World, ABHCharacter* Character, int32 PlayerId, const FString& PlayerName, bool bIsBot = false)
+{
+	ABHPlayerState* PlayerState = World ? World->SpawnActor<ABHPlayerState>() : nullptr;
+	if (PlayerState)
+	{
+		PlayerState->SetPlayerName(PlayerName);
+		PlayerState->SetPlayerId(PlayerId);
+		PlayerState->SetRole(EBHPlayerRole::Survivor);
+		PlayerState->SetLifeState(EBHPlayerLifeState::Alive);
+		PlayerState->SetIsABot(bIsBot);
+	}
+	if (Character)
+	{
+		Character->SetPlayerState(PlayerState);
+	}
+	return PlayerState;
+}
+
+void BHAdvanceRevisionTestWorld(UWorld* World, float DeltaSeconds)
+{
+	if (!World)
+	{
+		return;
+	}
+
+	World->TimeSeconds += DeltaSeconds;
+	World->UnpausedTimeSeconds += DeltaSeconds;
+	World->RealTimeSeconds += DeltaSeconds;
+	World->AudioTimeSeconds += DeltaSeconds;
+	World->DeltaTimeSeconds = DeltaSeconds;
+	World->DeltaRealTimeSeconds = DeltaSeconds;
+	World->GetTimerManager().Tick(DeltaSeconds);
+}
+
+// Pins bh.Questions.DragFrequency to 0 for the scope so ConfigureQuestion's FRand() drag-question
+// roll cannot vary which question a station reloads mid-test; restores the previous value on exit.
+struct FBHScopedDragQuestionsOff
+{
+	FBHScopedDragQuestionsOff()
+		: CVar(IConsoleManager::Get().FindConsoleVariable(TEXT("bh.Questions.DragFrequency")))
+		, SavedValue(CVar ? CVar->GetFloat() : 0.0f)
+	{
+		if (CVar)
+		{
+			CVar->Set(0.0f);
+		}
+	}
+	~FBHScopedDragQuestionsOff()
+	{
+		if (CVar)
+		{
+			CVar->Set(SavedValue);
+		}
+	}
+	IConsoleVariable* CVar;
+	float SavedValue;
+};
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHGameModeRevisionTuningTest,
 	"BlackoutHunt.GameMode.RevisionTuning",
@@ -51,6 +134,20 @@ bool FBHGameModeRevisionTuningTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Foggrounds doorframe origin is floor-aligned even when the door sits at gameplay height."),
 		ABHGameMode::ResolveFoggroundsDoorFrameOrigin(FVector(200.0f, -300.0f, 120.0f)).Z,
 		0.0);
+
+	// Once-per-node cap relaxation (H3): the cap is only enforced when enough live HUMAN students
+	// exist to satisfy a node's distinct-answer target — bots never fill node quotas, so with fewer
+	// humans the cap would make every node (and the exit) mathematically unreachable.
+	TestTrue(TEXT("Three humans satisfy a three-answer node, so the once-per-node cap is enforced."),
+		ABHGameMode::RevisionNodeAnswerCapApplies(3, 3));
+	TestFalse(TEXT("A solo human cannot satisfy a three-answer node, so the cap relaxes."),
+		ABHGameMode::RevisionNodeAnswerCapApplies(1, 3));
+	TestFalse(TEXT("Two humans cannot satisfy a three-answer node, so the cap relaxes."),
+		ABHGameMode::RevisionNodeAnswerCapApplies(2, 3));
+	TestTrue(TEXT("A solo human satisfies a one-answer node, so the cap is enforced."),
+		ABHGameMode::RevisionNodeAnswerCapApplies(1, 1));
+	TestFalse(TEXT("An empty (all-bot) class never enforces the cap."),
+		ABHGameMode::RevisionNodeAnswerCapApplies(0, 1));
 
 	FString BankSummary;
 	TestTrue(TEXT("Revision question bank remains valid for classroom reports and adaptive selection."),
@@ -143,10 +240,27 @@ bool FBHRevisionReviewQueueTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Re-missing a queued question does not duplicate it."), PlayerState->RevisionReviewQueue.Num(), 2);
 	TestEqual(TEXT("Re-missed question moves behind the other pending review."), PlayerState->PeekRevisionReview(), FString(TEXT("waves_q2")));
 
+	// Review-echo guard: the station excludes the question that was JUST missed in the same
+	// submission (its correction text — containing the answer — is still on screen), so the peek
+	// must skip it, surface the next-oldest review instead, and leave the queue untouched.
+	TestEqual(TEXT("Peek skips an excluded id and surfaces the next queued review."),
+		PlayerState->PeekRevisionReview(TEXT("waves_q2")), FString(TEXT("forces_q1")));
+	TestEqual(TEXT("Peek exclusion matches ids case-insensitively."),
+		PlayerState->PeekRevisionReview(TEXT("WAVES_Q2")), FString(TEXT("forces_q1")));
+	TestEqual(TEXT("An excluded peek never consumes the queue."), PlayerState->RevisionReviewQueue.Num(), 2);
+	TestEqual(TEXT("A plain peek still surfaces the oldest review."),
+		PlayerState->PeekRevisionReview(), FString(TEXT("waves_q2")));
+
 	// Answering a queued question correctly clears it.
 	TestTrue(TEXT("Dequeue removes a queued question and reports success."), PlayerState->DequeueRevisionReview(TEXT("waves_q2")));
 	TestEqual(TEXT("Queue shrinks after a correct review answer."), PlayerState->RevisionReviewQueue.Num(), 1);
 	TestFalse(TEXT("Dequeue of an absent question reports no removal."), PlayerState->DequeueRevisionReview(TEXT("waves_q2")));
+
+	// When the only queued review IS the just-missed question, the peek yields nothing — the
+	// station falls through to its normal adaptive pick — and the id stays queued for a later node.
+	TestTrue(TEXT("Excluding the only queued review yields no pick."),
+		PlayerState->PeekRevisionReview(TEXT("forces_q1")).IsEmpty());
+	TestEqual(TEXT("The sole excluded review stays queued for a later node."), PlayerState->RevisionReviewQueue.Num(), 1);
 
 	// The queue is capped so a long session cannot grow it without bound.
 	PlayerState->ResetRevisionStats();
@@ -669,6 +783,260 @@ bool FBHRevisionSelectDragQuestionTest::RunTest(const FString& Parameters)
 			TestEqual(TEXT("Selected drag question is in the requested topic."), Out.Topic, Topic);
 		}
 	}
+	return true;
+}
+
+// Every matching/ordering question's pieces must be pairwise distinct: GradeArrangement compares
+// piece STRINGS per slot, so two identical pieces make every placement of them grade correct (the
+// electricity_match_03 "lower R / lower R" bug — any drag arrangement passed).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHRevisionArrangementPiecesDistinctTest,
+	"BlackoutHunt.GameMode.RevisionArrangementPiecesDistinct",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHRevisionArrangementPiecesDistinctTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	int32 Checked = 0;
+	int32 Failures = 0;
+	for (const FBHRevisionQuestion& Q : FBHRevisionQuestionBank::GetBuiltInQuestions())
+	{
+		if (Q.Type != EBHQuestionType::DragDropMatching && Q.Type != EBHQuestionType::Ordering)
+		{
+			continue;
+		}
+		if (!Q.Answer.Choices.IsValidIndex(Q.Answer.CorrectChoiceIndex))
+		{
+			continue;
+		}
+		TArray<FString> Slots;
+		TArray<FString> Pieces;
+		if (!FBHRevisionQuestionBank::ParseArrangementChoice(Q.Answer.Choices[Q.Answer.CorrectChoiceIndex], Q.Type, Slots, Pieces))
+		{
+			continue;
+		}
+		++Checked;
+		for (int32 A = 0; A < Pieces.Num(); ++A)
+		{
+			for (int32 B = A + 1; B < Pieces.Num(); ++B)
+			{
+				if (Pieces[A].TrimStartAndEnd().Equals(Pieces[B].TrimStartAndEnd(), ESearchCase::CaseSensitive))
+				{
+					++Failures;
+					AddError(FString::Printf(TEXT("[%s] duplicate arrangement piece '%s' — any placement of the pair grades correct."), *Q.Id, *Pieces[A]));
+				}
+			}
+		}
+	}
+	TestTrue(TEXT("At least one matching/ordering question was checked for piece uniqueness."), Checked > 0);
+	TestEqual(TEXT("No matching/ordering question has duplicate (ungradeable) pieces."), Failures, 0);
+
+	// Spot-check the previously unfailable question: its two pieces must now differ while each
+	// stays physically correct (thermistor responds to heat, LDR to light — both lower resistance).
+	// Read the BUILT-IN bank directly so a teacher JSON override on this machine cannot mask it.
+	const FBHRevisionQuestion* MatchQuestion = FBHRevisionQuestionBank::GetBuiltInQuestions().FindByPredicate([](const FBHRevisionQuestion& Q)
+	{
+		return Q.Id.Equals(TEXT("electricity_match_03"), ESearchCase::IgnoreCase);
+	});
+	if (TestNotNull(TEXT("electricity_match_03 exists in the built-in bank."), MatchQuestion))
+	{
+		TArray<FString> Slots;
+		TArray<FString> Pieces;
+		const bool bParsed = MatchQuestion->Answer.Choices.IsValidIndex(MatchQuestion->Answer.CorrectChoiceIndex)
+			&& FBHRevisionQuestionBank::ParseArrangementChoice(MatchQuestion->Answer.Choices[MatchQuestion->Answer.CorrectChoiceIndex], MatchQuestion->Type, Slots, Pieces);
+		TestTrue(TEXT("electricity_match_03's correct choice parses into a drag arrangement."), bParsed);
+		if (bParsed && Pieces.Num() == 2)
+		{
+			TestFalse(TEXT("electricity_match_03's two pieces are textually distinct so a swapped drop grades wrong."),
+				Pieces[0].Equals(Pieces[1], ESearchCase::CaseSensitive));
+		}
+	}
+	return true;
+}
+
+// Once-per-node discipline at a live station (H3): a wrong answer must NOT permanently spend the
+// student's single attempt (record-on-correct), a correct answer must, and survivor bots may answer
+// for flavor but never fill the node's quota or claim a slot. Runs without a game mode, which takes
+// the documented strict default (cap enforced) — the relaxation rule itself is covered by the pure
+// RevisionNodeAnswerCapApplies expectations in FBHGameModeRevisionTuningTest.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHRevisionOncePerNodeDisciplineTest,
+	"BlackoutHunt.GameMode.RevisionOncePerNodeDiscipline",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHRevisionOncePerNodeDisciplineTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FBHScopedAutomationWorld TestWorld(TEXT("BlackoutHuntRevisionCap"));
+	UWorld* World = TestWorld.Get();
+	TestNotNull(TEXT("Test world is created."), World);
+	if (!World)
+	{
+		return false;
+	}
+	FBHScopedDragQuestionsOff DragQuestionsOff;
+
+	ABHGameState* GameState = BHCreateRevisionTestGameState(World);
+	ABHCharacter* StudentA = World->SpawnActor<ABHCharacter>(FVector(0.0f, 0.0f, 140.0f), FRotator::ZeroRotator);
+	ABHCharacter* StudentB = World->SpawnActor<ABHCharacter>(FVector(200.0f, 0.0f, 140.0f), FRotator::ZeroRotator);
+	ABHCharacter* BotC = World->SpawnActor<ABHCharacter>(FVector(400.0f, 0.0f, 140.0f), FRotator::ZeroRotator);
+	ABHObjectiveStation* Station = World->SpawnActor<ABHObjectiveStation>(FVector(120.0f, 0.0f, 95.0f), FRotator::ZeroRotator);
+	TestNotNull(TEXT("Revision game state spawns."), GameState);
+	TestNotNull(TEXT("Student A spawns."), StudentA);
+	TestNotNull(TEXT("Student B spawns."), StudentB);
+	TestNotNull(TEXT("Bot survivor spawns."), BotC);
+	TestNotNull(TEXT("Objective station spawns."), Station);
+	if (!GameState || !StudentA || !StudentB || !BotC || !Station)
+	{
+		return false;
+	}
+
+	BHAttachRevisionTestPlayerState(World, StudentA, 101, TEXT("Cap Student A"));
+	BHAttachRevisionTestPlayerState(World, StudentB, 102, TEXT("Cap Student B"));
+	BHAttachRevisionTestPlayerState(World, BotC, 103, TEXT("Cap Bot C"), /*bIsBot=*/true);
+	Station->Configure(EBHObjectiveStationType::Terminal);
+	// Raise the node target above 1 so the first correct answer cannot solve the whole node and the
+	// once-per-node rejection branch stays reachable afterwards.
+	Station->ConfigureRevisionCounterNode(EBHRevisionCounterNodeType::PeerReview);
+
+	// Record-on-correct: a miss must not consume the student's once-per-node slot.
+	const int32 WrongIndex = (Station->GetCorrectAnswerIndexForBot() + 1) % FMath::Max(1, Station->GetQuestionChoiceCount());
+	TestFalse(TEXT("A wrong answer grades as wrong."), Station->SubmitAnswer(StudentA, WrongIndex));
+	TestFalse(TEXT("A wrong answer does not spend the once-per-node slot."), Station->HasPlayerAnsweredThisNode(101));
+
+	// After the correction hold expires the same student may retry the node — the H3 failure mode
+	// ("3-human class unwinnable after one miss") is exactly this retry being impossible.
+	// (Re-arm the >1 node target first: the wrong answer reloaded the question, and without a game
+	// mode the reload takes the non-revision default of a 1-answer target.)
+	Station->ConfigureRevisionCounterNode(EBHRevisionCounterNodeType::PeerReview);
+	BHAdvanceRevisionTestWorld(World, 3.6f);
+	TestTrue(TEXT("The same student answers correctly after the correction hold."), Station->SubmitAnswer(StudentA, Station->GetCorrectAnswerIndexForBot()));
+	TestTrue(TEXT("A correct answer spends the once-per-node slot."), Station->HasPlayerAnsweredThisNode(101));
+	TestFalse(TEXT("The multi-answer node is not solved by one student."), Station->IsQuestionSolved());
+
+	// With the cap enforced (strict no-game-mode default), the spent slot blocks a second answer.
+	BHAdvanceRevisionTestWorld(World, 0.6f);
+	TestFalse(TEXT("A student who already answered this node is rejected."), Station->SubmitAnswer(StudentA, Station->GetCorrectAnswerIndexForBot()));
+
+	// Bot exclusion: a bot's correct answer is accepted as flavor but advances nothing.
+	TestTrue(TEXT("A survivor bot may answer the question."), Station->SubmitAnswer(BotC, Station->GetCorrectAnswerIndexForBot()));
+	TestEqual(TEXT("A bot's correct answer never increments the node quota."), Station->GetRevisionQuestionsSolved(), 0);
+	TestFalse(TEXT("A bot never claims a once-per-node slot."), Station->HasPlayerAnsweredThisNode(103));
+	TestFalse(TEXT("A bot's correct answer never solves the node."), Station->IsQuestionSolved());
+
+	// A second human still progresses the node normally.
+	BHAdvanceRevisionTestWorld(World, 0.6f);
+	TestTrue(TEXT("A second human's correct answer is accepted."), Station->SubmitAnswer(StudentB, Station->GetCorrectAnswerIndexForBot()));
+	TestTrue(TEXT("The second human's slot is recorded."), Station->HasPlayerAnsweredThisNode(102));
+
+	// Reconnect remap: the new PlayerId inherits the old id's spent slot.
+	Station->RemapAnsweredNodePlayerId(102, 555);
+	TestFalse(TEXT("The old PlayerId no longer holds the node slot after a remap."), Station->HasPlayerAnsweredThisNode(102));
+	TestTrue(TEXT("The reconnecting PlayerId inherits the spent node slot."), Station->HasPlayerAnsweredThisNode(555));
+
+	return true;
+}
+
+// The correction hold is per player: a wrong answer holds only the student who missed, never their
+// teammates (a shared hold let one miss — or a griefer — lock the whole class out of a node).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHRevisionPerPlayerCorrectionHoldTest,
+	"BlackoutHunt.GameMode.RevisionPerPlayerCorrectionHold",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHRevisionPerPlayerCorrectionHoldTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FBHScopedAutomationWorld TestWorld(TEXT("BlackoutHuntRevisionHold"));
+	UWorld* World = TestWorld.Get();
+	TestNotNull(TEXT("Test world is created."), World);
+	if (!World)
+	{
+		return false;
+	}
+	FBHScopedDragQuestionsOff DragQuestionsOff;
+
+	ABHGameState* GameState = BHCreateRevisionTestGameState(World);
+	ABHCharacter* StudentA = World->SpawnActor<ABHCharacter>(FVector(0.0f, 0.0f, 140.0f), FRotator::ZeroRotator);
+	ABHCharacter* StudentB = World->SpawnActor<ABHCharacter>(FVector(200.0f, 0.0f, 140.0f), FRotator::ZeroRotator);
+	ABHObjectiveStation* Station = World->SpawnActor<ABHObjectiveStation>(FVector(120.0f, 0.0f, 95.0f), FRotator::ZeroRotator);
+	TestNotNull(TEXT("Revision game state spawns."), GameState);
+	TestNotNull(TEXT("Held student spawns."), StudentA);
+	TestNotNull(TEXT("Teammate spawns."), StudentB);
+	TestNotNull(TEXT("Objective station spawns."), Station);
+	if (!GameState || !StudentA || !StudentB || !Station)
+	{
+		return false;
+	}
+
+	BHAttachRevisionTestPlayerState(World, StudentA, 201, TEXT("Hold Student A"));
+	BHAttachRevisionTestPlayerState(World, StudentB, 202, TEXT("Hold Student B"));
+	Station->Configure(EBHObjectiveStationType::Terminal);
+
+	const int32 WrongIndex = (Station->GetCorrectAnswerIndexForBot() + 1) % FMath::Max(1, Station->GetQuestionChoiceCount());
+	TestFalse(TEXT("Student A's wrong answer grades as wrong."), Station->SubmitAnswer(StudentA, WrongIndex));
+
+	// Inside A's 3s correction hold (and past A's 0.45s answer throttle): A is blocked...
+	BHAdvanceRevisionTestWorld(World, 0.6f);
+	TestFalse(TEXT("The wrong-answerer is held during their correction window."), Station->SubmitAnswer(StudentA, Station->GetCorrectAnswerIndexForBot()));
+	TestFalse(TEXT("A held submission never spends the once-per-node slot."), Station->HasPlayerAnsweredThisNode(201));
+
+	// ...but their teammate is not: the hold belongs to the player, not the station.
+	TestTrue(TEXT("A teammate answers freely during someone else's correction hold."), Station->SubmitAnswer(StudentB, Station->GetCorrectAnswerIndexForBot()));
+	TestTrue(TEXT("The unheld teammate's correct answer is recorded."), Station->HasPlayerAnsweredThisNode(202));
+
+	return true;
+}
+
+// Step echo: an answer carrying a stale RevisionQuestionStep (the shared question swapped while the
+// RPC was in flight) must be rejected without consuming the once-per-node slot, the per-player
+// answer throttle, the correction hold, or any mastery recording — so the immediate retry against
+// the freshly shown question costs the student nothing.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHRevisionStaleStepEchoTest,
+	"BlackoutHunt.GameMode.RevisionStaleStepEcho",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHRevisionStaleStepEchoTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FBHScopedAutomationWorld TestWorld(TEXT("BlackoutHuntRevisionStep"));
+	UWorld* World = TestWorld.Get();
+	TestNotNull(TEXT("Test world is created."), World);
+	if (!World)
+	{
+		return false;
+	}
+	FBHScopedDragQuestionsOff DragQuestionsOff;
+
+	ABHGameState* GameState = BHCreateRevisionTestGameState(World);
+	ABHCharacter* Student = World->SpawnActor<ABHCharacter>(FVector(0.0f, 0.0f, 140.0f), FRotator::ZeroRotator);
+	ABHObjectiveStation* Station = World->SpawnActor<ABHObjectiveStation>(FVector(120.0f, 0.0f, 95.0f), FRotator::ZeroRotator);
+	TestNotNull(TEXT("Revision game state spawns."), GameState);
+	TestNotNull(TEXT("Student spawns."), Student);
+	TestNotNull(TEXT("Objective station spawns."), Station);
+	if (!GameState || !Student || !Station)
+	{
+		return false;
+	}
+
+	BHAttachRevisionTestPlayerState(World, Student, 301, TEXT("Step Student"));
+	Station->Configure(EBHObjectiveStationType::Terminal);
+
+	const int32 LiveStep = Station->GetRevisionQuestionStep();
+	const int32 CorrectIndex = Station->GetCorrectAnswerIndexForBot();
+
+	// A correct answer aimed at a step the station is no longer showing is rejected outright.
+	TestFalse(TEXT("An answer echoing a stale question step is rejected."), Station->SubmitAnswer(Student, CorrectIndex, /*bVisualAnswer=*/false, LiveStep + 3));
+	TestFalse(TEXT("A stale-step rejection never spends the once-per-node slot."), Station->HasPlayerAnsweredThisNode(301));
+	TestFalse(TEXT("A stale-step rejection never grades the question."), Station->IsQuestionSolved());
+
+	// The IMMEDIATE retry with the live step succeeds: the stale rejection consumed neither the
+	// 0.45s per-player answer throttle nor any correction-hold state (no time was advanced).
+	TestTrue(TEXT("An immediate correctly-stepped retry is accepted."), Station->SubmitAnswer(Student, CorrectIndex, /*bVisualAnswer=*/false, LiveStep));
+	TestTrue(TEXT("The accepted retry records the once-per-node slot."), Station->HasPlayerAnsweredThisNode(301));
+	TestTrue(TEXT("The accepted retry solves the single-answer node question."), Station->IsQuestionSolved());
+
 	return true;
 }
 

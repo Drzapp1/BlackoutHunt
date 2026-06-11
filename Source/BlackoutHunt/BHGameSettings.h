@@ -81,6 +81,14 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Rules")
 	float ReconnectGraceSeconds;
 
+	// After the lobby->first-hunt ServerTravel, the ?BHAutoPrep=1 warmup start is held until every human
+	// from the departure roster has re-logged-in (travel is non-seamless, so each student lands only after
+	// their own map load). This is the give-up bound: Prep starts anyway once this many seconds pass, so a
+	// student whose client never returns can't hold the whole class at a black screen. Clamped to >= 10 s
+	// at the consumer so a hand-edited config can't make the gate meaningless on slow school machines.
+	UPROPERTY(Config, EditAnywhere, Category = "Rules", meta = (ClampMin = "10.0"))
+	float AutoPrepRosterTimeoutSeconds;
+
 	UPROPERTY(Config, EditAnywhere, Category = "Classroom")
 	bool bClassroomMode;
 

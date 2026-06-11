@@ -12,6 +12,7 @@
 #include "Engine/World.h"
 #include "Engine/Engine.h"
 #include "Engine/NetDriver.h"
+#include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/PlayerState.h"
 #include "HAL/FileManager.h"
@@ -1050,6 +1051,7 @@ void UBHGameInstance::PersistTravelPlayerState(const ABHPlayerState* PlayerState
 	Progress.LifetimeHunterPoints = PlayerState->LifetimeHunterPoints;
 	Progress.PropHuntScore = PlayerState->PropHuntScore;
 	Progress.PropHuntTimesSeeker = PlayerState->PropHuntTimesSeeker;
+	Progress.bIsBot = PlayerState->IsABot();
 	Progress.Powerups = PlayerState->Powerups;
 	Progress.ReconnectToken = PlayerState->ReconnectToken;
 	Progress.LastPersistedWallTime = NowWall;
@@ -1137,7 +1139,7 @@ bool UBHGameInstance::RestoreTravelPlayerState(ABHPlayerState* PlayerState, bool
 	return true;
 }
 
-void UBHGameInstance::MarkTravelPlayerLeftForReconnect(const ABHPlayerState* PlayerState, float ServerTimeSeconds)
+void UBHGameInstance::MarkTravelPlayerLeftForReconnect(const ABHPlayerState* PlayerState, float ServerTimeSeconds, const APawn* LeaverPawn)
 {
 	// The caller's world time is intentionally ignored for the grace stamp: it resets on ServerTravel.
 	// We stamp a process-wide monotonic clock so elapsed time stays valid across travel boundaries.
@@ -1147,13 +1149,25 @@ void UBHGameInstance::MarkTravelPlayerLeftForReconnect(const ABHPlayerState* Pla
 		return;
 	}
 
-	// Persist the player's current state, then stamp the leave time on the matching entry so a
-	// rejoin within the grace window can be recognized and restored.
-	PersistTravelPlayerState(PlayerState);
-
 	const FString ReconnectToken = PlayerState->ReconnectToken;
 	const FString StableId = TravelStableIdForPlayerState(PlayerState);
 	const FString PlayerName = PlayerState->GetPlayerName();
+
+	// A re-mark refreshes the grace stamp. Clear any STALE pending mark on the entry BEFORE persisting:
+	// PersistTravelPlayerState runs the staleness prune, whose rule 1 drops entries whose pending mark aged
+	// far past the grace window — it must not evict the very entry we are about to re-stamp (the new stamp
+	// is only written below, after the persist).
+	if (FBHTravelPlayerProgress* PreExisting = TravelPlayerProgress.FindByPredicate([&](const FBHTravelPlayerProgress& Progress)
+		{
+			return TravelEntryMatches(Progress, ReconnectToken, StableId, PlayerName);
+		}))
+	{
+		PreExisting->LeftServerWorldTime = -1.0;
+	}
+
+	// Persist the player's current state, then stamp the leave time on the matching entry so a
+	// rejoin within the grace window can be recognized and restored.
+	PersistTravelPlayerState(PlayerState);
 	FBHTravelPlayerProgress* Existing = TravelPlayerProgress.FindByPredicate([&](const FBHTravelPlayerProgress& Progress)
 	{
 		return TravelEntryMatches(Progress, ReconnectToken, StableId, PlayerName);
@@ -1162,6 +1176,17 @@ void UBHGameInstance::MarkTravelPlayerLeftForReconnect(const ABHPlayerState* Pla
 	if (Existing)
 	{
 		Existing->LeftServerWorldTime = (ReconnectClockOverrideSeconds >= 0.0) ? ReconnectClockOverrideSeconds : FPlatformTime::Seconds();
+		// Combat-log containment inputs (see the struct comments): the spot the pawn dropped at — only
+		// supplied for a LIVE-round leave, so a Prep/Intermission leave keeps the normal fresh-spawn
+		// restore — and the old PlayerId so the once-per-node answer bookkeeping can follow the player
+		// across the rejoin's brand-new PlayerState.
+		Existing->OldPlayerId = PlayerState->GetPlayerId();
+		Existing->bHasPawnTransform = LeaverPawn != nullptr;
+		if (LeaverPawn)
+		{
+			Existing->PawnLocation = LeaverPawn->GetActorLocation();
+			Existing->PawnRotation = LeaverPawn->GetActorRotation();
+		}
 	}
 }
 
@@ -1215,20 +1240,52 @@ void UBHGameInstance::ClearReconnectMark(const ABHPlayerState* PlayerState)
 		return;
 	}
 
-	// Clear the just-consumed reconnect entry. TravelEntryMatches keys off the secret token first (so the
-	// correct entry is cleared even when two students share a display name), falling back to id/name for any
-	// legacy entry that predates token issuance.
+	// Clear the just-consumed reconnect entry — TOKEN MATCH ONLY. This now runs on EVERY successful login,
+	// so the id/name fallback TravelEntryMatches uses elsewhere would let a tokenless arrival who merely
+	// typed the same display name (OSS-Null classroom path) wipe a genuinely-dropped player's pending mark
+	// and cost them their grace restore. A tokenless arrival has no mark of its own to consume; skip.
 	const FString ReconnectToken = PlayerState->ReconnectToken;
-	const FString StableId = TravelStableIdForPlayerState(PlayerState);
-	const FString PlayerName = PlayerState->GetPlayerName();
-	FBHTravelPlayerProgress* Existing = TravelPlayerProgress.FindByPredicate([&](const FBHTravelPlayerProgress& Progress)
+	if (ReconnectToken.IsEmpty())
 	{
-		return TravelEntryMatches(Progress, ReconnectToken, StableId, PlayerName);
+		return;
+	}
+	FBHTravelPlayerProgress* Existing = TravelPlayerProgress.FindByPredicate([&ReconnectToken](const FBHTravelPlayerProgress& Progress)
+	{
+		return !Progress.ReconnectToken.IsEmpty() && Progress.ReconnectToken == ReconnectToken;
 	});
 
 	if (Existing)
 	{
 		Existing->LeftServerWorldTime = -1.0f;
+	}
+}
+
+bool UBHGameInstance::HasTravelSnapshotForToken(const FString& ReconnectToken) const
+{
+	// "Was this identity part of the session?" — the guard the win-window round-result resend uses to
+	// distinguish a round participant rejoining from a brand-new player whose first sight of the class is
+	// the end screen (who must not be handed a result for a round they never played).
+	if (ReconnectToken.IsEmpty())
+	{
+		return false;
+	}
+	return TravelPlayerProgress.ContainsByPredicate([&ReconnectToken](const FBHTravelPlayerProgress& Progress)
+	{
+		return !Progress.ReconnectToken.IsEmpty() && Progress.ReconnectToken == ReconnectToken;
+	});
+}
+
+void UBHGameInstance::InvalidateAllReconnectMarks()
+{
+	// Marks are round-scoped: a snapshot taken when a player dropped during round N must not restore them
+	// into round N+1 (e.g. last round's Teacher rejoining as a SECOND hunter), and a mark belonging to a
+	// decided round must not keep deferring the next round's win checks. Only the pending-leave stamps are
+	// cleared — the snapshots themselves stay so banked progress still restores on the next travel login.
+	for (FBHTravelPlayerProgress& Progress : TravelPlayerProgress)
+	{
+		Progress.LeftServerWorldTime = -1.0;
+		Progress.bHasPawnTransform = false;
+		Progress.OldPlayerId = INDEX_NONE;
 	}
 }
 
@@ -1240,12 +1297,13 @@ int32 UBHGameInstance::CountReconnectableAliveSurvivors(float GraceSeconds) cons
 	}
 
 	// Same monotonic clock and window the grace check uses (see TryGetReconnectProgress), so a survivor who
-	// just dropped counts as "still coming back" until their 120 s window truly elapses.
+	// just dropped counts as "still coming back" until their 120 s window truly elapses. Bot snapshots are
+	// skipped: a trimmed bot can never re-login, so its mark must not hold a decided round open.
 	const double NowSeconds = (ReconnectClockOverrideSeconds >= 0.0) ? ReconnectClockOverrideSeconds : FPlatformTime::Seconds();
 	int32 Count = 0;
 	for (const FBHTravelPlayerProgress& Progress : TravelPlayerProgress)
 	{
-		if (Progress.LeftServerWorldTime < 0.0)
+		if (Progress.bIsBot || Progress.LeftServerWorldTime < 0.0)
 		{
 			continue;
 		}
@@ -1256,6 +1314,63 @@ int32 UBHGameInstance::CountReconnectableAliveSurvivors(float GraceSeconds) cons
 		}
 		if (Progress.LifeState == EBHPlayerLifeState::Alive
 			&& (Progress.PlayerRole == EBHPlayerRole::Survivor || Progress.PlayerRole == EBHPlayerRole::Tester))
+		{
+			++Count;
+		}
+	}
+	return Count;
+}
+
+int32 UBHGameInstance::CountReconnectableAliveHunters(float GraceSeconds) const
+{
+	if (GraceSeconds <= 0.0f)
+	{
+		return 0;
+	}
+
+	// Same monotonic clock and window the grace check uses (see TryGetReconnectProgress), so a hunter who
+	// just dropped counts as "still coming back" until their 120 s window truly elapses. Bot snapshots are
+	// skipped: a trimmed bot can never re-login, so its mark must not defer a SurvivorsWin.
+	const double NowSeconds = (ReconnectClockOverrideSeconds >= 0.0) ? ReconnectClockOverrideSeconds : FPlatformTime::Seconds();
+	int32 Count = 0;
+	for (const FBHTravelPlayerProgress& Progress : TravelPlayerProgress)
+	{
+		if (Progress.bIsBot || Progress.LeftServerWorldTime < 0.0)
+		{
+			continue;
+		}
+		const double Elapsed = NowSeconds - Progress.LeftServerWorldTime;
+		if (Elapsed < 0.0 || Elapsed > static_cast<double>(GraceSeconds))
+		{
+			continue;
+		}
+		if (Progress.LifeState == EBHPlayerLifeState::Alive
+			&& Progress.PlayerRole == EBHPlayerRole::Hunter)
+		{
+			++Count;
+		}
+	}
+	return Count;
+}
+
+int32 UBHGameInstance::CountRecentlyPersistedHumanPlayers(double WindowSeconds) const
+{
+	if (WindowSeconds <= 0.0)
+	{
+		return 0;
+	}
+
+	// Same monotonic clock the persist stamps use, so the window survives the ServerTravel it measures across.
+	const double NowSeconds = (ReconnectClockOverrideSeconds >= 0.0) ? ReconnectClockOverrideSeconds : FPlatformTime::Seconds();
+	int32 Count = 0;
+	for (const FBHTravelPlayerProgress& Progress : TravelPlayerProgress)
+	{
+		if (Progress.bIsBot || Progress.LastPersistedWallTime < 0.0)
+		{
+			continue;
+		}
+		const double Elapsed = NowSeconds - Progress.LastPersistedWallTime;
+		if (Elapsed >= 0.0 && Elapsed <= WindowSeconds)
 		{
 			++Count;
 		}

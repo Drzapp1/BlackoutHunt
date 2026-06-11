@@ -137,13 +137,21 @@ void ABHGameMode::PersistPlayersForTravel()
 		return;
 	}
 
+	int32 ConnectedHumans = 0;
 	for (APlayerState* RawPS : GameState->PlayerArray)
 	{
 		if (ABHPlayerState* BHPS = Cast<ABHPlayerState>(RawPS))
 		{
 			BHGI->PersistTravelPlayerState(BHPS);
+			if (!BHPS->IsABot())
+			{
+				++ConnectedHumans;
+			}
 		}
 	}
+	// Stamp the EXACT departure roster for the arrival map's AutoPrep gate — counted here, at the travel
+	// moment, so lobby quitters whose snapshots are merely recent can never inflate the expected count.
+	BHGI->SetExpectedReturningHumanCount(ConnectedHumans);
 }
 
 void ABHGameMode::RestorePlayersAfterTravel(AController* Controller)

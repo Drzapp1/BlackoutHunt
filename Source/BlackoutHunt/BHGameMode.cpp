@@ -1139,23 +1139,26 @@ void ABHGameMode::BeginPlay()
 	}
 
 	// Arriving from the train lobby: kick off the normal role-warmup (Prep) on load instead of re-entering a
-	// Lobby phase on the hunt map (the social waiting already happened on the train).
+	// Lobby phase on the hunt map (the social waiting already happened on the train). Travel is NON-seamless,
+	// so each student re-logs-in only after their own map load finishes — a fixed short delay here started
+	// Prep before slower-loading students landed and PostLogin parked them out of round 1. Gate the start on
+	// the departure roster instead: poll once per second until every human persisted at departure has
+	// re-logged-in, with a configurable timeout fallback (PollAutoPrepRosterGate).
 	const FString AutoPrepOption = GetWorld() ? GetWorld()->URL.GetOption(TEXT("BHAutoPrep="), TEXT("")) : FString();
 	if (!bPracticeMode && !bTestMode && IsTrueOption(AutoPrepOption))
 	{
-		FTimerDelegate AutoPrepDelegate;
-		AutoPrepDelegate.BindWeakLambda(this, [this]()
+		// The expected roster is captured ONCE, now. Preferred source: the EXACT human count
+		// PersistPlayersForTravel stamped at the departure moment — immune to lobby quitters whose
+		// snapshots are merely recent. Fallback (stamp of 0 = direct launch / no departure persist):
+		// the 90 s recently-persisted window, which covers the host's own map load.
+		if (const UBHGameInstance* RosterBHGI = GetGameInstance<UBHGameInstance>())
 		{
-			if (const ABHGameState* BHGS = GetGameState<ABHGameState>())
-			{
-				if (BHGS->RoundPhase == EBHRoundPhase::Lobby)
-				{
-					StartPrepPhase();
-				}
-			}
-		});
-		FTimerHandle AutoPrepHandle;
-		GetWorldTimerManager().SetTimer(AutoPrepHandle, AutoPrepDelegate, 1.0f, false);
+			ExpectedAutoPrepHumanCount = RosterBHGI->GetExpectedReturningHumanCount() > 0
+				? RosterBHGI->GetExpectedReturningHumanCount()
+				: RosterBHGI->CountRecentlyPersistedHumanPlayers(90.0);
+		}
+		AutoPrepRosterWaitStartSeconds = FPlatformTime::Seconds();
+		GetWorldTimerManager().SetTimer(AutoPrepRosterTimerHandle, this, &ABHGameMode::PollAutoPrepRosterGate, 1.0f, true);
 	}
 
 	const FString NavCheckOption = GetWorld() ? GetWorld()->URL.GetOption(TEXT("BHRunBotNavCheck="), TEXT("")) : FString();
@@ -1197,6 +1200,55 @@ void ABHGameMode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	Super::EndPlay(EndPlayReason);
 }
 
+void ABHGameMode::PollAutoPrepRosterGate()
+{
+	const ABHGameState* BHGS = GetGameState<ABHGameState>();
+	if (!BHGS || BHGS->RoundPhase != EBHRoundPhase::Lobby)
+	{
+		// The round already started by another path (host force-start, ready-up) or the phase moved on;
+		// the gate has nothing left to decide.
+		GetWorldTimerManager().ClearTimer(AutoPrepRosterTimerHandle);
+		return;
+	}
+
+	// Count the humans who have completed their re-login on this map. Bots never log in (and use
+	// ABHBotController, not APlayerController), so the player-controller iterator counts exactly the
+	// re-logged humans the persisted departure roster expects back.
+	int32 ConnectedHumans = 0;
+	if (const UWorld* World = GetWorld())
+	{
+		for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+		{
+			const APlayerController* PC = It->Get();
+			if (PC && PC->GetPlayerState<ABHPlayerState>())
+			{
+				++ConnectedHumans;
+			}
+		}
+	}
+
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	// Floor of 10 s: below that the gate is meaningless on slow school machines (a single client load
+	// regularly takes longer), and the timeout exists only as a give-up bound, never the normal path.
+	const double TimeoutSeconds = FMath::Max(10.0, Settings ? static_cast<double>(Settings->AutoPrepRosterTimeoutSeconds) : 45.0);
+	const double WaitedSeconds = FPlatformTime::Seconds() - AutoPrepRosterWaitStartSeconds;
+	const bool bRosterComplete = ConnectedHumans >= ExpectedAutoPrepHumanCount;
+	if (!bRosterComplete && WaitedSeconds < TimeoutSeconds)
+	{
+		return;
+	}
+
+	GetWorldTimerManager().ClearTimer(AutoPrepRosterTimerHandle);
+	if (!bRosterComplete)
+	{
+		// Starting anyway: a straggler who lands during Prep still joins the round as a live survivor
+		// (see the Prep-join path in PostLogin), so the timeout costs them warmup time, not the round.
+		UE_LOG(LogTemp, Warning, TEXT("BlackoutHunt AutoPrep: starting warmup after %.0fs timeout with %d/%d expected humans re-logged-in."),
+			WaitedSeconds, ConnectedHumans, ExpectedAutoPrepHumanCount);
+	}
+	StartPrepPhase();
+}
+
 FString ABHGameMode::InitNewPlayer(APlayerController* NewPlayerController, const FUniqueNetIdRepl& UniqueId, const FString& Options, const FString& Portal)
 {
 	const FString Result = Super::InitNewPlayer(NewPlayerController, UniqueId, Options, Portal);
@@ -1216,7 +1268,13 @@ void ABHGameMode::PostLogin(APlayerController* NewPlayer)
 
 	const ABHGameState* BHGS = GetGameState<ABHGameState>();
 	const bool bCanJoinRound = bPracticeMode || bTestMode || !BHGS || BHGS->RoundPhase == EBHRoundPhase::Lobby;
+	// Prep is the role warmup — no capture is live yet, and (with non-seamless travel) a slow-loading
+	// student legitimately lands here seconds after AutoPrep started it. Such a landing joins the round
+	// as a normal alive Survivor instead of spending the whole round parked as a spectator. Hunt and
+	// FinalEscape landings still spectate exactly as before.
+	const bool bPrepJoin = !bPracticeMode && !bTestMode && BHGS && BHGS->RoundPhase == EBHRoundPhase::Prep;
 	bool bReconnected = false;
+	FBHTravelPlayerProgress ReconnectProgress;
 
 	if (ABHPlayerState* BHPS = NewPlayer ? NewPlayer->GetPlayerState<ABHPlayerState>() : nullptr)
 	{
@@ -1237,7 +1295,6 @@ void ABHGameMode::PostLogin(APlayerController* NewPlayer)
 		// grace window is restored to their exact role/state (a caught student returns as their
 		// Hall Monitor/captured state, an active survivor/teacher returns to that role) instead of
 		// being forced to spectate until the next lobby.
-		FBHTravelPlayerProgress ReconnectProgress;
 		if (bLateJoinSpectator)
 		{
 			const UBHGameSettings* RejoinSettings = GetDefault<UBHGameSettings>();
@@ -1270,10 +1327,30 @@ void ABHGameMode::PostLogin(APlayerController* NewPlayer)
 			BHPS->LifetimeQuestionPoints = FMath::Max(BHPS->QuestionPoints, ReconnectProgress.LifetimeQuestionPoints);
 			BHPS->HunterPoints = FMath::Max(0, ReconnectProgress.HunterPoints);
 			BHPS->LifetimeHunterPoints = FMath::Max(BHPS->HunterPoints, ReconnectProgress.LifetimeHunterPoints);
+			// Prop-hunt match bookkeeping rides the same snapshot (mirroring the cross-round restore in
+			// RestoreTravelPlayerState): dropping the score corrupts the match standings, and dropping the
+			// seeker history puts the returner back at the front of the fewest-first rotation.
+			BHPS->PropHuntScore = FMath::Max(0, ReconnectProgress.PropHuntScore);
+			BHPS->PropHuntTimesSeeker = FMath::Max(0, ReconnectProgress.PropHuntTimesSeeker);
 			BHPS->Powerups = ReconnectProgress.Powerups;
 			for (FBHPowerupInventoryEntry& Entry : BHPS->Powerups)
 			{
 				Entry.CooldownEndServerTime = 0.0f;
+			}
+
+			// Once-per-node continuity: the rejoin minted a brand-new PlayerState (fresh PlayerId), which the
+			// objective stations' answered-node bookkeeping (keyed by PlayerId) would read as a brand-new
+			// student — every node they already spent re-opens, turning a plug-pull into free extra attempts.
+			// Remap the stations' stored ids so the cap follows the player across the rejoin.
+			if (ReconnectProgress.OldPlayerId != INDEX_NONE && ReconnectProgress.OldPlayerId != BHPS->GetPlayerId())
+			{
+				for (const TObjectPtr<ABHObjectiveStation>& Station : ObjectiveStations)
+				{
+					if (Station)
+					{
+						Station->RemapAnsweredNodePlayerId(ReconnectProgress.OldPlayerId, BHPS->GetPlayerId());
+					}
+				}
 			}
 
 			// Reconnected into an ALREADY-RESOLVED round (EndRound latched a *Win phase, within its ~8s
@@ -1288,26 +1365,78 @@ void ABHGameMode::PostLogin(APlayerController* NewPlayer)
 				{
 					BHPS->SetLifeState(EBHPlayerLifeState::Captured);
 				}
-				if (ABHPlayerController* ResultPC = Cast<ABHPlayerController>(NewPlayer))
-				{
-					ResultPC->ClientRecordRoundResult(BHPS->PlayerRole, BHPS->LifeState, ResolvedCheckBHGS->RoundPhase);
-				}
-			}
-			if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
-			{
-				BHGI->ClearReconnectMark(BHPS);
 			}
 		}
 		else
 		{
 			BHPS->SetDesiredRole(bTestMode ? EBHPlayerRole::Tester : (bPracticeMode || bLateJoinSpectator ? EBHPlayerRole::Survivor : RequestedRole));
-			BHPS->SetRole(bTestMode ? EBHPlayerRole::Tester : (bPracticeMode ? EBHPlayerRole::Survivor : (bCanJoinRound ? EBHPlayerRole::Unassigned : EBHPlayerRole::Spectator)));
-			BHPS->SetLifeState(bCanJoinRound ? EBHPlayerLifeState::Alive : EBHPlayerLifeState::Captured);
+			BHPS->SetRole(bTestMode ? EBHPlayerRole::Tester : (bPracticeMode ? EBHPlayerRole::Survivor : (bCanJoinRound ? EBHPlayerRole::Unassigned : (bPrepJoin ? EBHPlayerRole::Survivor : EBHPlayerRole::Spectator))));
+			BHPS->SetLifeState(bCanJoinRound || bPrepJoin ? EBHPlayerLifeState::Alive : EBHPlayerLifeState::Captured);
+			if (bPrepJoin)
+			{
+				// Roles were already assigned at Prep start, so this Survivor add is purely additive — it can
+				// never demote the guaranteed hunter. Start the warmup checklist fresh like AssignRoles does
+				// for the players who were present at assignment.
+				BHPS->ResetWarmupChecklist();
+			}
 			if (bRevisionMode && !bTrainIntermissionLevel)
 			{
 				BHPS->ResetRevisionStats();
 			}
 			RestorePlayersAfterTravel(NewPlayer);
+		}
+
+		// A round-N participant who lands inside the ~8 s win window must still receive the round result they
+		// missed (the client-side XP award rides it). This runs OUTSIDE the grace-restore branch on purpose:
+		// EndRound invalidates all reconnect marks, so a player who dropped seconds before the round resolved
+		// fails the grace probe (bReconnected false) — but their persisted session snapshot still proves they
+		// played the round. The sent-token set keeps the award single-fire for players who saw the broadcast.
+		{
+			const ABHGameState* ResultBHGS = GetGameState<ABHGameState>();
+			const UBHGameInstance* ResultBHGI = GetGameInstance<UBHGameInstance>();
+			if (ResultBHGS
+				&& (ResultBHGS->RoundPhase == EBHRoundPhase::HunterWin || ResultBHGS->RoundPhase == EBHRoundPhase::SurvivorsWin)
+				&& !BHPS->ReconnectToken.IsEmpty()
+				&& !RoundResultSentReconnectTokens.Contains(BHPS->ReconnectToken)
+				&& ResultBHGI && ResultBHGI->HasTravelSnapshotForToken(BHPS->ReconnectToken))
+			{
+				if (ABHPlayerController* ResultPC = Cast<ABHPlayerController>(NewPlayer))
+				{
+					ResultPC->ClientRecordRoundResult(BHPS->PlayerRole, BHPS->LifeState, ResultBHGS->RoundPhase);
+					RoundResultSentReconnectTokens.Add(BHPS->ReconnectToken);
+				}
+			}
+		}
+
+		// A dropped hunter restored into a LIVE phase after the hunt-start guarantee already promoted a
+		// replacement must not re-enter as a SECOND Teacher/seeker — the class signed up for TargetHunterCount
+		// of them. Demote the returner to a normal Survivor for this round; their banked points are untouched.
+		if (bReconnected && BHPS->IsAliveHunter())
+		{
+			const ABHGameState* HunterCheckBHGS = GetGameState<ABHGameState>();
+			const bool bLivePhase = HunterCheckBHGS
+				&& (HunterCheckBHGS->RoundPhase == EBHRoundPhase::Hunt || HunterCheckBHGS->RoundPhase == EBHRoundPhase::FinalEscape);
+			if (bLivePhase && CountAliveHunters() > FMath::Max(1, TargetHunterCount))
+			{
+				BHPS->SetRole(EBHPlayerRole::Survivor);
+				if (ABHPlayerController* DemotePC = Cast<ABHPlayerController>(NewPlayer))
+				{
+					DemotePC->ClientShowStatusMessage(
+						bPropHuntMode
+							? TEXT("Another player took over as the Seeker while you were gone — you rejoin as a prop.")
+							: TEXT("Another player took over as the Teacher while you were gone — you rejoin as a Survivor."),
+						6.0f);
+				}
+			}
+		}
+
+		// EVERY successful login consumes any pending reconnect mark for this identity, not just the grace
+		// restore above: a normal post-ServerTravel relogin otherwise keeps the mark the travel teardown
+		// wrote for the full grace window, and CountReconnectableAliveSurvivors/Hunters would then count a
+		// player who is actually present — silently deferring a decided win for up to ~2 minutes.
+		if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
+		{
+			BHGI->ClearReconnectMark(BHPS);
 		}
 
 		// Issue a fresh per-client reconnect token to anyone who didn't arrive with one (first join, or a
@@ -1332,20 +1461,76 @@ void ABHGameMode::PostLogin(APlayerController* NewPlayer)
 
 	if (GameState && GameState->PlayerArray.Num() > MaxPlayers)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("BHGameMode: rejected join, class is full (%d/%d). Returning player to menu."),
-			GameState->PlayerArray.Num(), MaxPlayers);
-		if (ABHPlayerController* FullBHPC = Cast<ABHPlayerController>(NewPlayer))
+		// Humans outrank bots for seats. The roster trim above can DEFER removing a bot (it never deletes the
+		// lone alive hunter mid-round, which would instantly end the round), so "over capacity" with live bots
+		// still in the roster means a bot is squatting the seat — admit the student at a temporary +1 and let
+		// RefreshBotRoster reclaim the seat at the next safe opportunity (round end / roster change). Only
+		// bounce when the class is genuinely full of humans.
+		if (bBotMode && BotControllers.Num() > 0)
 		{
-			// Best-effort: tell the bounced student why before they travel back to the menu.
-			FullBHPC->ClientShowStatusMessage(
-				FString::Printf(TEXT("This class is full (%d/%d). Returning you to the menu."), MaxPlayers, MaxPlayers),
-				4.0f);
+			UE_LOG(LogTemp, Log, TEXT("BHGameMode: class over capacity (%d/%d) but a bot seat is pending reclaim; admitting the player."),
+				GameState->PlayerArray.Num(), MaxPlayers);
 		}
-		NewPlayer->ClientTravel(TEXT("/Engine/Maps/Entry"), TRAVEL_Absolute);
-		return;
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("BHGameMode: rejected join, class is full (%d/%d). Returning player to menu."),
+				GameState->PlayerArray.Num(), MaxPlayers);
+			if (ABHPlayerController* FullBHPC = Cast<ABHPlayerController>(NewPlayer))
+			{
+				// Best-effort: tell the bounced student why before they travel back to the menu.
+				FullBHPC->ClientShowStatusMessage(
+					FString::Printf(TEXT("This class is full (%d/%d). Returning you to the menu."), MaxPlayers, MaxPlayers),
+					4.0f);
+			}
+			NewPlayer->ClientTravel(TEXT("/Engine/Maps/Entry"), TRAVEL_Absolute);
+			return;
+		}
 	}
 
 	RestartPlayer(NewPlayer);
+
+	// Combat-log containment: a mid-LIVE-round (Hunt/FinalEscape) reconnecter resumes at (near) the spot
+	// they dropped, not at a fresh spawn — a cornered survivor plug-pulling mid-chase must not be teleported
+	// across the map for free. The saved spot is re-validated through the same clear-capsule probe every
+	// spawn uses (another pawn or repositioned prop may occupy it now), so a blocked exact spot degrades to
+	// the nearest clear point beside it rather than an overlap.
+	if (bReconnected && ReconnectProgress.bHasPawnTransform)
+	{
+		const ABHGameState* RestoreBHGS = GetGameState<ABHGameState>();
+		const ABHPlayerState* RestorePS = NewPlayer ? NewPlayer->GetPlayerState<ABHPlayerState>() : nullptr;
+		const bool bLiveRound = RestoreBHGS
+			&& (RestoreBHGS->RoundPhase == EBHRoundPhase::Hunt || RestoreBHGS->RoundPhase == EBHRoundPhase::FinalEscape);
+		if (bLiveRound && RestorePS && RestorePS->LifeState == EBHPlayerLifeState::Alive)
+		{
+			if (APawn* RestoredPawn = NewPlayer->GetPawn())
+			{
+				const int32 RestoreIndex = GameState ? FMath::Max(0, GameState->PlayerArray.IndexOfByKey(RestorePS)) : 0;
+				const FVector RestoreLocation = BHResolveSpawnLocation(GetWorld(), ReconnectProgress.PawnLocation, RestoreIndex, RestoredPawn);
+				const FRotator RestoreFacing(0.0f, ReconnectProgress.PawnRotation.Yaw, 0.0f);
+				RestoredPawn->SetActorLocationAndRotation(RestoreLocation, RestoreFacing);
+				NewPlayer->SetControlRotation(RestoreFacing);
+			}
+		}
+	}
+
+	// A parked mid-round late joiner (Spectator role / Captured life state) just got a normal visible,
+	// ECC_Pawn-blocking pawn at a survivor spawn from RestartPlayer — a frozen "statue" that stacks with
+	// the next joiner and reads as a player to everyone else. Put the pawn into the same out-of-play
+	// presentation a captured survivor gets (hidden, collisionless, uncapturable). Prep joiners and lobby
+	// landings are Alive non-spectators, so they never take this branch.
+	if (!bPracticeMode && !bTestMode && NewPlayer)
+	{
+		const ABHPlayerState* ParkedPS = NewPlayer->GetPlayerState<ABHPlayerState>();
+		const bool bParkedOutOfPlay = ParkedPS
+			&& (ParkedPS->PlayerRole == EBHPlayerRole::Spectator || ParkedPS->LifeState == EBHPlayerLifeState::Captured);
+		if (bParkedOutOfPlay)
+		{
+			if (ABHCharacter* ParkedCharacter = Cast<ABHCharacter>(NewPlayer->GetPawn()))
+			{
+				ParkedCharacter->MarkCaptured();
+			}
+		}
+	}
 
 	if (bTestMode && !bTrainIntermissionLevel)
 	{
@@ -1375,7 +1560,9 @@ void ABHGameMode::PostLogin(APlayerController* NewPlayer)
 	{
 		if (ABHPlayerController* BHPC = Cast<ABHPlayerController>(NewPlayer))
 		{
-			BHPC->ClientShowStatusMessage(TEXT("Round already started. Spectator support is available: H encourages the team; T/Y/U request next-round roles."), 8.0f);
+			BHPC->ClientShowStatusMessage(bPrepJoin
+				? TEXT("You arrived during the role warmup - you're in this round as a Survivor. Try your controls before the Hunt starts.")
+				: TEXT("Round already started. Spectator support is available: H encourages the team; T/Y/U request next-round roles."), 8.0f);
 		}
 	}
 }
@@ -1418,12 +1605,22 @@ void ABHGameMode::Logout(AController* Exiting)
 			&& BHGS->RoundPhase != EBHRoundPhase::HunterWin;
 		if (!bPracticeMode && !bTestMode && bRoundActive && Settings->ReconnectGraceSeconds > 0.0f)
 		{
-			if (ABHPlayerState* BHPS = Exiting ? Exiting->GetPlayerState<ABHPlayerState>() : nullptr)
+			// Bots never re-login, so a trimmed/destroyed bot must not leave a pending mark the win-check
+			// deferrals would wait on (the grace counters also skip bIsBot snapshots as a second layer).
+			ABHPlayerState* BHPS = Exiting ? Exiting->GetPlayerState<ABHPlayerState>() : nullptr;
+			if (BHPS && !BHPS->IsABot())
 			{
 				if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
 				{
 					const float NowServerTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
-					BHGI->MarkTravelPlayerLeftForReconnect(BHPS, NowServerTime);
+					// Combat-log containment: while the round is LIVE (captures on), also snapshot the pawn's
+					// spot so the grace reconnect resumes them there instead of at a fresh spawn — a cornered
+					// survivor must not be able to plug-pull their way out of a chase. Prep/Intermission leaves
+					// pass no pawn on purpose: a fresh spawn is the correct restore there.
+					const bool bLiveRoundLeave = BHGS
+						&& (BHGS->RoundPhase == EBHRoundPhase::Hunt || BHGS->RoundPhase == EBHRoundPhase::FinalEscape);
+					const APawn* LeaverPawn = bLiveRoundLeave && Exiting ? Exiting->GetPawn() : nullptr;
+					BHGI->MarkTravelPlayerLeftForReconnect(BHPS, NowServerTime, LeaverPawn);
 				}
 			}
 		}
@@ -1475,10 +1672,24 @@ void ABHGameMode::Logout(AController* Exiting)
 			}
 			else if (CountAliveHunters() <= 0)
 			{
-				// The last hunter (human or bot) disconnected, so no one can capture the survivors.
-				// Resolve in the survivors' favor now instead of letting the match hang until the round
-				// timer expires — which would otherwise wrongly credit the (now absent) hunters with a win.
-				EndRound(EBHRoundPhase::SurvivorsWin);
+				// The last hunter (human or bot) disconnected, so no one can capture the survivors. Mirror
+				// the survivor branch above before resolving: a Teacher Wi-Fi blip must not instantly hand
+				// the class a win while the dropped hunter still has a live reconnect window. If they never
+				// return, TickRoundTimer's no-hunter check (with its round-timer backstop) still resolves
+				// the round in the survivors' favor — so this can only delay a SurvivorsWin, never let the
+				// match hang or wrongly credit the absent hunter.
+				const UBHGameSettings* GraceSettings = GetDefault<UBHGameSettings>();
+				const float GraceSeconds = GraceSettings ? GraceSettings->ReconnectGraceSeconds : 0.0f;
+				const UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>();
+				const int32 PendingHunters = (BHGI && GraceSeconds > 0.0f) ? BHGI->CountReconnectableAliveHunters(GraceSeconds) : 0;
+				if (PendingHunters <= 0)
+				{
+					EndRound(EBHRoundPhase::SurvivorsWin);
+				}
+				else
+				{
+					BroadcastStatus(TEXT("Teacher connection dropped - holding the round for a reconnect."), 4.0f);
+				}
 			}
 		}
 	}
@@ -1635,6 +1846,17 @@ void ABHGameMode::NotifySurvivorCaptured(ABHCharacter* Survivor, ABHCharacter* C
 	ABHPlayerState* SurvivorPS = Survivor->GetPlayerState<ABHPlayerState>();
 	ABHPlayerState* CapturingHunterPS = CapturingHunter ? CapturingHunter->GetPlayerState<ABHPlayerState>() : nullptr;
 	AController* SurvivorController = Survivor->GetController();
+
+	// The round is already decided (EndRound latched a *Win phase; the post-round travel fires ~8 s later).
+	// A Teacher swing landing inside that window must not still dock 25% of the victim's question points,
+	// credit the hunter +40, or MarkCaptured() them — the result is final, and the dock would persist into
+	// the next round via the travel snapshot. (Practice/test never reach a latched *Win phase, so this
+	// cannot starve their sandbox capture loops below.)
+	if (BHGS && (BHGS->RoundPhase == EBHRoundPhase::SurvivorsWin || BHGS->RoundPhase == EBHRoundPhase::HunterWin))
+	{
+		return;
+	}
+
 	if (bPracticeMode || bTestMode)
 	{
 		const FVector CaptureLocation = Survivor->GetActorLocation();
@@ -3335,7 +3557,13 @@ void ABHGameMode::TriggerTesterSuperJumpscare(ABHPlayerController* RequestingCon
 	const FVector TargetLocation = Target->GetActorLocation();
 	const float FocusHeight = FMath::Clamp(Variant.FocusHeight, 80.0f, 320.0f);
 	const float StageFocusHeight = FMath::Clamp(FocusHeight - 20.0f, 110.0f, 150.0f);
-	const float TotalLockSeconds = 6.35f;
+	// Revision hosts can dial scares down/off, and the chain's hand-rolled stage cues must respect that the
+	// way every single-shot path does (see SendJumpscareChargeCue): shake/flash/jitter magnitudes scale with
+	// the sensory level, and intensity 0 drops the input lock entirely — the lock is presentation, and a
+	// "scares off" class must never be frozen. The full lock is kept for any non-zero intensity because the
+	// staged choreography (cross at 1.55s, bend at 3.05s, charge at 4.55s) assumes the victim holds still.
+	const float SensoryScale = GetScareSensoryScale();
+	const float TotalLockSeconds = SensoryScale > 0.0f ? 6.35f : 0.0f;
 	const float CrossDelaySeconds = 1.55f;
 	const float BendDelaySeconds = 3.05f;
 	const float ChargeDelaySeconds = 4.55f;
@@ -3344,7 +3572,7 @@ void ABHGameMode::TriggerTesterSuperJumpscare(ABHPlayerController* RequestingCon
 	TWeakObjectPtr<ABHPlayerController> WeakController(RequestingController);
 	TWeakObjectPtr<ABHCharacter> WeakTarget(Target);
 
-	auto SendStageCue = [](ABHPlayerController* TargetPC, const FVector& FocusLocation, const FString& Message, const FBHJumpscareVariant& CueVariant, const FLinearColor& CueColor, float Duration, float LockSeconds, float Shake, float Flash, float Jitter, float AudioVolume)
+	auto SendStageCue = [SensoryScale](ABHPlayerController* TargetPC, const FVector& FocusLocation, const FString& Message, const FBHJumpscareVariant& CueVariant, const FLinearColor& CueColor, float Duration, float LockSeconds, float Shake, float Flash, float Jitter, float AudioVolume)
 	{
 		if (!TargetPC)
 		{
@@ -3357,10 +3585,10 @@ void ABHGameMode::TriggerTesterSuperJumpscare(ABHPlayerController* RequestingCon
 		Cue.Message = Message;
 		Cue.DurationSeconds = Duration;
 		Cue.LockSeconds = LockSeconds;
-		Cue.ShakeIntensity = FMath::Clamp(Shake, 0.0f, 1.0f);
-		Cue.CameraJitterDuration = FMath::Clamp(Jitter, 0.0f, 3.0f);
+		Cue.ShakeIntensity = FMath::Clamp(Shake * SensoryScale, 0.0f, 1.0f);
+		Cue.CameraJitterDuration = FMath::Clamp(Jitter, 0.0f, 3.0f) * SensoryScale;
 		Cue.CameraJitterFrequency = 34.0f;
-		Cue.FlashIntensity = FMath::Clamp(Flash, 0.0f, 1.0f);
+		Cue.FlashIntensity = FMath::Clamp(Flash * SensoryScale, 0.0f, 1.0f);
 		Cue.FlashColor = CueColor;
 		if (AudioVolume > 0.0f)
 		{
@@ -3369,7 +3597,7 @@ void ABHGameMode::TriggerTesterSuperJumpscare(ABHPlayerController* RequestingCon
 		}
 		Cue.VariantId = CueVariant.VariantId;
 		Cue.bSnapToFocus = true;
-		Cue.bLockInput = true;
+		Cue.bLockInput = LockSeconds > 0.0f;
 		Cue.bCloseRangeFocus = false;
 		TargetPC->ClientSnapViewToFlatFocus(FocusLocation);
 		TargetPC->ClientPlayHorrorCue(Cue);
@@ -3383,7 +3611,7 @@ void ABHGameMode::TriggerTesterSuperJumpscare(ABHPlayerController* RequestingCon
 	BHSpawnScriptedJumpscareStage(GetWorld(), RequestingController, Variant, TArray<FVector>{ PeekStart, PeekEnd }, 720.0f, 1.05f, Target, true, false);
 
 	FTimerDelegate CrossDelegate;
-	CrossDelegate.BindLambda([WeakController, Variant, StageColor, CrossStart, CrossEnd, StageFocusHeight, TotalLockSeconds, CrossDelaySeconds]()
+	CrossDelegate.BindLambda([WeakController, Variant, StageColor, CrossStart, CrossEnd, StageFocusHeight, TotalLockSeconds, CrossDelaySeconds, SensoryScale]()
 	{
 		ABHPlayerController* TargetPC = WeakController.Get();
 		if (!TargetPC)
@@ -3397,14 +3625,14 @@ void ABHGameMode::TriggerTesterSuperJumpscare(ABHPlayerController* RequestingCon
 		Cue.Message = TEXT("");
 		Cue.DurationSeconds = 0.95f;
 		Cue.LockSeconds = FMath::Max(0.0f, TotalLockSeconds - CrossDelaySeconds);
-		Cue.ShakeIntensity = 0.52f;
-		Cue.CameraJitterDuration = 0.90f;
+		Cue.ShakeIntensity = FMath::Clamp(0.52f * SensoryScale, 0.0f, 1.0f);
+		Cue.CameraJitterDuration = 0.90f * SensoryScale;
 		Cue.CameraJitterFrequency = 40.0f;
-		Cue.FlashIntensity = 0.18f;
+		Cue.FlashIntensity = FMath::Clamp(0.18f * SensoryScale, 0.0f, 1.0f);
 		Cue.FlashColor = StageColor;
 		Cue.VariantId = Variant.VariantId;
 		Cue.bSnapToFocus = true;
-		Cue.bLockInput = true;
+		Cue.bLockInput = Cue.LockSeconds > 0.0f;
 		TargetPC->ClientSnapViewToFlatFocus(Cue.FocusLocation);
 		TargetPC->ClientPlayHorrorCue(Cue);
 
@@ -3415,7 +3643,7 @@ void ABHGameMode::TriggerTesterSuperJumpscare(ABHPlayerController* RequestingCon
 
 	FTimerDelegate ChargeDelegate;
 	FTimerDelegate BendDelegate;
-	BendDelegate.BindLambda([WeakController, Variant, StageColor, ChargeBendStart, ChargeStart, StageFocusHeight, TotalLockSeconds, BendDelaySeconds]()
+	BendDelegate.BindLambda([WeakController, Variant, StageColor, ChargeBendStart, ChargeStart, StageFocusHeight, TotalLockSeconds, BendDelaySeconds, SensoryScale]()
 	{
 		ABHPlayerController* TargetPC = WeakController.Get();
 		if (!TargetPC)
@@ -3429,14 +3657,14 @@ void ABHGameMode::TriggerTesterSuperJumpscare(ABHPlayerController* RequestingCon
 		Cue.Message = TEXT("It moved.");
 		Cue.DurationSeconds = 0.95f;
 		Cue.LockSeconds = FMath::Max(0.0f, TotalLockSeconds - BendDelaySeconds);
-		Cue.ShakeIntensity = 0.56f;
-		Cue.CameraJitterDuration = 0.90f;
+		Cue.ShakeIntensity = FMath::Clamp(0.56f * SensoryScale, 0.0f, 1.0f);
+		Cue.CameraJitterDuration = 0.90f * SensoryScale;
 		Cue.CameraJitterFrequency = 42.0f;
-		Cue.FlashIntensity = 0.18f;
+		Cue.FlashIntensity = FMath::Clamp(0.18f * SensoryScale, 0.0f, 1.0f);
 		Cue.FlashColor = StageColor;
 		Cue.VariantId = Variant.VariantId;
 		Cue.bSnapToFocus = true;
-		Cue.bLockInput = true;
+		Cue.bLockInput = Cue.LockSeconds > 0.0f;
 		TargetPC->ClientSnapViewToFlatFocus(Cue.FocusLocation);
 		TargetPC->ClientPlayHorrorCue(Cue);
 		TargetPC->ClientShowStatusMessage(Cue.Message, 1.35f);
@@ -3446,7 +3674,7 @@ void ABHGameMode::TriggerTesterSuperJumpscare(ABHPlayerController* RequestingCon
 	FTimerHandle BendTimerHandle;
 	GetWorldTimerManager().SetTimer(BendTimerHandle, BendDelegate, BendDelaySeconds, false);
 
-	ChargeDelegate.BindLambda([WeakGameMode, WeakController, WeakTarget, Variant, StageColor, ChargeStart, StageFocusHeight, TotalLockSeconds, ChargeDelaySeconds]()
+	ChargeDelegate.BindLambda([WeakGameMode, WeakController, WeakTarget, Variant, StageColor, ChargeStart, StageFocusHeight, TotalLockSeconds, ChargeDelaySeconds, SensoryScale]()
 	{
 		ABHGameMode* GameMode = WeakGameMode.Get();
 		ABHPlayerController* TargetPC = WeakController.Get();
@@ -3462,14 +3690,14 @@ void ABHGameMode::TriggerTesterSuperJumpscare(ABHPlayerController* RequestingCon
 		Cue.Message = TEXT("It is coming.");
 		Cue.DurationSeconds = 1.55f;
 		Cue.LockSeconds = FMath::Max(0.0f, TotalLockSeconds - ChargeDelaySeconds);
-		Cue.ShakeIntensity = 0.78f;
-		Cue.CameraJitterDuration = 1.35f;
+		Cue.ShakeIntensity = FMath::Clamp(0.78f * SensoryScale, 0.0f, 1.0f);
+		Cue.CameraJitterDuration = 1.35f * SensoryScale;
 		Cue.CameraJitterFrequency = 48.0f;
-		Cue.FlashIntensity = 0.32f;
+		Cue.FlashIntensity = FMath::Clamp(0.32f * SensoryScale, 0.0f, 1.0f);
 		Cue.FlashColor = StageColor;
 		Cue.VariantId = Variant.VariantId;
 		Cue.bSnapToFocus = true;
-		Cue.bLockInput = true;
+		Cue.bLockInput = Cue.LockSeconds > 0.0f;
 		TargetPC->ClientSnapViewToFlatFocus(Cue.FocusLocation);
 		TargetPC->ClientPlayHorrorCue(Cue);
 		TargetPC->ClientShowStatusMessage(Cue.Message, 2.0f);
@@ -3544,6 +3772,42 @@ bool ABHGameMode::RevisionNodeAnswerCapApplies(int32 HumanStudentCount, int32 Pe
 	// once-per-node cap is satisfiable (and therefore worth enforcing for coverage) only when at least that
 	// many live humans are present. With fewer humans the node can never reach the target, so relax the cap.
 	return HumanStudentCount >= FMath::Max(1, PerNodeAnswerTarget);
+}
+
+EBHObjectiveStationType ABHGameMode::ResolveStationTypeForTopicMask(EBHObjectiveStationType NaturalType, int32 TopicMask, int32 StationIndex)
+{
+	const int32 ClampedMask = TopicMask & 0x0F;
+	const EBHPhysicsTopic NaturalTopic = FBHRevisionQuestionBank::TopicForStationType(NaturalType);
+	// A degenerate mask (nothing enabled — ParsePhysicsTopicMask never produces one, but presets/options
+	// flow through several seams) keeps the authored type rather than inventing a topic.
+	if (ClampedMask == 0 || (ClampedMask & FBHRevisionQuestionBank::TopicMaskBit(NaturalTopic)) != 0)
+	{
+		return NaturalType;
+	}
+
+	// Station type <-> topic is a 1:1 mapping (TopicForStationType), so re-typing IS the topic override.
+	// Fixed enumeration order + station index gives a stable pick that round-robins masked-off stations
+	// across every enabled topic instead of piling them onto one.
+	const EBHObjectiveStationType TypeOrder[4] = {
+		EBHObjectiveStationType::Valve,
+		EBHObjectiveStationType::Terminal,
+		EBHObjectiveStationType::Antenna,
+		EBHObjectiveStationType::Evidence
+	};
+	TArray<EBHObjectiveStationType, TInlineAllocator<4>> EnabledTypes;
+	for (EBHObjectiveStationType CandidateType : TypeOrder)
+	{
+		const EBHPhysicsTopic CandidateTopic = FBHRevisionQuestionBank::TopicForStationType(CandidateType);
+		if ((ClampedMask & FBHRevisionQuestionBank::TopicMaskBit(CandidateTopic)) != 0)
+		{
+			EnabledTypes.Add(CandidateType);
+		}
+	}
+	if (EnabledTypes.IsEmpty())
+	{
+		return NaturalType;
+	}
+	return EnabledTypes[FMath::Max(0, StationIndex) % EnabledTypes.Num()];
 }
 
 bool ABHGameMode::ShouldEnforceRevisionNodeAnswerCap() const
@@ -5804,6 +6068,18 @@ void ABHGameMode::TriggerTargetedJumpscare(ABHPlayerController* RequestingContro
 	// A deliberate teacher scare is intentional, so it bypasses the "teacher nearby" suppression and rolls one
 	// of the showcased scares at random rather than always firing a monster charge.
 	ABHPlayerController* TargetPC = Cast<ABHPlayerController>(Target->GetController());
+	// The host's own "scares off" setting (revision intensity 0) outranks even a deliberate admin scare:
+	// the class opted out of creature close-ups and input locks entirely, so the target gets only the
+	// muted "chosen" line and the requester learns why nothing sprang.
+	if (GetEffectiveScareIntensity() <= 0)
+	{
+		if (TargetPC)
+		{
+			TargetPC->ClientShowStatusMessage(TEXT("The Teacher chose you."), 2.75f);
+		}
+		RequestingController->ClientShowStatusMessage(TEXT("Scares are set to 0 for this class, so a muted warning was sent instead."), 3.0f);
+		return;
+	}
 	TriggerTeacherChosenScare(Target, TargetPC);
 	if (TargetPC)
 	{
@@ -11534,6 +11810,37 @@ void ABHGameMode::PrepareRoundDirector()
 	TSet<int32> ActiveStationIndexes;
 	if (bRevisionMode)
 	{
+		// Honor the host "Topics" mask at the question SOURCE. Every node is deliberately kept active
+		// below (students roam all stations), so the mask cannot work by deactivating nodes — instead any
+		// station whose natural topic is masked off is re-typed to an enabled topic's station type for
+		// this round (round-robin by station index across the enabled topics). The station's first
+		// question derives its topic from StationType (ConfigureQuestion -> TopicForStationType), and the
+		// SetDirectorActive(true) pass below re-rolls the question after this re-type, so a masked-off
+		// topic is never asked while every node still feeds enabled-topic mastery. Natural types are
+		// remembered so a later round under a different mask recomputes from — and can restore — the
+		// authored station identity.
+		for (int32 StationIndex = 0; StationIndex < ObjectiveStations.Num(); ++StationIndex)
+		{
+			ABHObjectiveStation* Station = ObjectiveStations[StationIndex];
+			if (!Station)
+			{
+				continue;
+			}
+
+			const EBHObjectiveStationType* KnownNaturalType = NaturalStationTypes.Find(Station);
+			const EBHObjectiveStationType NaturalType = KnownNaturalType ? *KnownNaturalType : Station->GetStationType();
+			if (!KnownNaturalType)
+			{
+				NaturalStationTypes.Add(Station, NaturalType);
+			}
+
+			const EBHObjectiveStationType DesiredType = ResolveStationTypeForTopicMask(NaturalType, RevisionTopicMask, StationIndex);
+			if (Station->GetStationType() != DesiredType)
+			{
+				Station->Configure(DesiredType);
+			}
+		}
+
 		const EBHObjectiveStationType TopicStationTypes[4] = {
 			EBHObjectiveStationType::Valve,
 			EBHObjectiveStationType::Terminal,
@@ -11682,6 +11989,24 @@ void ABHGameMode::PrepareRoundDirector()
 		}
 	}
 
+	// New round, new lighting baseline: a jumpscare light-cut restore still pending from the previous
+	// round belongs to the OLD power snapshot and must not stomp the states derived below. Bumping the
+	// window generation makes any such restore no-op (see CutLightsForJumpscare); the refcount/snapshot
+	// then restart clean for this round's scares. The re-derive loop below only drives CircuitId>0 lights,
+	// so before orphaning an open window, replay the snapshot onto the circuit-0 lights it cut (emergency
+	// corridors, panel accents) — otherwise a cut straddling this call (e.g. a warmup counter-trap scare
+	// firing seconds before Hunt start) leaves them unpowered for the whole round with no healing path.
+	for (const TPair<TWeakObjectPtr<ABHFlickerLight>, bool>& SnapshotPair : LightCutTrueSnapshot)
+	{
+		ABHFlickerLight* CutLight = SnapshotPair.Key.Get();
+		if (CutLight && CutLight->GetCircuitId() <= 0)
+		{
+			CutLight->SetPowered(SnapshotPair.Value);
+		}
+	}
+	ActiveLightCutCount = 0;
+	++LightCutWindowGeneration;
+	LightCutTrueSnapshot.Reset();
 	for (ABHFlickerLight* Light : FlickerLights)
 	{
 		if (Light && Light->GetCircuitId() > 0)
@@ -11839,9 +12164,12 @@ void ABHGameMode::TickDirector()
 
 	// Keep the Teacher in the horror too: every now and then spring a proper scare (turn-around / super chain /
 	// SCP-096) on a random alive hunter. Generous cooldown so it's an occasional jolt, never a nuisance.
+	// A host who set revision scares to 0 opted the WHOLE class out of creature scares — including the
+	// Teacher's own jolt, which is pure flavour with no reward attached, so it is gated like the survivor
+	// scare/cold-call rolls above (their intensity-0 chance tables already resolve to never).
 	const float TeacherScareCooldown = bPartyPace || bPanicRound ? 80.0f : 135.0f;
 	const float TeacherScareChance = bPartyPace || bPanicRound ? 0.22f : 0.13f;
-	if (Now - LastTeacherProperScareTime >= TeacherScareCooldown && FMath::FRand() < TeacherScareChance)
+	if (GetEffectiveScareIntensity() > 0 && Now - LastTeacherProperScareTime >= TeacherScareCooldown && FMath::FRand() < TeacherScareChance)
 	{
 		TArray<ABHCharacter*> AliveHunters;
 		for (TActorIterator<ABHCharacter> It(GetWorld()); It; ++It)
@@ -12027,7 +12355,11 @@ void ABHGameMode::UpdatePresenceDirector()
 	const float ObjectiveDone = static_cast<float>(BHGS->BreakersCompleted + BHGS->SideObjectivesCompleted);
 	const float ObjectiveAlpha = FMath::Clamp(ObjectiveDone / ObjectiveTotal, 0.0f, 1.0f);
 	const float HiddenAlpha = SurvivorCount > 0 ? static_cast<float>(HiddenCount) / static_cast<float>(SurvivorCount) : 0.0f;
-	const float TimeAlpha = BHGS->RemainingTime > 0 ? 1.0f - FMath::Clamp(static_cast<float>(BHGS->RemainingTime) / static_cast<float>(HuntSeconds), 0.0f, 1.0f) : 0.0f;
+	// Prop hunt rides the short seek clock, not the classroom HuntSeconds; normalizing by the wrong clock
+	// starts the presence baseline ~73% elevated at seek start (same shape as the taunt-cadence bug).
+	const float TimeAlpha = bPropHuntMode
+		? BHPropHunt::SeekElapsedFraction(PropHuntSeekClockSeconds, BHGS->RemainingTime)
+		: (BHGS->RemainingTime > 0 ? 1.0f - FMath::Clamp(static_cast<float>(BHGS->RemainingTime) / static_cast<float>(HuntSeconds), 0.0f, 1.0f) : 0.0f);
 	float DesiredPresence = FMath::Max(BestThreatAlpha * 86.0f, ObjectiveAlpha * 38.0f + HiddenAlpha * 18.0f + TimeAlpha * 28.0f);
 
 	if (BHGS->RoundModifier == EBHRoundModifier::PanicSurge)
@@ -12142,6 +12474,15 @@ void ABHGameMode::UpdatePresenceDirector()
 
 	const bool bPulse = NewPresence >= 72.0f || FMath::Abs(NewPresence - CurrentPresence) >= 18.0f;
 	BHGS->SetPresenceState(NewPresence, PresenceText, bPulse ? BHGS->PresencePulse + 1 : BHGS->PresencePulse);
+
+	// Prop Hunt: keep the replicated presence meter ticking (the HUD vignette/pill, the classroom board, and the
+	// capture spike all read it) but stop BEFORE the whisper payload below — its replicated positional drone, fear
+	// ticks, and nearby light-cut land BEHIND the most-threatened PROP, an audio/visual beacon that hands the seeker
+	// the hide spot. TickDirector's design note suppresses every director scare for prop hunt; this one leaked.
+	if (bPropHuntMode)
+	{
+		return;
+	}
 
 	const float Now = GetWorld()->GetTimeSeconds();
 	const float WhisperCooldown = bPartyPace || BHGS->RoundModifier == EBHRoundModifier::PanicSurge ? 8.5f : 14.0f;
@@ -12879,7 +13220,17 @@ void ABHGameMode::TriggerTeacherCounterJumpscare(ABHObjectiveStation* Station, E
 		}
 
 		++HitTeachers;
-		if (CounterType == EBHRevisionCounterNodeType::DemonstrationTrap && FMath::FRand() < 0.35f)
+		if (GetEffectiveScareIntensity() <= 0)
+		{
+			// Host "scares off": the counter node's reward economy stands (the broadcast + presence spike
+			// below, plus the teacher's dread bump the flat scare would have applied), but the creature /
+			// light-cut / input-lock presentation is skipped — the teacher just reads the muted status
+			// line, matching how the gated director paths land at intensity 0.
+			PC->ClientShowStatusMessage(Message, 3.2f);
+			Teacher->AddFear(18.0f);
+			Teacher->AddDread(24.0f);
+		}
+		else if (CounterType == EBHRevisionCounterNodeType::DemonstrationTrap && FMath::FRand() < 0.35f)
 		{
 			TriggerMonsterChargeJumpscare(Teacher);
 			PC->ClientShowStatusMessage(Message, 3.2f);
@@ -12918,7 +13269,18 @@ void ABHGameMode::ActivateStudentScareRelay(ABHCharacter* Activator, ABHObjectiv
 		}
 
 		++ScaredTeachers;
-		TriggerProperScareOnTeacher(TeacherTarget);
+		if (GetEffectiveScareIntensity() > 0)
+		{
+			TriggerProperScareOnTeacher(TeacherTarget);
+		}
+		else
+		{
+			// Host "scares off": the relay still lands as a reward (the teacher registers it, the
+			// activator's feedback below stays earned), but the proper creature scare and its input lock
+			// are presentation only — the muted status line plus a dread bump replace them.
+			TeacherTarget->AddFear(18.0f);
+			TeacherTarget->AddDread(24.0f);
+		}
 		PC->ClientShowStatusMessage(TEXT("Something sees you."), 2.75f);
 	}
 
@@ -13025,11 +13387,17 @@ bool ABHGameMode::TriggerStudentScareSwitch(ABHCharacter* Activator, const FVect
 	// Students scaring the Teacher ALWAYS spring one of the three "proper" scares (turn-around / super chain /
 	// SCP-096 variation) — never the lighter face/flash/ambient cues. Severity now only flavours the dread hit
 	// and the broadcast. (The old graduated branch is kept compiled-but-disabled below so its locals stay used.)
+	// Host "scares off" (revision intensity 0): the toggle still pays out — message, dread hit, presence
+	// spike, activator/broadcast feedback all stand — but the proper creature scare and its input lock are
+	// presentation and are skipped, leaving the teacher with the muted status line the gated paths use.
 	if (TargetPC)
 	{
 		TargetPC->ClientShowStatusMessage(TeacherMessage, 3.0f);
 	}
-	TriggerProperScareOnTeacher(TargetTeacher);
+	if (GetEffectiveScareIntensity() > 0)
+	{
+		TriggerProperScareOnTeacher(TargetTeacher);
+	}
 	TargetTeacher->AddFear(14.0f + ClampedSeverity * 6.0f);
 	TargetTeacher->AddDread(12.0f + ClampedSeverity * 7.0f);
 	// Legacy graduated path retained (compiled, never taken) so its locals stay referenced; ClampedSeverity is
@@ -13900,8 +14268,24 @@ void ABHGameMode::FreezeTargetForJumpscare(ABHCharacter* Target, float DurationS
 
 void ABHGameMode::CutLightsForJumpscare(const FVector& TargetLocation, const FVector& MonsterLocation, float Radius, float RestoreDelaySeconds)
 {
-	TArray<TWeakObjectPtr<ABHFlickerLight>> AffectedLights;
-	TArray<bool> OriginalPoweredStates;
+	// Cuts overlap routinely (reveal charges use radius 0 = every light, held ~10s), and a per-cut snapshot
+	// captured while another cut is still dark records already-cut lights as "off" — the later restore then
+	// re-applies an all-off map until a breaker/exit event re-powers it. So the TRUE pre-cut power is
+	// recorded once per overlap window (whichever cut touches the light first), each cut bumps a refcount,
+	// and only the LAST restore re-applies the window snapshot. A non-positive delay keeps the legacy
+	// "permanent cut" meaning and deliberately stays OUT of the bookkeeping (it schedules no restore, so it
+	// must neither hold the window open nor seed snapshot entries nothing will ever consume).
+	const bool bSchedulesRestore = RestoreDelaySeconds > 0.0f && GetWorld() != nullptr;
+	int32 CutLightCount = 0;
+	auto CutLight = [this, bSchedulesRestore, &CutLightCount](ABHFlickerLight* Light)
+	{
+		if (bSchedulesRestore && !LightCutTrueSnapshot.Contains(Light))
+		{
+			LightCutTrueSnapshot.Add(Light, Light->IsPowered());
+		}
+		Light->SetPowered(false);
+		++CutLightCount;
+	};
 
 	if (Radius <= 0.0f)
 	{
@@ -13909,9 +14293,7 @@ void ABHGameMode::CutLightsForJumpscare(const FVector& TargetLocation, const FVe
 		{
 			if (Light)
 			{
-				AffectedLights.Add(Light);
-				OriginalPoweredStates.Add(Light->IsPowered());
-				Light->SetPowered(false);
+				CutLight(Light);
 			}
 		}
 	}
@@ -13930,32 +14312,47 @@ void ABHGameMode::CutLightsForJumpscare(const FVector& TargetLocation, const FVe
 			const bool bNearMonster = FVector::DistSquared2D(LightLocation, MonsterLocation) <= RadiusSq;
 			if (bNearTarget || bNearMonster)
 			{
-				AffectedLights.Add(Light);
-				OriginalPoweredStates.Add(Light->IsPowered());
-				Light->SetPowered(false);
+				CutLight(Light);
 			}
 		}
 	}
 
-	if (AffectedLights.IsEmpty() || RestoreDelaySeconds <= 0.0f || !GetWorld())
+	if (CutLightCount == 0 || !bSchedulesRestore)
 	{
 		return;
 	}
 
+	++ActiveLightCutCount;
+
 	FTimerDelegate RestoreDelegate;
 	// Bind to the game mode so a round transition's ClearAllTimersForObject(this) can cancel a pending
 	// restore. A bare BindLambda timer is unowned and survives the phase change, re-powering lights
-	// after the round it belonged to has already ended.
-	RestoreDelegate.BindWeakLambda(this, [AffectedLights = MoveTemp(AffectedLights), OriginalPoweredStates = MoveTemp(OriginalPoweredStates)]() mutable
+	// after the round it belonged to has already ended. The generation check covers the remaining seam:
+	// PrepareRoundDirector replays any open window's circuit-0 snapshot, re-derives CircuitId>0 power, and
+	// resets the window state for the new round, so a restore armed before that reset must no-op rather
+	// than decrement (or re-apply into) the new window.
+	RestoreDelegate.BindWeakLambda(this, [this, CutGeneration = LightCutWindowGeneration]()
 	{
-		const int32 RestoreCount = FMath::Min(AffectedLights.Num(), OriginalPoweredStates.Num());
-		for (int32 Index = 0; Index < RestoreCount; ++Index)
+		if (CutGeneration != LightCutWindowGeneration)
 		{
-			if (AffectedLights[Index].IsValid())
+			return;
+		}
+
+		ActiveLightCutCount = FMath::Max(ActiveLightCutCount - 1, 0);
+		if (ActiveLightCutCount > 0)
+		{
+			// Another cut is still holding the dark; the window's final restore re-applies the snapshot.
+			return;
+		}
+
+		for (const TPair<TWeakObjectPtr<ABHFlickerLight>, bool>& SnapshotPair : LightCutTrueSnapshot)
+		{
+			if (SnapshotPair.Key.IsValid())
 			{
-				AffectedLights[Index]->SetPowered(OriginalPoweredStates[Index]);
+				SnapshotPair.Key->SetPowered(SnapshotPair.Value);
 			}
 		}
+		LightCutTrueSnapshot.Reset();
 	});
 
 	FTimerHandle RestoreHandle;
@@ -14537,6 +14934,7 @@ void ABHGameMode::StartPrepPhase()
 	TelemetryStartedObjectiveKeys.Reset();
 	TelemetryCompletedObjectiveKeys.Reset();
 	TelemetrySnapshotKeys.Reset();
+	RoundResultSentReconnectTokens.Reset();
 
 	if (ABHGameState* BHGS = GetGameState<ABHGameState>())
 	{
@@ -14586,6 +14984,7 @@ void ABHGameMode::StartHuntPhaseImmediately()
 	TelemetryStartedObjectiveKeys.Reset();
 	TelemetryCompletedObjectiveKeys.Reset();
 	TelemetrySnapshotKeys.Reset();
+	RoundResultSentReconnectTokens.Reset();
 
 	if (ABHGameState* BHGS = GetGameState<ABHGameState>())
 	{
@@ -14612,7 +15011,21 @@ void ABHGameMode::StartHuntPhaseImmediately()
 
 void ABHGameMode::StartHuntPhase()
 {
-	ResetRoleWarmupForLiveRoundStart();
+	// Prop Hunt: SKIP the warmup reset — it would wipe the hide phase at the exact moment the seeker is released
+	// (ResetRoleWarmupStateForRoundStart clears every prop's disguise/lock and RestartPlayer destroys the pawn and
+	// respawns it at a spawn point, herding every hidden prop back into the spawn cluster). Prop hunt has no
+	// classroom warmup state to reset: objectives are stripped, decoys/traps are suppressed for props, the seeker
+	// miss-ladder zeroes via the per-round map travel, and the disguise/lock state IS the round state the hide
+	// phase just built.
+	if (!bPropHuntMode)
+	{
+		ResetRoleWarmupForLiveRoundStart();
+	}
+	// Roles were assigned at Prep start, so a hunter who disconnected DURING the warmup leaves the round
+	// hunterless here — and the no-hunter tick would resolve it as a confusing SurvivorsWin ~1 s into the
+	// Hunt. Re-run the hunter guarantee before going live (no-op while any alive hunter remains). This must run
+	// in prop hunt too — a seeker who left during the hide still needs replacing, only the reset above is gated.
+	PromoteReplacementHunterForHuntStart();
 	PrepareRoundDirector();
 	SweepExpiredBotTacticalState();
 	if (ABHGameState* BHGS = GetGameState<ABHGameState>())
@@ -14660,8 +15073,8 @@ void ABHGameMode::StartHuntPhase()
 		{
 			continue;
 		}
-		// Role-tailored "now live" handoff. ResetRoleWarmupForLiveRoundStart() already ran above,
-		// so "capture is on now" is truthfully aligned with the actual safe->live switch.
+		// Role-tailored "now live" handoff. ResetRoleWarmupForLiveRoundStart() already ran above (classroom
+		// only — prop hunt skips it), so "capture is on now" is truthfully aligned with the actual safe->live switch.
 		const ABHPlayerState* BHPS = PC->GetPlayerState<ABHPlayerState>();
 		const EBHPlayerRole HandoffRole = BHPS ? BHPS->PlayerRole : EBHPlayerRole::Survivor;
 		FString HandoffMessage;
@@ -14979,6 +15392,94 @@ void ABHGameMode::AssignRoles()
 	}
 }
 
+void ABHGameMode::PromoteReplacementHunterForHuntStart()
+{
+	if (!GameState || CountAliveHunters() > 0)
+	{
+		return;
+	}
+
+	// Same candidate pool AssignRoles works from: every player state in PlayerArray (AssignRoles already
+	// merged the bot player states in at Prep start, so bots are eligible replacements too).
+	TArray<ABHPlayerState*> Players;
+	int32 AliveSurvivors = 0;
+	for (APlayerState* RawPS : GameState->PlayerArray)
+	{
+		ABHPlayerState* BHPS = Cast<ABHPlayerState>(RawPS);
+		if (!BHPS || BHPS->PlayerRole == EBHPlayerRole::Spectator)
+		{
+			continue;
+		}
+		Players.Add(BHPS);
+		if (BHPS->IsAliveSurvivor())
+		{
+			++AliveSurvivors;
+		}
+	}
+	if (Players.Num() < 2)
+	{
+		// A lone participant stays the survivor (mirrors AssignRoles' survivor guarantee) — promoting them
+		// would recreate the instant "Teacher wins an empty round" confusion the guarantee exists to avoid.
+		return;
+	}
+
+	// Mirror AssignRoles' symmetric hunter guarantee: promote a Monitor first (keeps the survivor count
+	// intact), otherwise a Survivor — but only while at least one survivor would remain.
+	ABHPlayerState* Promote = nullptr;
+	for (ABHPlayerState* BHPS : Players)
+	{
+		if (BHPS->PlayerRole == EBHPlayerRole::FakeHunter && BHPS->LifeState == EBHPlayerLifeState::Alive)
+		{
+			Promote = BHPS;
+			break;
+		}
+	}
+	if (!Promote && AliveSurvivors >= 2)
+	{
+		for (ABHPlayerState* BHPS : Players)
+		{
+			if (BHPS->IsAliveSurvivor())
+			{
+				Promote = BHPS;
+				break;
+			}
+		}
+	}
+	if (!Promote)
+	{
+		return;
+	}
+
+	Promote->SetRole(EBHPlayerRole::Hunter);
+	Promote->SetLifeState(EBHPlayerLifeState::Alive);
+	Promote->SetHiddenInLocker(false);
+	Promote->SetFakeHunterEligible(false);
+	// Respawn into the hunter loadout/spawn (GetSpawnTransformFor is role-aware). The owner is the player
+	// or bot controller for every PlayerArray entry; a state with no controller (mid-teardown) just keeps
+	// the role for the win checks.
+	if (AController* PromoteController = Cast<AController>(Promote->GetOwner()))
+	{
+		// Release world state the pawn holds BEFORE RestartPlayer destroys it: a promoted player hiding in a
+		// locker would otherwise strand the locker's Occupant pointer forever ("Occupied" with nobody inside).
+		if (ABHCharacter* PromotePawn = Cast<ABHCharacter>(PromoteController->GetPawn()))
+		{
+			PromotePawn->ExitLocker();
+		}
+		RestartPlayer(PromoteController);
+	}
+	if (bPropHuntMode)
+	{
+		// The replacement seeks this whole round: pay the same rotation tally + base points the round-start
+		// picks get, or fewest-seeks-first re-picks them again next round and their score eats the difference.
+		GrantPropHuntSeekerCredit(Promote);
+	}
+	UE_LOG(LogTemp, Log, TEXT("BlackoutHunt hunter guarantee at hunt start: %s promoted to the hunter role."), *Promote->GetPlayerName());
+	const FString PromotedMessage = bPropHuntMode
+		? FString::Printf(TEXT("The seeker left during the hide phase. %s steps in as the Seeker."), *Promote->GetPlayerName())
+		: FString::Printf(TEXT("The Teacher left during the warmup. %s steps in as the Teacher."), *Promote->GetPlayerName());
+	BroadcastStatus(PromotedMessage, 5.0f);
+}
+
 void ABHGameMode::TickRoundTimer()
 {
 	ABHGameState* BHGS = GetGameState<ABHGameState>();
@@ -15062,9 +15563,18 @@ void ABHGameMode::TickRoundTimer()
 		else if (CountAliveHunters() <= 0)
 		{
 			// No hunter remains — every hunter disconnected, or a degenerate role assignment left none.
-			// Survivors can never be caught, so resolve in their favor now instead of stalling on the Hunt
-			// timer (which would otherwise wrongly credit the absent hunters on timeout). Mirrors Logout.
-			EndRound(EBHRoundPhase::SurvivorsWin);
+			// Don't hand the class an instant win while the dropped hunter(s) still have a live reconnect
+			// window — a Teacher Wi-Fi blip must not end the round. Mirrors the survivor defer above,
+			// including the RemainingTime backstop: when the grace outlives the round clock we resolve in
+			// the survivors' favor anyway (nobody could have caught them), never credit the absent hunter.
+			const UBHGameSettings* GraceSettings = GetDefault<UBHGameSettings>();
+			const float GraceSeconds = GraceSettings ? GraceSettings->ReconnectGraceSeconds : 0.0f;
+			const UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>();
+			const int32 PendingHunters = (BHGI && GraceSeconds > 0.0f) ? BHGI->CountReconnectableAliveHunters(GraceSeconds) : 0;
+			if (PendingHunters <= 0 || BHGS->RemainingTime <= 0)
+			{
+				EndRound(EBHRoundPhase::SurvivorsWin);
+			}
 		}
 		else if (BHGS->RemainingTime <= 0)
 		{
@@ -15107,6 +15617,15 @@ void ABHGameMode::EndRound(EBHRoundPhase ResultPhase)
 	ApplyUnfinishedMonitorRevisionDock();
 	BHGS->SetAllCaughtGraceRemaining(-1);
 
+	// Reconnect marks are round-scoped: invalidate them all the moment the round is decided, so a round-N
+	// snapshot can never restore into round N+1 (last round's Teacher returning as a second hunter) and a
+	// stale mark can't keep deferring the next round's win checks. Safe ordering: the train-hop rescue marks
+	// are written by Logout during the post-round travel teardown, AFTER this latches.
+	if (UBHGameInstance* MarksBHGI = GetGameInstance<UBHGameInstance>())
+	{
+		MarksBHGI->InvalidateAllReconnectMarks();
+	}
+
 	BHGS->SetRoundPhase(ResultPhase);
 	BHGS->SetRemainingTime(0);
 	// Prop hunt: the win/lose sting + the best-of-N match wrapper both ride the one idempotent round-end seam
@@ -15141,6 +15660,14 @@ void ABHGameMode::EndRound(EBHRoundPhase ResultPhase)
 			if (BHPC && BHPS)
 			{
 				BHPC->ClientRecordRoundResult(BHPS->PlayerRole, BHPS->LifeState, ResultPhase);
+				// Remember who already received this round's result (keyed by reconnect token — it survives
+				// the rejoin's fresh PlayerState) so the resolved-round reconnect path in PostLogin cannot
+				// re-send it to a player who drops and returns inside the pre-travel win window: the
+				// client-side handler banks XP per receipt, so a second send doubles the award.
+				if (!BHPS->ReconnectToken.IsEmpty())
+				{
+					RoundResultSentReconnectTokens.Add(BHPS->ReconnectToken);
+				}
 			}
 		}
 	}

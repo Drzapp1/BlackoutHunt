@@ -310,9 +310,16 @@ bool ABHPlayerState::DequeueRevisionReview(const FString& QuestionId)
 	return Removed > 0;
 }
 
-FString ABHPlayerState::PeekRevisionReview() const
+FString ABHPlayerState::PeekRevisionReview(const FString& ExcludeQuestionId) const
 {
-	return RevisionReviewQueue.Num() > 0 ? RevisionReviewQueue[0] : FString();
+	for (const FString& QueuedId : RevisionReviewQueue)
+	{
+		if (ExcludeQuestionId.IsEmpty() || !QueuedId.Equals(ExcludeQuestionId, ESearchCase::IgnoreCase))
+		{
+			return QueuedId;
+		}
+	}
+	return FString();
 }
 
 void ABHPlayerState::AddQuestionPoints(int32 Points)

@@ -283,6 +283,13 @@ public:
 	// there are at least PerNodeAnswerTarget live human students (enough to fill a node via distinct
 	// answers). Fewer humans => relax. Static so it can be unit-tested without a live world.
 	static bool RevisionNodeAnswerCapApplies(int32 HumanStudentCount, int32 PerNodeAnswerTarget);
+	// Question-source half of the host "Topics" filter. Revision keeps EVERY node active on purpose
+	// (students roam all stations), so the mask cannot work by deactivating stations; instead a station
+	// whose natural TopicForStationType topic is masked off is re-typed for the round to an enabled
+	// topic's station type, spread round-robin by station index across the enabled topics so each
+	// enabled topic keeps several contributing nodes. Returns NaturalType when its topic is enabled or
+	// when the mask is degenerate (nothing enabled). Static so it can be unit-tested without a live world.
+	static EBHObjectiveStationType ResolveStationTypeForTopicMask(EBHObjectiveStationType NaturalType, int32 TopicMask, int32 StationIndex);
 	static FVector ResolveFoggroundsDoorFrameOrigin(const FVector& DoorLocation);
 	// Records a revision answer (mastery, spaced-repetition queue, telemetry) and returns the
 	// shop points awarded for the answer (0 when wrong or when not in revision mode).
@@ -526,6 +533,16 @@ protected:
 	void StartHuntPhaseImmediately();
 	void StartHuntPhase();
 	void AssignRoles();
+	// AutoPrep roster gate (?BHAutoPrep=1, the lobby->first-hunt arrival): polled once per second from
+	// BeginPlay; starts Prep only once every human from the persisted departure roster has re-logged-in
+	// (travel is non-seamless, so each student lands after their own map load), or after the configured
+	// AutoPrepRosterTimeoutSeconds so an unreturning client cannot hold the class hostage.
+	void PollAutoPrepRosterGate();
+	// Hunt-start half of the symmetric hunter guarantee: if every hunter left during Prep (Logout cannot
+	// re-assign roles mid-warmup), promote a replacement with the same preference order AssignRoles uses
+	// — a Monitor first (keeps the survivor count intact), otherwise a Survivor while at least one
+	// survivor would remain — instead of starting a hunterless Hunt that self-resolves a second in.
+	void PromoteReplacementHunterForHuntStart();
 	// --- Prop Hunt (opt-in, reversible). All gated by bPropHuntMode; defined in BHGameModePropHunt.cpp. ----------
 	// Destroy the classroom objective actors (question stations, breakers, exit gates, escape managers) the level
 	// builders / authored maps spawned, so a prop-hunt arena has no tasks and no exit to run to. Called after the
@@ -537,6 +554,10 @@ protected:
 	void BeginPropHuntHunt();
 	// A caught prop joins the seekers (infection); the last caught prop ends the round as a seeker win.
 	void HandlePropHuntCapture(ABHCharacter* Survivor, ABHCharacter* CapturingHunter);
+	// Rotation bookkeeping + base points for anyone who STARTS a seek as a seeker — the round-start picks and
+	// the hunt-start replacement promotion must both pay it, or the fewest-seeks-first rotation re-picks the
+	// uncredited player next round. Defined in BHGameModePropHunt.cpp beside the cvar it reads.
+	void GrantPropHuntSeekerCredit(ABHPlayerState* Seeker);
 	// Once-per-second service (called from TickRoundTimer's Hunt branch): drives the forced-taunt cadence, the
 	// auto reveal-pulse cadence, and the replicated "props left / total" HUD counters.
 	void TickPropHunt();
@@ -644,6 +665,7 @@ public:
 	FString DebugBuildTravelOptionsForLevelForTest(const FString& Level, int32 StageIndex) const { return BuildTravelOptionsForLevel(Level, false, StageIndex, EBHRoundPhase::Lobby); }
 	static TArray<FVector> DebugScatterPropHuntSpawnPointsForTest(UWorld* World, const FBox& Bounds, int32 DesiredCount, int32 Salt) { return ScatterPropHuntSpawnPoints(World, Bounds, DesiredCount, Salt); }
 	bool DebugTryBuildPropHuntArenaForTest() { return TryBuildPropHuntArena(); }
+	void DebugPromoteReplacementHunterForHuntStartForTest() { PromoteReplacementHunterForHuntStart(); }
 protected:
 #endif
 
@@ -695,6 +717,12 @@ protected:
 	TArray<TObjectPtr<ABHFlickerLight>> StationSignalLights;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<ABHObjectiveStation>> ObjectiveStations;
+	// Natural (authored/builder-assigned) type of each objective station, recorded the first time
+	// PrepareRoundDirector sees the station — BEFORE any Topics-mask re-type — so a later round under a
+	// different mask recomputes the override from (and can restore) the station's real identity rather
+	// than compounding on a previous round's override. Weak keys: stations live for the world's lifetime,
+	// so stale entries only appear at teardown and are never read.
+	TMap<TWeakObjectPtr<ABHObjectiveStation>, EBHObjectiveStationType> NaturalStationTypes;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<ABHEscapeStationManager>> EscapeStationManagers;
 	UPROPERTY(Transient)
@@ -723,6 +751,18 @@ protected:
 	// Armed only on the FinalEscape fallback path (no EscapeStationManager present) so the match
 	// cannot hang forever; the normal path uses the manager's own escape timer.
 	FTimerHandle FinalEscapeFallbackTimerHandle;
+	// AutoPrep roster gate (see PollAutoPrepRosterGate): the repeating poll handle, the human count the
+	// departure persist recorded (how many re-logins to wait for), and the monotonic wall-clock the wait
+	// started at (FPlatformTime::Seconds — world time is fine within one map, but the wall clock keeps the
+	// timeout honest if anything ever dilates/pauses world time during load-in).
+	FTimerHandle AutoPrepRosterTimerHandle;
+	int32 ExpectedAutoPrepHumanCount = 0;
+	double AutoPrepRosterWaitStartSeconds = 0.0;
+	// Reconnect tokens of players who already received this round's ClientRecordRoundResult (the client-side
+	// XP award). EndRound fills it; the resolved-round reconnect path in PostLogin consults it so a player
+	// who drops and rejoins inside the ~8 s win window is not awarded the round result twice. Reset at every
+	// in-place round start (the cross-travel reset is implicit: a fresh GameMode spawns per map).
+	TSet<FString> RoundResultSentReconnectTokens;
 	// True once a ServerTravel has been committed/scheduled for this GameMode instance (e.g. the
 	// post-round reset). Discretionary travels routed through RequestServerTravel() bail when set, so
 	// a tester shortcut cannot overwrite the pending destination during the post-round window.
@@ -755,6 +795,10 @@ protected:
 	float PropHuntLastTauntServerTime = -1000.0f;
 	// Server time of the last auto reveal pulse (P4); seeded at seek start so the first pulse lands a full interval in.
 	float PropHuntLastPulseServerTime = -1000.0f;
+	// Length (s) the seek clock was actually armed with in BeginPropHuntHunt (bh.PropHuntSeekSeconds, floored at 10).
+	// The taunt/pulse tightening lerps must normalize by THIS, never HuntSeconds: the classroom hunt length (900
+	// default) does not drive the prop-hunt clock, and dividing by it started the cadence curve ~73% spent at release.
+	int32 PropHuntSeekClockSeconds = 0;
 	// Host-configured best-of-N from ?BHPropHuntRounds= (0 = unset -> the bh.PropHuntRoundCount cvar). Carried
 	// across every prop-hunt travel hop like the other host options.
 	int32 PropHuntRoundCountOption = 0;
@@ -817,6 +861,17 @@ protected:
 	float LastTeacherCounterScareTime;
 	// Cooldown clock for the occasional "scare the Teacher too" beat (a proper scare on a random alive hunter).
 	float LastTeacherProperScareTime = -999.0f;
+	// --- Overlapping light-cut window (CutLightsForJumpscare) ---------------------------------------------
+	// Reveal-charge scares cut EVERY light (radius 0) for ~10s, so two cuts routinely overlap. A per-cut
+	// snapshot taken while another cut is live records already-cut lights as "off", and that cut's restore
+	// would re-apply an all-off map. Instead each light's TRUE pre-cut power is recorded once per window
+	// (the first cut to touch it wins), every scheduled restore decrements the refcount, and only the LAST
+	// restore re-applies the snapshot. The generation stamps each window so a restore that outlives a round
+	// transition (PrepareRoundDirector re-derives all light power and resets this state) no-ops instead of
+	// stomping the new round's lighting.
+	int32 ActiveLightCutCount = 0;
+	uint32 LightCutWindowGeneration = 0;
+	TMap<TWeakObjectPtr<ABHFlickerLight>, bool> LightCutTrueSnapshot;
 	float LastObjectiveDangerBeatTime;
 	float LastSpectatorEncouragementTime;
 	FVector LastBotNoiseLocation;

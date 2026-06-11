@@ -30,6 +30,7 @@ struct FBHOnlineSessionSummary
 };
 
 class ABHPlayerState;
+class APawn;
 class APlayerState;
 
 struct FBHTravelPlayerProgress
@@ -54,6 +55,22 @@ struct FBHTravelPlayerProgress
 	// the seeker (drives the fewest-first rotation). Both zeroed by ResetPropHuntMatch when a new match begins.
 	int32 PropHuntScore = 0;
 	int32 PropHuntTimesSeeker = 0;
+	// True when this snapshot belongs to a bot PlayerState. Bots are persisted alongside humans (they share
+	// PlayerArray), but the AutoPrep roster gate must count only HUMANS still expected to re-login after the
+	// lobby->hunt travel — a bot never re-logs-in, so counting it would always force the timeout fallback.
+	bool bIsBot = false;
+	// Combat-log containment: where the leaver's pawn stood when they dropped during a LIVE round (Hunt/
+	// FinalEscape). A grace reconnect respawns them at (near) this spot instead of a fresh spawn, so
+	// plug-pulling mid-chase is never a free cross-map teleport. bHasPawnTransform stays false for a
+	// Prep/Intermission leave (or a pawn already torn down) — those reconnect at a normal spawn.
+	bool bHasPawnTransform = false;
+	FVector PawnLocation = FVector::ZeroVector;
+	FRotator PawnRotation = FRotator::ZeroRotator;
+	// PlayerId of the PlayerState that disconnected mid-round. A reconnect mints a brand-new PlayerState
+	// (fresh PlayerId), which would silently reset the objective stations' once-per-node answer bookkeeping;
+	// the GameMode remaps the stations' stored ids to the new id on a grace reconnect. INDEX_NONE until a
+	// mid-round leave stamps it.
+	int32 OldPlayerId = INDEX_NONE;
 	TArray<FBHPowerupInventoryEntry> Powerups;
 	// Monotonic wall-clock time (FPlatformTime::Seconds) this player disconnected during an active
 	// round, or < 0 if this entry is a normal travel snapshot rather than a pending mid-round
@@ -197,14 +214,40 @@ public:
 	// Mid-round reconnect support. MarkTravelPlayerLeftForReconnect persists the player's current
 	// state and stamps the leave time; TryGetReconnectProgress returns a copy if a matching entry
 	// is still within the grace window; ClearReconnectMark consumes it after a successful rejoin.
-	void MarkTravelPlayerLeftForReconnect(const ABHPlayerState* PlayerState, float ServerTimeSeconds);
+	// LeaverPawn (optional) additionally snapshots the pawn's spot + the old PlayerId for the
+	// combat-log containment restore — pass it only for a LIVE-round (Hunt/FinalEscape) leave.
+	void MarkTravelPlayerLeftForReconnect(const ABHPlayerState* PlayerState, float ServerTimeSeconds, const APawn* LeaverPawn = nullptr);
 	bool TryGetReconnectProgress(const ABHPlayerState* PlayerState, float NowServerTimeSeconds, float GraceSeconds, FBHTravelPlayerProgress& OutProgress) const;
 	void ClearReconnectMark(const ABHPlayerState* PlayerState);
+	// Drop EVERY pending reconnect mark (banked-progress snapshots are kept). Called by EndRound: the marks
+	// are round-scoped state, so a round-N Teacher rejoining during round N+1 must NOT be restored as a
+	// second hunter, and a stale mark must not keep deferring round N+1's win checks. Safe relative to the
+	// train-hop rescue: the travel-teardown marks are written during Logout AFTER EndRound has latched.
+	void InvalidateAllReconnectMarks();
 	// Number of players who dropped with an alive Survivor (or Tester) state and still hold a live reconnect
 	// mark within GraceSeconds. The GameMode consults this on Logout so a transient classroom Wi-Fi blip that
 	// drops the last alive survivor(s) together does not instantly hand the round to the Teacher before the
 	// 120 s reconnect grace can bring them back. Uses the same process-wide monotonic clock as the grace check.
 	int32 CountReconnectableAliveSurvivors(float GraceSeconds) const;
+	// Hunter mirror of the above: players who dropped with an alive Hunter state and still hold a live
+	// reconnect mark. The no-hunter win checks (TickRoundTimer / Logout) defer the SurvivorsWin while this
+	// is > 0, so a Teacher Wi-Fi blip no longer ends the round instantly.
+	int32 CountReconnectableAliveHunters(float GraceSeconds) const;
+	// Number of HUMAN (non-bot) snapshots persisted within the last WindowSeconds. PersistPlayersForTravel
+	// refreshes every connected player's entry immediately before a ServerTravel, so on the arrival map this
+	// is the departure roster — the AutoPrep gate holds the warmup start until that many humans have
+	// re-logged-in. The window only needs to cover the HOST's own map load (the gap between the departure
+	// persist and the new GameMode's BeginPlay); older entries belong to earlier travels/departed players.
+	int32 CountRecentlyPersistedHumanPlayers(double WindowSeconds) const;
+	// EXACT departure roster: PersistPlayersForTravel stamps the count of connected humans at the moment of
+	// each ServerTravel. Preferred over the windowed count above by the AutoPrep gate — the window can sweep
+	// in a player who quit the lobby shortly before departure (their entry was refreshed on lobby arrival),
+	// which would force every such first round onto the timeout path.
+	void SetExpectedReturningHumanCount(int32 Count) { ExpectedReturningHumanCount = FMath::Max(0, Count); }
+	int32 GetExpectedReturningHumanCount() const { return ExpectedReturningHumanCount; }
+	// True when a session snapshot exists for this exact reconnect token — i.e. the identity played in this
+	// session. Used by the win-window round-result resend to exclude brand-new joiners.
+	bool HasTravelSnapshotForToken(const FString& ReconnectToken) const;
 	// Per-client reconnect token storage (Bug-9 secure reconnect). The server issues a token at join and
 	// pushes it to the owning client via ClientReceiveReconnectToken; the client stores it here and the
 	// JoinGame URL echoes it on a later rejoin, so the reconnect is keyed on this unguessable token.
@@ -298,6 +341,8 @@ private:
 	TArray<FBHTravelPlayerProgress> TravelPlayerProgress;
 	// Prop-hunt rounds completed this match (P6); reset by ResetPropHuntMatch on entering the lobby.
 	int32 PropHuntRoundsPlayed = 0;
+	// Humans connected at the most recent PersistPlayersForTravel — the AutoPrep gate's exact expected roster.
+	int32 ExpectedReturningHumanCount = 0;
 	// >= 0 only in automated tests; otherwise the reconnect grace clock uses FPlatformTime::Seconds().
 	double ReconnectClockOverrideSeconds = -1.0;
 	TArray<FBHQuestionAttemptRecord> QuestionAttemptHistory;

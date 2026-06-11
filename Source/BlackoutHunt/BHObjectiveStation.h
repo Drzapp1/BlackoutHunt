@@ -41,10 +41,23 @@ public:
 	// bVisualAnswer = the answer was given via the interactive visual method (drag arrangement, or
 	// clicking a diagram element) rather than picking a multiple-choice option; visual answers earn
 	// extra mastery (see FinalizeRevisionAnswer). Keyboard/choice-row/bot answers pass false.
-	bool SubmitAnswer(ABHCharacter* Character, int32 AnswerIndex, bool bVisualAnswer = false);
+	// ClientQuestionStep = the replicated RevisionQuestionStep the CLIENT was looking at when it
+	// answered. The shared question can be swapped by any teammate's answer while an RPC is in
+	// flight (question fields replicate at a low rate), so a stale step is rejected with a friendly
+	// retry message instead of being graded against a question the sender never saw. INDEX_NONE
+	// (bots, arrangements, legacy callers) skips the check.
+	bool SubmitAnswer(ABHCharacter* Character, int32 AnswerIndex, bool bVisualAnswer = false, int32 ClientQuestionStep = INDEX_NONE);
 	// Typed-numeric answer path for Calculation questions: validates the value against
 	// the question's NumericAnswer +/- tolerance, then shares the choice path's result handling.
-	bool SubmitNumericAnswer(ABHCharacter* Character, float Value);
+	// ClientQuestionStep: same stale-step echo as SubmitAnswer.
+	bool SubmitNumericAnswer(ABHCharacter* Character, float Value, int32 ClientQuestionStep = INDEX_NONE);
+	// Reconnect support: a returning player gets a fresh PlayerState (new PlayerId), which would
+	// otherwise re-open their once-per-node slot and drop any active throttle/correction-hold
+	// state. Called server-side by the reconnect restore to carry the old id's per-node state over.
+	void RemapAnsweredNodePlayerId(int32 OldPlayerId, int32 NewPlayerId);
+	// True when this player already spent their once-per-node answer here this round (recorded on a
+	// CORRECT answer only - see SubmitAnswer/FinalizeRevisionAnswer).
+	bool HasPlayerAnsweredThisNode(int32 PlayerId) const;
 	// Drag/drop answer path for DragDropMatching + Ordering questions. SlotToPiece[slot] is the
 	// index (into GetInteractivePieces) of the piece the player dropped on that slot. Graded
 	// server-side against the correct choice, then mapped to a synthetic choice index so it shares
@@ -124,6 +137,11 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Question")
 	int32 GetRevisionQuestionsRequired() const;
+
+	// The replicated question-step counter for the currently shown question. Clients echo this back
+	// through the Submit* RPCs so the server can reject answers aimed at an already-swapped question.
+	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Question")
+	int32 GetRevisionQuestionStep() const;
 
 	UFUNCTION(BlueprintPure, Category = "Blackout Hunt|Question")
 	EBHRevisionCounterNodeType GetRevisionCounterType() const;
@@ -311,15 +329,23 @@ protected:
 	// Server-only: question ID pulled from the lowest-mastery participant's review
 	// queue during adaptive planning, consumed by the next ConfigureQuestion.
 	FString PendingReviewQuestionId;
+	// Server-only: PlayerId of the student whose review queue surfaced the CURRENT question (valid
+	// only while bRevisionReviewQuestion is true; INDEX_NONE otherwise). Correction credit (half
+	// points + CorrectionsCompleted) must go only to the student who actually missed the question;
+	// anyone else answering the re-surfaced review is graded normally.
+	int32 ReviewQuestionTargetPlayerId = INDEX_NONE;
 	float LastNoiseTime;
 	// Per-player answer throttle keyed by PlayerId. A single shared timestamp would let one
 	// student's press eat every other student's press inside the 0.45s window, silently dropping
 	// votes when a whole class answers together. Mirrors BHTrainBonusQuestionTerminal.
 	TMap<int32, float> LastAnswerTimeByPlayerId;
-	// Server-only anti-gaming state. After a wrong answer the station holds answer submission
-	// until this server time so the student reads the correction instead of brute-forcing the
-	// four choices; the hold escalates with consecutive wrong answers. Neither pins the player
-	// in place — they can always walk away from the station.
-	float CorrectionHoldUntil = 0.0f;
-	int32 ConsecutiveWrongAtStation = 0;
+	// Server-only anti-gaming state, PER PLAYER (keyed by PlayerId like the answer throttle above).
+	// After a wrong answer the station holds THAT student's submissions until the stored server
+	// time so they read the correction instead of brute-forcing the four choices; the hold
+	// escalates with their consecutive wrong answers at this station. A single shared hold let one
+	// student's miss (or a griefer cycling wrong answers) lock the whole class out of the node, so
+	// teammates are never held by someone else's mistake. Neither pins the player in place — they
+	// can always walk away from the station.
+	TMap<int32, float> CorrectionHoldUntilByPlayerId;
+	TMap<int32, int32> ConsecutiveWrongByPlayerId;
 };
