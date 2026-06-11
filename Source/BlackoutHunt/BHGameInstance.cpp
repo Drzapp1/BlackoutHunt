@@ -1823,6 +1823,17 @@ bool UBHGameInstance::IsOnlineIdentityReadyForSessions(FString& OutMessage)
 			return true;
 		}
 
+		// The Epic sign-in prompt (AutoLogin spawns the account-portal browser window) is opt-in via
+		// config: it kept popping on every online action during iteration, and the classroom join paths
+		// (LAN + playit tunnel) never need it. Flip bEnableEOSSignIn=True in DefaultGame.ini to restore
+		// EOS lobby discovery sign-in; an already-persisted login (status check above) still works either way.
+		const UBHGameSettings* SignInSettings = GetDefault<UBHGameSettings>();
+		if (!SignInSettings || !SignInSettings->bEnableEOSSignIn)
+		{
+			OutMessage = TEXT("EOS sign-in is disabled in this build. Host or join over LAN or the classroom tunnel instead.");
+			return false;
+		}
+
 		if (!bEOSAutoLoginAttempted)
 		{
 			bEOSAutoLoginAttempted = true;

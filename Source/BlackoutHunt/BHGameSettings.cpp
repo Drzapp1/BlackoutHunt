@@ -213,6 +213,7 @@ UBHGameSettings::UBHGameSettings()
 	bUseAuthoredLevels = false;
 	ReconnectGraceSeconds = 120.0f;
 	AutoPrepRosterTimeoutSeconds = 45.0f;
+	bEnableEOSSignIn = false;
 	bClassroomMode = true;
 	bAllowStudentTeacherAdminControls = false;
 	bAllowTunnelHelper = true;

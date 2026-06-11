@@ -89,6 +89,13 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Rules", meta = (ClampMin = "10.0"))
 	float AutoPrepRosterTimeoutSeconds;
 
+	// Opt-in for the Epic account sign-in prompt (EOS AutoLogin opens the account-portal browser window).
+	// OFF by default: the classroom join paths (LAN + playit tunnel) never need it, and the prompt kept
+	// interrupting iteration on every online action. An already-persisted EOS login keeps working; flip to
+	// True to restore EOS lobby-discovery sign-in.
+	UPROPERTY(Config, EditAnywhere, Category = "Online")
+	bool bEnableEOSSignIn;
+
 	UPROPERTY(Config, EditAnywhere, Category = "Classroom")
 	bool bClassroomMode;
 
