@@ -12,9 +12,11 @@
 
 class ABHBreaker;
 class ABHCharacter;
+class ABHDoor;
 class ABHExitGate;
 class ABHLocker;
 class ABHObjectiveStation;
+class ABHTrainDoor;
 class UAITask_MoveTo;
 class UAIPerceptionComponent;
 class UAISenseConfig_Hearing;
@@ -52,6 +54,7 @@ private:
 	class ABHGameMode* GetBHGameMode() const;
 
 	void Think();
+	void ThinkFinalEscape(ABHCharacter* BotCharacter, class ABHPlayerState* BotPS, class ABHGameState* BHGS);
 	void ThinkWithCandidates(ABHCharacter* BotCharacter, class ABHPlayerState* BotPS, class ABHGameState* BHGS, const TCHAR* EmptyPatrolLabel);
 	void BuildDecisionCandidates(ABHCharacter* BotCharacter, class ABHPlayerState* BotPS, class ABHGameState* BHGS, TArray<FBHBotDecisionCandidate>& OutCandidates);
 	void BuildSurvivorDecisionCandidates(ABHCharacter* BotCharacter, class ABHGameState* BHGS, TArray<FBHBotDecisionCandidate>& OutCandidates);
@@ -91,7 +94,10 @@ private:
 	ABHBreaker* FindActiveBreaker() const;
 	ABHExitGate* FindActiveExit() const;
 	ABHLocker* FindNearestLocker(bool bRequireEmpty, bool bRequireOccupied, float Range) const;
-	ABHLocker* FindSuspiciousLocker(const FVector& NearLocation, float Range, bool bAllowEmptySuspicion) const;
+	ABHLocker* FindSuspiciousLocker(float Range) const;
+	ABHTrainDoor* FindNearestOpenEscapeDoor() const;
+	bool TryOpenBlockingDoor(ABHCharacter* BotCharacter);
+	bool IsDecoyDropSuppressed() const;
 	AActor* FindSurvivorObjective() const;
 	AActor* FindHunterPatrolObjective() const;
 	float GetObjectivePressure(const class ABHGameState* BHGS) const;
@@ -103,6 +109,7 @@ private:
 	void HandleSurvivorThreat(ABHCharacter* BotCharacter, ABHCharacter* Threat);
 	void HandleSurvivorObjective(ABHCharacter* BotCharacter, AActor* Target, class ABHGameState* BHGS);
 	void HandleStationAnswer(ABHCharacter* BotCharacter, ABHObjectiveStation* Station);
+	void NoteStationAnswerOutcome(ABHObjectiveStation* Station, bool bAccepted);
 	float GetCorrectAnswerChance() const;
 	int32 ChooseAnswerIndex(ABHObjectiveStation* Station) const;
 
@@ -121,10 +128,18 @@ private:
 	float LastDecisionTime;
 	float LastBaitAttemptTime;
 	float LastHideExitTime;
+	float LastDoorOpenAttemptTime;
 	float LastSeenHunterStimulusTime;
 	float LastSeenSurvivorStimulusTime;
 	int32 DecisionsMade;
 	int32 IntentSwitches;
+	// Per-bot answer-outcome memory (item: revision bots camping spent nodes). StationRejectionCounts
+	// tracks CONSECUTIVE refused submissions per station (reset on any accepted one) and drives an
+	// escalating per-bot target cooldown; AnsweredRevisionNodes remembers nodes where this bot's
+	// once-per-round attempt was recorded (record-on-correct), so AnswerStation candidates skip them.
+	// Both reset on possession (fresh pawn = fresh round).
+	TMap<TWeakObjectPtr<const AActor>, int32> StationRejectionCounts;
+	TSet<TWeakObjectPtr<const AActor>> AnsweredRevisionNodes;
 	FVector LastProgressLocation;
 	FVector LastKnownSurvivorLocation;
 	float LastKnownSurvivorTime;

@@ -809,28 +809,70 @@ void ABHGameMode::RefreshBotRoster(ABHPlayerController* RequestingController)
 
 bool ABHGameMode::RemoveOneBot()
 {
-	for (int32 Index = BotControllers.Num() - 1; Index >= 0; --Index)
+	BotControllers.RemoveAll([](const TObjectPtr<ABHBotController>& Bot)
 	{
-		ABHBotController* Bot = BotControllers[Index];
-		BotControllers.RemoveAt(Index);
-		if (!Bot)
-		{
-			continue;
-		}
-
-		if (APawn* Pawn = Bot->GetPawn())
-		{
-			Pawn->Destroy();
-		}
-		if (GameState && Bot->PlayerState)
-		{
-			GameState->RemovePlayerState(Bot->PlayerState);
-		}
-		Bot->Destroy();
-		return true;
+		return !IsValid(Bot);
+	});
+	if (BotControllers.IsEmpty())
+	{
+		return false;
 	}
 
-	return false;
+	// Role/phase-aware trim. The old pop-the-newest behaviour could delete the bot Teacher mid-round
+	// (a human joining clamps the roster via PostLogin), and the next win-condition tick then resolved
+	// an unearned SurvivorsWin. Prefer benched/captured bots, then alive non-hunters; an alive hunter
+	// only goes when another alive hunter remains. Practice mode is exempt from the live-round guard:
+	// its disable-bots path ("set bot count to 0") must always be able to clear the whole roster.
+	const ABHGameState* BHGS = GetGameState<ABHGameState>();
+	const EBHRoundPhase Phase = BHGS ? BHGS->RoundPhase : EBHRoundPhase::Lobby;
+	const bool bRoundLive = !bPracticeMode
+		&& (Phase == EBHRoundPhase::Prep || Phase == EBHRoundPhase::Hunt || Phase == EBHRoundPhase::FinalEscape);
+
+	int32 AliveHunterCount = 0;
+	if (GameState)
+	{
+		for (APlayerState* RawPS : GameState->PlayerArray)
+		{
+			const ABHPlayerState* PS = Cast<ABHPlayerState>(RawPS);
+			if (PS && PS->IsAliveHunter())
+			{
+				++AliveHunterCount;
+			}
+		}
+	}
+
+	TArray<BHBotBehavior::FBHBotRemovalCandidate> RemovalCandidates;
+	RemovalCandidates.Reserve(BotControllers.Num());
+	for (const TObjectPtr<ABHBotController>& Bot : BotControllers)
+	{
+		const ABHPlayerState* BotPS = Bot ? Bot->GetPlayerState<ABHPlayerState>() : nullptr;
+		BHBotBehavior::FBHBotRemovalCandidate Candidate;
+		Candidate.bAlive = BotPS && BotPS->LifeState == EBHPlayerLifeState::Alive;
+		Candidate.bHunter = BotPS && BotPS->PlayerRole == EBHPlayerRole::Hunter;
+		RemovalCandidates.Add(Candidate);
+	}
+
+	const int32 RemoveIndex = BHBotBehavior::SelectBotRemovalIndex(RemovalCandidates, bRoundLive, AliveHunterCount);
+	if (RemoveIndex == INDEX_NONE)
+	{
+		// Every removable bot is the round's lone alive hunter; deleting it would instantly resolve
+		// SurvivorsWin. Defer the trim — the callers' while-loops stop on false and RefreshBotRoster
+		// re-runs the clamp on the next roster change (human join/leave, round transition).
+		return false;
+	}
+
+	ABHBotController* Bot = BotControllers[RemoveIndex];
+	BotControllers.RemoveAt(RemoveIndex);
+	if (APawn* Pawn = Bot->GetPawn())
+	{
+		Pawn->Destroy();
+	}
+	if (GameState && Bot->PlayerState)
+	{
+		GameState->RemovePlayerState(Bot->PlayerState);
+	}
+	Bot->Destroy();
+	return true;
 }
 
 void ABHGameMode::TrimBotRosterToCapacity()

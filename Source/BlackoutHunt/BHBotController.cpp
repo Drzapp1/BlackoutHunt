@@ -6,6 +6,8 @@
 #include "BHBotPolicySubsystem.h"
 #include "BHBreaker.h"
 #include "BHCharacter.h"
+#include "BHDoor.h"
+#include "BHEscapeStationManager.h"
 #include "BHExitGate.h"
 #include "BHGameMode.h"
 #include "BHGameSettings.h"
@@ -13,11 +15,14 @@
 #include "BHLocker.h"
 #include "BHObjectiveStation.h"
 #include "BHPlayerState.h"
+#include "BHTrainDoor.h"
 #include "AITypes.h"
 #include "EngineUtils.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "HAL/IConsoleManager.h"
 #include "Navigation/PathFollowingComponent.h"
 #include "NavigationSystem.h"
+#include "UObject/UnrealType.h"
 #include "Perception/AIPerceptionComponent.h"
 #include "Perception/AISense.h"
 #include "Perception/AISense_Hearing.h"
@@ -26,6 +31,26 @@
 #include "Perception/AISenseConfig_Sight.h"
 #include "Components/StateTreeAIComponent.h"
 #include "StateTree.h"
+
+// Honest-vision tuning (see CanSeeCharacter): how hard the Teacher's blackout blinds a student bot
+// standing inside it, and how far a bot Teacher can spot a LIGHTS-OFF target in heavy/extreme fog
+// (a lit flashlight is always visible at full range). Conservative defaults; live-tunable like the
+// other bh.* knobs.
+static TAutoConsoleVariable<float> CVarBHBotBlackoutSightScale(
+	TEXT("bh.BotBlackoutSightScale"),
+	0.35f,
+	TEXT("Bots: sight-range multiplier for a student bot standing inside the Teacher's blackout (mirrors the human blind)."),
+	ECVF_Default);
+static TAutoConsoleVariable<float> CVarBHBotFogSightScaleHeavy(
+	TEXT("bh.BotFogSightScaleHeavy"),
+	0.62f,
+	TEXT("Bots: hunter sight-range multiplier in HEAVY fog against a target with no active flashlight."),
+	ECVF_Default);
+static TAutoConsoleVariable<float> CVarBHBotFogSightScaleExtreme(
+	TEXT("bh.BotFogSightScaleExtreme"),
+	0.42f,
+	TEXT("Bots: hunter sight-range multiplier in EXTREME fog against a target with no active flashlight."),
+	ECVF_Default);
 
 namespace
 {
@@ -151,11 +176,77 @@ bool BHBotIntentRequiresMovement(EBHBotIntent Intent)
 	}
 }
 
-void BHApplyBotMovementProfile(ACharacter* MoveCharacter, const ABHPlayerState* BotPS)
+// True while one of the character's authoritative speed-state windows is in force. While such a
+// window is open the bot brain must NOT write MaxWalkSpeed at all: RefreshMovementSpeedFromState
+// already wrote the clamped value when the window opened (and re-runs when it closes), and the bot's
+// ~0.25s think used to stomp it — a bot Teacher was back to full sprint a quarter-second into the
+// 0.62s axe swing that caps a human Teacher at 0.54x throughout, gutting the taught dodge counterplay.
+// We deliberately do not reproduce the multipliers; the character stays the single source of truth.
+bool BHBotAuthoritativeSpeedWindowActive(const ABHCharacter* BotCharacter, const ABHPlayerState* BotPS)
+{
+	if (!BotCharacter)
+	{
+		return false;
+	}
+
+	// Teacher capture swing: same gate the human path uses in RefreshMovementSpeedFromState.
+	if (BotPS && BotPS->IsAliveHunter() && BotCharacter->IsTeacherCaptureAttackActive())
+	{
+		return true;
+	}
+
+	// Prop-hunt miss stumble: the until-time is replicated private state on ABHCharacter with no
+	// getter, so read it through the reflection path instead of mirroring the bookkeeping (BHCharacter
+	// is owned elsewhere this wave). Compared against the same shared server clock the character's own
+	// check uses (GetTeacherCaptureClockSeconds == GameState server time).
+	const UWorld* World = BotCharacter->GetWorld();
+	const FProperty* MissSlowProperty = ABHCharacter::StaticClass()->FindPropertyByName(TEXT("PropHuntMissSlowUntilServerTime"));
+	if (const FFloatProperty* MissSlowFloat = CastField<FFloatProperty>(MissSlowProperty))
+	{
+		const float MissSlowUntil = MissSlowFloat->GetPropertyValue_InContainer(BotCharacter);
+		const AGameStateBase* BaseGameState = World ? World->GetGameState() : nullptr;
+		const float ServerNow = BaseGameState ? BaseGameState->GetServerWorldTimeSeconds() : (World ? World->GetTimeSeconds() : 0.0f);
+		if (MissSlowUntil > -900.0f && ServerNow < MissSlowUntil)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+// Final-escape anti-camp penalty (humans: 0.72x in RefreshMovementSpeedFromState + the per-tick clamp).
+// Skipping the bot write cannot honor this one — nothing re-runs the character refresh when the
+// penalty starts, so the bot's last written speed would simply persist. Apply the same single
+// constant to the bot-written speed instead; the window itself stays authored by the escape manager.
+float BHBotFinalEscapePenaltyMultiplier(const ABHCharacter* BotCharacter, const ABHPlayerState* BotPS)
+{
+	UWorld* World = BotCharacter ? BotCharacter->GetWorld() : nullptr;
+	if (!World || !BotPS || !BotPS->IsAliveHunter())
+	{
+		return 1.0f;
+	}
+
+	for (TActorIterator<ABHEscapeStationManager> It(World); It; ++It)
+	{
+		const ABHEscapeStationManager* Manager = *It;
+		if (Manager && Manager->IsHunterPenaltyActive(BotCharacter))
+		{
+			return 0.72f; // mirrors BHFinalEscapeHunterPenaltyActive's multiplier in BHCharacter.cpp
+		}
+	}
+	return 1.0f;
+}
+
+void BHApplyBotMovementProfile(ABHCharacter* MoveCharacter, const ABHPlayerState* BotPS)
 {
 	if (UCharacterMovementComponent* Movement = MoveCharacter ? MoveCharacter->GetCharacterMovement() : nullptr)
 	{
-		Movement->MaxWalkSpeed = BHBotRoleMoveSpeed(BotPS);
+		if (BHBotAuthoritativeSpeedWindowActive(MoveCharacter, BotPS))
+		{
+			return;
+		}
+		Movement->MaxWalkSpeed = BHBotRoleMoveSpeed(BotPS) * BHBotFinalEscapePenaltyMultiplier(MoveCharacter, BotPS);
 	}
 }
 }
@@ -229,6 +320,7 @@ ABHBotController::ABHBotController()
 	LastDecisionTime = -999.0f;
 	LastBaitAttemptTime = -999.0f;
 	LastHideExitTime = -999.0f;
+	LastDoorOpenAttemptTime = -999.0f;
 	LastSeenHunterStimulusTime = -999.0f;
 	LastSeenSurvivorStimulusTime = -999.0f;
 	DecisionsMade = 0;
@@ -367,6 +459,10 @@ void ABHBotController::OnPossess(APawn* InPawn)
 	LastProgressTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	ABHPlayerState* BotPS = GetBHPlayerState();
 	bStateTreePolicyFallbackActivated = false;
+	// Fresh pawn = fresh round: forget last round's per-station answer outcomes (stations reload their
+	// questions and the once-per-node bookkeeping resets with them).
+	StationRejectionCounts.Reset();
+	AnsweredRevisionNodes.Reset();
 
 	if (ACharacter* MoveCharacter = Cast<ACharacter>(InPawn))
 	{
@@ -399,6 +495,16 @@ bool ABHBotController::RunStateTreeIntent(EBHBotIntent Intent, AActor* Target, c
 	if (!BotCharacter || !BotPS || !BHGS || !GetWorld() || BotPS->LifeState != EBHPlayerLifeState::Alive)
 	{
 		return false;
+	}
+
+	// The state-tree brain honors the FinalEscape input locks the same way the policy brain does in
+	// ThinkFinalEscape: a held bot Teacher must loom at its release spot, not pre-position on the
+	// evacuation doors while every human Teacher is frozen.
+	if (BHGS->RoundPhase == EBHRoundPhase::FinalEscape
+		&& (BotPS->PlayerRole == EBHPlayerRole::Hunter ? BHGS->bHunterInputFrozen : BHGS->bPlayerInputFrozen))
+	{
+		StopMovement();
+		return true;
 	}
 
 	BHApplyBotMovementProfile(BotCharacter, BotPS);
@@ -435,10 +541,7 @@ bool ABHBotController::RunStateTreeIntent(EBHBotIntent Intent, AActor* Target, c
 			ResolvedLocation = LastKnownSurvivorTime > -900.0f ? LastKnownSurvivorLocation : LocalMemory.LastSeenSurvivorLocation;
 			break;
 		case EBHBotIntent::SearchLocker:
-			ResolvedTarget = FindSuspiciousLocker(
-				LastKnownSurvivorTime > -900.0f ? LastKnownSurvivorLocation : BotCharacter->GetActorLocation(),
-				1100.0f,
-				true);
+			ResolvedTarget = FindSuspiciousLocker(1100.0f);
 			ResolvedLocation = ResolvedTarget ? ResolvedTarget->GetActorLocation() : BotCharacter->GetActorLocation();
 			break;
 		case EBHBotIntent::AmbushObjective:
@@ -693,6 +796,19 @@ void ABHBotController::OnTargetPerceptionUpdated(AActor* Actor, FAIStimulus Stim
 		return;
 	}
 
+	// Honest-vision gate for the async perception sense: UAISense_Sight only knows geometry, so it
+	// happily reports a survivor at full radius through pitch-black blackout or extreme fog (and a
+	// disguised prop-hunt pawn). Re-validate sight events through the same CanSeeCharacter rules the
+	// deliberate Find* scans use so perception cannot smuggle in knowledge the brain is denied.
+	if (bSightStimulus)
+	{
+		const ABHCharacter* SightCharacter = Cast<ABHCharacter>(Actor);
+		if (SightCharacter && !CanSeeCharacter(SightCharacter, SightRange, false))
+		{
+			return;
+		}
+	}
+
 	if (const ABHCharacter* SeenCharacter = Cast<ABHCharacter>(Actor))
 	{
 		const ABHPlayerState* SeenPS = SeenCharacter->GetPlayerState<ABHPlayerState>();
@@ -821,13 +937,31 @@ void ABHBotController::Think()
 		}
 	}
 
-	if (BHGS->RoundPhase != EBHRoundPhase::Hunt)
+	// Forward door probe: a bot pushing against a shut BHDoor keeps a live path with ~zero velocity for
+	// the full StuckSeconds before the watchdog abandons the move. Probe-and-open early so chases,
+	// objective runs and the Prep wander flow through doors the way a human's E press does.
+	if (const UPathFollowingComponent* PathFollowing = GetPathFollowingComponent())
+	{
+		if (PathFollowing->GetStatus() == EPathFollowingStatus::Moving
+			&& BotCharacter->GetVelocity().SizeSquared2D() < FMath::Square(80.0f))
+		{
+			TryOpenBlockingDoor(BotCharacter);
+		}
+	}
+
+	if (BHGS->RoundPhase != EBHRoundPhase::Hunt && BHGS->RoundPhase != EBHRoundPhase::FinalEscape)
 	{
 		ClearInteraction();
 		if (BHGS->RoundPhase == EBHRoundPhase::Prep)
 		{
 			MoveTowardLocation(GetStablePatrolPoint(BotCharacter, 5.5f, 800.0f), 180.0f);
 		}
+		return;
+	}
+
+	if (BHGS->RoundPhase == EBHRoundPhase::FinalEscape)
+	{
+		ThinkFinalEscape(BotCharacter, BotPS, BHGS);
 		return;
 	}
 
@@ -843,6 +977,93 @@ void ABHBotController::Think()
 	{
 		ThinkWithCandidates(BotCharacter, BotPS, BHGS, TEXT("monitor patrol"));
 	}
+}
+
+void ABHBotController::ThinkFinalEscape(ABHCharacter* BotCharacter, ABHPlayerState* BotPS, ABHGameState* BHGS)
+{
+	const float Now = GetWorld()->GetTimeSeconds();
+	const bool bHunterBot = BotPS->PlayerRole == EBHPlayerRole::Hunter;
+
+	// Honor the same input locks humans are under: everyone is frozen for the unlock cutscene, and the
+	// Teacher stays held until HunterReleaseServerTime. A bot that moved through its lock would get a
+	// head start no human can have (and a held bot Teacher camping the doors defeats the release delay).
+	if (bHunterBot ? BHGS->bHunterInputFrozen : BHGS->bPlayerInputFrozen)
+	{
+		ClearInteraction();
+		StopMovement();
+		return;
+	}
+
+	if (bHunterBot || BotPS->PlayerRole == EBHPlayerRole::FakeHunter)
+	{
+		// Released hunters keep hunting the stragglers with the normal candidate brain (chase / last
+		// seen / noise all still apply — the escape doors broadcast plenty of it); monitors keep their
+		// route-pressure patrol. This is what makes the climax read as a chase instead of a freebie.
+		ThinkWithCandidates(BotCharacter, BotPS, BHGS, bHunterBot ? TEXT("no teacher lead") : TEXT("monitor patrol"));
+		return;
+	}
+
+	// Survivor: sprint for the evacuation train like the humans next to it. Hiding is over — a locker
+	// rider misses the train and hands the Teacher a free sweep once the timer expires.
+	if (BotCharacter->IsHiddenInLocker())
+	{
+		if (Now - LastHideExitTime > 1.0f)
+		{
+			LastHideExitTime = Now;
+			BotCharacter->BotExitCurrentLocker();
+		}
+		return;
+	}
+
+	ABHTrainDoor* EscapeDoor = FindNearestOpenEscapeDoor();
+	if (!EscapeDoor)
+	{
+		// No boardable train door right now. On a map whose escape manager never spawned (logged loudly as
+		// malformed but still playable), humans can still leave through the unlocked exit gates — let the
+		// normal candidate brain chase its Escape candidate so bots are not frozen scenery for the climax.
+		if (BHGS->bExitUnlocked)
+		{
+			ThinkWithCandidates(BotCharacter, BotPS, BHGS, TEXT("final escape via exit gate"));
+			return;
+		}
+		// Doors still sliding open / train departed: hold instead of wandering — the round resolves
+		// around us either way.
+		ClearInteraction();
+		StopMovement();
+		return;
+	}
+
+	if (CurrentClaimTarget.IsValid())
+	{
+		if (ABHGameMode* BHGM = GetBHGameMode())
+		{
+			BHGM->ReleaseBotObjective(this);
+		}
+		CurrentClaimTarget.Reset();
+	}
+
+	const EBHBotIntent PreviousIntent = CurrentIntent;
+	CurrentIntent = EBHBotIntent::Escape;
+	LastDecisionTime = Now;
+	++DecisionsMade;
+	if (PreviousIntent != EBHBotIntent::Escape)
+	{
+		++IntentSwitches;
+	}
+	LastDecisionCandidateCount = 1;
+	bLastDecisionUsedPolicyModel = false;
+	LastDecisionDebugLabel = BHBotDecisionLabel(EBHPlayerRole::Survivor, Personality, TEXT("final escape sprint"));
+	UpdateBotMovementSpeed(BotCharacter, BotPS, true);
+
+	if (IsCloseTo(EscapeDoor, 360.0f))
+	{
+		// Board: BeginInteract on an open evacuation door escapes immediately (the same verb a human
+		// presses), and the door's escape volume also boards on plain overlap — keep pushing in.
+		BotCharacter->BotBeginInteract(EscapeDoor);
+		MoveTowardActor(EscapeDoor, 60.0f);
+		return;
+	}
+	MoveTowardActor(EscapeDoor, 130.0f);
 }
 
 void ABHBotController::ThinkWithCandidates(ABHCharacter* BotCharacter, ABHPlayerState* BotPS, ABHGameState* BHGS, const TCHAR* EmptyPatrolLabel)
@@ -934,7 +1155,7 @@ void ABHBotController::BuildSurvivorDecisionCandidates(ABHCharacter* BotCharacte
 		const FVector Side = FVector::CrossProduct(Away, FVector::UpVector).GetSafeNormal();
 		const FVector FleeLocation = BotLocation + (Away * FMath::FRandRange(850.0f, 1250.0f)) + (Side * FMath::FRandRange(-420.0f, 420.0f));
 		AddCandidate(OutCandidates, EBHBotIntent::Flee, Threat, FleeLocation, bCautiousHider ? 2.45f : (bObjectiveRunner ? 2.12f : 2.25f), 0.24f, 0.92f, BHBotDecisionLabel(EBHPlayerRole::Survivor, Personality, TEXT("break line of sight")));
-		if (bDecoyBaiter && Now - LastBaitAttemptTime > (Personality == EBHBotPersonality::Trickster ? 7.0f : 9.0f))
+		if (bDecoyBaiter && !IsDecoyDropSuppressed() && Now - LastBaitAttemptTime > (Personality == EBHBotPersonality::Trickster ? 7.0f : 9.0f))
 		{
 			AddCandidate(OutCandidates, EBHBotIntent::Bait, Threat, FleeLocation, Personality == EBHBotPersonality::Trickster ? 2.36f : 2.08f, 0.42f, 0.88f, BHBotDecisionLabel(EBHPlayerRole::Survivor, Personality, TEXT("drop decoy bait")));
 		}
@@ -951,7 +1172,7 @@ void ABHBotController::BuildSurvivorDecisionCandidates(ABHCharacter* BotCharacte
 				AddCandidate(OutCandidates, EBHBotIntent::Hide, Locker, Locker->GetActorLocation(), Personality == EBHBotPersonality::Panicked ? 2.36f : 2.08f, 0.08f, 0.72f, BHBotDecisionLabel(EBHPlayerRole::Survivor, Personality, TEXT("hide after losing teacher")));
 			}
 		}
-		if (bFreshHunterMemory && bDecoyBaiter && Now - LastBaitAttemptTime > (Personality == EBHBotPersonality::Trickster ? 8.0f : 11.0f))
+		if (bFreshHunterMemory && bDecoyBaiter && !IsDecoyDropSuppressed() && Now - LastBaitAttemptTime > (Personality == EBHBotPersonality::Trickster ? 8.0f : 11.0f))
 		{
 			FVector Away = (BotLocation - LocalMemory.LastSeenHunterLocation).GetSafeNormal2D();
 			if (Away.IsNearlyZero())
@@ -985,6 +1206,13 @@ void ABHBotController::BuildSurvivorDecisionCandidates(ABHCharacter* BotCharacte
 		}
 
 		const EBHBotIntent Intent = Station->IsQuestionSolved() ? EBHBotIntent::WorkStation : EBHBotIntent::AnswerStation;
+		if (Intent == EBHBotIntent::AnswerStation && AnsweredRevisionNodes.Contains(Station))
+		{
+			// This bot's once-per-round attempt at the node is already recorded; the station will refuse
+			// any further answer from it. Leave the node to teammates (the bot can still return for the
+			// hold-E task once the question is solved — that path stays a WorkStation candidate).
+			continue;
+		}
 		float Base = Station->IsQuestionSolved() ? 1.35f : 1.65f;
 		float Risk = GetThreatPressureForLocation(Station->GetActorLocation());
 		float Urgency = 0.75f + ObjectivePressure * 0.2f;
@@ -1056,7 +1284,10 @@ void ABHBotController::BuildTeacherDecisionCandidates(ABHCharacter* BotCharacter
 	}
 
 	const EBHBotDifficulty Difficulty = GetBHGameMode() ? GetBHGameMode()->GetBotDifficulty() : EBHBotDifficulty::Normal;
-	const bool bAllowEmptySuspicion = Difficulty == EBHBotDifficulty::Hard || bSuspiciousHunter;
+	// Disposition only: Hard hunters and the LockerInspector archetype rate locker sweeps higher and
+	// search wider. Which lockers are even candidates is decided inside FindSuspiciousLocker, which is
+	// evidence-gated at every difficulty (no occupancy reads — see that function).
+	const bool bThoroughLockerChecker = Difficulty == EBHBotDifficulty::Hard || bSuspiciousHunter;
 	const float LastSeenAge = Now - LastKnownSurvivorTime;
 	if (LastSeenAge <= HearingMemorySeconds + 8.0f)
 	{
@@ -1067,9 +1298,9 @@ void ABHBotController::BuildTeacherDecisionCandidates(ABHCharacter* BotCharacter
 			AddCandidate(OutCandidates, EBHBotIntent::UsePower, nullptr, FalseMarkerLocation, 1.22f - LastSeenAge * 0.025f, 0.0f, 0.62f, BHBotDecisionLabel(BotRole, Personality, TEXT("false marker off last seen")));
 		}
 		const float LockerSearchRange = Difficulty == EBHBotDifficulty::Hard ? 1250.0f : (bSuspiciousHunter ? 1180.0f : 900.0f);
-		if (ABHLocker* Locker = FindSuspiciousLocker(LastKnownSurvivorLocation, LockerSearchRange, bAllowEmptySuspicion))
+		if (ABHLocker* Locker = FindSuspiciousLocker(LockerSearchRange))
 		{
-			AddCandidate(OutCandidates, EBHBotIntent::SearchLocker, Locker, Locker->GetActorLocation(), 1.38f + (bAllowEmptySuspicion ? 0.28f : 0.0f) + (bSuspiciousHunter ? 0.24f : 0.0f), 0.08f, 0.7f, BHBotDecisionLabel(BotRole, Personality, TEXT("check suspicious locker")));
+			AddCandidate(OutCandidates, EBHBotIntent::SearchLocker, Locker, Locker->GetActorLocation(), 1.38f + (bThoroughLockerChecker ? 0.28f : 0.0f) + (bSuspiciousHunter ? 0.24f : 0.0f), 0.08f, 0.7f, BHBotDecisionLabel(BotRole, Personality, TEXT("check suspicious locker")));
 		}
 	}
 
@@ -1272,7 +1503,7 @@ void ABHBotController::CommitDecision(ABHCharacter* BotCharacter, ABHPlayerState
 		else
 		{
 			const float HideDecoyCooldown = Personality == EBHBotPersonality::Trickster ? 6.0f : (Personality == EBHBotPersonality::Cautious ? 12.0f : 9.0f);
-			if (Now - LastTrapAttemptTime > HideDecoyCooldown)
+			if (!IsDecoyDropSuppressed() && Now - LastTrapAttemptTime > HideDecoyCooldown)
 			{
 				LastTrapAttemptTime = Now;
 				BotCharacter->BotDropDecoyOrTrap();
@@ -1291,7 +1522,7 @@ void ABHBotController::CommitDecision(ABHCharacter* BotCharacter, ABHPlayerState
 		const float DecoyCooldown = Decision.Intent == EBHBotIntent::Bait
 			? (Personality == EBHBotPersonality::Trickster ? 3.0f : 4.0f)
 			: (Personality == EBHBotPersonality::Panicked ? 6.0f : 8.0f);
-		if (Now - LastTrapAttemptTime > DecoyCooldown)
+		if (!IsDecoyDropSuppressed() && Now - LastTrapAttemptTime > DecoyCooldown)
 		{
 			LastTrapAttemptTime = Now;
 			BotCharacter->BotDropDecoyOrTrap();
@@ -1346,7 +1577,7 @@ void ABHBotController::CommitDecision(ABHCharacter* BotCharacter, ABHPlayerState
 		{
 			MoveTowardLocation(Decision.Location, 260.0f);
 		}
-		if (BotPS->PlayerRole == EBHPlayerRole::FakeHunter && Now - LastTrapAttemptTime > (Personality == EBHBotPersonality::Ambusher ? 5.5f : (Personality == EBHBotPersonality::Trickster ? 6.0f : 9.0f)))
+		if (BotPS->PlayerRole == EBHPlayerRole::FakeHunter && !IsDecoyDropSuppressed() && Now - LastTrapAttemptTime > (Personality == EBHBotPersonality::Ambusher ? 5.5f : (Personality == EBHBotPersonality::Trickster ? 6.0f : 9.0f)))
 		{
 			LastTrapAttemptTime = Now;
 			BotCharacter->BotDropDecoyOrTrap();
@@ -1404,7 +1635,7 @@ void ABHBotController::CommitDecision(ABHCharacter* BotCharacter, ABHPlayerState
 	}
 	case EBHBotIntent::DropTrap:
 		ClearInteraction();
-		if (Now - LastTrapAttemptTime > (BotPS->PlayerRole == EBHPlayerRole::FakeHunter ? (Personality == EBHBotPersonality::Ambusher ? 5.5f : 7.5f) : 4.0f))
+		if (!IsDecoyDropSuppressed() && Now - LastTrapAttemptTime > (BotPS->PlayerRole == EBHPlayerRole::FakeHunter ? (Personality == EBHBotPersonality::Ambusher ? 5.5f : 7.5f) : 4.0f))
 		{
 			LastTrapAttemptTime = Now;
 			BotCharacter->BotDropDecoyOrTrap();
@@ -1710,6 +1941,14 @@ void ABHBotController::UpdateBotMovementSpeed(ABHCharacter* BotCharacter, ABHPla
 		return;
 	}
 
+	// While an authoritative speed-state window (capture swing / prop-hunt miss stumble) is open, the
+	// character's own RefreshMovementSpeedFromState value must persist — see
+	// BHBotAuthoritativeSpeedWindowActive for why the bot write is skipped outright.
+	if (BHBotAuthoritativeSpeedWindowActive(BotCharacter, BotPS))
+	{
+		return;
+	}
+
 	// Burst sprint paced by the character's real stamina (GetStaminaPercent is 0..100). The shared
 	// stamina drain/recovery in ABHCharacter::Tick already runs server-side for bots, so sprinting
 	// drains and walking recovers it - the same out-of-breath rhythm a human gets. Hysteresis (keep
@@ -1722,7 +1961,8 @@ void ABHBotController::UpdateBotMovementSpeed(ABHCharacter* BotCharacter, ABHPla
 		bSprint = bBotSprinting ? StaminaPercent > 12.0f : StaminaPercent > 45.0f;
 	}
 	bBotSprinting = bSprint;
-	Movement->MaxWalkSpeed = bSprint ? BHBotRoleSprintSpeed(BotPS) : BHBotRoleMoveSpeed(BotPS);
+	Movement->MaxWalkSpeed = (bSprint ? BHBotRoleSprintSpeed(BotPS) : BHBotRoleMoveSpeed(BotPS))
+		* BHBotFinalEscapePenaltyMultiplier(BotCharacter, BotPS);
 }
 
 void ABHBotController::ClearInteraction()
@@ -1817,6 +2057,17 @@ bool ABHBotController::HandleStuck(AActor* GoalActor)
 
 	if (GetWorld()->GetTimeSeconds() - LastProgressTime < StuckSeconds)
 	{
+		return false;
+	}
+
+	// Before abandoning the move (and cooldown-blacklisting a perfectly good target), check whether a
+	// closed BHDoor is what's actually in the way and open it. A door slammed in a chasing bot's face
+	// used to be a permanent wall: the path stays valid, the pawn never advances, and the goal got a
+	// 20s cooldown — "close a door, break the bot" at zero cost.
+	if (TryOpenBlockingDoor(GetBHCharacter()))
+	{
+		LastProgressLocation = GetPawn()->GetActorLocation();
+		LastProgressTime = GetWorld()->GetTimeSeconds();
 		return false;
 	}
 
@@ -1920,7 +2171,28 @@ bool ABHBotController::CanSeeCharacter(const ABHCharacter* Other, float Range, b
 
 	const FVector ToTarget = Other->GetActorLocation() - ControlledPawn->GetActorLocation();
 	const float SightProfileMultiplier = FMath::Clamp(Other->GetMovementSightProfileMultiplier(), 0.25f, 1.0f);
-	if (ToTarget.SizeSquared() > FMath::Square(Range * SightProfileMultiplier))
+
+	// Honest vision: bots suffer the same light/fog handicaps humans do. A student bot inside the
+	// Teacher's blackout is blinded hard (the power used to be a no-op against bots), and a bot
+	// Teacher hunting through heavy/extreme fog can only spot a LIGHTS-OFF target at reduced range —
+	// a lit flashlight still carries at full range, preserving the human stealth-vs-sight trade.
+	float HonestRangeScale = 1.0f;
+	if (const ABHGameState* BHGS = GetBHGameState())
+	{
+		const ABHPlayerState* SelfPS = GetBHPlayerState();
+		const bool bSelfHunter = SelfPS && SelfPS->PlayerRole == EBHPlayerRole::Hunter;
+		HonestRangeScale = BHBotBehavior::HonestSightRangeScale(
+			bSelfHunter,
+			BHGS->IsPointInTeacherBlackout(ControlledPawn->GetActorLocation()),
+			BHGS->IsPointInTeacherBlackout(Other->GetActorLocation()),
+			BHGS->ActiveFogPreset,
+			Other->IsFlashlightOn(),
+			CVarBHBotBlackoutSightScale.GetValueOnGameThread(),
+			CVarBHBotFogSightScaleHeavy.GetValueOnGameThread(),
+			CVarBHBotFogSightScaleExtreme.GetValueOnGameThread());
+	}
+
+	if (ToTarget.SizeSquared() > FMath::Square(Range * SightProfileMultiplier * HonestRangeScale))
 	{
 		return false;
 	}
@@ -2075,11 +2347,45 @@ ABHLocker* ABHBotController::FindNearestLocker(bool bRequireEmpty, bool bRequire
 	return Best;
 }
 
-ABHLocker* ABHBotController::FindSuspiciousLocker(const FVector& NearLocation, float Range, bool bAllowEmptySuspicion) const
+ABHLocker* ABHBotController::FindSuspiciousLocker(float Range) const
 {
+	// Evidence-gated suspicion (no occupancy wallhack): the bot may only sweep lockers when it holds a
+	// fresh, honestly-acquired lead — its own/team last-seen survivor position or a recent shared noise
+	// stimulus — and only lockers near that evidence. The old version read GetOccupant() directly and on
+	// Normal/Easy ONLY ever approached occupied lockers, making "the bot walks to a locker" a guaranteed
+	// find tell. Empty lockers now join the sweep at every difficulty; on Hard, true occupancy only
+	// BIASES which nearby locker gets checked first (a strong hunter reads the room, it doesn't x-ray).
+	const APawn* ControlledPawn = GetPawn();
+	if (!GetWorld() || !ControlledPawn)
+	{
+		return nullptr;
+	}
+
+	const float Now = GetWorld()->GetTimeSeconds();
+	TArray<FVector, TInlineAllocator<4>> EvidenceAnchors;
+	if (Now - LastKnownSurvivorTime <= HearingMemorySeconds)
+	{
+		EvidenceAnchors.Add(LastKnownSurvivorLocation);
+	}
+	if (Now - LocalMemory.LastSeenSurvivorTime <= HearingMemorySeconds)
+	{
+		EvidenceAnchors.Add(LocalMemory.LastSeenSurvivorLocation);
+	}
+	FVector NoiseLocation = FVector::ZeroVector;
+	if (GetBHGameMode() && GetBHGameMode()->GetLatestBotNoiseLocation(HearingMemorySeconds, NoiseLocation))
+	{
+		EvidenceAnchors.Add(NoiseLocation);
+	}
+	if (EvidenceAnchors.IsEmpty())
+	{
+		return nullptr;
+	}
+
+	const bool bOccupancyBias = (GetBHGameMode() ? GetBHGameMode()->GetBotDifficulty() : EBHBotDifficulty::Normal) == EBHBotDifficulty::Hard;
 	ABHLocker* Best = nullptr;
-	float BestDistSq = FMath::Square(Range);
-	const bool bHasRecentKnownLocation = GetWorld() && GetWorld()->GetTimeSeconds() - LastKnownSurvivorTime <= HearingMemorySeconds;
+	// Biased-distance score, capped so the sweep stays local: a locker can never be picked from
+	// farther than twice the search range even with the Hard bias applied.
+	float BestScore = Range * 2.0f;
 	for (TActorIterator<ABHLocker> It(GetWorld()); It; ++It)
 	{
 		ABHLocker* Locker = *It;
@@ -2088,24 +2394,144 @@ ABHLocker* ABHBotController::FindSuspiciousLocker(const FVector& NearLocation, f
 			continue;
 		}
 
-		const bool bOccupied = Locker->GetOccupant() != nullptr;
-		if (!bOccupied && !bAllowEmptySuspicion)
+		bool bNearEvidence = false;
+		for (const FVector& Anchor : EvidenceAnchors)
 		{
-			continue;
+			if (FVector::DistSquared(Locker->GetActorLocation(), Anchor) <= FMath::Square(Range))
+			{
+				bNearEvidence = true;
+				break;
+			}
 		}
-		if (bHasRecentKnownLocation && FVector::DistSquared(Locker->GetActorLocation(), NearLocation) > FMath::Square(Range))
+		if (!bNearEvidence)
 		{
 			continue;
 		}
 
-		const float DistSq = GetPawn() ? FVector::DistSquared(GetPawn()->GetActorLocation(), Locker->GetActorLocation()) : 0.0f;
-		if (DistSq < BestDistSq)
+		float Score = FVector::Dist(ControlledPawn->GetActorLocation(), Locker->GetActorLocation());
+		if (bOccupancyBias && Locker->GetOccupant() != nullptr)
 		{
-			BestDistSq = DistSq;
+			Score *= 0.55f;
+		}
+		if (Score < BestScore)
+		{
+			BestScore = Score;
 			Best = Locker;
 		}
 	}
 	return Best;
+}
+
+ABHTrainDoor* ABHBotController::FindNearestOpenEscapeDoor() const
+{
+	const APawn* ControlledPawn = GetPawn();
+	if (!GetWorld() || !ControlledPawn)
+	{
+		return nullptr;
+	}
+
+	ABHGameMode* BHGM = GetBHGameMode();
+	ABHTrainDoor* Best = nullptr;
+	float BestDistSq = TNumericLimits<float>::Max();
+	for (TActorIterator<ABHTrainDoor> It(GetWorld()); It; ++It)
+	{
+		ABHTrainDoor* Door = *It;
+		if (!Door || !Door->IsEscapeDoor() || !Door->IsDoorOpen())
+		{
+			continue;
+		}
+		// Honor per-bot unreachable cooldowns so a door whose platform approach failed pathing falls
+		// back to the next open door instead of wedging the bot against the same spot.
+		if (BHGM && BHGM->IsBotTargetOnCooldown(this, Door))
+		{
+			continue;
+		}
+
+		const float DistSq = FVector::DistSquared(ControlledPawn->GetActorLocation(), Door->GetActorLocation());
+		if (DistSq < BestDistSq)
+		{
+			BestDistSq = DistSq;
+			Best = Door;
+		}
+	}
+	return Best;
+}
+
+bool ABHBotController::TryOpenBlockingDoor(ABHCharacter* BotCharacter)
+{
+	if (!BotCharacter || !GetWorld())
+	{
+		return false;
+	}
+
+	// Single deliberate presses only: the door is gaining a toggle cooldown, and an E-spamming bot
+	// would feed the Teacher noise pings anyway. One press, then give the swing time to finish before
+	// re-evaluating whether the way is clear.
+	const float Now = GetWorld()->GetTimeSeconds();
+	if (Now - LastDoorOpenAttemptTime < 1.75f)
+	{
+		return false;
+	}
+
+	// A closed door only counts as blocking when it sits within interact reach AND roughly in the
+	// direction the bot is trying to move — never yank open a door beside or behind the route (that
+	// reads as haunted and leaks the bot's own position for nothing).
+	const FVector BotLocation = BotCharacter->GetActorLocation();
+	FVector MoveDirection = BotCharacter->GetVelocity().GetSafeNormal2D();
+	if (MoveDirection.IsNearlyZero())
+	{
+		MoveDirection = BotCharacter->GetActorForwardVector().GetSafeNormal2D();
+	}
+
+	ABHDoor* BestDoor = nullptr;
+	float BestDistSq = FMath::Square(360.0f);
+	for (TActorIterator<ABHDoor> It(GetWorld()); It; ++It)
+	{
+		ABHDoor* Door = *It;
+		if (!Door || Door->IsOpen())
+		{
+			continue;
+		}
+
+		const FVector ToDoor = Door->GetActorLocation() - BotLocation;
+		const float DistSq = ToDoor.SizeSquared2D();
+		if (DistSq > BestDistSq)
+		{
+			continue;
+		}
+		// Point-blank doors pass regardless of facing — a bot shoved against a door by avoidance can
+		// end up angled away from it while still being blocked by it.
+		if (DistSq > FMath::Square(140.0f) && FVector::DotProduct(MoveDirection, ToDoor.GetSafeNormal2D()) < 0.25f)
+		{
+			continue;
+		}
+
+		BestDistSq = DistSq;
+		BestDoor = Door;
+	}
+
+	if (!BestDoor)
+	{
+		return false;
+	}
+
+	LastDoorOpenAttemptTime = Now;
+	// Route through the same authority gates a human press takes (reach + LOS + CanInteract);
+	// BeginInteract on a closed BHDoor toggles it open. Release immediately — a door press is
+	// instantaneous and holding would wedge the character's server interact target on the door.
+	const bool bPressed = BotCharacter->BotBeginInteract(BestDoor);
+	if (bPressed)
+	{
+		BotCharacter->BotEndInteract(BestDoor);
+	}
+	return bPressed;
+}
+
+bool ABHBotController::IsDecoyDropSuppressed() const
+{
+	const ABHGameState* BHGS = GetBHGameState();
+	const ABHPlayerState* BotPS = GetBHPlayerState();
+	return BHGS && BotPS && BHBotBehavior::ShouldSuppressBotDecoyDrop(BHGS->bPropHuntMode, BotPS->PlayerRole);
 }
 
 AActor* ABHBotController::FindSurvivorObjective() const
@@ -2163,6 +2589,14 @@ float ABHBotController::GetObjectivePressure(const ABHGameState* BHGS) const
 
 float ABHBotController::GetThreatPressureForLocation(const FVector& Location) const
 {
+	// Honest-knowledge threat model: a hunter only raises the risk of a spot if this bot (or a
+	// teammate, via the shared stimulus board) has actually SEEN that hunter recently — the old
+	// version read every alive hunter's live position straight off the pawn list, so an ambushing
+	// Teacher behind a wall still repelled bots from the objective it was guarding. The recorded
+	// SIGHTING location is scored (faded by age), never the live one; a hunter that breaks line of
+	// sight goes dark to bots the same way it does to humans.
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	const float PressureRange = SightRange * 1.15f;
 	float Pressure = 0.0f;
 	for (TActorIterator<ABHCharacter> It(GetWorld()); It; ++It)
 	{
@@ -2173,14 +2607,38 @@ float ABHBotController::GetThreatPressureForLocation(const FVector& Location) co
 			continue;
 		}
 
-		const float Dist = FVector::Dist2D(Location, Candidate->GetActorLocation());
-		if (Dist <= SightRange * 1.15f)
+		float SightingTime = -1000.0f;
+		FVector SightingLocation = FVector::ZeroVector;
+		if (LocalMemory.LastSeenHunter.Get() == Candidate && LocalMemory.LastSeenHunterTime > SightingTime)
 		{
-			Pressure = FMath::Max(Pressure, 1.0f - Dist / (SightRange * 1.15f));
+			SightingTime = LocalMemory.LastSeenHunterTime;
+			SightingLocation = LocalMemory.LastSeenHunterLocation;
 		}
+		for (const FBHBotStimulus& Stimulus : LocalMemory.RecentStimuli)
+		{
+			if (Stimulus.Type == EBHBotStimulusType::Sight
+				&& Stimulus.TargetActor.Get() == Candidate
+				&& Stimulus.TimeSeconds > SightingTime)
+			{
+				SightingTime = Stimulus.TimeSeconds;
+				SightingLocation = Stimulus.Location;
+			}
+		}
+
+		if (SightingTime <= -900.0f)
+		{
+			continue; // never honestly seen — this hunter contributes nothing
+		}
+
+		Pressure = FMath::Max(Pressure, BHBotBehavior::SightingThreatPressure(
+			Now - SightingTime,
+			HearingMemorySeconds,
+			FVector::Dist2D(Location, SightingLocation),
+			PressureRange));
 	}
 
-	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	// Anonymous fallback: the bot's last-seen-hunter memory may outlive the actor pointer (hunter
+	// pawn swapped/respawned), so keep the legacy area pressure around that remembered location too.
 	if (LocalMemory.LastSeenHunterTime > -1000.0f && Now - LocalMemory.LastSeenHunterTime < HearingMemorySeconds)
 	{
 		const float Dist = FVector::Dist2D(Location, LocalMemory.LastSeenHunterLocation);
@@ -2275,14 +2733,20 @@ void ABHBotController::HandleSurvivorThreat(ABHCharacter* BotCharacter, ABHChara
 			return;
 		}
 
-		BotCharacter->BotDropDecoyOrTrap();
+		if (!IsDecoyDropSuppressed())
+		{
+			BotCharacter->BotDropDecoyOrTrap();
+		}
 		MoveTowardActor(Locker, 180.0f);
 		return;
 	}
 
 	ClearInteraction();
 	const FVector Away = (BotCharacter->GetActorLocation() - Threat->GetActorLocation()).GetSafeNormal();
-	BotCharacter->BotDropDecoyOrTrap();
+	if (!IsDecoyDropSuppressed())
+	{
+		BotCharacter->BotDropDecoyOrTrap();
+	}
 	MoveTowardLocation(BotCharacter->GetActorLocation() + Away * 900.0f, 160.0f);
 }
 
@@ -2371,7 +2835,52 @@ void ABHBotController::HandleStationAnswer(ABHCharacter* BotCharacter, ABHObject
 	}
 
 	LastAnswerAttemptTime = Now;
-	BotCharacter->BotSubmitAnswer(Station, ChooseAnswerIndex(Station));
+	const bool bAccepted = BotCharacter->BotSubmitAnswer(Station, ChooseAnswerIndex(Station));
+	NoteStationAnswerOutcome(Station, bAccepted);
+}
+
+void ABHBotController::NoteStationAnswerOutcome(ABHObjectiveStation* Station, bool bAccepted)
+{
+	if (!Station)
+	{
+		return;
+	}
+
+	if (bAccepted)
+	{
+		StationRejectionCounts.Remove(Station);
+		// Individual revision spends one attempt per node per student, recorded on the ACCEPTED answer.
+		// Remember it so the bot moves to a fresh node instead of camping this one for re-attempts the
+		// station will reject from now on (BuildSurvivorDecisionCandidates skips the marked nodes).
+		const ABHGameState* BHGS = GetBHGameState();
+		if (BHGS && BHGS->bRevisionMode)
+		{
+			AnsweredRevisionNodes.Add(Station);
+		}
+		else if (ABHGameMode* BHGM = GetBHGameMode())
+		{
+			// Classic mode: an ACCEPTED answer may still have been graded WRONG, which arms the station's
+			// per-player correction hold (3-9 s escalating). Pace the bot's own retry past the longest hold
+			// instead of letting the next quick re-answer get REFUSED and escalate into the 16-45 s rejection
+			// exile — a wrong bot should re-engage on the cadence a reading human would, not wander off.
+			BHGM->AddBotTargetCooldown(this, Station, 10.0f + FMath::FRandRange(0.0f, 2.0f), TEXT("answer graded - pace the retry"));
+		}
+		return;
+	}
+
+	// The station refused the submission (correction hold, question swap mid-flight, spent attempt...).
+	// Bots used to ignore this entirely and retry the same node forever while exclusive-claiming it.
+	const int32 Rejections = ++StationRejectionCounts.FindOrAdd(Station);
+	const float CooldownSeconds = BHBotBehavior::AnswerRejectionCooldownSeconds(Rejections);
+	if (CooldownSeconds > 0.0f)
+	{
+		if (ABHGameMode* BHGM = GetBHGameMode())
+		{
+			// AddBotTargetCooldown also releases this bot's exclusive claim, so a node that keeps
+			// refusing this bot opens up for teammates while the bot spreads to another candidate.
+			BHGM->AddBotTargetCooldown(this, Station, CooldownSeconds + FMath::FRandRange(0.0f, 4.0f), TEXT("station answer rejected"));
+		}
+	}
 }
 
 float ABHBotController::GetCorrectAnswerChance() const

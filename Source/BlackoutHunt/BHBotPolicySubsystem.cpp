@@ -58,6 +58,114 @@ FName MakePersonalityIntentKey(EBHBotPersonality Personality, EBHBotIntent Inten
 }
 }
 
+namespace BHBotBehavior
+{
+int32 SelectBotRemovalIndex(const TArray<FBHBotRemovalCandidate>& Candidates, bool bRoundLive, int32 AliveHunterCount)
+{
+	int32 BestIndex = INDEX_NONE;
+	int32 BestTier = TNumericLimits<int32>::Max();
+	// Newest-first inside a tier: iterate from the end so the most recently added bot wins ties,
+	// preserving the old pop-the-newest behaviour wherever the safety tiers agree.
+	for (int32 Index = Candidates.Num() - 1; Index >= 0; --Index)
+	{
+		const FBHBotRemovalCandidate& Candidate = Candidates[Index];
+		int32 Tier = 0;
+		if (Candidate.bAlive)
+		{
+			if (Candidate.bHunter)
+			{
+				// An alive hunter bot may only be trimmed when at least one other alive hunter (human
+				// or bot) remains in a live round; deleting the lone hunter resolves the round on the
+				// next win-condition tick, which a roster clamp must never do.
+				if (bRoundLive && AliveHunterCount <= 1)
+				{
+					continue;
+				}
+				Tier = 2;
+			}
+			else
+			{
+				Tier = 1;
+			}
+		}
+
+		if (Tier < BestTier)
+		{
+			BestTier = Tier;
+			BestIndex = Index;
+			if (BestTier == 0)
+			{
+				break;
+			}
+		}
+	}
+	return BestIndex;
+}
+
+float AnswerRejectionCooldownSeconds(int32 ConsecutiveRejections)
+{
+	if (ConsecutiveRejections < 2)
+	{
+		return 0.0f;
+	}
+	// Two consecutive refusals: the station is actively holding this bot off (correction hold) — step
+	// aside long enough for the hold to lapse and teammates to use the node. Four or more: this bot's
+	// answers are structurally rejected here (spent once-per-node attempt), so stay away much longer.
+	return ConsecutiveRejections >= 4 ? 45.0f : 16.0f;
+}
+
+float HonestSightRangeScale(bool bViewerIsHunter, bool bViewerInTeacherBlackout, bool bTargetInTeacherBlackout, EBHFogPreset FogPreset, bool bTargetFlashlightOn, float BlackoutScale, float HeavyFogScale, float ExtremeFogScale)
+{
+	float Scale = 1.0f;
+	// The blackout blinds students (survivors/monitors) in BOTH directions — standing inside it, or
+	// peering into it from outside (a human can't see into the dark either). Only the Teacher who cast
+	// it keeps full sight, the same asymmetry the power has for humans (it weakens STUDENT flashlights).
+	if (!bViewerIsHunter && (bViewerInTeacherBlackout || bTargetInTeacherBlackout))
+	{
+		Scale *= FMath::Clamp(BlackoutScale, 0.05f, 1.0f);
+	}
+	// Fog only hides a target that is not lit up: a flashlight beam carries through fog and gives the
+	// holder away at full range, preserving the lights-on-vs-stealth trade humans play against the
+	// Teacher. Light fog leaves sight untouched.
+	if (bViewerIsHunter && !bTargetFlashlightOn)
+	{
+		if (FogPreset == EBHFogPreset::Heavy)
+		{
+			Scale *= FMath::Clamp(HeavyFogScale, 0.05f, 1.0f);
+		}
+		else if (FogPreset == EBHFogPreset::Extreme)
+		{
+			Scale *= FMath::Clamp(ExtremeFogScale, 0.05f, 1.0f);
+		}
+	}
+	return Scale;
+}
+
+float SightingThreatPressure(float SightingAgeSeconds, float MemorySeconds, float Distance2D, float PressureRange)
+{
+	if (MemorySeconds <= 0.0f || PressureRange <= 0.0f)
+	{
+		return 0.0f;
+	}
+
+	const float Age = FMath::Max(0.0f, SightingAgeSeconds);
+	if (Age > MemorySeconds || Distance2D > PressureRange)
+	{
+		return 0.0f;
+	}
+
+	// Fade up to 60% with age rather than to zero: a sighting on the edge of memory still marks the
+	// area as warmer than a never-seen corridor, but no longer dominates the risk score.
+	const float AgeFade = 1.0f - FMath::Clamp(Age / MemorySeconds, 0.0f, 1.0f) * 0.6f;
+	return (1.0f - FMath::Clamp(Distance2D / PressureRange, 0.0f, 1.0f)) * AgeFade;
+}
+
+bool ShouldSuppressBotDecoyDrop(bool bPropHuntMode, EBHPlayerRole BotRole)
+{
+	return bPropHuntMode && BotRole == EBHPlayerRole::Survivor;
+}
+}
+
 void UBHBotPolicySubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
