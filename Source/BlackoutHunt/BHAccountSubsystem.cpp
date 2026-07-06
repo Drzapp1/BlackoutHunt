@@ -1133,9 +1133,6 @@ void UBHAccountSubsystem::RecordRoundResult(EBHPlayerRole Role, EBHPlayerLifeSta
 	SanitizeProgressCosmetics();
 	SaveProgress();
 
-	FString Message;
-	SyncProgress(Message);
-
 	// Cosmetic achievements (idempotent; each first-time-only awards XP + unlocks its tint + toasts).
 	if (Role == EBHPlayerRole::Survivor && LifeState == EBHPlayerLifeState::Escaped)
 	{
@@ -1165,6 +1162,14 @@ void UBHAccountSubsystem::RecordRoundResult(EBHPlayerRole Role, EBHPlayerLifeSta
 	{
 		UnlockAchievement(FName(TEXT("on_a_roll")));
 	}
+
+	// Upload AFTER the round's achievement unlocks + achievement-XP are applied above, so a
+	// signed-in account syncs them in the same round they're earned. (Previously SyncProgress
+	// ran before these unlocks, so a freshly earned achievement/XP only reached the server on
+	// the next sync -- one round late.) Each UnlockAchievement above only SaveProgress()es
+	// locally, so this is the single upload that carries them.
+	FString Message;
+	SyncProgress(Message);
 }
 
 void UBHAccountSubsystem::UnlockAchievement(FName AchievementId)
