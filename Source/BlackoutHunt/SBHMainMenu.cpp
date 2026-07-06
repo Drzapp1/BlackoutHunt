@@ -2833,6 +2833,12 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 					.AutoWidth()
 					.Padding(0.0f, 0.0f, 8.0f, 0.0f)
 					[
+						BuildMenuTabButton(EBHMainMenuTab::Achievements, FText::FromString(TEXT("Awards")))
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+					[
 						BuildMenuTabButton(EBHMainMenuTab::Match, FText::FromString(TEXT("Match")))
 					]
 					+ SHorizontalBox::Slot()
@@ -3187,6 +3193,23 @@ void SBHMainMenu::Construct(const FArguments& InArgs)
 							]
 						]
 					]
+					+ SWidgetSwitcher::Slot()
+					[
+						SNew(SBorder)
+						.BorderImage(WhiteBrush())
+						.BorderBackgroundColor(FLinearColor(0.026f, 0.032f, 0.038f, 0.94f))
+						.Padding(16.0f)
+						[
+							SNew(SScrollBox)
+							+ SScrollBox::Slot()
+							[
+								SAssignNew(AchievementsPanelContainer, SBox)
+								[
+									BuildAchievementsPanel()
+								]
+							]
+						]
+					]
 				]
 			]
 		]
@@ -3231,6 +3254,39 @@ bool SBHMainMenu::SupportsKeyboardFocus() const
 
 FReply SBHMainMenu::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
 {
+	// Easter egg: the Konami code. Tracked on every key without consuming it (so normal menu nav still
+	// works); only the final key is consumed, to reveal a hidden line. Cosmetic; gated by bh.EasterEggs.
+	if (BHAreEasterEggsEnabled())
+	{
+		static const FKey KonamiSequence[] = {
+			EKeys::Up, EKeys::Up, EKeys::Down, EKeys::Down,
+			EKeys::Left, EKeys::Right, EKeys::Left, EKeys::Right,
+			EKeys::B, EKeys::A
+		};
+		const FKey Pressed = InKeyEvent.GetKey();
+		if (Pressed == KonamiSequence[KonamiProgress])
+		{
+			++KonamiProgress;
+			if (KonamiProgress >= static_cast<int32>(UE_ARRAY_COUNT(KonamiSequence)))
+			{
+				KonamiProgress = 0;
+				StatusText = FText::FromString(TEXT("Up Up Down Down Left Right Left Right B A  --  the faculty sees you. no cheats here, just a quiet nod. well played."));
+				if (ABHPlayerController* KonamiPC = PlayerController.Get())
+				{
+					if (UBHAccountSubsystem* Account = KonamiPC->GetGameInstance() ? KonamiPC->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+					{
+						Account->UnlockAchievement(FName(TEXT("codebreaker"))); // unlocks the Arcade tint
+					}
+				}
+				return FReply::Handled();
+			}
+		}
+		else
+		{
+			KonamiProgress = (Pressed == KonamiSequence[0]) ? 1 : 0;
+		}
+	}
+
 	if (bShowingStartScreen)
 	{
 		if (InKeyEvent.GetKey() == EKeys::Enter || InKeyEvent.GetKey() == EKeys::SpaceBar)
@@ -3355,6 +3411,26 @@ FReply SBHMainMenu::OnMenuTabClicked(EBHMainMenuTab NewTab)
 	if (MainTabSwitcher.IsValid())
 	{
 		MainTabSwitcher->SetActiveWidgetIndex(MenuTabToWidgetIndex(NewTab));
+	}
+
+	// Opening the Awards tab: rebuild it so the "NEW" markers + profile/mastery reflect the latest progress,
+	// then mark all current unlocks seen so the markers and the tab count clear next time.
+	if (NewTab == EBHMainMenuTab::Achievements)
+	{
+		if (AchievementsPanelContainer.IsValid())
+		{
+			AchievementsPanelContainer->SetContent(BuildAchievementsPanel());
+		}
+		if (ABHPlayerController* PC = PlayerController.Get())
+		{
+			if (UGameInstance* GameInstance = PC->GetGameInstance())
+			{
+				if (UBHAccountSubsystem* AccountSubsystem = GameInstance->GetSubsystem<UBHAccountSubsystem>())
+				{
+					AccountSubsystem->MarkAchievementsSeen();
+				}
+			}
+		}
 	}
 
 	return FReply::Handled();
@@ -3502,6 +3578,22 @@ FSlateColor SBHMainMenu::GetMenuTabColor(EBHMainMenuTab Tab) const
 	return FSlateColor(FLinearColor(0.045f, 0.052f, 0.060f, 0.96f));
 }
 
+FText SBHMainMenu::GetMenuTabLabel(EBHMainMenuTab Tab, FText BaseLabel) const
+{
+	if (Tab == EBHMainMenuTab::Achievements)
+	{
+		const ABHPlayerController* PC = PlayerController.Get();
+		const UGameInstance* GameInstance = PC ? PC->GetGameInstance() : nullptr;
+		const UBHAccountSubsystem* AccountSubsystem = GameInstance ? GameInstance->GetSubsystem<UBHAccountSubsystem>() : nullptr;
+		const int32 Unseen = AccountSubsystem ? AccountSubsystem->GetUnseenAchievementCount() : 0;
+		if (Unseen > 0)
+		{
+			return FText::FromString(FString::Printf(TEXT("%s  (%d)"), *BaseLabel.ToString(), Unseen));
+		}
+	}
+	return BaseLabel;
+}
+
 FSlateColor SBHMainMenu::GetMenuTabTextColor(EBHMainMenuTab Tab) const
 {
 	return ActiveMenuTab == Tab
@@ -3533,6 +3625,8 @@ int32 SBHMainMenu::MenuTabToWidgetIndex(EBHMainMenuTab Tab)
 		return 8;
 	case EBHMainMenuTab::Feedback:
 		return 9;
+	case EBHMainMenuTab::Achievements:
+		return 10;
 	default:
 		return 8;
 	}
@@ -3851,6 +3945,393 @@ TSharedRef<SWidget> SBHMainMenu::BuildEndOfRoundSurveyPanel()
 						.Text(FText::FromString(TEXT("NO THANKS")))
 					]
 				]
+			]
+		];
+}
+
+namespace
+{
+	// Difficulty -> tier colour (Bronze..Mythic) used for the badge spine + difficulty pips.
+	FLinearColor BHAchievementTierColor(int32 Difficulty)
+	{
+		switch (FMath::Clamp(Difficulty, 1, 5))
+		{
+		case 1:  return FLinearColor(0.62f, 0.44f, 0.26f, 1.0f); // Bronze
+		case 2:  return FLinearColor(0.70f, 0.72f, 0.78f, 1.0f); // Silver
+		case 3:  return FLinearColor(0.90f, 0.72f, 0.28f, 1.0f); // Gold
+		case 4:  return FLinearColor(0.40f, 0.84f, 0.92f, 1.0f); // Platinum
+		default: return FLinearColor(0.74f, 0.52f, 0.98f, 1.0f); // Mythic (5 stars)
+		}
+	}
+	FString BHAchievementTierName(int32 Difficulty)
+	{
+		switch (FMath::Clamp(Difficulty, 1, 5))
+		{
+		case 1:  return TEXT("BRONZE");
+		case 2:  return TEXT("SILVER");
+		case 3:  return TEXT("GOLD");
+		case 4:  return TEXT("PLATINUM");
+		default: return TEXT("MYTHIC");
+		}
+	}
+
+	// XP -> school-themed rank. Fills the current/next rank XP thresholds (for a progress-to-next bar).
+	FString BHRankForXP(int32 XP, int32& OutCurrentThreshold, int32& OutNextThreshold)
+	{
+		struct FRankTier { int32 Threshold; const TCHAR* Name; };
+		static const FRankTier Ranks[] = {
+			{ 0, TEXT("Freshman") },
+			{ 150, TEXT("Sophomore") },
+			{ 400, TEXT("Junior") },
+			{ 800, TEXT("Senior") },
+			{ 1500, TEXT("Honor Roll") },
+			{ 2800, TEXT("Dean's List") },
+			{ 5000, TEXT("Valedictorian") }
+		};
+		const int32 Num = UE_ARRAY_COUNT(Ranks);
+		int32 Idx = 0;
+		for (int32 i = 0; i < Num; ++i)
+		{
+			if (XP >= Ranks[i].Threshold)
+			{
+				Idx = i;
+			}
+		}
+		OutCurrentThreshold = Ranks[Idx].Threshold;
+		OutNextThreshold = (Idx + 1 < Num) ? Ranks[Idx + 1].Threshold : Ranks[Idx].Threshold;
+		return Ranks[Idx].Name;
+	}
+}
+
+TSharedRef<SWidget> SBHMainMenu::BuildAchievementsPanel()
+{
+	const ABHPlayerController* PC = PlayerController.Get();
+	const UGameInstance* GameInstance = PC ? PC->GetGameInstance() : nullptr;
+	const UBHAccountSubsystem* AccountSubsystem = GameInstance ? GameInstance->GetSubsystem<UBHAccountSubsystem>() : nullptr;
+
+	TArray<FBHAchievementDisplay> Achievements;
+	int32 Earned = 0;
+	int32 Total = 0;
+	if (AccountSubsystem)
+	{
+		Achievements = AccountSubsystem->GetAchievementsForDisplay();
+		AccountSubsystem->GetAchievementCounts(Earned, Total);
+	}
+
+	// Profile header: rank from XP + lifetime stats.
+	int32 XP = 0, Rounds = 0, HunterWins = 0, SurvivorWins = 0, Escapes = 0, BestStreak = 0;
+	if (AccountSubsystem)
+	{
+		const FBHAccountProgress& Prog = AccountSubsystem->GetProgress();
+		XP = Prog.XP;
+		Rounds = Prog.RoundsPlayed;
+		HunterWins = Prog.HunterWins;
+		SurvivorWins = Prog.SurvivorWins;
+		Escapes = Prog.Escapes;
+		BestStreak = Prog.BestWinStreak;
+	}
+	int32 RankCurrent = 0;
+	int32 RankNext = 0;
+	const FString RankName = BHRankForXP(XP, RankCurrent, RankNext);
+	const float RankPct = (RankNext > RankCurrent) ? FMath::Clamp(static_cast<float>(XP - RankCurrent) / static_cast<float>(RankNext - RankCurrent), 0.0f, 1.0f) : 1.0f;
+	const FString RankXpStr = (RankNext > RankCurrent) ? FString::Printf(TEXT("%d / %d XP"), XP, RankNext) : FString::Printf(TEXT("%d XP  (max rank)"), XP);
+	const FString StatsStr = FString::Printf(TEXT("%d rounds  -  %d wins (%dT / %dS)  -  %d escapes  -  best streak %d  -  %d/%d awards"), Rounds, HunterWins + SurvivorWins, HunterWins, SurvivorWins, Escapes, BestStreak, Earned, Total);
+
+	// Easiest-first so the list reads as a difficulty ramp; within a tier, earned badges float up.
+	Achievements.Sort([](const FBHAchievementDisplay& A, const FBHAchievementDisplay& B)
+	{
+		if (A.Difficulty != B.Difficulty) { return A.Difficulty < B.Difficulty; }
+		if (A.bUnlocked != B.bUnlocked) { return A.bUnlocked && !B.bUnlocked; }
+		return A.Title < B.Title;
+	});
+
+	TSharedRef<SVerticalBox> BadgeList = SNew(SVerticalBox);
+	for (const FBHAchievementDisplay& Ach : Achievements)
+	{
+		const bool bSecret = Ach.bHidden && !Ach.bUnlocked;
+		const FLinearColor TierColor = BHAchievementTierColor(Ach.Difficulty);
+		const FLinearColor TitleColor = Ach.bUnlocked ? FLinearColor(0.94f, 0.92f, 0.80f, 1.0f) : FLinearColor(0.56f, 0.59f, 0.63f, 1.0f);
+
+		// Difficulty meter: five pips, the first N filled with the tier colour.
+		TSharedRef<SHorizontalBox> Meter = SNew(SHorizontalBox);
+		for (int32 Pip = 0; Pip < 5; ++Pip)
+		{
+			const bool bFilled = Pip < Ach.Difficulty;
+			Meter->AddSlot().AutoWidth().Padding(0.0f, 0.0f, 2.0f, 0.0f)
+			[
+				SNew(SBox).WidthOverride(10.0f).HeightOverride(10.0f)
+				[
+					SNew(SBorder)
+					.BorderImage(WhiteBrush())
+					.BorderBackgroundColor(bFilled ? TierColor : FLinearColor(0.16f, 0.17f, 0.19f, 1.0f))
+				]
+			];
+		}
+
+		const FString TitleStr = bSecret ? FString(TEXT("??? (hidden)")) : Ach.Title;
+		const FString DescStr = bSecret ? FString(TEXT("A secret achievement. Keep playing to discover it.")) : Ach.Description;
+		const FString RewardStr = Ach.RewardLabel.IsEmpty() ? FString() : (FString(TEXT("Reward: ")) + Ach.RewardLabel);
+		const FString StateStr = Ach.bUnlocked ? (Ach.bIsNew ? FString(TEXT("NEW!")) : FString(TEXT("EARNED"))) : (bSecret ? FString(TEXT("???")) : BHAchievementTierName(Ach.Difficulty));
+		const FLinearColor StateColor = Ach.bUnlocked ? (Ach.bIsNew ? FLinearColor(1.0f, 0.86f, 0.30f, 1.0f) : FLinearColor(0.40f, 0.86f, 0.52f, 1.0f)) : TierColor;
+		const float ProgressPct = Ach.ProgressTarget > 0 ? static_cast<float>(Ach.ProgressCurrent) / static_cast<float>(Ach.ProgressTarget) : 0.0f;
+		const FString ProgressStr = FString::Printf(TEXT("%d / %d"), Ach.ProgressCurrent, Ach.ProgressTarget);
+		const bool bShowProgress = Ach.ProgressTarget > 0 && !Ach.bUnlocked && !bSecret;
+
+		BadgeList->AddSlot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 6.0f)
+		[
+			SNew(SBorder)
+			.BorderImage(WhiteBrush())
+			.BorderBackgroundColor(Ach.bUnlocked ? FLinearColor(0.055f, 0.078f, 0.066f, 0.95f) : FLinearColor(0.040f, 0.044f, 0.052f, 0.95f))
+			.Padding(9.0f)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 9.0f, 0.0f)
+				[
+					SNew(SBox).WidthOverride(5.0f)
+					[
+						SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(TierColor)
+					]
+				]
+				+ SHorizontalBox::Slot().FillWidth(1.0f)
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight()
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 8.0f, 0.0f)
+						[
+							Meter
+						]
+						+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+						[
+							SNew(STextBlock)
+							.Font(MenuFont(11, FName(TEXT("Bold"))))
+							.ColorAndOpacity(TitleColor)
+							.Text(FText::FromString(TitleStr))
+						]
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 3.0f, 0.0f, 0.0f)
+					[
+						SNew(STextBlock)
+						.AutoWrapText(true)
+						.Font(MenuFont(9))
+						.ColorAndOpacity(FLinearColor(0.66f, 0.70f, 0.74f, 1.0f))
+						.Text(FText::FromString(DescStr))
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f, 0.0f, 0.0f)
+					[
+						SNew(STextBlock)
+						.Visibility(RewardStr.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible)
+						.Font(MenuFont(9, FName(TEXT("Bold"))))
+						.ColorAndOpacity(FLinearColor(0.70f, 0.82f, 0.74f, 1.0f))
+						.Text(FText::FromString(RewardStr))
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f, 0.0f, 0.0f)
+					[
+						SNew(SBox)
+						.Visibility(bShowProgress ? EVisibility::Visible : EVisibility::Collapsed)
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+							[
+								SNew(SBox).HeightOverride(7.0f)
+								[
+									SNew(SHorizontalBox)
+									+ SHorizontalBox::Slot().FillWidth(FMath::Max(ProgressPct, 0.0001f))
+									[
+										SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(TierColor)
+									]
+									+ SHorizontalBox::Slot().FillWidth(FMath::Max(1.0f - ProgressPct, 0.0001f))
+									[
+										SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(FLinearColor(0.13f, 0.14f, 0.16f, 1.0f))
+									]
+								]
+							]
+							+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+							[
+								SNew(STextBlock).Font(MenuFont(8)).ColorAndOpacity(FLinearColor(0.62f, 0.66f, 0.70f, 1.0f)).Text(FText::FromString(ProgressStr))
+							]
+						]
+					]
+				]
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(8.0f, 0.0f, 0.0f, 0.0f)
+				[
+					SNew(STextBlock)
+					.Font(MenuFont(9, FName(TEXT("Bold"))))
+					.ColorAndOpacity(StateColor)
+					.Text(FText::FromString(StateStr))
+				]
+			]
+		];
+	}
+
+	// Per-topic physics mastery (from in-round answers; persisted in the account).
+	static const TCHAR* BHTopicNames[4] = { TEXT("Forces & Motion"), TEXT("Electricity"), TEXT("Waves"), TEXT("Energy") };
+	TSharedRef<SVerticalBox> MasteryRows = SNew(SVerticalBox);
+	int32 WeakestTopicIdx = INDEX_NONE;
+	float WeakestTopicPct = 2.0f;
+	int32 TopicsWithData = 0;
+	int32 MasteredTopics = 0;
+	for (int32 TopicIdx = 0; TopicIdx < 4; ++TopicIdx)
+	{
+		const int32 TopicTotal = (AccountSubsystem && AccountSubsystem->GetProgress().TopicAnswerCounts.IsValidIndex(TopicIdx)) ? AccountSubsystem->GetProgress().TopicAnswerCounts[TopicIdx] : 0;
+		const int32 TopicCorrect = (AccountSubsystem && AccountSubsystem->GetProgress().TopicCorrectCounts.IsValidIndex(TopicIdx)) ? AccountSubsystem->GetProgress().TopicCorrectCounts[TopicIdx] : 0;
+		const float TopicPct = TopicTotal > 0 ? static_cast<float>(TopicCorrect) / static_cast<float>(TopicTotal) : 0.0f;
+		// Only judge a topic once there's a little evidence (>=3 answers), so a single lucky/unlucky answer
+		// doesn't crown a "weakest" topic.
+		if (TopicTotal >= 3)
+		{
+			++TopicsWithData;
+			if (TopicPct >= 0.8f) { ++MasteredTopics; }
+			if (TopicPct < WeakestTopicPct) { WeakestTopicPct = TopicPct; WeakestTopicIdx = TopicIdx; }
+		}
+		const FLinearColor BarColor = TopicTotal == 0
+			? FLinearColor(0.30f, 0.32f, 0.35f, 1.0f)
+			: (TopicPct >= 0.7f ? FLinearColor(0.36f, 0.82f, 0.46f, 1.0f)
+				: (TopicPct >= 0.4f ? FLinearColor(0.88f, 0.74f, 0.30f, 1.0f) : FLinearColor(0.88f, 0.44f, 0.36f, 1.0f)));
+		const FString TopicStat = TopicTotal > 0 ? FString::Printf(TEXT("%d/%d  %.0f%%"), TopicCorrect, TopicTotal, TopicPct * 100.0f) : FString(TEXT("--"));
+		MasteryRows->AddSlot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 4.0f)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+			[
+				SNew(SBox).WidthOverride(108.0f)
+				[
+					SNew(STextBlock).Font(MenuFont(9, FName(TEXT("Bold")))).ColorAndOpacity(FLinearColor(0.78f, 0.82f, 0.86f, 1.0f)).Text(FText::FromString(BHTopicNames[TopicIdx]))
+				]
+			]
+			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center).Padding(6.0f, 0.0f, 6.0f, 0.0f)
+			[
+				SNew(SBox).HeightOverride(9.0f)
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot().FillWidth(FMath::Max(TopicPct, 0.0001f))
+					[
+						SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(BarColor)
+					]
+					+ SHorizontalBox::Slot().FillWidth(FMath::Max(1.0f - TopicPct, 0.0001f))
+					[
+						SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(FLinearColor(0.13f, 0.14f, 0.16f, 1.0f))
+					]
+				]
+			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+			[
+				SNew(SBox).WidthOverride(70.0f)
+				[
+					SNew(STextBlock).Font(MenuFont(9)).ColorAndOpacity(FLinearColor(0.70f, 0.74f, 0.78f, 1.0f)).Text(FText::FromString(TopicStat))
+				]
+			]
+		];
+	}
+
+	// Turn the passive mastery bars into a study nudge: point the student at their weakest topic (or congratulate
+	// a clean sweep). Cosmetic/local -- the student's own lifetime view, not the classroom report.
+	FString FocusStr;
+	if (TopicsWithData == 0)
+	{
+		FocusStr = TEXT("Answer a few questions in each topic and your study focus will show up here.");
+	}
+	else if (MasteredTopics >= 4)
+	{
+		FocusStr = TEXT("All four topics above 80% -- you're exam-ready. Keep them sharp.");
+	}
+	else if (WeakestTopicIdx != INDEX_NONE)
+	{
+		FocusStr = FString::Printf(TEXT("Focus next: %s (%.0f%%) -- your weakest topic right now."), BHTopicNames[WeakestTopicIdx], WeakestTopicPct * 100.0f);
+	}
+
+	return SNew(SBorder)
+		.BorderImage(WhiteBrush())
+		.BorderBackgroundColor(FLinearColor(0.034f, 0.034f, 0.044f, 0.95f))
+		.Padding(10.0f)
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 10.0f)
+			[
+				SNew(SBorder)
+				.BorderImage(WhiteBrush())
+				.BorderBackgroundColor(FLinearColor(0.06f, 0.07f, 0.085f, 0.95f))
+				.Padding(9.0f)
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight()
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+						[
+							SNew(STextBlock).Font(MenuFont(15, FName(TEXT("Bold")))).ColorAndOpacity(FLinearColor(0.95f, 0.86f, 0.55f, 1.0f)).Text(FText::FromString(RankName))
+						]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+						[
+							SNew(STextBlock).Font(MenuFont(9)).ColorAndOpacity(FLinearColor(0.70f, 0.74f, 0.78f, 1.0f)).Text(FText::FromString(RankXpStr))
+						]
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 5.0f, 0.0f, 6.0f)
+					[
+						SNew(SBox).HeightOverride(8.0f)
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot().FillWidth(FMath::Max(RankPct, 0.0001f))
+							[
+								SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(FLinearColor(0.42f, 0.66f, 0.92f, 1.0f))
+							]
+							+ SHorizontalBox::Slot().FillWidth(FMath::Max(1.0f - RankPct, 0.0001f))
+							[
+								SNew(SBorder).BorderImage(WhiteBrush()).BorderBackgroundColor(FLinearColor(0.13f, 0.14f, 0.16f, 1.0f))
+							]
+						]
+					]
+					+ SVerticalBox::Slot().AutoHeight()
+					[
+						SNew(STextBlock).AutoWrapText(true).Font(MenuFont(9)).ColorAndOpacity(FLinearColor(0.68f, 0.72f, 0.76f, 1.0f)).Text(FText::FromString(StatsStr))
+					]
+				]
+			]
+			+ SVerticalBox::Slot().AutoHeight()
+			[
+				SNew(STextBlock)
+				.Font(MenuFont(13, FName(TEXT("Bold"))))
+				.ColorAndOpacity(FLinearColor(0.92f, 0.88f, 0.74f, 1.0f))
+				.Text(FText::FromString(TEXT("Achievements")))
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 5.0f, 0.0f, 9.0f)
+			[
+				SNew(STextBlock)
+				.AutoWrapText(true)
+				.Font(MenuFont(10))
+				.ColorAndOpacity(FLinearColor(0.66f, 0.72f, 0.78f, 1.0f))
+				.Text(FText::FromString(FString::Printf(TEXT("Earned %d of %d. Each badge shows its difficulty (more pips = harder, colour-coded by tier) and the cosmetic it unlocks. Hidden badges stay secret until you find them."), Earned, Total)))
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 4.0f)
+			[
+				SNew(STextBlock)
+				.Font(MenuFont(11, FName(TEXT("Bold"))))
+				.ColorAndOpacity(FLinearColor(0.82f, 0.88f, 0.80f, 1.0f))
+				.Text(FText::FromString(TEXT("Your physics mastery (from in-round answers)")))
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 11.0f)
+			[
+				MasteryRows
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 11.0f)
+			[
+				SNew(SBorder)
+				.Visibility(FocusStr.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible)
+				.BorderImage(WhiteBrush())
+				.BorderBackgroundColor(FLinearColor(0.07f, 0.09f, 0.08f, 0.95f))
+				.Padding(7.0f)
+				[
+					SNew(STextBlock)
+					.AutoWrapText(true)
+					.Font(MenuFont(10, FName(TEXT("Bold"))))
+					.ColorAndOpacity(FLinearColor(0.74f, 0.90f, 0.78f, 1.0f))
+					.Text(FText::FromString(FocusStr))
+				]
+			]
+			+ SVerticalBox::Slot().AutoHeight()
+			[
+				BadgeList
 			]
 		];
 }
@@ -4306,7 +4787,7 @@ TSharedRef<SWidget> SBHMainMenu::BuildMenuTabButton(EBHMainMenuTab Tab, const FT
 			SNew(STextBlock)
 			.Font(MenuFont(12, FName(TEXT("Bold"))))
 			.ColorAndOpacity(TAttribute<FSlateColor>::Create(TAttribute<FSlateColor>::FGetter::CreateSP(this, &SBHMainMenu::GetMenuTabTextColor, Tab)))
-			.Text(Label)
+			.Text(TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &SBHMainMenu::GetMenuTabLabel, Tab, Label)))
 		];
 }
 
@@ -6013,6 +6494,30 @@ FReply SBHMainMenu::OnAvatarHeadwearClicked(int32 HeadwearIndex)
 	return FReply::Handled();
 }
 
+FReply SBHMainMenu::OnAvatarTitleClicked(int32 TitleIndex)
+{
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		FString Message;
+		PC->SetTitleForMenu(TitleIndex, Message);
+		StatusText = FText::FromString(Message);
+	}
+
+	return FReply::Handled();
+}
+
+FReply SBHMainMenu::OnAvatarEmblemClicked(int32 EmblemIndex)
+{
+	if (ABHPlayerController* PC = PlayerController.Get())
+	{
+		FString Message;
+		PC->SetEmblemForMenu(EmblemIndex, Message);
+		StatusText = FText::FromString(Message);
+	}
+
+	return FReply::Handled();
+}
+
 FReply SBHMainMenu::OnGraphicsPresetClicked(int32 Quality)
 {
 	if (ABHPlayerController* PC = PlayerController.Get())
@@ -6755,6 +7260,12 @@ FSlateColor SBHMainMenu::GetCosmeticButtonColor(EBHCosmeticCategory Category, in
 			break;
 		case EBHCosmeticCategory::Headwear:
 			bSelected = BHCosmeticClampIndex(Category, BHPS->AvatarHeadwearIndex) == BHCosmeticClampIndex(Category, Index);
+			break;
+		case EBHCosmeticCategory::Title:
+			bSelected = BHCosmeticClampIndex(Category, BHPS->SelectedTitleIndex) == BHCosmeticClampIndex(Category, Index);
+			break;
+		case EBHCosmeticCategory::Emblem:
+			bSelected = BHCosmeticClampIndex(Category, BHPS->SelectedEmblemIndex) == BHCosmeticClampIndex(Category, Index);
 			break;
 		default:
 			break;
@@ -8383,6 +8894,54 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 			];
 	}
 
+	TSharedRef<SVerticalBox> TitleButtons = SNew(SVerticalBox);
+	for (int32 Index = 0; Index <= BHCosmeticMaxIndex(EBHCosmeticCategory::Title); ++Index)
+	{
+		TitleButtons->AddSlot()
+			.AutoHeight()
+			.Padding(0.0f, 0.0f, 0.0f, 4.0f)
+			[
+				SNew(SBox)
+				.HeightOverride(28.0f)
+				[
+					SNew(SBHMenuButton)
+					.IsEnabled(this, &SBHMainMenu::IsCosmeticUnlockedForMenu, EBHCosmeticCategory::Title, Index)
+					.ButtonColorAndOpacity(this, &SBHMainMenu::GetCosmeticButtonColor, EBHCosmeticCategory::Title, Index)
+					.ContentPadding(FMargin(7.0f, 4.0f))
+					.OnClicked(this, &SBHMainMenu::OnAvatarTitleClicked, Index)
+					[
+						SNew(STextBlock)
+						.Font(MenuFont(8, FName(TEXT("Bold"))))
+						.Text(this, &SBHMainMenu::GetCosmeticButtonText, EBHCosmeticCategory::Title, Index)
+					]
+				]
+			];
+	}
+
+	TSharedRef<SGridPanel> EmblemButtons = SNew(SGridPanel);
+	for (int32 Index = 0; Index <= BHCosmeticMaxIndex(EBHCosmeticCategory::Emblem); ++Index)
+	{
+		EmblemButtons->AddSlot(Index % 2, Index / 2)
+			.Padding(0.0f, 0.0f, 6.0f, 6.0f)
+			[
+				SNew(SBox)
+				.WidthOverride(118.0f)
+				.HeightOverride(30.0f)
+				[
+					SNew(SBHMenuButton)
+					.IsEnabled(this, &SBHMainMenu::IsCosmeticUnlockedForMenu, EBHCosmeticCategory::Emblem, Index)
+					.ButtonColorAndOpacity(this, &SBHMainMenu::GetCosmeticButtonColor, EBHCosmeticCategory::Emblem, Index)
+					.ContentPadding(FMargin(7.0f, 4.0f))
+					.OnClicked(this, &SBHMainMenu::OnAvatarEmblemClicked, Index)
+					[
+						SNew(STextBlock)
+						.Font(MenuFont(8, FName(TEXT("Bold"))))
+						.Text(this, &SBHMainMenu::GetCosmeticButtonText, EBHCosmeticCategory::Emblem, Index)
+					]
+				]
+			];
+	}
+
 	return SNew(SBorder)
 		.BorderImage(WhiteBrush())
 		.BorderBackgroundColor(FLinearColor(0.034f, 0.034f, 0.044f, 0.95f))
@@ -8483,6 +9042,35 @@ TSharedRef<SWidget> SBHMainMenu::BuildCharacterCustomizationPanel()
 					.Padding(0.0f, 5.0f, 0.0f, 6.0f)
 					[
 						HeadwearButtons
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 8.0f, 0.0f, 0.0f)
+					[
+						SNew(STextBlock)
+						.Font(MenuFont(10, FName(TEXT("Bold"))))
+						.ColorAndOpacity(FLinearColor(0.86f, 0.80f, 0.60f, 1.0f))
+						.Text(FText::FromString(TEXT("Title (shown on your nameplate)")))
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 5.0f, 0.0f, 6.0f)
+					[
+						TitleButtons
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						SNew(STextBlock)
+						.Font(MenuFont(10, FName(TEXT("Bold"))))
+						.ColorAndOpacity(FLinearColor(0.86f, 0.80f, 0.60f, 1.0f))
+						.Text(FText::FromString(TEXT("Emblem (nameplate badge)")))
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 5.0f, 0.0f, 6.0f)
+					[
+						EmblemButtons
 					]
 				]
 			]

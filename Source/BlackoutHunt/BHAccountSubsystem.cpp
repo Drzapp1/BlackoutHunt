@@ -5,6 +5,7 @@
 #include "BHAccountSubsystem.h"
 
 #include "BHAccountSettings.h"
+#include "BHPlayerController.h"
 #include "Containers/StringConv.h"
 #include "Dom/JsonObject.h"
 #include "HAL/PlatformMisc.h"
@@ -63,7 +64,55 @@ namespace
 	// Highest progress schema version this build understands. If a save declares a higher version we
 	// refuse to parse it with the old schema and refuse to overwrite it (avoids silently wiping a
 	// newer build's data when an older build runs against the same profile).
-	constexpr int32 BHCurrentProgressVersion = 1;
+	// v2 added unlocked_achievements (cosmetic achievements + the hidden prestige tints they unlock).
+	constexpr int32 BHCurrentProgressVersion = 2;
+
+	// Cosmetic achievement registry. Earning one awards XP (so achievements feed the same economy as play) and
+	// unlocks any tint gated on its id (see BHCosmeticUnlocks.cpp). Purely cosmetic -- never affects gameplay.
+	struct FBHAchievementDef
+	{
+		const TCHAR* Id;
+		const TCHAR* Title;
+		const TCHAR* Description;
+		int32 XPReward;
+		int32 Difficulty;          // 1..5 -- the badge's star meter + tier colour in the Achievements tab
+		const TCHAR* RewardLabel;  // cosmetic reward shown on the badge ("" if the reward is XP only)
+		bool bHidden;              // a secret achievement: the tab shows "???" until it is earned
+	};
+	const FBHAchievementDef GBHAchievements[] = {
+		{ TEXT("honorary_faculty"), TEXT("Honorary Faculty"), TEXT("Played under a famous physicist's name."), 40, 1, TEXT("Chalk tint"),                  true  },
+		{ TEXT("codebreaker"),      TEXT("Codebreaker"),       TEXT("Found the code that asks for nothing."),  30, 2, TEXT("Arcade tint"),                 true  },
+		{ TEXT("escape_artist"),    TEXT("Escape Artist"),     TEXT("Reached the exit and made it out."),      60, 2, TEXT("Exit Sign tint"),              false },
+		{ TEXT("survivor"),         TEXT("Last One Standing"), TEXT("Won a Hunt as a survivor."),              50, 3, TEXT("Suit outfit"),                 false },
+		{ TEXT("spelunker"),        TEXT("Spelunker"),         TEXT("Hid in a locker. The dark is patient."),  20, 1, TEXT(""),                            false },
+		{ TEXT("perfect_chain"),    TEXT("Perfect Chain"),     TEXT("Nailed a frame-perfect momentum chain."), 80, 5, TEXT("Afterimage tint + Spacesuit"), false },
+		// Newer achievements (rewards: Veteran / Faculty tints + the Top Hat headwear). See Docs/EASTER_EGGS.md.
+		{ TEXT("veteran"),          TEXT("Veteran"),           TEXT("Played 25 rounds. A familiar face."),     60, 2, TEXT("Veteran tint"),                false },
+		{ TEXT("top_of_the_class"), TEXT("Top of the Class"),  TEXT("Won a Hunt as the Teacher."),             50, 3, TEXT("Faculty tint"),                false },
+		{ TEXT("roof_rider"),       TEXT("Roof Rider"),        TEXT("Found a way onto the train roof."),       70, 3, TEXT("Top Hat"),                     true  },
+		// Skill / Teacher / Exploration / Dedication achievements. Rewards: tints + Crown / Halo / Graduation Cap.
+		{ TEXT("flow_master"),      TEXT("Flow Master"),       TEXT("Chained a full three-link flow chain."),  90, 5, TEXT("Slipstream tint"),             false },
+		{ TEXT("first_blood"),      TEXT("First Blood"),       TEXT("Captured your first survivor as Teacher."), 40, 2, TEXT("Detention tint"),            false },
+		{ TEXT("flawless_hunt"),    TEXT("Flawless Hunt"),     TEXT("Caught every survivor in one round."),    75, 4, TEXT("Apex tint"),                   false },
+		{ TEXT("tourist"),          TEXT("Tourist"),           TEXT("Tried all four train activities."),       45, 2, TEXT("Commuter tint"),               false },
+		{ TEXT("completionist"),    TEXT("Completionist"),     TEXT("Found every hidden easter egg."),         120, 5, TEXT("Halo"),                       true  },
+		{ TEXT("graduate"),         TEXT("Graduate"),          TEXT("Played 50 rounds. A classroom regular."),  80, 3, TEXT("Graduation Cap"),             false },
+		{ TEXT("on_a_roll"),        TEXT("On a Roll"),         TEXT("Won three rounds in a row."),             70, 3, TEXT("Crown"),                       false },
+		// Educational achievements (reward: nameplate titles). Earned from in-round physics answers.
+		{ TEXT("honor_roll"),       TEXT("Honor Roll"),        TEXT("Answered five questions correctly in a row."), 60, 3, TEXT("Honor Roll title"),      false },
+		{ TEXT("polymath"),         TEXT("Polymath"),          TEXT("Answered correctly in all four physics topics."), 70, 3, TEXT("Polymath title"),    false }
+	};
+	const FBHAchievementDef* BHFindAchievement(FName Id)
+	{
+		for (const FBHAchievementDef& Def : GBHAchievements)
+		{
+			if (Id == FName(Def.Id))
+			{
+				return &Def;
+			}
+		}
+		return nullptr;
+	}
 
 	FString JsonObjectToString(const TSharedRef<FJsonObject>& JsonObject)
 	{
@@ -479,6 +528,24 @@ namespace
 		return AtomicSaveStringToFile(JsonObjectToString(Root), Path);
 	}
 
+	// Constant-time compare of two equal-length ASCII strings (used for the credential MAC). FString's
+	// operator!= short-circuits on the first differing byte, which leaks a byte-by-byte timing oracle;
+	// the loop below always visits every byte. Marginal here (the MAC key is machine-bound and any
+	// attacker is already local), but cheap to do right.
+	bool BHConstantTimeStringEquals(const FString& A, const FString& B)
+	{
+		if (A.Len() != B.Len())
+		{
+			return false;
+		}
+		uint32 Accumulator = 0;
+		for (int32 Index = 0; Index < A.Len(); ++Index)
+		{
+			Accumulator |= static_cast<uint32>(A[Index] ^ B[Index]);
+		}
+		return Accumulator == 0;
+	}
+
 	// Parse a single encrypted credential file: decode, verify the MAC, decrypt, and apply the record.
 	// Returns false if the file is missing/unreadable or fails any integrity/decrypt step.
 	bool TryLoadEncryptedCredentialFile(const FString& Path, FBHLocalCredentialRecord& OutRecord)
@@ -503,7 +570,7 @@ namespace
 		}
 
 		const FString ExpectedMac = JsonString(Root, TEXT("mac")).ToLower();
-		if (ExpectedMac.IsEmpty() || ExpectedMac != MakePayloadMac(Iv, Ciphertext))
+		if (ExpectedMac.IsEmpty() || !BHConstantTimeStringEquals(ExpectedMac, MakePayloadMac(Iv, Ciphertext)))
 		{
 			return false;
 		}
@@ -579,6 +646,14 @@ void UBHAccountSubsystem::LoginMicrosoft()
 
 void UBHAccountSubsystem::AccountPollLogin()
 {
+	// Stop an abandoned sign-in from polling indefinitely (the backend can keep replying "pending").
+	if (LoginPollDeadlineSeconds > 0.0 && FPlatformTime::Seconds() > LoginPollDeadlineSeconds)
+	{
+		StopLoginPolling();
+		SetLastAccountMessage(TEXT("Sign-in timed out. Re-open the login to try again."));
+		return;
+	}
+
 	FString Message;
 	PollProviderLogin(Message);
 }
@@ -1012,7 +1087,12 @@ void UBHAccountSubsystem::RecordRoundResult(EBHPlayerRole Role, EBHPlayerLifeSta
 		return;
 	}
 
-	++Progress.RoundsPlayed;
+	// Saturating increments: overflow is unreachable (~7.8M rounds) but mirror the BHSaturatingAddPoints
+	// posture used for in-round points so a wrap can never flip a lifetime stat negative.
+	if (Progress.RoundsPlayed < MAX_int32)
+	{
+		++Progress.RoundsPlayed;
+	}
 	int32 EarnedXP = 25;
 
 	if (Role == EBHPlayerRole::Hunter && ResultPhase == EBHRoundPhase::HunterWin)
@@ -1032,13 +1112,259 @@ void UBHAccountSubsystem::RecordRoundResult(EBHPlayerRole Role, EBHPlayerLifeSta
 		EarnedXP += 50;
 	}
 
-	Progress.XP += EarnedXP;
+	// Consecutive-win streak (for On a Roll): the player's side winning extends it; anything else breaks it.
+	const bool bWonRound = (Role == EBHPlayerRole::Hunter && ResultPhase == EBHRoundPhase::HunterWin)
+		|| (Role == EBHPlayerRole::Survivor && ResultPhase == EBHRoundPhase::SurvivorsWin);
+	if (bWonRound)
+	{
+		if (Progress.CurrentWinStreak < MAX_int32)
+		{
+			++Progress.CurrentWinStreak;
+		}
+	}
+	else
+	{
+		Progress.CurrentWinStreak = 0;
+	}
+	Progress.BestWinStreak = FMath::Max(Progress.BestWinStreak, Progress.CurrentWinStreak);
+
+	Progress.XP = (EarnedXP > 0 && Progress.XP > MAX_int32 - EarnedXP) ? MAX_int32 : Progress.XP + EarnedXP;
 	Progress.LastUpdatedUtc = UtcNowString();
 	SanitizeProgressCosmetics();
 	SaveProgress();
 
+	// Cosmetic achievements (idempotent; each first-time-only awards XP + unlocks its tint + toasts).
+	if (Role == EBHPlayerRole::Survivor && LifeState == EBHPlayerLifeState::Escaped)
+	{
+		UnlockAchievement(FName(TEXT("escape_artist")));
+	}
+	if (Role == EBHPlayerRole::Survivor && ResultPhase == EBHRoundPhase::SurvivorsWin)
+	{
+		UnlockAchievement(FName(TEXT("survivor")));
+	}
+	// Teacher (Hunter) win -> the Faculty tint.
+	if (Role == EBHPlayerRole::Hunter && ResultPhase == EBHRoundPhase::HunterWin)
+	{
+		UnlockAchievement(FName(TEXT("top_of_the_class")));
+	}
+	// Milestone: 25 rounds played -> the Veteran tint (idempotent, so it only toasts once at round 25).
+	if (Progress.RoundsPlayed >= 25)
+	{
+		UnlockAchievement(FName(TEXT("veteran")));
+	}
+	// Milestone: 50 rounds -> the Graduation Cap (a gentler target than a literal 100 for occasional class play).
+	if (Progress.RoundsPlayed >= 50)
+	{
+		UnlockAchievement(FName(TEXT("graduate")));
+	}
+	// Three wins in a row -> the Crown.
+	if (Progress.CurrentWinStreak >= 3)
+	{
+		UnlockAchievement(FName(TEXT("on_a_roll")));
+	}
+
+	// Upload AFTER the round's achievement unlocks + achievement-XP are applied above, so a
+	// signed-in account syncs them in the same round they're earned. (Previously SyncProgress
+	// ran before these unlocks, so a freshly earned achievement/XP only reached the server on
+	// the next sync -- one round late.) Each UnlockAchievement above only SaveProgress()es
+	// locally, so this is the single upload that carries them.
 	FString Message;
 	SyncProgress(Message);
+}
+
+void UBHAccountSubsystem::UnlockAchievement(FName AchievementId)
+{
+	if (AchievementId.IsNone() || Progress.UnlockedAchievements.Contains(AchievementId))
+	{
+		return;
+	}
+
+	Progress.UnlockedAchievements.AddUnique(AchievementId);
+	const FBHAchievementDef* Def = BHFindAchievement(AchievementId);
+	if (Def && Def->XPReward > 0)
+	{
+		Progress.XP = (Progress.XP > MAX_int32 - Def->XPReward) ? MAX_int32 : Progress.XP + Def->XPReward;
+	}
+	Progress.LastUpdatedUtc = UtcNowString();
+	SaveProgress();
+
+	// Toast on the menu status line + the local player's HUD (this subsystem is per-client, so the "first"
+	// controller here is the local player whose progress this is). Purely cosmetic feedback.
+	const FString Title = Def ? FString(Def->Title) : AchievementId.ToString();
+	const FString Toast = FString::Printf(TEXT("Achievement unlocked: %s"), *Title);
+	SetLastAccountMessage(Toast);
+	if (const UGameInstance* GameInstance = GetGameInstance())
+	{
+		if (UWorld* World = GameInstance->GetWorld())
+		{
+			if (ABHPlayerController* LocalPC = Cast<ABHPlayerController>(World->GetFirstPlayerController()))
+			{
+				LocalPC->ShowLocalStatusMessage(Toast, 4.5f);
+			}
+		}
+	}
+
+	// Completionist: collecting every hidden egg achievement earns it. Guarded so unlocking completionist
+	// itself can't re-enter (and UnlockAchievement is idempotent, so the recursion bottoms out immediately).
+	if (AchievementId != FName(TEXT("completionist")))
+	{
+		static const FName EggAchievements[] = {
+			FName(TEXT("spelunker")), FName(TEXT("honorary_faculty")),
+			FName(TEXT("codebreaker")), FName(TEXT("roof_rider"))
+		};
+		bool bAllEggs = true;
+		for (const FName& Egg : EggAchievements)
+		{
+			if (!Progress.UnlockedAchievements.Contains(Egg))
+			{
+				bAllEggs = false;
+				break;
+			}
+		}
+		if (bAllEggs)
+		{
+			UnlockAchievement(FName(TEXT("completionist")));
+		}
+	}
+}
+
+void UBHAccountSubsystem::RecordTrainActivityUse(int32 ActivityIndex)
+{
+	if (ActivityIndex < 0 || ActivityIndex > 3)
+	{
+		return;
+	}
+	const int32 Bit = 1 << ActivityIndex;
+	if ((Progress.TrainActivityMask & Bit) != 0)
+	{
+		return; // already recorded this activity type
+	}
+	Progress.TrainActivityMask |= Bit;
+	Progress.LastUpdatedUtc = UtcNowString();
+	SaveProgress();
+	// All four train activities tried -> Tourist.
+	if ((Progress.TrainActivityMask & 0x0F) == 0x0F)
+	{
+		UnlockAchievement(FName(TEXT("tourist")));
+	}
+}
+
+void UBHAccountSubsystem::RecordQuestionResult(int32 TopicIndex, bool bCorrect)
+{
+	if (TopicIndex < 0 || TopicIndex > 3)
+	{
+		return;
+	}
+	// Per-topic lifetime tallies (for the mastery readout).
+	if (Progress.TopicAnswerCounts.Num() < 4) { Progress.TopicAnswerCounts.SetNumZeroed(4); }
+	if (Progress.TopicCorrectCounts.Num() < 4) { Progress.TopicCorrectCounts.SetNumZeroed(4); }
+	if (Progress.TopicAnswerCounts[TopicIndex] < MAX_int32) { ++Progress.TopicAnswerCounts[TopicIndex]; }
+	if (bCorrect && Progress.TopicCorrectCounts[TopicIndex] < MAX_int32) { ++Progress.TopicCorrectCounts[TopicIndex]; }
+
+	if (bCorrect)
+	{
+		if (Progress.CurrentAnswerStreak < MAX_int32)
+		{
+			++Progress.CurrentAnswerStreak;
+		}
+		Progress.TopicsEverCorrectMask |= (1 << TopicIndex);
+	}
+	else
+	{
+		Progress.CurrentAnswerStreak = 0;
+	}
+	Progress.LastUpdatedUtc = UtcNowString();
+	SaveProgress();
+
+	// Educational achievements (idempotent).
+	if (Progress.CurrentAnswerStreak >= 5)
+	{
+		UnlockAchievement(FName(TEXT("honor_roll")));
+	}
+	if ((Progress.TopicsEverCorrectMask & 0x0F) == 0x0F)
+	{
+		UnlockAchievement(FName(TEXT("polymath")));
+	}
+}
+
+bool UBHAccountSubsystem::HasAchievement(FName AchievementId) const
+{
+	return Progress.UnlockedAchievements.Contains(AchievementId);
+}
+
+TArray<FBHAchievementDisplay> UBHAccountSubsystem::GetAchievementsForDisplay() const
+{
+	TArray<FBHAchievementDisplay> Result;
+	Result.Reserve(UE_ARRAY_COUNT(GBHAchievements));
+	for (const FBHAchievementDef& Def : GBHAchievements)
+	{
+		FBHAchievementDisplay Display;
+		Display.Id = FName(Def.Id);
+		Display.Title = Def.Title;
+		Display.Description = Def.Description;
+		Display.RewardLabel = Def.RewardLabel ? Def.RewardLabel : TEXT("");
+		Display.Difficulty = Def.Difficulty;
+		Display.bHidden = Def.bHidden;
+		Display.bUnlocked = Progress.UnlockedAchievements.Contains(Display.Id);
+		Display.bIsNew = Display.bUnlocked && !Progress.SeenAchievements.Contains(Display.Id);
+		// Progress toward countable achievements (drives the Awards-tab progress bar). Event/binary ones leave
+		// ProgressTarget at 0 (no bar).
+		{
+			auto BitCount4 = [](int32 Mask) { int32 Count = 0; for (int32 Bit = 0; Bit < 4; ++Bit) { if (Mask & (1 << Bit)) { ++Count; } } return Count; };
+			if (Display.Id == FName(TEXT("veteran"))) { Display.ProgressCurrent = Progress.RoundsPlayed; Display.ProgressTarget = 25; }
+			else if (Display.Id == FName(TEXT("graduate"))) { Display.ProgressCurrent = Progress.RoundsPlayed; Display.ProgressTarget = 50; }
+			else if (Display.Id == FName(TEXT("on_a_roll"))) { Display.ProgressCurrent = Progress.CurrentWinStreak; Display.ProgressTarget = 3; }
+			else if (Display.Id == FName(TEXT("honor_roll"))) { Display.ProgressCurrent = Progress.CurrentAnswerStreak; Display.ProgressTarget = 5; }
+			else if (Display.Id == FName(TEXT("tourist"))) { Display.ProgressCurrent = BitCount4(Progress.TrainActivityMask); Display.ProgressTarget = 4; }
+			else if (Display.Id == FName(TEXT("polymath"))) { Display.ProgressCurrent = BitCount4(Progress.TopicsEverCorrectMask); Display.ProgressTarget = 4; }
+			if (Display.ProgressTarget > 0) { Display.ProgressCurrent = FMath::Clamp(Display.ProgressCurrent, 0, Display.ProgressTarget); }
+		}
+		Result.Add(MoveTemp(Display));
+	}
+	return Result;
+}
+
+void UBHAccountSubsystem::GetAchievementCounts(int32& OutEarned, int32& OutTotal) const
+{
+	OutTotal = UE_ARRAY_COUNT(GBHAchievements);
+	OutEarned = 0;
+	for (const FBHAchievementDef& Def : GBHAchievements)
+	{
+		if (Progress.UnlockedAchievements.Contains(FName(Def.Id)))
+		{
+			++OutEarned;
+		}
+	}
+}
+
+int32 UBHAccountSubsystem::GetUnseenAchievementCount() const
+{
+	int32 Count = 0;
+	for (const FName& Id : Progress.UnlockedAchievements)
+	{
+		if (!Progress.SeenAchievements.Contains(Id))
+		{
+			++Count;
+		}
+	}
+	return Count;
+}
+
+void UBHAccountSubsystem::MarkAchievementsSeen()
+{
+	bool bChanged = false;
+	for (const FName& Id : Progress.UnlockedAchievements)
+	{
+		if (!Progress.SeenAchievements.Contains(Id))
+		{
+			Progress.SeenAchievements.AddUnique(Id);
+			bChanged = true;
+		}
+	}
+	if (bChanged)
+	{
+		SaveProgress();
+	}
 }
 
 const FBHAccountProfile& UBHAccountSubsystem::GetProfile() const
@@ -1073,7 +1399,7 @@ bool UBHAccountSubsystem::HasLocalCredential() const
 
 bool UBHAccountSubsystem::IsCosmeticUnlocked(EBHCosmeticCategory Category, int32 Index) const
 {
-	return BHCosmeticIsUnlocked(Category, Index, Progress.XP);
+	return BHCosmeticIsUnlocked(Category, Index, Progress.XP, &Progress.UnlockedAchievements);
 }
 
 int32 UBHAccountSubsystem::GetSelectedCosmeticIndex(EBHCosmeticCategory Category) const
@@ -1081,13 +1407,17 @@ int32 UBHAccountSubsystem::GetSelectedCosmeticIndex(EBHCosmeticCategory Category
 	switch (Category)
 	{
 	case EBHCosmeticCategory::Outfit:
-		return BHCosmeticClampUnlockedIndex(Category, Progress.SelectedAvatarIndex, Progress.XP);
+		return BHCosmeticClampUnlockedIndex(Category, Progress.SelectedAvatarIndex, Progress.XP, &Progress.UnlockedAchievements);
 	case EBHCosmeticCategory::ShirtColor:
-		return BHCosmeticClampUnlockedIndex(Category, Progress.SelectedAvatarColorIndex, Progress.XP);
+		return BHCosmeticClampUnlockedIndex(Category, Progress.SelectedAvatarColorIndex, Progress.XP, &Progress.UnlockedAchievements);
 	case EBHCosmeticCategory::Headwear:
-		return BHCosmeticClampUnlockedIndex(Category, Progress.SelectedAvatarHeadwearIndex, Progress.XP);
+		return BHCosmeticClampUnlockedIndex(Category, Progress.SelectedAvatarHeadwearIndex, Progress.XP, &Progress.UnlockedAchievements);
 	case EBHCosmeticCategory::Gear:
 		return 0;
+	case EBHCosmeticCategory::Title:
+		return BHCosmeticClampUnlockedIndex(Category, Progress.SelectedTitleIndex, Progress.XP, &Progress.UnlockedAchievements);
+	case EBHCosmeticCategory::Emblem:
+		return BHCosmeticClampUnlockedIndex(Category, Progress.SelectedEmblemIndex, Progress.XP, &Progress.UnlockedAchievements);
 	default:
 		return 0;
 	}
@@ -1097,14 +1427,25 @@ bool UBHAccountSubsystem::SetSelectedCosmetic(EBHCosmeticCategory Category, int3
 {
 	const int32 ClampedIndex = BHCosmeticClampIndex(Category, Index);
 	const int32 RequiredXP = BHCosmeticRequiredXP(Category, ClampedIndex);
-	if (!BHCosmeticIsUnlocked(Category, ClampedIndex, Progress.XP))
+	if (!BHCosmeticIsUnlocked(Category, ClampedIndex, Progress.XP, &Progress.UnlockedAchievements))
 	{
-		OutMessage = FString::Printf(
-			TEXT("%s %s unlocks at %d XP. Current XP: %d."),
-			BHCosmeticCategoryName(Category),
-			BHCosmeticItemName(Category, ClampedIndex),
-			RequiredXP,
-			Progress.XP);
+		const TCHAR* RequiredAchievement = BHCosmeticRequiredAchievement(Category, ClampedIndex);
+		if (RequiredAchievement && RequiredAchievement[0] != TEXT('\0'))
+		{
+			OutMessage = FString::Printf(
+				TEXT("%s %s is an achievement reward -- earn the matching achievement to unlock it."),
+				BHCosmeticCategoryName(Category),
+				BHCosmeticItemName(Category, ClampedIndex));
+		}
+		else
+		{
+			OutMessage = FString::Printf(
+				TEXT("%s %s unlocks at %d XP. Current XP: %d."),
+				BHCosmeticCategoryName(Category),
+				BHCosmeticItemName(Category, ClampedIndex),
+				RequiredXP,
+				Progress.XP);
+		}
 		SetLastAccountMessage(OutMessage);
 		return false;
 	}
@@ -1122,6 +1463,12 @@ bool UBHAccountSubsystem::SetSelectedCosmetic(EBHCosmeticCategory Category, int3
 		break;
 	case EBHCosmeticCategory::Gear:
 		Progress.SelectedAvatarGearIndex = 0;
+		break;
+	case EBHCosmeticCategory::Title:
+		Progress.SelectedTitleIndex = ClampedIndex;
+		break;
+	case EBHCosmeticCategory::Emblem:
+		Progress.SelectedEmblemIndex = ClampedIndex;
 		break;
 	default:
 		OutMessage = TEXT("Unknown cosmetic category.");
@@ -1234,6 +1581,9 @@ void UBHAccountSubsystem::StartLoginPolling()
 {
 	const UBHAccountSettings* Settings = GetDefault<UBHAccountSettings>();
 	const float PollSeconds = Settings ? FMath::Max(1.0f, Settings->LoginPollSeconds) : 2.0f;
+	// Give up after ~5 minutes of "pending" so an abandoned browser sign-in stops polling the backend
+	// forever. Comfortably longer than any real OAuth completion; the user can re-launch login to retry.
+	LoginPollDeadlineSeconds = FPlatformTime::Seconds() + 300.0;
 	UWorld* World = GetGameInstance() ? GetGameInstance()->GetWorld() : nullptr;
 	if (World)
 	{
@@ -1252,6 +1602,7 @@ void UBHAccountSubsystem::StopLoginPolling()
 	bLoginPending = false;
 	bLoginStartRequestInFlight = false;
 	bLoginRequestInFlight = false;
+	LoginPollDeadlineSeconds = 0.0;
 	PendingProvider.Reset();
 }
 
@@ -1299,10 +1650,12 @@ void UBHAccountSubsystem::SaveProgress() const
 void UBHAccountSubsystem::SanitizeProgressCosmetics()
 {
 	Progress.XP = FMath::Max(0, Progress.XP);
-	Progress.SelectedAvatarIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Outfit, Progress.SelectedAvatarIndex, Progress.XP);
-	Progress.SelectedAvatarColorIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::ShirtColor, Progress.SelectedAvatarColorIndex, Progress.XP);
-	Progress.SelectedAvatarHeadwearIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Headwear, Progress.SelectedAvatarHeadwearIndex, Progress.XP);
+	Progress.SelectedAvatarIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Outfit, Progress.SelectedAvatarIndex, Progress.XP, &Progress.UnlockedAchievements);
+	Progress.SelectedAvatarColorIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::ShirtColor, Progress.SelectedAvatarColorIndex, Progress.XP, &Progress.UnlockedAchievements);
+	Progress.SelectedAvatarHeadwearIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Headwear, Progress.SelectedAvatarHeadwearIndex, Progress.XP, &Progress.UnlockedAchievements);
 	Progress.SelectedAvatarGearIndex = 0;
+	Progress.SelectedTitleIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Title, Progress.SelectedTitleIndex, Progress.XP, &Progress.UnlockedAchievements);
+	Progress.SelectedEmblemIndex = BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::Emblem, Progress.SelectedEmblemIndex, Progress.XP, &Progress.UnlockedAchievements);
 }
 
 TSharedRef<FJsonObject> UBHAccountSubsystem::ProfileToJson() const
@@ -1329,13 +1682,43 @@ TSharedRef<FJsonObject> UBHAccountSubsystem::ProgressToJson() const
 	JsonObject->SetNumberField(TEXT("hunter_wins"), Progress.HunterWins);
 	JsonObject->SetNumberField(TEXT("survivor_wins"), Progress.SurvivorWins);
 	JsonObject->SetNumberField(TEXT("escapes"), Progress.Escapes);
+	JsonObject->SetNumberField(TEXT("current_win_streak"), Progress.CurrentWinStreak);
+	JsonObject->SetNumberField(TEXT("best_win_streak"), Progress.BestWinStreak);
+	JsonObject->SetNumberField(TEXT("train_activity_mask"), Progress.TrainActivityMask);
+	JsonObject->SetNumberField(TEXT("current_answer_streak"), Progress.CurrentAnswerStreak);
+	JsonObject->SetNumberField(TEXT("topics_ever_correct_mask"), Progress.TopicsEverCorrectMask);
+	{
+		TArray<TSharedPtr<FJsonValue>> AnswerCountsJson;
+		TArray<TSharedPtr<FJsonValue>> CorrectCountsJson;
+		for (int32 TopicIdx = 0; TopicIdx < 4; ++TopicIdx)
+		{
+			AnswerCountsJson.Add(MakeShared<FJsonValueNumber>(Progress.TopicAnswerCounts.IsValidIndex(TopicIdx) ? Progress.TopicAnswerCounts[TopicIdx] : 0));
+			CorrectCountsJson.Add(MakeShared<FJsonValueNumber>(Progress.TopicCorrectCounts.IsValidIndex(TopicIdx) ? Progress.TopicCorrectCounts[TopicIdx] : 0));
+		}
+		JsonObject->SetArrayField(TEXT("topic_answer_counts"), AnswerCountsJson);
+		JsonObject->SetArrayField(TEXT("topic_correct_counts"), CorrectCountsJson);
+	}
 	JsonObject->SetNumberField(TEXT("xp"), Progress.XP);
 	JsonObject->SetStringField(TEXT("selected_avatar_url"), Progress.SelectedAvatarUrl);
 	JsonObject->SetNumberField(TEXT("selected_avatar_index"), Progress.SelectedAvatarIndex);
 	JsonObject->SetNumberField(TEXT("selected_avatar_color_index"), Progress.SelectedAvatarColorIndex);
 	JsonObject->SetNumberField(TEXT("selected_avatar_headwear_index"), Progress.SelectedAvatarHeadwearIndex);
 	JsonObject->SetNumberField(TEXT("selected_avatar_gear_index"), Progress.SelectedAvatarGearIndex);
+	JsonObject->SetNumberField(TEXT("selected_title_index"), Progress.SelectedTitleIndex);
+	JsonObject->SetNumberField(TEXT("selected_emblem_index"), Progress.SelectedEmblemIndex);
 	JsonObject->SetStringField(TEXT("last_updated_utc"), Progress.LastUpdatedUtc);
+	TArray<TSharedPtr<FJsonValue>> AchievementsJson;
+	for (const FName& Achievement : Progress.UnlockedAchievements)
+	{
+		AchievementsJson.Add(MakeShared<FJsonValueString>(Achievement.ToString()));
+	}
+	JsonObject->SetArrayField(TEXT("unlocked_achievements"), AchievementsJson);
+	TArray<TSharedPtr<FJsonValue>> SeenJson;
+	for (const FName& Seen : Progress.SeenAchievements)
+	{
+		SeenJson.Add(MakeShared<FJsonValueString>(Seen.ToString()));
+	}
+	JsonObject->SetArrayField(TEXT("seen_achievements"), SeenJson);
 	return JsonObject;
 }
 
@@ -1377,13 +1760,66 @@ void UBHAccountSubsystem::ApplyProgressJson(const TSharedPtr<FJsonObject>& JsonO
 	Progress.HunterWins = JsonInt(JsonObject, TEXT("hunter_wins"));
 	Progress.SurvivorWins = JsonInt(JsonObject, TEXT("survivor_wins"));
 	Progress.Escapes = JsonInt(JsonObject, TEXT("escapes"));
+	Progress.CurrentWinStreak = JsonInt(JsonObject, TEXT("current_win_streak"));
+	Progress.BestWinStreak = JsonInt(JsonObject, TEXT("best_win_streak"));
+	Progress.TrainActivityMask = JsonInt(JsonObject, TEXT("train_activity_mask"));
+	Progress.CurrentAnswerStreak = JsonInt(JsonObject, TEXT("current_answer_streak"));
+	Progress.TopicsEverCorrectMask = JsonInt(JsonObject, TEXT("topics_ever_correct_mask"));
+	Progress.TopicAnswerCounts.Init(0, 4);
+	Progress.TopicCorrectCounts.Init(0, 4);
+	{
+		const TArray<TSharedPtr<FJsonValue>>* AnswerCountsJson = nullptr;
+		if (JsonObject.IsValid() && JsonObject->TryGetArrayField(TEXT("topic_answer_counts"), AnswerCountsJson) && AnswerCountsJson)
+		{
+			for (int32 TopicIdx = 0; TopicIdx < 4 && TopicIdx < AnswerCountsJson->Num(); ++TopicIdx)
+			{
+				Progress.TopicAnswerCounts[TopicIdx] = (*AnswerCountsJson)[TopicIdx].IsValid() ? static_cast<int32>((*AnswerCountsJson)[TopicIdx]->AsNumber()) : 0;
+			}
+		}
+		const TArray<TSharedPtr<FJsonValue>>* CorrectCountsJson = nullptr;
+		if (JsonObject.IsValid() && JsonObject->TryGetArrayField(TEXT("topic_correct_counts"), CorrectCountsJson) && CorrectCountsJson)
+		{
+			for (int32 TopicIdx = 0; TopicIdx < 4 && TopicIdx < CorrectCountsJson->Num(); ++TopicIdx)
+			{
+				Progress.TopicCorrectCounts[TopicIdx] = (*CorrectCountsJson)[TopicIdx].IsValid() ? static_cast<int32>((*CorrectCountsJson)[TopicIdx]->AsNumber()) : 0;
+			}
+		}
+	}
 	Progress.XP = JsonInt(JsonObject, TEXT("xp"));
 	Progress.SelectedAvatarUrl = JsonString(JsonObject, TEXT("selected_avatar_url"));
 	Progress.SelectedAvatarIndex = JsonInt(JsonObject, TEXT("selected_avatar_index"));
 	Progress.SelectedAvatarColorIndex = JsonInt(JsonObject, TEXT("selected_avatar_color_index"));
 	Progress.SelectedAvatarHeadwearIndex = JsonInt(JsonObject, TEXT("selected_avatar_headwear_index"));
 	Progress.SelectedAvatarGearIndex = JsonInt(JsonObject, TEXT("selected_avatar_gear_index"));
+	Progress.SelectedTitleIndex = JsonInt(JsonObject, TEXT("selected_title_index"));
+	Progress.SelectedEmblemIndex = JsonInt(JsonObject, TEXT("selected_emblem_index"));
 	Progress.LastUpdatedUtc = JsonString(JsonObject, TEXT("last_updated_utc"));
+	Progress.UnlockedAchievements.Reset();
+	const TArray<TSharedPtr<FJsonValue>>* AchievementsJson = nullptr;
+	if (JsonObject.IsValid() && JsonObject->TryGetArrayField(TEXT("unlocked_achievements"), AchievementsJson) && AchievementsJson)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *AchievementsJson)
+		{
+			FString AchievementId;
+			if (Value.IsValid() && Value->TryGetString(AchievementId) && !AchievementId.IsEmpty())
+			{
+				Progress.UnlockedAchievements.AddUnique(FName(AchievementId));
+			}
+		}
+	}
+	Progress.SeenAchievements.Reset();
+	const TArray<TSharedPtr<FJsonValue>>* SeenJson = nullptr;
+	if (JsonObject.IsValid() && JsonObject->TryGetArrayField(TEXT("seen_achievements"), SeenJson) && SeenJson)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *SeenJson)
+		{
+			FString SeenId;
+			if (Value.IsValid() && Value->TryGetString(SeenId) && !SeenId.IsEmpty())
+			{
+				Progress.SeenAchievements.AddUnique(FName(SeenId));
+			}
+		}
+	}
 	SanitizeProgressCosmetics();
 }
 

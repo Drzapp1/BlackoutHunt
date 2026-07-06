@@ -74,8 +74,10 @@ bool ABHLocker::CanInteract_Implementation(ABHCharacter* Character) const
 
 	if (BHPS->PlayerRole == EBHPlayerRole::Tester)
 	{
+		// Match BeginInteract, which only searches an *occupied* locker. Without the Occupant!=nullptr
+		// guard an empty locker showed the Tester a "search" prompt that then fell through and did nothing.
 		const ABHGameState* BHGS = GetWorld() ? GetWorld()->GetGameState<ABHGameState>() : nullptr;
-		return BHGS && BHGS->RoundPhase == EBHRoundPhase::Hunt && (Occupant != Character);
+		return BHGS && BHGS->RoundPhase == EBHRoundPhase::Hunt && Occupant != nullptr && Occupant != Character;
 	}
 
 	if (BHPS->IsAliveHunter())

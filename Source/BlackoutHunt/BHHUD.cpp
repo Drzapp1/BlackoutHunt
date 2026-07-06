@@ -3,6 +3,7 @@
 // Unauthorized copying or distribution is strictly prohibited.
 
 #include "BHHUD.h"
+#include "BHAccountSubsystem.h"
 #include "BHBreakableGlassPane.h"
 #include "BHCharacter.h"
 #include "BHBreaker.h"
@@ -14,6 +15,7 @@
 #include "BHObjectiveStation.h"
 #include "BHPlayerController.h"
 #include "BHPlayerState.h"
+#include "BHCosmeticUnlocks.h"
 #include "BHRevisionQuestionBank.h"
 #include "BHSecurityMonitor.h"
 #include "BHTrainBonusQuestionTerminal.h"
@@ -247,15 +249,17 @@ namespace
 	{
 		if (GameState && GameState->RevisionContributionTarget > 0)
 		{
-			return FMath::Clamp(GameState->RevisionContributionTarget, 1, 4);
+			return FMath::Clamp(GameState->RevisionContributionTarget, 1, 6);
 		}
 
+		// Fallback only until the server replicates the frozen target: mirror the authority formula in
+		// ABHGameMode::ComputeLiveRevisionContributionTarget (5, plus one more on later stages) so the HUD
+		// never under-promises a contribution gate the server actually enforces at 5-6. (Previously this
+		// estimated from questions-per-node and capped at 4, which disagreed with the real requirement.)
 		const int32 ParticipantCount = CountRevisionParticipants(GameState);
+		(void)ParticipantCount;
 		const int32 StageIndex = GameState ? FMath::Clamp(GameState->TrainStageIndex, 0, 2) : 0;
-		const int32 QuestionsPerNode = ParticipantCount >= 10
-			? (StageIndex <= 0 ? 2 : 3)
-			: (ParticipantCount >= 6 ? 3 : 2);
-		return FMath::Clamp(QuestionsPerNode - 1 + StageIndex, 1, 4);
+		return FMath::Clamp(5 + FMath::Clamp(StageIndex, 0, 1), 1, 6);
 	}
 
 	float GuidanceDistanceMeters(float DistanceCm)
@@ -1134,6 +1138,101 @@ void ABHHUD::DrawHUD()
 
 	if (Character)
 	{
+		// Easter egg ("the faculty remembers"): a one-time, client-local nod when the local player's name
+		// matches a famous physicist. Pure cosmetic status line; never affects gameplay. Gated by bh.EasterEggs.
+		if (!bShownPhysicistGreeting && BHAreEasterEggsEnabled())
+		{
+			const ABHPlayerState* GreetPS = Character->GetBHPlayerState();
+			const FString LowerName = GreetPS ? GreetPS->GetPlayerName().ToLower() : FString();
+			if (!LowerName.IsEmpty())
+			{
+				bShownPhysicistGreeting = true; // resolved once the name has replicated; never re-scans
+				FString PhysicistLine;
+				if (LowerName == TEXT("newton")) { PhysicistLine = TEXT("Somewhere, an apple falls in your honour."); }
+				else if (LowerName == TEXT("einstein")) { PhysicistLine = TEXT("Time runs a little strangely around you."); }
+				else if (LowerName == TEXT("curie")) { PhysicistLine = TEXT("You glow faintly in the dark. (It's fine.)"); }
+				else if (LowerName == TEXT("tesla")) { PhysicistLine = TEXT("The lights flicker when you arrive. They like you."); }
+				else if (LowerName == TEXT("feynman")) { PhysicistLine = TEXT("There's plenty of room at the bottom -- of that locker."); }
+				else if (LowerName == TEXT("bohr")) { PhysicistLine = TEXT("Classically, your exact position is uncertain."); }
+				else if (LowerName == TEXT("schrodinger")) { PhysicistLine = TEXT("You are both hidden and found until someone opens the locker."); }
+				else if (LowerName == TEXT("hawking")) { PhysicistLine = TEXT("Even the dark radiates, given enough time."); }
+				else if (LowerName == TEXT("galileo")) { PhysicistLine = TEXT("And yet, the exit moves."); }
+				else if (LowerName == TEXT("faraday")) { PhysicistLine = TEXT("You induce a quiet current of dread in the Teacher."); }
+				else if (LowerName == TEXT("maxwell")) { PhysicistLine = TEXT("A small demon sorts the fast students from the slow."); }
+				else if (LowerName == TEXT("planck")) { PhysicistLine = TEXT("Reality is grainier than it looks. So is this building."); }
+				else if (LowerName == TEXT("lovelace")) { PhysicistLine = TEXT("You compute the escape before the Teacher takes a step."); }
+				else if (LowerName == TEXT("noether")) { PhysicistLine = TEXT("Every symmetry hides something the dark can't take from you."); }
+				else if (LowerName == TEXT("hertz")) { PhysicistLine = TEXT("Your footsteps oscillate at a frequency only the building hears."); }
+				else if (LowerName == TEXT("joule")) { PhysicistLine = TEXT("Every step you take does honest work."); }
+				else if (LowerName == TEXT("ohm")) { PhysicistLine = TEXT("You resist. The current of fear flows around you."); }
+				else if (LowerName == TEXT("volta")) { PhysicistLine = TEXT("There's a potential between you and the exit. Close it."); }
+				else if (LowerName == TEXT("ampere")) { PhysicistLine = TEXT("A steady current of nerve runs through you."); }
+				else if (LowerName == TEXT("kelvin")) { PhysicistLine = TEXT("Absolute zero is colder. Tonight, not by much."); }
+				else if (LowerName == TEXT("rutherford")) { PhysicistLine = TEXT("Most of this building is empty space. Use it."); }
+				else if (LowerName == TEXT("heisenberg")) { PhysicistLine = TEXT("The surer you are of where you're going, the less of how fast."); }
+				else if (LowerName == TEXT("pascal")) { PhysicistLine = TEXT("The pressure is equal in every direction. Even here."); }
+				else if (LowerName == TEXT("doppler")) { PhysicistLine = TEXT("Footsteps drop in pitch as the Teacher passes you by."); }
+				else if (LowerName == TEXT("42") || LowerName == TEXT("adams")) { PhysicistLine = TEXT("The answer is 42. The question is which locker."); }
+				else if (LowerName == TEXT("pi")) { PhysicistLine = TEXT("You go on forever and never quite repeat."); }
+				if (!PhysicistLine.IsEmpty())
+				{
+					if (ABHPlayerController* GreetPC = Cast<ABHPlayerController>(PlayerOwner))
+					{
+						GreetPC->ShowLocalStatusMessage(PhysicistLine, 5.0f);
+					}
+					// Cosmetic achievement: unlocks the "Chalk" tint.
+					if (UWorld* World = GetWorld())
+					{
+						if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+						{
+							Account->UnlockAchievement(FName(TEXT("honorary_faculty")));
+						}
+					}
+				}
+			}
+		}
+
+		// Achievement: hid in a locker (a gameplay achievement, so NOT gated by the cosmetic easter-egg toggle).
+		// UnlockAchievement is idempotent, so the per-frame call no-ops after the first hide.
+		if (Character->IsHiddenInLocker())
+		{
+			if (UWorld* World = GetWorld())
+			{
+				if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+				{
+					Account->UnlockAchievement(FName(TEXT("spelunker")));
+				}
+			}
+		}
+
+		// Easter egg ("scratched into the locker"): while hidden, a faint message someone left in the wood.
+		// Stable per-locker (hashed from the spot you're hiding in) so each locker keeps its own "graffiti".
+		// Cosmetic; visible only to you, only while concealed. Gated by bh.EasterEggs.
+		if (Character->IsHiddenInLocker() && BHAreEasterEggsEnabled())
+		{
+			static const TCHAR* LockerScratches[] = {
+				TEXT("scratched here: \"g = 9.81. it still pulls, even down here.\""),
+				TEXT("carved deep: \"sound needs a medium. screams travel anyway.\""),
+				TEXT("a faded note: \"the quieter you are, the louder it gets.\""),
+				TEXT("etched small: \"F = ma. fear has mass too.\""),
+				TEXT("shaky letters: \"I counted to 96. don't.\""),
+				TEXT("someone wrote: \"revise. it's the only way out.\""),
+				TEXT("a student carved: \"the train always comes. eventually.\""),
+				TEXT("barely visible: \"light has no mass, but it still leaves.\""),
+				TEXT("cut with a key: \"the answer is 42. find the question.\""),
+				TEXT("tiny letters: \"Schrodinger hid here. or did he?\""),
+				TEXT("worn smooth: \"energy is conserved. courage isn't.\""),
+				TEXT("fresh marks: \"you are not the first to wait in the dark.\""),
+				TEXT("deep grooves: \"momentum is conserved. so are grudges.\""),
+				TEXT("a tally of 13: \"period 5. never came back.\""),
+				TEXT("pencil, faint: \"the exit is a wave. catch it at the crest.\""),
+				TEXT("scratched twice: \"P = IV. pay the voltage, pass the test.\"")
+			};
+			const FVector HideSpot = Character->GetActorLocation();
+			const int32 ScratchIndex = FMath::Abs(FMath::FloorToInt(HideSpot.X) * 73 + FMath::FloorToInt(HideSpot.Y) * 31) % static_cast<int32>(UE_ARRAY_COUNT(LockerScratches));
+			DrawWrappedHudText(LockerScratches[ScratchIndex], Canvas->ClipX * 0.5f - 230.0f, Canvas->ClipY * 0.60f, 460.0f, FLinearColor(0.62f, 0.58f, 0.52f, 0.42f), GEngine->GetSmallFont(), 0.52f, 12.0f, 2);
+		}
+
 		// Probe teacher proximity once -- it feeds both the vitals meter and the threat arrow,
 		// so it stays outside the per-element visibility gates below.
 		const FBHTeacherProximityReadout TeacherProximity = FindTeacherProximity(GetWorld(), Character);
@@ -1146,15 +1245,29 @@ void ABHHUD::DrawHUD()
 				? FString::Printf(TEXT("MARKED %.0fs"), Character->GetDetentionMarkRemaining())
 				: (Character->IsHiddenInLocker() ? FString(TEXT("CONCEALED")) : FString(TEXT("STATUS")));
 			DrawHudText(VitalsTitle.ToUpper(), SafePad, VitalsY - 19.0f, Character->IsDetentionMarked() ? FLinearColor(1.0f, 0.20f, 0.12f, 0.96f) : FLinearColor(0.76f, 0.72f, 0.64f, 0.84f), GEngine->GetSmallFont(), 0.66f);
+			// BATTERY + STAMINA are relevant to every role (the Teacher has a flashlight/blackout and sprints),
+			// but TEACHER proximity / FEAR / DREAD are survivor-only and sat dead at 0 for the Teacher / Hall
+			// Monitor (most visible in their tutorials). Gate those three by survivor role and re-flow the panel
+			// with a running Y so a non-survivor sees a compact BATTERY+STAMINA panel with no empty gaps. A
+			// survivor still gets the exact original layout.
 			DrawProgressBar(TEXT("BATTERY"), Character->GetFlashlightBattery(), SafePad, VitalsY, MeterW, FLinearColor(0.80f, 0.82f, 0.70f, 0.88f));
-
-			const FString TeacherText = TeacherProximity.bFound
-				? FString::Printf(TEXT("%s %.0fm"), TeacherProximity.bLineOfSight ? TEXT("VISIBLE") : TEXT("NEAR"), TeacherProximity.DistanceCm / 100.0f)
-				: FString(TEXT("CLEAR"));
-			DrawProgressBar(TEXT("TEACHER"), TeacherProximity.ProximityPercent, SafePad, VitalsY + 32.0f, MeterW, FLinearColor(0.90f, 0.36f, 0.22f, 0.90f), TeacherText);
-			DrawRawMeter(TEXT("STAMINA"), Character->GetStaminaPercent(), SafePad, VitalsY + 68.0f, MeterW, FLinearColor(0.75f, 0.83f, 0.54f, 0.88f), false);
-			DrawRawMeter(TEXT("FEAR"), Character->GetFear(), SafePad, VitalsY + 86.0f, MeterW, FLinearColor(0.92f, 0.28f, 0.20f, 0.88f), true);
-			DrawRawMeter(TEXT("DREAD"), Character->GetDread(), SafePad, VitalsY + 104.0f, MeterW, FLinearColor(0.84f, 0.18f, 0.14f, 0.90f), true);
+			float MeterY = VitalsY + 32.0f;
+			if (bShowSurvivorWarnings)
+			{
+				const FString TeacherText = TeacherProximity.bFound
+					? FString::Printf(TEXT("%s %.0fm"), TeacherProximity.bLineOfSight ? TEXT("VISIBLE") : TEXT("NEAR"), TeacherProximity.DistanceCm / 100.0f)
+					: FString(TEXT("CLEAR"));
+				DrawProgressBar(TEXT("TEACHER"), TeacherProximity.ProximityPercent, SafePad, MeterY, MeterW, FLinearColor(0.90f, 0.36f, 0.22f, 0.90f), TeacherText);
+				MeterY += 36.0f;
+			}
+			DrawRawMeter(TEXT("STAMINA"), Character->GetStaminaPercent(), SafePad, MeterY, MeterW, FLinearColor(0.75f, 0.83f, 0.54f, 0.88f), false);
+			MeterY += 18.0f;
+			if (bShowSurvivorWarnings)
+			{
+				DrawRawMeter(TEXT("FEAR"), Character->GetFear(), SafePad, MeterY, MeterW, FLinearColor(0.92f, 0.28f, 0.20f, 0.88f), true);
+				MeterY += 18.0f;
+				DrawRawMeter(TEXT("DREAD"), Character->GetDread(), SafePad, MeterY, MeterW, FLinearColor(0.84f, 0.18f, 0.14f, 0.90f), true);
+			}
 			FString StressHint;
 			if (bShowSurvivorWarnings && (Character->GetFear() >= HudFearPanicHintThreshold || Character->GetDread() >= HudDreadPanicHintThreshold))
 			{
@@ -2416,7 +2529,7 @@ void ABHHUD::DrawInteractionPrompt(ABHCharacter* Character)
 			}
 			else if (!bCanViewStationQuestion && !BHPS->IsAliveSurvivor())
 			{
-				PromptInfo.DisabledReason = FText::FromString(BHPS->PlayerRole == EBHPlayerRole::FakeHunter ? TEXT("CONTRIBUTE IN PHYSICS CLASSROOM") : TEXT("SURVIVOR OBJECTIVE"));
+				PromptInfo.DisabledReason = FText::FromString(BHPS->PlayerRole == EBHPlayerRole::FakeHunter ? TEXT("SURVIVORS FINISH THIS NODE") : TEXT("SURVIVOR OBJECTIVE"));
 			}
 			else if (!PromptStation->IsQuestionSolved() && PromptStation->GetQuestionChoiceCount() > 0)
 			{
@@ -2467,51 +2580,75 @@ void ABHHUD::DrawInteractionPrompt(ABHCharacter* Character)
 		? FString::Printf(TEXT("%s / %s%s"), *KeyText, *Prompt, *DistanceText)
 		: FString::Printf(TEXT("NO / %s%s"), *Prompt, *DistanceText);
 
-	float TextW = 0.0f;
-	float TextH = 0.0f;
-	const float Scale = bCanInteract ? 0.68f : 0.62f;
-	Canvas->TextSize(GEngine->GetSmallFont(), PromptLine, TextW, TextH, Scale, Scale);
-
-	const float PromptX = (Canvas->ClipX - TextW) * 0.5f;
-	const float PromptY = Canvas->ClipY * 0.5f + 29.0f;
-	const FLinearColor PromptColor = bHighContrastHud
-		? (bCanInteract ? FLinearColor(0.94f, 1.0f, 0.86f, 1.0f) : FLinearColor(0.82f, 0.84f, 0.82f, 0.92f))
-		: (bCanInteract ? FLinearColor(0.82f, 0.78f, 0.66f, 0.88f) : FLinearColor(0.54f, 0.50f, 0.45f, 0.72f));
-	DrawHudText(PromptLine, PromptX + 1.0f, PromptY + 1.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.42f), GEngine->GetSmallFont(), Scale);
-	DrawHudText(PromptLine, PromptX, PromptY, PromptColor, GEngine->GetSmallFont(), Scale);
-	if (bCanInteract)
+	// While the question panel is on screen (a survivor or monitor reading a node's question), suppress this
+	// centered interaction prompt: it otherwise renders behind the opaque panel (worse at higher HUD scale)
+	// and the panel already carries its own "press 1-4 / Tab" controls hint. Every other interactable (and the
+	// solved/blocked node states, which show no panel) keep their prompt and disabled-reason line.
+	if (!bStationQuestionPrompt)
 	{
-		const float ScratchY = PromptY + TextH + 3.0f;
-		const FLinearColor ScratchColor = PromptInfo.bDangerous || PromptInfo.bNoisy ? FLinearColor(0.92f, 0.14f, 0.08f, 0.62f) : FLinearColor(0.82f, 0.18f, 0.12f, 0.44f);
-		DrawLine(PromptX + TextW * 0.18f, ScratchY, PromptX + TextW * 0.82f, ScratchY + 1.0f, ScratchColor, 1.0f);
-		if (PromptInfo.Progress > 0.01f)
+		float TextW = 0.0f;
+		float TextH = 0.0f;
+		const float Scale = bCanInteract ? 0.68f : 0.62f;
+		Canvas->TextSize(GEngine->GetSmallFont(), PromptLine, TextW, TextH, Scale, Scale);
+
+		const float PromptX = (Canvas->ClipX - TextW) * 0.5f;
+		const float PromptY = Canvas->ClipY * 0.5f + 29.0f;
+		const FLinearColor PromptColor = bHighContrastHud
+			? (bCanInteract ? FLinearColor(0.94f, 1.0f, 0.86f, 1.0f) : FLinearColor(0.82f, 0.84f, 0.82f, 0.92f))
+			: (bCanInteract ? FLinearColor(0.82f, 0.78f, 0.66f, 0.88f) : FLinearColor(0.54f, 0.50f, 0.45f, 0.72f));
+		DrawHudText(PromptLine, PromptX + 1.0f, PromptY + 1.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.42f), GEngine->GetSmallFont(), Scale);
+		DrawHudText(PromptLine, PromptX, PromptY, PromptColor, GEngine->GetSmallFont(), Scale);
+		if (bCanInteract)
 		{
-			DrawLine(PromptX + TextW * 0.18f, ScratchY + 4.0f, PromptX + TextW * FMath::Lerp(0.18f, 0.82f, PromptInfo.Progress), ScratchY + 4.0f, FLinearColor(0.78f, 0.88f, 0.62f, 0.76f), 2.0f);
+			const float ScratchY = PromptY + TextH + 3.0f;
+			const FLinearColor ScratchColor = PromptInfo.bDangerous || PromptInfo.bNoisy ? FLinearColor(0.92f, 0.14f, 0.08f, 0.62f) : FLinearColor(0.82f, 0.18f, 0.12f, 0.44f);
+			DrawLine(PromptX + TextW * 0.18f, ScratchY, PromptX + TextW * 0.82f, ScratchY + 1.0f, ScratchColor, 1.0f);
+			if (PromptInfo.Progress > 0.01f)
+			{
+				DrawLine(PromptX + TextW * 0.18f, ScratchY + 4.0f, PromptX + TextW * FMath::Lerp(0.18f, 0.82f, PromptInfo.Progress), ScratchY + 4.0f, FLinearColor(0.78f, 0.88f, 0.62f, 0.76f), 2.0f);
+			}
 		}
-	}
 
-	const FText DetailText = bCanInteract ? PromptInfo.RiskText : PromptInfo.DisabledReason;
-	if (!DetailText.IsEmpty())
-	{
-		const FString DetailLine = DetailText.ToString().ToUpper();
-		float DetailW = 0.0f;
-		float DetailH = 0.0f;
-		const float DetailScale = 0.50f;
-		Canvas->TextSize(GEngine->GetSmallFont(), DetailLine, DetailW, DetailH, DetailScale, DetailScale);
-		const float DetailX = (Canvas->ClipX - DetailW) * 0.5f;
-		const float DetailY = PromptY + TextH + 8.0f;
-		const FLinearColor DetailColor = bCanInteract
-			? (PromptInfo.bNoisy || PromptInfo.bDangerous
-				? (bHighContrastHud ? FLinearColor(1.0f, 0.42f, 0.24f, 1.0f) : FLinearColor(0.96f, 0.28f, 0.14f, 0.84f))
-				: (bHighContrastHud ? FLinearColor(0.82f, 0.94f, 0.86f, 0.96f) : FLinearColor(0.66f, 0.72f, 0.66f, 0.88f)))
-			: (bHighContrastHud ? FLinearColor(0.92f, 0.74f, 0.52f, 0.96f) : FLinearColor(0.70f, 0.64f, 0.56f, 0.88f));
-		DrawHudText(DetailLine, DetailX + 1.0f, DetailY + 1.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.46f), GEngine->GetSmallFont(), DetailScale);
-		DrawHudText(DetailLine, DetailX, DetailY, DetailColor, GEngine->GetSmallFont(), DetailScale);
+		const FText DetailText = bCanInteract ? PromptInfo.RiskText : PromptInfo.DisabledReason;
+		if (!DetailText.IsEmpty())
+		{
+			const FString DetailLine = DetailText.ToString().ToUpper();
+			float DetailW = 0.0f;
+			float DetailH = 0.0f;
+			const float DetailScale = 0.50f;
+			Canvas->TextSize(GEngine->GetSmallFont(), DetailLine, DetailW, DetailH, DetailScale, DetailScale);
+			const float DetailX = (Canvas->ClipX - DetailW) * 0.5f;
+			const float DetailY = PromptY + TextH + 8.0f;
+			const FLinearColor DetailColor = bCanInteract
+				? (PromptInfo.bNoisy || PromptInfo.bDangerous
+					? (bHighContrastHud ? FLinearColor(1.0f, 0.42f, 0.24f, 1.0f) : FLinearColor(0.96f, 0.28f, 0.14f, 0.84f))
+					: (bHighContrastHud ? FLinearColor(0.82f, 0.94f, 0.86f, 0.96f) : FLinearColor(0.66f, 0.72f, 0.66f, 0.88f)))
+				: (bHighContrastHud ? FLinearColor(0.92f, 0.74f, 0.52f, 0.96f) : FLinearColor(0.70f, 0.64f, 0.56f, 0.88f));
+			DrawHudText(DetailLine, DetailX + 1.0f, DetailY + 1.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.46f), GEngine->GetSmallFont(), DetailScale);
+			DrawHudText(DetailLine, DetailX, DetailY, DetailColor, GEngine->GetSmallFont(), DetailScale);
+		}
 	}
 
 	if (const ABHObjectiveStation* Station = Cast<ABHObjectiveStation>(Target); Station && bCanViewStationQuestion)
 	{
 		DrawQuestionPanel(Station);
+	}
+}
+
+namespace
+{
+	// Colour for an earned nameplate emblem badge (index into EBHCosmeticCategory::Emblem; 0 = none).
+	FLinearColor BHNameplateEmblemColor(int32 EmblemIndex)
+	{
+		switch (EmblemIndex)
+		{
+		case 1:  return FLinearColor(0.90f, 0.92f, 0.86f); // Chalk Star
+		case 2:  return FLinearColor(0.20f, 0.92f, 0.45f); // Exit Sign
+		case 3:  return FLinearColor(0.95f, 0.80f, 0.30f); // Crown
+		case 4:  return FLinearColor(0.45f, 0.88f, 0.95f); // Halo
+		case 5:  return FLinearColor(1.00f, 0.52f, 0.22f); // Ember
+		default: return FLinearColor(0.72f, 0.74f, 0.70f);
+		}
 	}
 }
 
@@ -2594,11 +2731,46 @@ void ABHHUD::DrawNearbyNameTags(const ABHCharacter* Character)
 		float TextW = 0.0f;
 		float TextH = 0.0f;
 		Canvas->TextSize(GEngine->GetSmallFont(), Label, TextW, TextH, Scale, Scale);
-		const float X = ScreenPosition.X - TextW * 0.5f;
+		// If this survivor shows an emblem badge to the left of the name, reserve its footprint and shift the
+		// name (and its title caption) right by half of it, so the badge+name group stays centred over the
+		// character instead of hanging lopsided to the left.
+		const bool bShowEmblem = !bThreatRole && OtherPS->SelectedEmblemIndex > 0;
+		const float EmblemBadgeSize = bShowEmblem ? FMath::Max(8.0f, TextH * 0.55f) : 0.0f;
+		const float EmblemFootprint = bShowEmblem ? EmblemBadgeSize + 5.0f : 0.0f;
+		const float X = ScreenPosition.X - TextW * 0.5f + EmblemFootprint * 0.5f;
 		const float Y = ScreenPosition.Y - TextH * 0.5f;
 		DrawHudText(Label, X + 1.0f, Y + 1.0f, FLinearColor(0.0f, 0.0f, 0.0f, Alpha * 0.70f), GEngine->GetSmallFont(), Scale);
 		DrawHudText(Label, X, Y, TextColor, GEngine->GetSmallFont(), Scale);
 		DrawLine(X + TextW * 0.18f, Y + TextH + 3.0f, X + TextW * 0.82f, Y + TextH + 3.0f, FLinearColor(TextColor.R, TextColor.G, TextColor.B, Alpha * 0.58f), 2.0f);
+
+		// Earned nameplate flair (survivors only -- threats show TEACHER / HALL MONITOR and stay anonymous):
+		// a small emblem badge to the left of the name, and an earned title underneath it. Cosmetic only.
+		if (!bThreatRole)
+		{
+			if (bShowEmblem)
+			{
+				const FLinearColor EmblemColor = BHNameplateEmblemColor(OtherPS->SelectedEmblemIndex);
+				// Sits just left of the name's left edge (X already includes the half-footprint shift) and is
+				// vertically centred on the name.
+				DrawPanel(X - EmblemFootprint, ScreenPosition.Y - EmblemBadgeSize * 0.5f, EmblemBadgeSize, EmblemBadgeSize,
+					FLinearColor(EmblemColor.R, EmblemColor.G, EmblemColor.B, Alpha),
+					FLinearColor(0.0f, 0.0f, 0.0f, Alpha * 0.55f));
+			}
+			if (OtherPS->SelectedTitleIndex > 0)
+			{
+				const FString TitleText = BHCosmeticItemName(EBHCosmeticCategory::Title, OtherPS->SelectedTitleIndex);
+				const float TitleScale = Scale * 0.78f;
+				float TitleW = 0.0f;
+				float TitleH = 0.0f;
+				Canvas->TextSize(GEngine->GetSmallFont(), TitleText, TitleW, TitleH, TitleScale, TitleScale);
+				// Centre the title under the NAME (which may be shifted right by the emblem), not the raw
+				// character point, so name + title read as one column; drop it just below the underline.
+				const float TitleX = (X + TextW * 0.5f) - TitleW * 0.5f;
+				const float TitleY = Y + TextH + 8.0f;
+				DrawHudText(TitleText, TitleX + 1.0f, TitleY + 1.0f, FLinearColor(0.0f, 0.0f, 0.0f, Alpha * 0.55f), GEngine->GetSmallFont(), TitleScale);
+				DrawHudText(TitleText, TitleX, TitleY, FLinearColor(0.86f, 0.78f, 0.52f, Alpha * 0.92f), GEngine->GetSmallFont(), TitleScale);
+			}
+		}
 	}
 }
 
@@ -2873,7 +3045,12 @@ void ABHHUD::DrawQuestionPanel(const ABHObjectiveStation* Station)
 			*CounterText);
 		DrawRightAlignedText(Meta, PanelX + PanelW - 22.0f * S, PanelY + 16.0f * S, FLinearColor(0.78f, 0.86f, 0.94f, 1.0f), GEngine->GetSmallFont(), 0.76f * S);
 	}
-	DrawWrappedHudText(Station->GetPhysicalTaskInstruction(), PanelX + 22.0f * S, PanelY + 42.0f * S, PanelW - 44.0f * S, FLinearColor(0.74f, 0.88f, 0.88f, 1.0f), GEngine->GetSmallFont(), 0.72f * S, 13.0f * S, 1);
+	// The hold-E task is survivor-only, so show Hall Monitors what their role actually does at this node
+	// rather than a "hold E to ..." instruction they can never follow (which read as a contradiction sitting
+	// right next to the "press 1-4 to answer" controls).
+	const ABHPlayerState* PanelViewerPS = LocalChar ? LocalChar->GetBHPlayerState() : nullptr;
+	const bool bMonitorViewer = PanelViewerPS && PanelViewerPS->PlayerRole == EBHPlayerRole::FakeHunter;
+	DrawWrappedHudText(bMonitorViewer ? FString(TEXT("You answer to contribute; a survivor holds E to finish this node.")) : Station->GetPhysicalTaskInstruction(), PanelX + 22.0f * S, PanelY + 42.0f * S, PanelW - 44.0f * S, FLinearColor(0.74f, 0.88f, 0.88f, 1.0f), GEngine->GetSmallFont(), 0.72f * S, 13.0f * S, 1);
 	DrawWrappedHudText(Station->GetQuestionPrompt(), PanelX + 22.0f * S, PanelY + 62.0f * S, PanelW - 44.0f * S, MainText(), GEngine->GetSmallFont(), 0.92f * S, 17.0f * S, 2);
 
 	float ChoiceStartY = PanelY + 112.0f * S;

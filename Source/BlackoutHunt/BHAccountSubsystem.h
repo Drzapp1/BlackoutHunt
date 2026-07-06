@@ -66,6 +66,33 @@ struct FBHAccountProgress
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	int32 Escapes = 0;
 
+	// Current consecutive-win streak (for the On a Roll achievement). Resets on any non-winning round.
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	int32 CurrentWinStreak = 0;
+
+	// Best consecutive-win streak ever (lifetime stat shown on the profile).
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	int32 BestWinStreak = 0;
+
+	// Bitmask of train-intermission activity types ever completed (for the Tourist achievement). 4 low bits.
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	int32 TrainActivityMask = 0;
+
+	// Consecutive-correct answer streak (Honor Roll) + bitmask of physics topics ever answered correctly
+	// (Polymath). Cosmetic/local; never touches the revision mastery model or classroom reports.
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	int32 CurrentAnswerStreak = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	int32 TopicsEverCorrectMask = 0;
+
+	// Per-topic lifetime answer tallies (index = EBHPhysicsTopic 0..3) behind the player's mastery readout.
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	TArray<int32> TopicAnswerCounts;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	TArray<int32> TopicCorrectCounts;
+
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	int32 XP = 0;
 
@@ -84,8 +111,42 @@ struct FBHAccountProgress
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	int32 SelectedAvatarGearIndex = 0;
 
+	// Nameplate flair selections (achievement-gated; 0 = none). See EBHCosmeticCategory::Title / Emblem.
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	int32 SelectedTitleIndex = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	int32 SelectedEmblemIndex = 0;
+
 	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
 	FString LastUpdatedUtc;
+
+	// Cosmetic achievements earned (ids; see the registry in BHAccountSubsystem.cpp). Some unlock the hidden
+	// prestige tints. Local + persisted; never affect gameplay.
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	TArray<FName> UnlockedAchievements;
+
+	// Achievements already SEEN in the Awards tab (for the "newly unlocked" indicator: unlocked-but-unseen = new).
+	UPROPERTY(BlueprintReadOnly, Category = "Blackout Hunt|Account")
+	TArray<FName> SeenAchievements;
+};
+
+// One achievement's display data for the menu's Achievements tab, built from the registry + the local account's
+// earned set. Plain struct (C++/Slate only -- not exposed to Blueprint).
+struct FBHAchievementDisplay
+{
+	FName Id;
+	FString Title;
+	FString Description;
+	FString RewardLabel;   // e.g. "Top Hat", "Afterimage tint" -- empty if the reward is XP only
+	int32 Difficulty = 1;  // 1..5 (the badge's star meter + tier colour)
+	bool bUnlocked = false;
+	bool bHidden = false;  // a secret achievement: the tab shows "???" until it is earned
+	// Progress toward a countable achievement (e.g. 18/25 rounds). ProgressTarget == 0 means "not countable"
+	// (an event/binary achievement) and the badge draws no progress bar.
+	int32 ProgressCurrent = 0;
+	int32 ProgressTarget = 0;
+	bool bIsNew = false;   // unlocked but not yet viewed in the Awards tab (drives the "NEW" marker).
 };
 
 UCLASS()
@@ -138,6 +199,27 @@ public:
 	bool ResetLocalClassroomData(FString& OutMessage);
 	bool SetLocalDisplayName(const FString& DisplayName, FString& OutMessage);
 	void RecordRoundResult(EBHPlayerRole Role, EBHPlayerLifeState LifeState, EBHRoundPhase ResultPhase);
+	// Records that the local player completed a train-intermission activity (type 0..3); earns Tourist once all four are done.
+	void RecordTrainActivityUse(int32 ActivityIndex);
+	// Records a graded answer (physics topic 0..3, correct?). Updates the answer streak / topic mask and earns
+	// the Honor Roll / Polymath achievements. Cosmetic/local only; never affects scoring, mastery, or reports.
+	void RecordQuestionResult(int32 TopicIndex, bool bCorrect);
+
+	// Cosmetic achievements (local, persisted). UnlockAchievement is idempotent: the first time only, it awards
+	// the achievement's XP, unlocks any tint gated on it, saves, and shows a one-line toast. Never affects play.
+	void UnlockAchievement(FName AchievementId);
+	bool HasAchievement(FName AchievementId) const;
+
+	// Every achievement with its metadata + whether THIS account has earned it, for the menu's Achievements tab.
+	// Ordered hardest-last is handled by the caller; this preserves registry order.
+	TArray<FBHAchievementDisplay> GetAchievementsForDisplay() const;
+	// Earned / total counts for the tab header.
+	void GetAchievementCounts(int32& OutEarned, int32& OutTotal) const;
+
+	// "Newly unlocked" indicator: count of unlocked-but-unseen achievements, and a way to mark every current
+	// unlock as seen (called when the Awards tab is opened so the badge / tab count clears).
+	int32 GetUnseenAchievementCount() const;
+	void MarkAchievementsSeen();
 
 	const FBHAccountProfile& GetProfile() const;
 	const FBHAccountProgress& GetProgress() const;
@@ -189,4 +271,8 @@ private:
 	bool bLoginRequestInFlight = false;
 	bool bSyncRequestInFlight = false;
 	FTimerHandle LoginPollTimerHandle;
+
+	// Wall-clock deadline (FPlatformTime::Seconds) after which the repeating login poll gives up, so an
+	// abandoned OAuth flow that keeps returning "pending" can't poll the backend forever in the background.
+	double LoginPollDeadlineSeconds = 0.0;
 };

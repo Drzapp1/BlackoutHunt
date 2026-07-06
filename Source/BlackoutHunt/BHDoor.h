@@ -36,4 +36,8 @@ protected:
 	bool bOpen;
 
 	FRotator ClosedRotation;
+
+	// OnRep_Open can fire before BeginPlay for a dynamically-replicated door; this gate defers the door
+	// visual until BeginPlay has captured the true closed pose (see ABHDoor::BeginPlay / OnRep_Open).
+	bool bClosedRotationCaptured = false;
 };

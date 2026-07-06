@@ -41,6 +41,16 @@ void ABHRuntimeMeshPropActor::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 	DOREPLIFETIME(ABHRuntimeMeshPropActor, bCollisionEnabled);
 }
 
+void ABHRuntimeMeshPropActor::BeginPlay()
+{
+	Super::BeginPlay();
+	// Re-apply the serialized visuals on the host. The constructor only sets the cube default (the asset
+	// paths are empty at construction), and clients get the real mesh via OnRep_PropVisuals -- but a
+	// level-PLACED instance has its paths serialized with no OnRep on the server, so without this it would
+	// render the constructor default. Idempotent for the normal runtime-spawned + ConfigureProp path.
+	ApplyPropVisuals();
+}
+
 void ABHRuntimeMeshPropActor::ConfigureProp(
 	const FString& NewMeshAssetPath,
 	const FString& NewMaterialAssetPath,

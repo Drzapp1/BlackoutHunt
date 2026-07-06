@@ -137,16 +137,22 @@ bool FBHTrainEconomyTest::RunTest(const FString& Parameters)
 	UBHGameInstance* GameInstance = NewObject<UBHGameInstance>();
 	TestNotNull(TEXT("Game instance can be created for travel persistence test."), GameInstance);
 	TeacherPS->SetPlayerName(TEXT("Teacher Persist"));
+	// Restore now keys on the server-issued reconnect token (set in InitNewPlayer/PostLogin and echoed in the
+	// travel login URL) rather than the typed display name, so the persisted entry and every legitimate
+	// returner below carry it explicitly - mirroring the real cross-travel flow.
+	TeacherPS->ReconnectToken = TEXT("travel-token-teacher");
 	TeacherPS->AddHunterPoints(75);
 	GameInstance->PersistTravelPlayerState(TeacherPS);
 	ABHPlayerState* RestoredPS = NewObject<ABHPlayerState>();
 	RestoredPS->SetPlayerName(TEXT("Teacher Persist"));
+	RestoredPS->ReconnectToken = TEXT("travel-token-teacher");
 	TestTrue(TEXT("Travel restore finds persisted Teacher progress."), GameInstance->RestoreTravelPlayerState(RestoredPS));
 	TestEqual(TEXT("Travel restore carries current capture points."), RestoredPS->HunterPoints, 80);
 	TestEqual(TEXT("Travel restore carries lifetime capture points."), RestoredPS->LifetimeHunterPoints, 115);
 	GameInstance->ResetPersistentHunterPoints();
 	ABHPlayerState* ResetPS = NewObject<ABHPlayerState>();
 	ResetPS->SetPlayerName(TEXT("Teacher Persist"));
+	ResetPS->ReconnectToken = TEXT("travel-token-teacher");
 	TestTrue(TEXT("Travel restore still finds player after capture point reset."), GameInstance->RestoreTravelPlayerState(ResetPS));
 	TestEqual(TEXT("Capture point reset clears current capture points."), ResetPS->HunterPoints, 0);
 	TestEqual(TEXT("Capture point reset clears lifetime capture points."), ResetPS->LifetimeHunterPoints, 0);
@@ -154,6 +160,7 @@ bool FBHTrainEconomyTest::RunTest(const FString& Parameters)
 	ABHPlayerState* CapturedTravelPS = NewObject<ABHPlayerState>();
 	TestNotNull(TEXT("Captured travel player state can be created."), CapturedTravelPS);
 	CapturedTravelPS->SetPlayerName(TEXT("Captured Persist"));
+	CapturedTravelPS->ReconnectToken = TEXT("travel-token-captured");
 	CapturedTravelPS->SetRole(EBHPlayerRole::Survivor);
 	CapturedTravelPS->SetDesiredRole(EBHPlayerRole::FakeHunter);
 	CapturedTravelPS->SetLifeState(EBHPlayerLifeState::Captured);
@@ -165,6 +172,7 @@ bool FBHTrainEconomyTest::RunTest(const FString& Parameters)
 
 	ABHPlayerState* RestoredCapturedPS = NewObject<ABHPlayerState>();
 	RestoredCapturedPS->SetPlayerName(TEXT("Captured Persist"));
+	RestoredCapturedPS->ReconnectToken = TEXT("travel-token-captured");
 	TestTrue(TEXT("Travel restore finds captured survivor progress."), GameInstance->RestoreTravelPlayerState(RestoredCapturedPS));
 	TestEqual(TEXT("Travel restore makes captured survivor playable again."), RestoredCapturedPS->LifeState, EBHPlayerLifeState::Alive);
 	TestFalse(TEXT("Travel restore clears one-round Hall Monitor eligibility."), RestoredCapturedPS->bFakeHunterEligible);
@@ -175,6 +183,7 @@ bool FBHTrainEconomyTest::RunTest(const FString& Parameters)
 	GameInstance->ResetPersistentTrainRunProgress();
 	ABHPlayerState* FreshLobbyPS = NewObject<ABHPlayerState>();
 	FreshLobbyPS->SetPlayerName(TEXT("Captured Persist"));
+	FreshLobbyPS->ReconnectToken = TEXT("travel-token-captured");
 	TestTrue(TEXT("Final train-run reset still finds the player."), GameInstance->RestoreTravelPlayerState(FreshLobbyPS));
 	TestEqual(TEXT("Final train-run reset clears question points."), FreshLobbyPS->QuestionPoints, 0);
 	TestEqual(TEXT("Final train-run reset clears lifetime question points."), FreshLobbyPS->LifetimeQuestionPoints, 0);

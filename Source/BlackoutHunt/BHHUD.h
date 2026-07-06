@@ -118,6 +118,8 @@ protected:
 	bool bTaughtQuestionFormat;
 	bool bTaughtGuideAccess;
 	bool bTaughtSpectator;
+	// One-time "the faculty remembers" easter-egg greeting (cosmetic, client-local). See Docs/EASTER_EGGS.md.
+	bool bShownPhysicistGreeting = false;
 	int32 LastSeenPresencePulse;
 	float PresencePulseEndTime;
 	bool bHasVisibleHunterCue;

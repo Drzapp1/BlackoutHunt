@@ -36,6 +36,10 @@ protected:
 	FVector ClosedMeshLocation;
 	float OpenLiftHeight;
 
+	// OnRep_Open can fire before BeginPlay for a dynamically-replicated gate; this gate defers the mesh
+	// lift until BeginPlay has captured the true closed relative location (see ABHSlidingGate::BeginPlay).
+	bool bClosedMeshLocationCaptured = false;
+
 	// Server time of the last accepted toggle. Throttles raising/lowering so a griefing student can't
 	// flap a gate (blocking a doorway / making noise) for everyone. Negative sentinel = first is free.
 	float LastToggleServerTime = -100.0f;

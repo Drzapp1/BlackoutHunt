@@ -750,6 +750,14 @@ void ABHBotController::Think()
 	ABHGameState* BHGS = GetBHGameState();
 	if (!BotCharacter || !BotPS || !BHGS || BotPS->LifeState != EBHPlayerLifeState::Alive)
 	{
+		// A bot captured/benched mid-objective keeps its pawn (no EndPlay runs), so release any claimed
+		// objective here too — otherwise the rest of the bot team treats that station/breaker as taken and
+		// avoids it until the time-boxed claim expires (~13s). Mirrors EndPlay's release.
+		if (ABHGameMode* BHGM = GetBHGameMode())
+		{
+			BHGM->ReleaseBotObjective(this);
+		}
+		CurrentClaimTarget.Reset();
 		ClearInteraction();
 		StopMovement();
 		return;
@@ -770,7 +778,29 @@ void ABHBotController::Think()
 	BHApplyBotMovementProfile(BotCharacter, BotPS);
 	if (ABHGameMode* BHGM = GetBHGameMode())
 	{
+		// Merge, don't clobber: GetBotWorldMemorySnapshot RESETS LocalMemory and rebuilds it from the SHARED
+		// world stimuli, which only re-broadcast every ~2s. The bot's OWN async perception writes a just-seen
+		// hunter/survivor straight into LocalMemory, so a plain overwrite briefly drops a sighting this bot
+		// personally just made (the flee/hide logic then reads "no hunter"). Keep whichever sighting is newer.
+		const float PriorHunterTime = LocalMemory.LastSeenHunterTime;
+		const FVector PriorHunterLocation = LocalMemory.LastSeenHunterLocation;
+		const auto PriorHunter = LocalMemory.LastSeenHunter;
+		const float PriorSurvivorTime = LocalMemory.LastSeenSurvivorTime;
+		const FVector PriorSurvivorLocation = LocalMemory.LastSeenSurvivorLocation;
+		const auto PriorSurvivor = LocalMemory.LastSeenSurvivor;
 		BHGM->GetBotWorldMemorySnapshot(LocalMemory, HearingMemorySeconds + 8.0f);
+		if (PriorHunterTime > LocalMemory.LastSeenHunterTime)
+		{
+			LocalMemory.LastSeenHunterTime = PriorHunterTime;
+			LocalMemory.LastSeenHunterLocation = PriorHunterLocation;
+			LocalMemory.LastSeenHunter = PriorHunter;
+		}
+		if (PriorSurvivorTime > LocalMemory.LastSeenSurvivorTime)
+		{
+			LocalMemory.LastSeenSurvivorTime = PriorSurvivorTime;
+			LocalMemory.LastSeenSurvivorLocation = PriorSurvivorLocation;
+			LocalMemory.LastSeenSurvivor = PriorSurvivor;
+		}
 	}
 
 	if (BHGS->RoundPhase != EBHRoundPhase::Hunt)
@@ -2200,6 +2230,11 @@ FVector ABHBotController::BuildAmbushLocation(const FVector& SeenLocation, const
 
 void ABHBotController::HandleSurvivorThreat(ABHCharacter* BotCharacter, ABHCharacter* Threat)
 {
+	if (!BotCharacter || !Threat)
+	{
+		return;
+	}
+
 	if (ABHLocker* Locker = FindNearestLocker(true, false, 950.0f))
 	{
 		if (IsCloseTo(Locker, 260.0f))

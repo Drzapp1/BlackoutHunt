@@ -21,8 +21,10 @@ class SEditableTextBox;
 class SMultiLineEditableTextBox;
 class SVerticalBox;
 class SWidgetSwitcher;
+class SBox;
 class SWidget;
 enum class EBHFeedbackKind : uint8;
+struct FBHAchievementDisplay;
 class USceneCaptureComponent2D;
 class USkeletalMeshComponent;
 class UStaticMeshComponent;
@@ -55,7 +57,8 @@ private:
 		Account,
 		Controls,
 		Settings,
-		Feedback
+		Feedback,
+		Achievements
 	};
 
 	enum class EBHClassroomRunbookStep : uint8
@@ -166,6 +169,8 @@ private:
 	FReply OnAvatarPresetClicked(int32 AvatarIndex);
 	FReply OnAvatarColorClicked(int32 ColorIndex);
 	FReply OnAvatarHeadwearClicked(int32 HeadwearIndex);
+	FReply OnAvatarTitleClicked(int32 TitleIndex);
+	FReply OnAvatarEmblemClicked(int32 EmblemIndex);
 	FReply OnMenuTabClicked(EBHMainMenuTab NewTab);
 	FReply OnOpenClassroomBoardClicked();
 	FReply OnOpenClassroomSupportFolderClicked();
@@ -235,6 +240,8 @@ private:
 	FSlateColor GetAvatarPreviewAccentColor() const;
 	FSlateColor GetCosmeticButtonColor(EBHCosmeticCategory Category, int32 Index) const;
 	FSlateColor GetMenuTabColor(EBHMainMenuTab Tab) const;
+	// Dynamic tab label: the base label, except the Awards tab appends the unlocked-but-unseen count.
+	FText GetMenuTabLabel(EBHMainMenuTab Tab, FText BaseLabel) const;
 	FSlateColor GetMenuTabTextColor(EBHMainMenuTab Tab) const;
 	static int32 MenuTabToWidgetIndex(EBHMainMenuTab Tab);
 	float GetMasterVolumeValue() const;
@@ -301,6 +308,7 @@ private:
 	TSharedRef<SWidget> BuildAccountPanel();
 	TSharedRef<SWidget> BuildLocalCredentialPanel(bool bForStartScreen);
 	TSharedRef<SWidget> BuildFeedbackPanel();
+	TSharedRef<SWidget> BuildAchievementsPanel();
 	TSharedRef<SWidget> BuildEndOfRoundSurveyPanel();
 	FSlateColor GetFeedbackKindButtonColor(EBHFeedbackKind Kind) const;
 	FSlateColor GetFeedbackRatingButtonColor(int32 Rating) const;
@@ -345,6 +353,8 @@ private:
 	TSharedPtr<SEditableTextBox> LessonPresetNameTextBox;
 	TSharedPtr<SVerticalBox> LessonPresetListBox;
 	TSharedPtr<SWidgetSwitcher> MainTabSwitcher;
+	// Awards-tab content holder so it can be rebuilt on tab-open (refreshing the "newly unlocked" markers + stats).
+	TSharedPtr<SBox> AchievementsPanelContainer;
 	TWeakObjectPtr<AActor> AvatarPreviewActor;
 	TWeakObjectPtr<USkeletalMeshComponent> AvatarPreviewMeshComponent;
 	TWeakObjectPtr<UStaticMeshComponent> AvatarPreviewHeadwearComponent;
@@ -368,6 +378,8 @@ private:
 	EBHMainMenuTab ActiveMenuTab = EBHMainMenuTab::Play;
 	bool bShowingStartScreen = false;
 	bool bShowStartCredentials = false;
+	// Progress through the Konami code (easter egg, cosmetic). See Docs/EASTER_EGGS.md.
+	int32 KonamiProgress = 0;
 	// When the local player is the listen-server host, leaving ends the whole class session,
 	// so the first LEAVE press only arms a confirm prompt; the second press actually leaves.
 	bool bLeaveConfirmPending = false;

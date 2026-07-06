@@ -57,6 +57,10 @@ struct FBHTravelPlayerProgress
 	// where the new world's GetTimeSeconds() resets to ~0 and would otherwise make the elapsed time
 	// negative and silently bypass the grace check.
 	double LeftServerWorldTime = -1.0;
+	// Monotonic wall-clock time (FPlatformTime::Seconds) this entry was last persisted. Used to bound the
+	// TravelPlayerProgress list over a long, churny session: a connected player is re-persisted on every
+	// ServerTravel, so the oldest LastPersistedWallTime values are departed players safe to evict.
+	double LastPersistedWallTime = -1.0;
 };
 
 USTRUCT()
@@ -192,6 +196,11 @@ public:
 	void MarkTravelPlayerLeftForReconnect(const ABHPlayerState* PlayerState, float ServerTimeSeconds);
 	bool TryGetReconnectProgress(const ABHPlayerState* PlayerState, float NowServerTimeSeconds, float GraceSeconds, FBHTravelPlayerProgress& OutProgress) const;
 	void ClearReconnectMark(const ABHPlayerState* PlayerState);
+	// Number of players who dropped with an alive Survivor (or Tester) state and still hold a live reconnect
+	// mark within GraceSeconds. The GameMode consults this on Logout so a transient classroom Wi-Fi blip that
+	// drops the last alive survivor(s) together does not instantly hand the round to the Teacher before the
+	// 120 s reconnect grace can bring them back. Uses the same process-wide monotonic clock as the grace check.
+	int32 CountReconnectableAliveSurvivors(float GraceSeconds) const;
 	// Per-client reconnect token storage (Bug-9 secure reconnect). The server issues a token at join and
 	// pushes it to the owning client via ClientReceiveReconnectToken; the client stores it here and the
 	// JoinGame URL echoes it on a later rejoin, so the reconnect is keyed on this unguessable token.

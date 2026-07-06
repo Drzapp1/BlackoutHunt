@@ -92,8 +92,13 @@ void ABHGameMode::NotifyFinalEscapeExpired()
 		return;
 	}
 
-	BroadcastStatus(TEXT("The evacuation train departed without the class."), 4.5f);
-	EndRound(EBHRoundPhase::HunterWin);
+	// Credit a partial evacuation: if any survivor already boarded before the window closed, that is a
+	// survivor win (matching the standard Hunt resolution), not a clean Teacher win for the stragglers.
+	const bool bAnyEscaped = CountEscapedSurvivors() > 0;
+	BroadcastStatus(bAnyEscaped
+		? TEXT("The evacuation train departed. The students who boarded escaped.")
+		: TEXT("The evacuation train departed without the class."), 4.5f);
+	EndRound(bAnyEscaped ? EBHRoundPhase::SurvivorsWin : EBHRoundPhase::HunterWin);
 }
 
 void ABHGameMode::PersistPlayersForTravel()
@@ -238,6 +243,11 @@ void ABHGameMode::TriggerFinalEscapeIfNeeded()
 		EscapeStationManagers[0]->TriggerFinalEscape();
 		return;
 	}
+
+	// No EscapeStationManager on this map (procedural maps always spawn one; an authored final map must place
+	// one). The manager-less fallback below skips the manager's cutscene, hunter-freeze, and anti-camp, so log
+	// loudly to flag the malformed map -- mirrors the other authored-level discovery warnings.
+	UE_LOG(LogTemp, Warning, TEXT("[BlackoutHunt] Final escape on '%s' has no ABHEscapeStationManager; using the manager-less fallback (no cutscene / hunter-freeze / anti-camp). Place an escape station manager on this final map."), *RuntimeLevelName);
 
 	BHGS->SetRoundPhase(EBHRoundPhase::FinalEscape);
 	BHGS->SetExitUnlocked(true);

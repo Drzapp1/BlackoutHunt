@@ -36,7 +36,10 @@ namespace
 {
 	const FName BHOnlineLevelSetting(TEXT("BHLEVEL"));
 	const FName BHOnlineBuildSetting(TEXT("BHBUILD"));
-	const FString BHOnlineBuildId(TEXT("BlackoutHunt-0.7.2"));
+	// Gates EOS/Steam session discovery/matching only (direct-IP/LAN/tunnel use the engine's native net
+	// version check). MUST be bumped with ProjectVersion in Config/DefaultGame.ini so mismatched online
+	// builds don't match — and so a half-updated build can still find sessions. Keep these in lockstep.
+	const FString BHOnlineBuildId(TEXT("BlackoutHunt-0.8.1"));
 	constexpr int32 BHOnlineMaxSearchResults = 25;
 
 	FString NormalizeRuntimeLevelName(FString LevelName)
@@ -962,6 +965,55 @@ void UBHGameInstance::RequestCleanExit(const FString& Reason)
 	FPlatformMisc::RequestExit(false);
 }
 
+// Bound TravelPlayerProgress so a long, churny host session (mid-round drops, rejoins, name changes, lost
+// tokens) can't grow it without limit -- it was only ever appended to. Two rules, neither of which can evict
+// a within-grace pending reconnect or a recently-refreshed (still-connected) player.
+static void BHPruneStaleTravelProgress(TArray<FBHTravelPlayerProgress>& Entries, double NowWallSeconds)
+{
+	const UBHGameSettings* Settings = GetDefault<UBHGameSettings>();
+	const double GraceSeconds = Settings ? static_cast<double>(Settings->ReconnectGraceSeconds) : 120.0;
+
+	// 1) Drop pending mid-round-disconnect marks aged well past the grace window: that player can no longer
+	//    grace-reconnect (a fresh rejoin issues a new token + entry), so the entry is dead weight.
+	const double PendingDeadline = GraceSeconds * 4.0 + 60.0;
+	Entries.RemoveAll([&](const FBHTravelPlayerProgress& Entry)
+	{
+		return Entry.LeftServerWorldTime >= 0.0 && (NowWallSeconds - Entry.LeftServerWorldTime) > PendingDeadline;
+	});
+
+	// 2) Generous backstop cap: evict the OLDEST-persisted, NON-pending snapshot entries that also haven't
+	//    been refreshed in the last few minutes. Connected players are re-persisted on every ServerTravel, so
+	//    they sort newest and stay protected; we never force-evict a protected entry (better to slightly
+	//    exceed the cap than drop a current player's banked progress).
+	constexpr int32 MaxEntries = 256;
+	constexpr double RecentProtectWindow = 300.0;
+	if (Entries.Num() > MaxEntries)
+	{
+		Entries.StableSort([](const FBHTravelPlayerProgress& A, const FBHTravelPlayerProgress& B)
+		{
+			return A.LastPersistedWallTime < B.LastPersistedWallTime; // oldest first
+		});
+		for (int32 Index = 0; Index < Entries.Num() && Entries.Num() > MaxEntries; )
+		{
+			const FBHTravelPlayerProgress& Entry = Entries[Index];
+			const bool bPending = Entry.LeftServerWorldTime >= 0.0;
+			const bool bRecent = Entry.LastPersistedWallTime >= 0.0 && (NowWallSeconds - Entry.LastPersistedWallTime) <= RecentProtectWindow;
+			if (!bPending && !bRecent)
+			{
+				Entries.RemoveAt(Index);
+			}
+			else
+			{
+				++Index;
+			}
+		}
+		if (Entries.Num() > MaxEntries)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[BlackoutHunt] TravelPlayerProgress still has %d entries after pruning (all pending/recent); cap %d."), Entries.Num(), MaxEntries);
+		}
+	}
+}
+
 void UBHGameInstance::PersistTravelPlayerState(const ABHPlayerState* PlayerState)
 {
 	if (!PlayerState)
@@ -982,6 +1034,7 @@ void UBHGameInstance::PersistTravelPlayerState(const ABHPlayerState* PlayerState
 		return TravelEntryMatches(Progress, ReconnectToken, StableId, PlayerName);
 	});
 
+	const double NowWall = (ReconnectClockOverrideSeconds >= 0.0) ? ReconnectClockOverrideSeconds : FPlatformTime::Seconds();
 	FBHTravelPlayerProgress& Progress = Existing ? *Existing : TravelPlayerProgress.AddDefaulted_GetRef();
 	Progress.StableId = StableId;
 	Progress.PlayerName = PlayerName;
@@ -997,6 +1050,12 @@ void UBHGameInstance::PersistTravelPlayerState(const ABHPlayerState* PlayerState
 	Progress.LifetimeHunterPoints = PlayerState->LifetimeHunterPoints;
 	Progress.Powerups = PlayerState->Powerups;
 	Progress.ReconnectToken = PlayerState->ReconnectToken;
+	Progress.LastPersistedWallTime = NowWall;
+
+	// Keep TravelPlayerProgress bounded over a long, churny host session. Safe: never evicts a within-grace
+	// pending reconnect or an entry refreshed in the last few minutes. Done after the write above so the
+	// just-persisted entry (NowWall timestamp) is protected.
+	BHPruneStaleTravelProgress(TravelPlayerProgress, NowWall);
 }
 
 bool UBHGameInstance::RestoreTravelPlayerState(ABHPlayerState* PlayerState, bool bApplyRoleAndLifeState) const
@@ -1009,6 +1068,23 @@ bool UBHGameInstance::RestoreTravelPlayerState(ABHPlayerState* PlayerState, bool
 	const FString StableId = TravelStableIdForPlayerState(PlayerState);
 	const FString PlayerName = PlayerState->GetPlayerName();
 	const FString ReconnectToken = PlayerState->ReconnectToken;
+
+	// Identity safety: only restore banked progress (points / powerups / revision stats) when the player can
+	// be matched by a STRONG identity — the server-issued reconnect token (carried in the travel login URL,
+	// parsed in InitNewPlayer before this runs) or a real online unique-net-id. On the direct-IP / Playit /
+	// OSS-Null classroom path GetUniqueId() is empty and TravelStableIdForPlayerState falls back to the typed
+	// display name, so a name match here would let a brand-new student who reused a prior student's name
+	// inherit their points/powerups and clobber the freshly-reset revision stats (corrupting the class CSV).
+	// A legitimate cross-stage traveler always presents its token at this point, so this never blocks them;
+	// a client that genuinely lost its token (crash / manual rejoin) cleanly starts fresh rather than guessed
+	// by name — mirroring the token-only mid-round reconnect path (TryGetReconnectProgress).
+	const bool bHasRealUniqueId = PlayerState->GetUniqueId().IsValid()
+		&& !PlayerState->GetUniqueId()->ToString().IsEmpty();
+	if (ReconnectToken.IsEmpty() && !bHasRealUniqueId)
+	{
+		return false;
+	}
+
 	const FBHTravelPlayerProgress* Existing = TravelPlayerProgress.FindByPredicate([&](const FBHTravelPlayerProgress& Progress)
 	{
 		return TravelEntryMatches(Progress, ReconnectToken, StableId, PlayerName);
@@ -1137,6 +1213,37 @@ void UBHGameInstance::ClearReconnectMark(const ABHPlayerState* PlayerState)
 	{
 		Existing->LeftServerWorldTime = -1.0f;
 	}
+}
+
+int32 UBHGameInstance::CountReconnectableAliveSurvivors(float GraceSeconds) const
+{
+	if (GraceSeconds <= 0.0f)
+	{
+		return 0;
+	}
+
+	// Same monotonic clock and window the grace check uses (see TryGetReconnectProgress), so a survivor who
+	// just dropped counts as "still coming back" until their 120 s window truly elapses.
+	const double NowSeconds = (ReconnectClockOverrideSeconds >= 0.0) ? ReconnectClockOverrideSeconds : FPlatformTime::Seconds();
+	int32 Count = 0;
+	for (const FBHTravelPlayerProgress& Progress : TravelPlayerProgress)
+	{
+		if (Progress.LeftServerWorldTime < 0.0)
+		{
+			continue;
+		}
+		const double Elapsed = NowSeconds - Progress.LeftServerWorldTime;
+		if (Elapsed < 0.0 || Elapsed > static_cast<double>(GraceSeconds))
+		{
+			continue;
+		}
+		if (Progress.LifeState == EBHPlayerLifeState::Alive
+			&& (Progress.PlayerRole == EBHPlayerRole::Survivor || Progress.PlayerRole == EBHPlayerRole::Tester))
+		{
+			++Count;
+		}
+	}
+	return Count;
 }
 
 void UBHGameInstance::SetReconnectClockOverrideForTest(double NowSeconds)

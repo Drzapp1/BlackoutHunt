@@ -4,6 +4,7 @@
 
 #include "BHCharacter.h"
 #include "BHCosmeticUnlocks.h"
+#include "BHAccountSubsystem.h"
 #include "BHAlarmTrap.h"
 #include "BHBlockActor.h"
 #include "BHEscapeStationManager.h"
@@ -36,6 +37,7 @@
 #include "Components/SpotLightComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Curves/CurveFloat.h"
+#include "HAL/IConsoleManager.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/OverlapResult.h"
 #include "Engine/StaticMesh.h"
@@ -262,7 +264,19 @@ FLinearColor BHAvatarPaletteColor(int32 Index)
 		FLinearColor(0.52f, 0.44f, 0.86f, 1.0f),
 		FLinearColor(0.84f, 0.75f, 0.24f, 1.0f),
 		FLinearColor(0.28f, 0.68f, 0.62f, 1.0f),
-		FLinearColor(0.76f, 0.76f, 0.80f, 1.0f)
+		FLinearColor(0.76f, 0.76f, 0.80f, 1.0f),
+		// Hidden prestige tints (indices 8..17) -- must match the ShirtColor entries in BHCosmeticUnlocks.cpp
+		// and the identical palettes in BHGameMode/BHPlayerController.
+		FLinearColor(0.86f, 0.90f, 0.82f, 1.0f), // Chalk
+		FLinearColor(0.95f, 0.22f, 0.62f, 1.0f), // Arcade
+		FLinearColor(0.18f, 0.92f, 0.45f, 1.0f), // Exit Sign
+		FLinearColor(0.42f, 0.86f, 1.00f, 1.0f), // Afterimage
+		FLinearColor(0.64f, 0.44f, 0.22f, 1.0f), // Veteran
+		FLinearColor(0.40f, 0.12f, 0.20f, 1.0f), // Faculty
+		FLinearColor(0.55f, 0.86f, 0.92f, 1.0f), // Slipstream
+		FLinearColor(0.80f, 0.20f, 0.18f, 1.0f), // Detention
+		FLinearColor(0.52f, 0.10f, 0.14f, 1.0f), // Apex
+		FLinearColor(0.40f, 0.54f, 0.56f, 1.0f)  // Commuter
 	};
 
 	return Palette[FMath::Abs(Index) % UE_ARRAY_COUNT(Palette)];
@@ -390,6 +404,38 @@ void BHSetAccessoryPiece(
 	Part->SetRelativeRotation(Rotation);
 	Part->SetRelativeScale3D(Scale);
 	BHPropVisuals::SetPartVisible(Part, bVisible);
+}
+
+// Finds a skeletal mesh's head bone for headwear attachment (common names first, then any bone containing
+// "head"). Returns NAME_None when there's no head bone (e.g. a static role mesh) so callers fall back to root.
+static FName BHFindHeadBone(const USkeletalMeshComponent* Mesh)
+{
+	if (!Mesh)
+	{
+		return NAME_None;
+	}
+	static const TCHAR* Candidates[] = { TEXT("head"), TEXT("Head"), TEXT("B-head"), TEXT("Bip001 Head"), TEXT("mixamorig:Head"), TEXT("Head_M"), TEXT("spine_05") };
+	for (const TCHAR* Name : Candidates)
+	{
+		if (Mesh->GetBoneIndex(FName(Name)) != INDEX_NONE)
+		{
+			return FName(Name);
+		}
+	}
+	if (const USkeletalMesh* Asset = Mesh->GetSkeletalMeshAsset())
+	{
+		const FReferenceSkeleton& RefSkel = Asset->GetRefSkeleton();
+		const int32 BoneCount = RefSkel.GetNum();
+		for (int32 BoneIdx = 0; BoneIdx < BoneCount; ++BoneIdx)
+		{
+			const FName BoneName = RefSkel.GetBoneName(BoneIdx);
+			if (BoneName.ToString().Contains(TEXT("head"), ESearchCase::IgnoreCase))
+			{
+				return BoneName;
+			}
+		}
+	}
+	return NAME_None;
 }
 
 const TCHAR* BHSelectQuaterniusMeshPath(const ABHPlayerState* BHPS)
@@ -2581,7 +2627,10 @@ float ABHCharacter::ComputeBlackoutFlashlightFlicker() const
 	const float Stutter = 0.5f + 0.5f * FMath::Sin(T * 51.0f) * FMath::Sin(T * 23.0f + 1.3f);   // [0..1]
 	const float Cutout = FMath::Square(FMath::Max(0.0f, FMath::Sin(T * 9.0f + 0.7f)));            // occasional [0..1]
 	const float Flicker = FMath::Lerp(0.35f, 1.6f, Stutter) * FMath::Lerp(1.0f, 0.12f, Cutout);
-	return FMath::Clamp(Floor * Flicker, 0.02f, 0.55f);
+	// Floor the flicker just under the configured near-dead level, not at a fixed 0.02 -- so a config that
+	// sets BlackoutFlashlightStrengthScale=0 (the beam should fully die in the blackout) is honoured instead
+	// of being clamped back up to 0.02. The default (0.15) still keeps the original ~0.02 minimum.
+	return FMath::Clamp(Floor * Flicker, FMath::Min(Floor, 0.02f), 0.55f);
 }
 
 float ABHCharacter::GetFlashlightTuningValue(FName ParameterName) const
@@ -3114,6 +3163,72 @@ void ABHCharacter::ClientSpecialMoveRejected_Implementation(EBHMovementSpecialSt
 	SetMovementFailureReason(Reason);
 }
 
+void ABHCharacter::ClientNotifyPerfectChain_Implementation(int32 ChainCount)
+{
+	// Cosmetic only: unlock the perfect_chain achievement (-> the Afterimage tint) on the owning client.
+	if (UWorld* World = GetWorld())
+	{
+		if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+		{
+			Account->UnlockAchievement(FName(TEXT("perfect_chain")));
+			// A full three-link chain (the cap, BHMomentumChainMaxLinks) earns Flow Master.
+			if (ChainCount >= 3)
+			{
+				Account->UnlockAchievement(FName(TEXT("flow_master")));
+			}
+		}
+	}
+	// Brief feel cue for nailing it (the achievement toast handles the first-time fanfare).
+	if (ABHPlayerController* BHPC = Cast<ABHPlayerController>(GetController()))
+	{
+		BHPC->ShowLocalStatusMessage(ChainCount >= 2 ? FString::Printf(TEXT("Perfect chain x%d"), ChainCount) : FString(TEXT("Perfect chain!")), 1.5f);
+	}
+}
+
+void ABHCharacter::ClientRecordTrainActivity_Implementation(uint8 ActivityIndex)
+{
+	// Cosmetic only: record that this client tried a train-intermission activity (-> the Tourist achievement).
+	if (UWorld* World = GetWorld())
+	{
+		if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+		{
+			Account->RecordTrainActivityUse(static_cast<int32>(ActivityIndex));
+		}
+	}
+}
+
+void ABHCharacter::ClientRecordQuestionResult_Implementation(uint8 TopicIndex, bool bCorrect)
+{
+	// Cosmetic only: record a graded answer on the owning client (-> per-topic mastery + Honor Roll / Polymath).
+	if (UWorld* World = GetWorld())
+	{
+		if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+		{
+			Account->RecordQuestionResult(static_cast<int32>(TopicIndex), bCorrect);
+		}
+	}
+}
+
+void ABHCharacter::ClientGrantAchievement_Implementation(FName AchievementId, const FString& ToastMessage)
+{
+	// Cosmetic only: unlock the given achievement on the owning client (account progress is client-local, so the
+	// server can't write it directly -- it asks the owning client to, here).
+	if (UWorld* World = GetWorld())
+	{
+		if (UBHAccountSubsystem* Account = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<UBHAccountSubsystem>() : nullptr)
+		{
+			Account->UnlockAchievement(AchievementId);
+		}
+	}
+	if (!ToastMessage.IsEmpty())
+	{
+		if (ABHPlayerController* BHPC = Cast<ABHPlayerController>(GetController()))
+		{
+			BHPC->ShowLocalStatusMessage(ToastMessage, 3.0f);
+		}
+	}
+}
+
 void ABHCharacter::StartCosmeticSpecialMove(EBHMovementSpecialState State)
 {
 	if (HasAuthority() || !BHIsTransientSpecialMove(State))
@@ -3272,6 +3387,39 @@ void ABHCharacter::UpdateSpecialMoveAuthority(float DeltaSeconds)
 	}
 }
 
+// Momentum "flow chain" tech. A frame-perfect transient special-move input within this window right as the
+// previous move ended bypasses the cooldown once and preserves momentum -- a hard, satisfying speedrun tech.
+// Survivor-side only; capped so it can't loop; modest speed scale. Gated by bh.MomentumTech (default on).
+// NOTE: this is the one "fun feature" that touches movement, so it WANTS balance playtesting; the cvar plus the
+// tight window + cap keep its impact small in the meantime.
+static TAutoConsoleVariable<int32> CVarBHMomentumTech(
+	TEXT("bh.MomentumTech"),
+	1,
+	TEXT("1 (default) = survivor frame-perfect momentum-chain tech on; 0 = off (plain special moves)."),
+	ECVF_Default);
+// Flow-chain tuning knobs -- exposed as cvars so the one balance-sensitive feature can be playtest-tuned live
+// (the defaults match the original constants). See Docs/EASTER_EGGS.md.
+static TAutoConsoleVariable<float> CVarBHMomentumChainWindow(
+	TEXT("bh.MomentumChainWindow"),
+	0.12f,
+	TEXT("Survivor flow-chain input window in seconds: chain the next special move within this of the previous one ending. Lower = harder. (Default 0.12)"),
+	ECVF_Default);
+static TAutoConsoleVariable<int32> CVarBHMomentumChainMaxLinks(
+	TEXT("bh.MomentumChainMaxLinks"),
+	3,
+	TEXT("Maximum survivor flow-chain links before a real cooldown resets it. (Default 3)"),
+	ECVF_Default);
+static TAutoConsoleVariable<float> CVarBHMomentumChainSpeedScale(
+	TEXT("bh.MomentumChainSpeedScale"),
+	1.15f,
+	TEXT("Speed multiplier applied to a chained special move. (Default 1.15)"),
+	ECVF_Default);
+static TAutoConsoleVariable<int32> CVarBHHatsFollowHead(
+	TEXT("bh.HatsFollowHead"),
+	1,
+	TEXT("1 (default) = procedural headwear attaches to the skeletal head bone so it follows the head through crouch/prone/animation; 0 = anchor to the role mesh's bounds top (the previous static behavior)."),
+	ECVF_Default);
+
 bool ABHCharacter::TryStartSpecialMoveAuthority(EBHMovementSpecialState RequestedState, bool bEndProne, bool bEndProneRequiresInput)
 {
 	if (!HasAuthority() || !CanAct() || !GetWorld())
@@ -3322,7 +3470,25 @@ bool ABHCharacter::TryStartSpecialMoveAuthority(EBHMovementSpecialState Requeste
 	}
 
 	const float Now = GetWorld()->GetTimeSeconds();
-	if (Now < SpecialMoveCooldownEndTime)
+
+	// Momentum "flow chain" tech: a frame-perfect transient move right as the previous one ended bypasses the
+	// cooldown once and keeps the player's momentum. Survivor-side only (never helps a Hunter capture), a tight
+	// (hard) window, and capped. SpecialMoveMomentumScale feeds the special-move speed below.
+	SpecialMoveMomentumScale = 1.0f;
+	bool bPerfectChain = false;
+	if (CVarBHMomentumTech.GetValueOnGameThread() != 0 && BHPS && BHPS->IsAliveSurvivor()
+		&& Now < SpecialMoveCooldownEndTime && LastSpecialMoveEndedTime > -900.0f
+		&& PerfectChainCount < CVarBHMomentumChainMaxLinks.GetValueOnGameThread())
+	{
+		const float SinceEnded = Now - LastSpecialMoveEndedTime;
+		if (SinceEnded >= 0.0f && SinceEnded <= CVarBHMomentumChainWindow.GetValueOnGameThread())
+		{
+			bPerfectChain = true;
+			SpecialMoveMomentumScale = CVarBHMomentumChainSpeedScale.GetValueOnGameThread();
+		}
+	}
+
+	if (Now < SpecialMoveCooldownEndTime && !bPerfectChain)
 	{
 		const FString CooldownLabel = BaseTuning.CooldownText.IsEmpty() ? TEXT("Movement cooling down:") : BaseTuning.CooldownText.ToString();
 		const FString Reason = FString::Printf(TEXT("%s %ds."), *CooldownLabel, FMath::CeilToInt(SpecialMoveCooldownEndTime - Now));
@@ -3374,6 +3540,16 @@ bool ABHCharacter::TryStartSpecialMoveAuthority(EBHMovementSpecialState Requeste
 		EmitSpecialMoveNoiseAuthority(RequestedState, FName(TEXT("dive launch")), 0.78f);
 	}
 
+	if (bPerfectChain)
+	{
+		++PerfectChainCount;
+		ClientNotifyPerfectChain(PerfectChainCount);
+	}
+	else
+	{
+		PerfectChainCount = 0;
+	}
+
 	ForceNetUpdate();
 	return true;
 }
@@ -3383,6 +3559,12 @@ void ABHCharacter::FinishSpecialMoveAuthority()
 	if (!HasAuthority() || !IsSpecialMoveActive())
 	{
 		return;
+	}
+
+	// Remember when this transient move ended so a frame-perfect follow-up can chain (see the momentum tech).
+	if (GetWorld())
+	{
+		LastSpecialMoveEndedTime = GetWorld()->GetTimeSeconds();
 	}
 
 	const bool bShouldEndProne = bSpecialMoveEndsProne && (!bSpecialMoveEndProneRequiresInput || bProneInputHeld);
@@ -3514,9 +3696,9 @@ void ABHCharacter::RefreshMovementSpeedFromState()
 	if (IsSpecialMoveActive())
 	{
 		const FBHMovementSpecialTuning SpecialTuning = BHGetSpecialMoveTuning(BHPS, MovementSpecialState);
-		const float SpecialMoveSpeed = SpecialTuning.DurationSeconds > KINDA_SMALL_NUMBER
+		const float SpecialMoveSpeed = (SpecialTuning.DurationSeconds > KINDA_SMALL_NUMBER
 			? SpecialTuning.Curve.Distance / SpecialTuning.DurationSeconds
-			: WalkSpeedNow;
+			: WalkSpeedNow) * SpecialMoveMomentumScale;
 		Movement->MaxWalkSpeed = FMath::Max(WalkSpeedNow, SpecialMoveSpeed);
 		return;
 	}
@@ -5480,7 +5662,10 @@ void ABHCharacter::ApplyTeacherWeaponVisuals(const ABHPlayerState* BHPS)
 void ABHCharacter::PlayTeacherMeleeSwingLocal(bool bConfirmedHit)
 {
 	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
-	if (!BHPS || BHPS->PlayerRole != EBHPlayerRole::Hunter || BHPS->LifeState != EBHPlayerLifeState::Alive)
+	// Use IsAliveHunter() (which includes Tester) so the axe swing animates for every role that can actually
+	// capture — the capture gameplay in TryCaptureAuthority gates on IsAliveHunter(), so a swinging Tester
+	// previously saw no animation/trail/flash for a swing the server accepted.
+	if (!BHPS || !BHPS->IsAliveHunter())
 	{
 		return;
 	}
@@ -5526,9 +5711,8 @@ void ABHCharacter::UpdateTeacherWeaponSwingVisuals()
 	};
 
 	const ABHPlayerState* BHPS = GetPlayerState<ABHPlayerState>();
-	const bool bShowWeapon = BHPS
-		&& BHPS->PlayerRole == EBHPlayerRole::Hunter
-		&& BHPS->LifeState == EBHPlayerLifeState::Alive;
+	// IsAliveHunter() includes Tester, matching the capture/swing gameplay predicate (see PlayTeacherMeleeSwingLocal).
+	const bool bShowWeapon = BHPS && BHPS->IsAliveHunter();
 	if (!bShowWeapon)
 	{
 		TeacherWeaponRoot->SetRelativeLocation(BHTeacherWeaponIdleLocation);
@@ -5759,15 +5943,34 @@ void ABHCharacter::ApplyAvatarStyle()
 	const int32 GearIndex = 0;
 	const bool bShowRoleAccessories = bUsingRoleModel;
 	FVector RoleAccessoryBaseOffset = FVector::ZeroVector;
-	if (bShowRoleAccessories)
+	if (bShowRoleAccessories && RoleModelRoot)
 	{
+		USceneComponent* VisibleRoleMesh = nullptr;
 		if (RoleSkeletalMesh && RoleSkeletalMesh->IsVisible())
 		{
-			RoleAccessoryBaseOffset = RoleSkeletalMesh->GetRelativeLocation();
+			VisibleRoleMesh = RoleSkeletalMesh;
 		}
 		else if (RoleStaticMesh && RoleStaticMesh->IsVisible())
 		{
-			RoleAccessoryBaseOffset = RoleStaticMesh->GetRelativeLocation();
+			VisibleRoleMesh = RoleStaticMesh;
+		}
+
+		if (VisibleRoleMesh)
+		{
+			RoleAccessoryBaseOffset = VisibleRoleMesh->GetRelativeLocation();
+			// The preview offsets (Z ~67..85) assume a small preview head, but the in-game role mesh varies a
+			// lot in size/scale (survivor 1.0, hunter 0.11, hider static), so a fixed Z left the hat down at the
+			// torso -- inside the body. Anchor the hat to the TOP of the mesh's runtime bounds (~the head)
+			// instead, keeping the preview offsets' relative shape. The preview crown/skull-top is ~78 (the cap
+			// crown), so seat that at the mesh's head top; brims/glasses cluster below it and a beanie bobble (~85)
+			// pokes just above -- all on the head rather than inside the body.
+			const FBoxSphereBounds RoleBounds = VisibleRoleMesh->CalcBounds(VisibleRoleMesh->GetComponentTransform());
+			if (RoleBounds.BoxExtent.Z > KINDA_SMALL_NUMBER)
+			{
+				const float HeadTopWorldZ = RoleBounds.Origin.Z + RoleBounds.BoxExtent.Z;
+				const float HeadTopRelZ = HeadTopWorldZ - RoleModelRoot->GetComponentLocation().Z;
+				RoleAccessoryBaseOffset.Z = HeadTopRelZ - 78.0f;
+			}
 		}
 	}
 	const auto RoleAccessoryLocation = [&RoleAccessoryBaseOffset](const FVector& PreviewLocation)
@@ -5798,6 +6001,12 @@ void ABHCharacter::ApplyAvatarStyle()
 	};
 	for (UStaticMeshComponent* Part : RoleHeadwearParts)
 	{
+		// Re-home to RoleModelRoot before re-positioning, in case the previous update parented this piece to the
+		// head bone -- so the offsets below stay root-relative. The head-bone re-attach happens after positioning.
+		if (Part && RoleModelRoot && Part->GetAttachParent() != RoleModelRoot)
+		{
+			Part->AttachToComponent(RoleModelRoot, FAttachmentTransformRules::KeepRelativeTransform);
+		}
 		BHPropVisuals::SetPartVisible(Part, false);
 	}
 	for (UStaticMeshComponent* Part : RoleGearParts)
@@ -5830,6 +6039,56 @@ void ABHCharacter::ApplyAvatarStyle()
 			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCube, AccessoryBlack, RoleAccessoryLocation(FVector(11.0f, 0.0f, 67.0f)), FRotator::ZeroRotator, FVector(0.045f, 0.40f, 0.080f), true);
 			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCube, AccessoryLight, RoleAccessoryLocation(FVector(23.0f, 0.0f, 64.0f)), FRotator::ZeroRotator, FVector(0.055f, 0.42f, 0.115f), true);
 			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessoryCube, AccessoryMetal, RoleAccessoryLocation(FVector(24.0f, 0.0f, 57.0f)), FRotator::ZeroRotator, FVector(0.018f, 0.36f, 0.012f), true);
+		}
+		else if (HeadwearIndex == 5)
+		{
+			// Top Hat -- the Roof Rider achievement reward. A tall cylinder crown + a wide flat disc brim, with a
+			// thin hatband in the player's shirt tint. Offsets use the head-anchored convention (preview-Z 78 ~= head top).
+			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCylinder, AccessoryBlack, RoleAccessoryLocation(FVector(6.0f, 0.0f, 90.0f)), FRotator::ZeroRotator, FVector(0.26f, 0.26f, 0.22f), true);
+			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCylinder, AccessoryBlack, RoleAccessoryLocation(FVector(6.0f, 0.0f, 75.0f)), FRotator::ZeroRotator, FVector(0.48f, 0.48f, 0.02f), true);
+			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessoryCylinder, AccessoryColor, RoleAccessoryLocation(FVector(6.0f, 0.0f, 80.0f)), FRotator::ZeroRotator, FVector(0.29f, 0.29f, 0.035f), true);
+		}
+		else if (HeadwearIndex == 6)
+		{
+			// Crown (On a Roll) -- a circlet in the player's tint with a raised front point + a bright jewel.
+			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCylinder, AccessoryColor, RoleAccessoryLocation(FVector(6.0f, 0.0f, 79.0f)), FRotator::ZeroRotator, FVector(0.345f, 0.345f, 0.075f), true);
+			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCube, AccessoryColor, RoleAccessoryLocation(FVector(20.0f, 0.0f, 90.0f)), FRotator::ZeroRotator, FVector(0.05f, 0.07f, 0.16f), true);
+			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessorySphere, AccessoryLight, RoleAccessoryLocation(FVector(21.0f, 0.0f, 83.0f)), FRotator::ZeroRotator, FVector(0.07f, 0.07f, 0.07f), true);
+		}
+		else if (HeadwearIndex == 7)
+		{
+			// Halo (Completionist) -- a thin bright disc floating above the head; the accent/detail pieces are hidden.
+			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCylinder, AccessoryLight, RoleAccessoryLocation(FVector(6.0f, 0.0f, 100.0f)), FRotator::ZeroRotator, FVector(0.36f, 0.36f, 0.012f), true);
+			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCylinder, AccessoryLight, RoleAccessoryLocation(FVector(6.0f, 0.0f, 100.0f)), FRotator::ZeroRotator, FVector(0.01f, 0.01f, 0.01f), false);
+			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessoryCylinder, AccessoryLight, RoleAccessoryLocation(FVector(6.0f, 0.0f, 100.0f)), FRotator::ZeroRotator, FVector(0.01f, 0.01f, 0.01f), false);
+		}
+		else if (HeadwearIndex == 8)
+		{
+			// Graduation Cap (Graduate) -- a black skull-cap + a flat square mortarboard + a tassel in the tint.
+			BHSetAccessoryPiece(RoleHeadwearMesh, AccessoryCylinder, AccessoryBlack, RoleAccessoryLocation(FVector(6.0f, 0.0f, 77.0f)), FRotator::ZeroRotator, FVector(0.27f, 0.27f, 0.06f), true);
+			BHSetAccessoryPiece(RoleHeadwearAccentMesh, AccessoryCube, AccessoryBlack, RoleAccessoryLocation(FVector(6.0f, 0.0f, 82.0f)), FRotator::ZeroRotator, FVector(0.42f, 0.42f, 0.02f), true);
+			BHSetAccessoryPiece(RoleHeadwearDetailMesh, AccessoryCube, AccessoryColor, RoleAccessoryLocation(FVector(24.0f, 0.0f, 78.0f)), FRotator::ZeroRotator, FVector(0.02f, 0.02f, 0.10f), true);
+		}
+	}
+
+	// Pixel-accurate headwear: now that the visible pieces are positioned (root-relative, at the head top),
+	// re-attach them to the skeletal HEAD BONE so they follow the head through crouch / prone / animation instead
+	// of floating at the last-known bounds top. KeepWorldTransform preserves the position computed above, so there
+	// is no placement downside when a head bone is found; a static role mesh (the hider) has no bone, so its pieces
+	// just stay on RoleModelRoot as before. Toggle with bh.HatsFollowHead. (Visual change -- worth a playtest.)
+	if (bShowRoleAccessories && HeadwearIndex > 0 && CVarBHHatsFollowHead.GetValueOnGameThread() != 0
+		&& RoleSkeletalMesh && RoleSkeletalMesh->IsVisible())
+	{
+		const FName HeadBone = BHFindHeadBone(RoleSkeletalMesh);
+		if (!HeadBone.IsNone())
+		{
+			for (UStaticMeshComponent* Part : RoleHeadwearParts)
+			{
+				if (Part && Part->IsVisible())
+				{
+					Part->AttachToComponent(RoleSkeletalMesh, FAttachmentTransformRules::KeepWorldTransform, HeadBone);
+				}
+			}
 		}
 	}
 

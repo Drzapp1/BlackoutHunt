@@ -219,7 +219,14 @@ void ABHGameMode::SetBotCount(ABHPlayerController* RequestingController, int32 N
 			{
 			}
 		}
-		bBotMode = bShouldEnableBotMode;
+		// Only flip bBotMode when the roster can actually be refreshed now (Lobby/practice). Mid-round the
+		// change is queued (TargetBotCount is already updated above), so flipping bBotMode here would desync it
+		// from the still-live bots: RefreshBotRoster early-returns on !bBotMode, so a later human join/leave
+		// could no longer re-clamp the live-bot count. Keep the current value until the next round applies it.
+		if (bCanRefreshRosterNow)
+		{
+			bBotMode = bShouldEnableBotMode;
+		}
 		BHGS->SetBotOptions(bBotMode, TargetBotCount, BotDifficulty);
 		if (bCanRefreshRosterNow)
 		{

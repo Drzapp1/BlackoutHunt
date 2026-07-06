@@ -317,6 +317,9 @@ void ABHTrainIntermissionManager::AdvancePhase()
 			// Final stage: arrive at the terminal and END the game in place -- no onward travel. The GameMode
 			// posts the top-5 leaderboard + class summary to the boards and exports the class/per-student files.
 			// Then we hold here (no phase timer) so the host can review before returning to the lobby.
+			// Pull any straggler who wandered out of the carriage during the ride back aboard first, matching
+			// the normal StationStop boarding transitions, so nobody is stranded in the tunnel at the results hold.
+			AutoBoardPlayers();
 			SetTunnelMoving(false);
 			SetTrainDoorsOpen(true);
 			CurrentPhase = EBHTrainPhase::StationStop;

@@ -632,7 +632,10 @@ FText ABHObjectiveStation::GetInteractionLabel_Implementation(ABHCharacter* Char
 		&& QuestionChoices.Num() > 0;
 	if (!BHPS->IsAliveSurvivor() && !bAliveMonitorCanAnswer)
 	{
-		return FText::FromString(BHPS->PlayerRole == EBHPlayerRole::FakeHunter ? TEXT("Monitor Must Revise") : TEXT("Survivor Objective"));
+		// Reached by a Hall Monitor only once the node's question is already solved (while it is unanswered
+		// they get the "press 1-4" path above). Monitors can't do the hold-E task, so name what actually
+		// happens here rather than "Monitor Must Revise" (their revise-to-unlock guidance lives on the role HUD).
+		return FText::FromString(BHPS->PlayerRole == EBHPlayerRole::FakeHunter ? TEXT("Survivors Finish Node") : TEXT("Survivor Objective"));
 	}
 
 	if (BHStationAllowsWarmup(BHGS))
@@ -706,7 +709,9 @@ FBHInteractionPromptInfo ABHObjectiveStation::GetInteractionPromptInfo_Implement
 			&& QuestionChoices.Num() > 0;
 		if (!BHPS->IsAliveSurvivor() && !bAliveMonitorCanAnswer)
 		{
-			Info.DisabledReason = FText::FromString(BHPS->PlayerRole == EBHPlayerRole::FakeHunter ? TEXT("CONTRIBUTE IN PHYSICS CLASSROOM") : TEXT("SURVIVOR OBJECTIVE"));
+			// Monitor here = the question is already solved (they answer it while it is open). They can't hold
+			// E, so don't tell them to "contribute" at a node that is done; survivors finish it from here.
+			Info.DisabledReason = FText::FromString(BHPS->PlayerRole == EBHPlayerRole::FakeHunter ? TEXT("SURVIVORS FINISH THIS NODE") : TEXT("SURVIVOR OBJECTIVE"));
 		}
 		else if (!bQuestionSolved && QuestionChoices.Num() > 0)
 		{
@@ -930,7 +935,14 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 	{
 		if (PC)
 		{
-			PC->ClientShowStatusMessage(BHGS->bRevisionMode ? TEXT("Node questions solved. Hold E with classmates to finish the task.") : TEXT("Question solved. Hold E to finish the task."), 2.75f);
+			// Hall Monitors can answer but never do the hold-E physical task, so don't tell them to "hold E"
+			// on a node they just helped solve - point them at the next node to keep earning contributions.
+			const bool bMonitor = BHPS && BHPS->PlayerRole == EBHPlayerRole::FakeHunter;
+			PC->ClientShowStatusMessage(
+				bMonitor
+					? TEXT("Question already solved here. Hall Monitors don't do the hold-E task - answer another node to contribute.")
+					: (BHGS->bRevisionMode ? TEXT("Node questions solved. Hold E with classmates to finish the task.") : TEXT("Question solved. Hold E to finish the task.")),
+				2.75f);
 		}
 		return true;
 	}
@@ -1016,20 +1028,37 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 	if (bActiveRevisionMode)
 	{
 		ABHGameMode* BHGM = GetWorld() ? GetWorld()->GetAuthGameMode<ABHGameMode>() : nullptr;
-		if (RevisionTeamPlayerIds.Num() == 0 && BHGM)
+		// Rebuild the co-located answer team from the players present at this node on EVERY vote, not only
+		// the first. This is what lets a lone student (or a Hall Monitor working a node alone) clear it by
+		// themselves, and stops a teammate who wandered off from soft-locking the node: the team shrinks to
+		// who is actually here, so the majority needed tracks the people who can still vote.
+		const bool bNewTeam = RevisionTeamPlayerIds.Num() == 0;
+		if (BHGM)
 		{
-			TSet<int32> NewTeam;
+			TSet<int32> PresentTeam;
 			FString TeamSummary;
-			if (BHGM->BuildRevisionAnswerTeam(this, Character, NewTeam, TeamSummary))
+			if (BHGM->BuildRevisionAnswerTeam(this, Character, PresentTeam, TeamSummary))
 			{
-				RevisionTeamPlayerIds = NewTeam;
+				RevisionTeamPlayerIds = PresentTeam;
 				RevisionTeamSummary = TeamSummary;
-				QuestionFeedback = FString::Printf(TEXT("Answer team: %s. Vote with 1-4."), *RevisionTeamSummary);
-				bQuestionFeedbackCorrect = true;
+				if (bNewTeam)
+				{
+					QuestionFeedback = FString::Printf(TEXT("Answer team: %s. Vote with 1-4."), *RevisionTeamSummary);
+					bQuestionFeedbackCorrect = true;
+				}
 			}
 		}
 
 		const int32 PlayerId = BHPS ? BHPS->GetPlayerId() : INDEX_NONE;
+		// Drop stored votes from players who are no longer present at the node so a departed teammate's
+		// stale vote can neither block the majority nor resolve the question in their absence.
+		for (TMap<int32, int32>::TIterator It(RevisionTeamVotes); It; ++It)
+		{
+			if (!RevisionTeamPlayerIds.Contains(It.Key()))
+			{
+				It.RemoveCurrent();
+			}
+		}
 		if (RevisionTeamPlayerIds.Num() > 0 && !RevisionTeamPlayerIds.Contains(PlayerId))
 		{
 			if (PC)
@@ -1040,10 +1069,15 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 		}
 
 		RevisionTeamVotes.Add(PlayerId, AnswerIndex);
-		int32 ChoiceVotes[4] = {0, 0, 0, 0};
+		// Size the tally to the actual choice count (floored at 4) rather than a fixed [4]. A drag/ordering
+		// question can ship more than 4 candidates; with a hard [4] a correct answer at index >=4 could never
+		// be counted, so the team could never vote the node through (soft-lock).
+		const int32 ChoiceCount = FMath::Max(QuestionChoices.Num(), 4);
+		TArray<int32> ChoiceVotes;
+		ChoiceVotes.Init(0, ChoiceCount);
 		for (const TPair<int32, int32>& Vote : RevisionTeamVotes)
 		{
-			if (Vote.Value >= 0 && Vote.Value < 4)
+			if (Vote.Value >= 0 && Vote.Value < ChoiceVotes.Num())
 			{
 				++ChoiceVotes[Vote.Value];
 			}
@@ -1052,7 +1086,7 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 		const int32 TeamSize = FMath::Max(1, RevisionTeamPlayerIds.Num());
 		const int32 MajorityNeeded = FMath::Clamp((TeamSize / 2) + 1, 1, TeamSize);
 		int32 BestChoice = INDEX_NONE;
-		for (int32 ChoiceIndex = 0; ChoiceIndex < 4; ++ChoiceIndex)
+		for (int32 ChoiceIndex = 0; ChoiceIndex < ChoiceVotes.Num(); ++ChoiceIndex)
 		{
 			if (ChoiceVotes[ChoiceIndex] >= MajorityNeeded)
 			{
@@ -1111,6 +1145,14 @@ bool ABHObjectiveStation::SubmitAnswer(ABHCharacter* Character, int32 AnswerInde
 // analytics), advances the revision node, applies feedback, and handles the wrong path.
 bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPlayerController* PC, bool bCorrect, const FString& EvaluatedSelectedAnswer, TArray<ABHCharacter*>& RevisionParticipants, bool bActiveRevisionMode, bool bVisualAnswer)
 {
+	// Per-player learning record (cosmetic/local): the answer streak / topic mask behind the Honor Roll and
+	// Polymath achievements. This is the live grade path -- the warmup path returns earlier and is excluded.
+	// Never affects scoring, the revision mastery model, or classroom reports.
+	if (Character)
+	{
+		Character->ClientRecordQuestionResult(static_cast<uint8>(FBHRevisionQuestionBank::TopicForStationType(StationType)), bCorrect);
+	}
+
 	if (bCorrect)
 	{
 		bool bRevisionNodeUnlocked = true;
@@ -1195,9 +1237,17 @@ bool ABHObjectiveStation::FinalizeRevisionAnswer(ABHCharacter* Character, ABHPla
 		}
 
 		bQuestionSolved = true;
+		// Tailor the "now finish the node" line to the role: only survivors do the hold-E task, so a Hall
+		// Monitor who just landed the answer is told the survivors will finish it rather than to hold E
+		// themselves (which their role can never satisfy).
+		const ABHPlayerState* FinalizerPS = Character ? Character->GetBHPlayerState() : nullptr;
+		const bool bMonitorFinalizer = FinalizerPS && FinalizerPS->PlayerRole == EBHPlayerRole::FakeHunter;
+		const FString FinishHint = bMonitorFinalizer
+			? FString::Printf(TEXT("Survivors hold E to %s the %s."), *ActionVerb, *GetStationName())
+			: FString::Printf(TEXT("Now hold E to %s the %s."), *ActionVerb, *GetStationName());
 		QuestionFeedback = bActiveRevisionMode
-			? FString::Printf(TEXT("Node unlocked %d/%d: %s Now hold E to %s the %s."), RevisionQuestionsSolved, FMath::Max(1, RevisionQuestionsRequired), *QuestionExplanation, *ActionVerb, *GetStationName())
-			: FString::Printf(TEXT("Correct. Now hold E to %s the %s."), *ActionVerb, *GetStationName());
+			? FString::Printf(TEXT("Node unlocked %d/%d: %s %s"), RevisionQuestionsSolved, FMath::Max(1, RevisionQuestionsRequired), *QuestionExplanation, *FinishHint)
+			: FString::Printf(TEXT("Correct. %s"), *FinishHint);
 		bQuestionFeedbackCorrect = true;
 		if (bActiveRevisionMode && RevisionCounterType != EBHRevisionCounterNodeType::None)
 		{
@@ -1848,7 +1898,7 @@ void ABHObjectiveStation::ConfigureQuestion()
 			RevisionQuestionsRequired = FMath::Max(1, RevisionQuestionsRequired);
 			FBHRevisionQuestion Selected;
 			const FVector Location = GetActorLocation();
-			const int32 LocationSeed = FMath::Abs(FMath::RoundToInt(Location.X * 0.13f + Location.Y * 0.07f + static_cast<int32>(StationType) * 131.0f + RevisionQuestionStep * 911.0f + FMath::RandRange(0, 100000)));
+			const int32 LocationSeed = FMath::Abs(FMath::RoundToInt(Location.X * 0.13f + Location.Y * 0.07f + static_cast<int32>(StationType) * 131.0f + RevisionQuestionStep * 911.0f + static_cast<float>(FMath::Abs(BHGM->GetRoundSeed()) % 100000)));
 
 			// Spaced repetition: if the targeted participant has a previously missed
 			// question queued, re-ask that exact question before normal selection.

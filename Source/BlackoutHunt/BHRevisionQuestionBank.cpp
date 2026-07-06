@@ -770,7 +770,9 @@ void BuildNewTypeShowcase(TArray<FBHRevisionQuestion>& Bank)
 		Q.DiagramType = DType;
 		Q.Prompt = Prompt;
 		Q.Answer.Choices = MakeChoices({C0, C1, C2, C3});
-		Q.Answer.CorrectChoiceIndex = Correct;
+		// Clamp like AddSpecs does; guards against a future showcase entry passing an out-of-range index
+		// (which would OOB-index Choices[CorrectChoiceIndex] during grading).
+		Q.Answer.CorrectChoiceIndex = FMath::Clamp(Correct, 0, Q.Answer.Choices.Num() - 1);
 		Q.Answer.Formula = Formula;
 		Q.Diagram = Diagram;
 		Q.Hint = Hint;
@@ -1067,7 +1069,10 @@ bool FBHRevisionQuestionBank::SelectQuestion(EBHPhysicsTopic Topic, EBHRevisionD
 		return false;
 	}
 
-	const int32 ChosenIndex = FMath::Abs(Seed) % Candidates.Num();
+	// Unsigned modulo: FMath::Abs(INT32_MIN) is UB and stays negative, which would index out of bounds
+	// (callers like BuildManualQuestionSet can wrap an unsigned seed to exactly INT32_MIN). Mirrors the
+	// guard already used in BHGameModeHostControls.cpp's SelectHostControlPromptLine.
+	const int32 ChosenIndex = static_cast<int32>(static_cast<uint32>(Seed) % static_cast<uint32>(Candidates.Num()));
 	OutQuestion = *Candidates[ChosenIndex];
 	return true;
 }
@@ -1099,7 +1104,10 @@ bool FBHRevisionQuestionBank::SelectQuestionByDifficulty(EBHPhysicsTopic Topic, 
 		return false;
 	}
 
-	const int32 ChosenIndex = FMath::Abs(Seed) % Candidates.Num();
+	// Unsigned modulo: FMath::Abs(INT32_MIN) is UB and stays negative, which would index out of bounds
+	// (callers like BuildManualQuestionSet can wrap an unsigned seed to exactly INT32_MIN). Mirrors the
+	// guard already used in BHGameModeHostControls.cpp's SelectHostControlPromptLine.
+	const int32 ChosenIndex = static_cast<int32>(static_cast<uint32>(Seed) % static_cast<uint32>(Candidates.Num()));
 	OutQuestion = *Candidates[ChosenIndex];
 	return true;
 }
@@ -1131,7 +1139,8 @@ bool FBHRevisionQuestionBank::SelectDragQuestion(EBHPhysicsTopic Topic, EBHQuest
 	{
 		return false;
 	}
-	const int32 Pick = Pool[FMath::Abs(Seed) % Pool.Num()];
+	// Unsigned modulo: FMath::Abs(INT32_MIN) is UB and stays negative (out-of-bounds index).
+	const int32 Pick = Pool[static_cast<int32>(static_cast<uint32>(Seed) % static_cast<uint32>(Pool.Num()))];
 	OutQuestion = Bank[Pick];
 	return true;
 }
@@ -1411,7 +1420,9 @@ bool FBHRevisionQuestionBank::ParseQuestionsFromJson(const FString& JsonText, TA
 			Question.Answer.CorrectChoiceIndex = JsonInt(Answer, TEXT("correctChoiceIndex"), 0);
 			Question.Answer.Formula = JsonStr(Answer, TEXT("formula"));
 			Question.Answer.NumericAnswer = static_cast<float>(JsonNum(Answer, TEXT("numericAnswer"), 0.0));
-			Question.Answer.NumericTolerance = static_cast<float>(JsonNum(Answer, TEXT("numericTolerance"), 0.0));
+			// Match the built-in AddSpecs floor: a negative tolerance can never be satisfied (grading uses
+			// |value - answer| <= tolerance), which would silently break a teacher-authored calculation question.
+			Question.Answer.NumericTolerance = FMath::Max(0.0f, static_cast<float>(JsonNum(Answer, TEXT("numericTolerance"), 0.0)));
 		}
 
 		const TSharedPtr<FJsonObject>* DiagramPtr = nullptr;
@@ -1433,8 +1444,10 @@ bool FBHRevisionQuestionBank::ParseQuestionsFromJson(const FString& JsonText, TA
 			Question.Diagram.ImageSoftPath = JsonStr(Diagram, TEXT("imageSoftPath"));
 		}
 
-		// masteryWeight is optional; derive it from difficulty when absent.
-		Question.MasteryWeight = static_cast<float>(JsonNum(Obj, TEXT("masteryWeight"), MasteryWeightFor(Question.Difficulty)));
+		// masteryWeight is optional; derive it from difficulty when absent. Floor at a small positive value
+		// like the built-in bank: a zero/negative weight makes correct answers build no mastery (or reduce it),
+		// which can soft-lock a teacher-authored override bank below the exit threshold.
+		Question.MasteryWeight = FMath::Max(0.05f, static_cast<float>(JsonNum(Obj, TEXT("masteryWeight"), MasteryWeightFor(Question.Difficulty))));
 
 		OutQuestions.Add(Question);
 	}

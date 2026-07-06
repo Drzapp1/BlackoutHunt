@@ -116,7 +116,10 @@ bool FBHLessonPresetValidationTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Round seconds clamp to one minute minimum."), CleanPreset.RoundSeconds, 60);
 	TestEqual(TEXT("Scare intensity clamps to supported range."), CleanPreset.ScareIntensity, 3);
 	TestEqual(TEXT("Unknown maps fall back to Facility."), CleanPreset.MapName, FString(TEXT("Facility")));
-	TestEqual(TEXT("Bot count clamps to current classroom cap."), CleanPreset.BotCount, 11);
+	// The classroom cap is configurable (UBHGameSettings::MaxPlayers, clamped to [2,64]); assert against the live
+	// cap rather than a hard-coded value so the test tracks the setting instead of going stale when it changes.
+	const int32 ExpectedClampedBots = FMath::Max(0, UBHGameSettings::GetClampedClassMaxPlayers() - 1);
+	TestEqual(TEXT("Bot count clamps to current classroom cap."), CleanPreset.BotCount, ExpectedClampedBots);
 	TestEqual(TEXT("Invalid bot difficulty falls back to normal."), CleanPreset.BotDifficulty, EBHBotDifficulty::Normal);
 
 	FBHLessonPreset UnsupportedTopicPreset = CleanPreset;
@@ -128,7 +131,7 @@ bool FBHLessonPresetValidationTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Launch options keep revision mode enabled."), LaunchOptions.Contains(TEXT("BHRevisionMode=1")));
 	TestTrue(TEXT("Launch options carry clamped topic mask."), LaunchOptions.Contains(TEXT("BHRevisionTopics=15")));
 	TestTrue(TEXT("Launch options carry live classroom flag."), LaunchOptions.Contains(TEXT("BHLiveClassroom=1")));
-	TestTrue(TEXT("Launch options carry bot fill when requested."), LaunchOptions.Contains(TEXT("BHBotCount=11")));
+	TestTrue(TEXT("Launch options carry bot fill when requested."), LaunchOptions.Contains(*FString::Printf(TEXT("BHBotCount=%d"), ExpectedClampedBots)));
 
 	FBHLessonPreset NoBotPreset = CleanPreset;
 	NoBotPreset.BotCount = 0;

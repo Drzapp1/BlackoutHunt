@@ -3,6 +3,7 @@
 // Unauthorized copying or distribution is strictly prohibited.
 
 #include "BHGameMode.h"
+#include "HAL/IConsoleManager.h"
 #include "BHAlarmTrap.h"
 #include "BHAtmosphereDirector.h"
 #include "BHAmbientEmitter.h"
@@ -53,6 +54,7 @@
 #include "BHTrainDisplayActor.h"
 #include "BHTrainDoor.h"
 #include "BHTrainIntermissionManager.h"
+#include "BHTrainRoofHatch.h"
 #include "BHTrainTunnelMotionActor.h"
 #include "Components/BoxComponent.h"
 #include "Components/BrushComponent.h"
@@ -157,7 +159,19 @@ FLinearColor AvatarColorForIndex(int32 Index)
 		FLinearColor(0.52f, 0.44f, 0.86f, 1.0f),
 		FLinearColor(0.84f, 0.75f, 0.24f, 1.0f),
 		FLinearColor(0.28f, 0.68f, 0.62f, 1.0f),
-		FLinearColor(0.76f, 0.76f, 0.80f, 1.0f)
+		FLinearColor(0.76f, 0.76f, 0.80f, 1.0f),
+		// Hidden prestige tints (indices 8..17) -- must match the ShirtColor entries in BHCosmeticUnlocks.cpp
+		// and the identical palettes in BHCharacter/BHPlayerController.
+		FLinearColor(0.86f, 0.90f, 0.82f, 1.0f), // Chalk
+		FLinearColor(0.95f, 0.22f, 0.62f, 1.0f), // Arcade
+		FLinearColor(0.18f, 0.92f, 0.45f, 1.0f), // Exit Sign
+		FLinearColor(0.42f, 0.86f, 1.00f, 1.0f), // Afterimage
+		FLinearColor(0.64f, 0.44f, 0.22f, 1.0f), // Veteran
+		FLinearColor(0.40f, 0.12f, 0.20f, 1.0f), // Faculty
+		FLinearColor(0.55f, 0.86f, 0.92f, 1.0f), // Slipstream
+		FLinearColor(0.80f, 0.20f, 0.18f, 1.0f), // Detention
+		FLinearColor(0.52f, 0.10f, 0.14f, 1.0f), // Apex
+		FLinearColor(0.40f, 0.54f, 0.56f, 1.0f)  // Commuter
 	};
 
 	return Palette[FMath::Abs(Index) % UE_ARRAY_COUNT(Palette)];
@@ -208,6 +222,12 @@ bool BHIsLegacyScp096JumpscareVariant(const FBHJumpscareVariant& Variant)
 constexpr float BHJumpscareMinViewDot = 0.50f;
 constexpr float BHJumpscareSpawnCapsuleRadius = 62.0f;
 constexpr float BHJumpscareSpawnCapsuleHalfHeight = 142.0f;
+
+// Radius around a question node within which a revision participant counts as part of that node's
+// co-located answer team (see BuildRevisionAnswerTeam). Comfortably larger than the ~3.75 m answer
+// reach so everyone who could press 1-4 at the node is on the team, but local enough that students
+// across the level are not pulled into a vote they can't see.
+constexpr float BHRevisionAnswerTeamRadius = 900.0f;
 
 bool BHResolveJumpscareView(ABHCharacter* Target, ABHPlayerController* TargetPC, FVector& OutViewLocation, FVector& OutViewForward)
 {
@@ -1143,6 +1163,24 @@ void ABHGameMode::PostLogin(APlayerController* NewPlayer)
 			{
 				Entry.CooldownEndServerTime = 0.0f;
 			}
+
+			// Reconnected into an ALREADY-RESOLVED round (EndRound latched a *Win phase, within its ~8s
+			// pre-travel window). Don't put a restored-Alive survivor back in play as a capturable target
+			// in a decided round; mark them out of play. (An Escaped/Captured outcome is preserved.) Banked
+			// points/stats restored above still carry to the next round.
+			const ABHGameState* ResolvedCheckBHGS = GetGameState<ABHGameState>();
+			if (ResolvedCheckBHGS
+				&& (ResolvedCheckBHGS->RoundPhase == EBHRoundPhase::HunterWin || ResolvedCheckBHGS->RoundPhase == EBHRoundPhase::SurvivorsWin))
+			{
+				if (BHPS->LifeState == EBHPlayerLifeState::Alive)
+				{
+					BHPS->SetLifeState(EBHPlayerLifeState::Captured);
+				}
+				if (ABHPlayerController* ResultPC = Cast<ABHPlayerController>(NewPlayer))
+				{
+					ResultPC->ClientRecordRoundResult(BHPS->PlayerRole, BHPS->LifeState, ResolvedCheckBHGS->RoundPhase);
+				}
+			}
 			if (UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>())
 			{
 				BHGI->ClearReconnectMark(BHPS);
@@ -1303,7 +1341,25 @@ void ABHGameMode::Logout(AController* Exiting)
 		{
 			if (CountAliveSurvivors() <= 0)
 			{
-				EndRound(EBHRoundPhase::HunterWin);
+				// Don't hand the Teacher an instant win if the survivor(s) who just dropped still have a live
+				// reconnect window — a transient classroom Wi-Fi blip can knock out the last survivors together.
+				// Defer: if they don't return, the Hunt round timer (or the final-escape window) still resolves
+				// the round, so this can only delay a HunterWin, never prevent a legitimate one.
+				const UBHGameSettings* GraceSettings = GetDefault<UBHGameSettings>();
+				const float GraceSeconds = GraceSettings ? GraceSettings->ReconnectGraceSeconds : 0.0f;
+				const UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>();
+				const int32 PendingSurvivors = (BHGI && GraceSeconds > 0.0f) ? BHGI->CountReconnectableAliveSurvivors(GraceSeconds) : 0;
+				if (PendingSurvivors <= 0)
+				{
+					// Evacuate-together: an already-escaped survivor (LifeState Escaped, so not counted as
+					// "alive") still wins the round for the class. Mirror the Hunt-tick and standard-capture
+					// resolution rather than handing the Teacher a win the class actually earned.
+					EndRound(CountEscapedSurvivors() > 0 ? EBHRoundPhase::SurvivorsWin : EBHRoundPhase::HunterWin);
+				}
+				else
+				{
+					BroadcastStatus(TEXT("Survivor connection dropped - holding the round for a reconnect."), 4.0f);
+				}
 			}
 			else if (CountAliveHunters() <= 0)
 			{
@@ -1503,8 +1559,20 @@ void ABHGameMode::NotifySurvivorCaptured(ABHCharacter* Survivor, ABHCharacter* C
 
 		if (CountAliveSurvivors() <= 0)
 		{
-			EndRound(EBHRoundPhase::HunterWin);
+			// Evacuate-together: a survivor who already escaped still wins for the class even if the last
+			// inside survivor is infected here. Mirror the standard capture path's resolution below.
+			EndRound(CountEscapedSurvivors() > 0 ? EBHRoundPhase::SurvivorsWin : EBHRoundPhase::HunterWin);
 		}
+		return;
+	}
+
+	// Defense in depth: the live capture path below penalises points, credits the hunter, and MarkCaptured()s
+	// the survivor -- all wrong if they are already out of play (a survivor who reached the exit being
+	// "captured" here would lose their escape). Every current caller only fires for an in-play survivor;
+	// guard so a future caller can't double-process one. (Practice/test/infection paths above handle their
+	// own non-alive cases and have already returned.)
+	if (!SurvivorPS || !SurvivorPS->IsAliveSurvivor())
+	{
 		return;
 	}
 
@@ -1518,6 +1586,11 @@ void ABHGameMode::NotifySurvivorCaptured(ABHCharacter* Survivor, ABHCharacter* C
 		if (ABHPlayerController* HunterPC = Cast<ABHPlayerController>(CapturingHunter ? CapturingHunter->GetController() : nullptr))
 		{
 			HunterPC->ClientShowStatusMessage(FString::Printf(TEXT("Axe capture registered. +40 capture points (%d total)."), CapturingHunterPS->HunterPoints), 3.25f);
+		}
+		// Cosmetic achievement: a real player's first capture as Teacher (-> the Detention tint).
+		if (CapturingHunter && !CapturingHunterPS->IsABot())
+		{
+			CapturingHunter->ClientGrantAchievement(FName(TEXT("first_blood")), TEXT("First capture. The hunt is on."));
 		}
 	}
 	if (ABHPlayerController* SurvivorPC = Cast<ABHPlayerController>(SurvivorController))
@@ -1579,6 +1652,12 @@ void ABHGameMode::NotifySurvivorCaptured(ABHCharacter* Survivor, ABHCharacter* C
 
 	if (CountAliveSurvivors() <= 0)
 	{
+		// Cosmetic achievement: caught everyone with nobody escaping is a Flawless Hunt (-> the Apex tint).
+		if (CountEscapedSurvivors() <= 0 && CapturingHunter && CapturingHunterPS
+			&& CapturingHunterPS->PlayerRole == EBHPlayerRole::Hunter && !CapturingHunterPS->IsABot())
+		{
+			CapturingHunter->ClientGrantAchievement(FName(TEXT("flawless_hunt")), TEXT("Flawless hunt -- nobody escaped."));
+		}
 		// Evacuate-together: when the last alive survivor is caught, the class still wins if anyone already
 		// reached the exit. Hard-coding HunterWin here would discard survivors who escaped and are waiting.
 		// Mirrors the Hunt-tick resolution.
@@ -1605,6 +1684,15 @@ void ABHGameMode::NotifySurvivorEscaped(ABHCharacter* Survivor)
 			BHGS->SetExitUnlocked(bTestMode);
 			BHGS->SetPresenceState(FMath::Max(BHGS->PresenceLevel, 64.0f), bTestMode ? TEXT("Test escape complete. Exit remains open.") : TEXT("Practice escape complete. Resetting the exit."), BHGS->PresencePulse + 1);
 		}
+		return;
+	}
+
+	// Defense in depth: MarkEscaped() + the win check below assume an in-play survivor. Every current caller
+	// only fires for one, but guard so a future caller can't re-escape someone already out of play (which
+	// would re-run the round-end check). The practice/test path above handles its own case and returned.
+	const ABHPlayerState* EscapingPS = Survivor->GetPlayerState<ABHPlayerState>();
+	if (!EscapingPS || !EscapingPS->IsAliveSurvivor())
+	{
 		return;
 	}
 
@@ -3536,93 +3624,47 @@ bool ABHGameMode::BuildRevisionAnswerTeam(ABHObjectiveStation* Station, ABHChara
 {
 	OutPlayerIds.Reset();
 	OutSummary = TEXT("");
-	if (!bRevisionMode || !GameState)
+	if (!bRevisionMode || !GameState || !Station)
 	{
 		return false;
 	}
 
-	const EBHPhysicsTopic Topic = Station ? FBHRevisionQuestionBank::TopicForStationType(Station->GetStationType()) : EBHPhysicsTopic::ForcesAndMotion;
-	const auto TopicMastery = [Topic](const ABHPlayerState* PS)
-	{
-		if (!PS)
-		{
-			return 0.0f;
-		}
-		switch (Topic)
-		{
-		case EBHPhysicsTopic::ForcesAndMotion:
-			return PS->RevisionStats.ForcesMastery;
-		case EBHPhysicsTopic::Electricity:
-			return PS->RevisionStats.ElectricityMastery;
-		case EBHPhysicsTopic::Waves:
-			return PS->RevisionStats.WavesMastery;
-		case EBHPhysicsTopic::Energy:
-			return PS->RevisionStats.EnergyMastery;
-		default:
-			return 0.0f;
-		}
-	};
+	// Co-located answer team: a question node is answered by the players actually gathered AT this node,
+	// NOT a class-wide committee. This is what lets a lone student — or a Hall Monitor working a node by
+	// themselves — clear it and earn the contribution, while a cluster still votes together. Because the
+	// caller rebuilds this set on every vote, a teammate who wanders off can never soft-lock the node
+	// (the old class-wide committee could leave a present player stuck at "Vote recorded (1/5)" forever).
+	// Mirrors the multi-repairer breaker model, which already keys progress off who is physically present.
+	const FVector StationLocation = Station->GetActorLocation();
+	const float RadiusSq = FMath::Square(BHRevisionAnswerTeamRadius);
+	const ABHPlayerState* RequestingPS = RequestingCharacter ? RequestingCharacter->GetPlayerState<ABHPlayerState>() : nullptr;
 
-	TArray<ABHPlayerState*> Students;
+	TArray<FString> Names;
 	for (APlayerState* RawPS : GameState->PlayerArray)
 	{
 		ABHPlayerState* BHPS = Cast<ABHPlayerState>(RawPS);
-		if (IsRevisionParticipantState(BHPS) && !BHPS->IsABot())
+		if (!IsRevisionParticipantState(BHPS) || BHPS->LifeState != EBHPlayerLifeState::Alive)
 		{
-			Students.Add(BHPS);
+			continue;
 		}
-	}
-	if (Students.IsEmpty())
-	{
-		for (APlayerState* RawPS : GameState->PlayerArray)
+		// Bots are never team members: an idle bot wandering through the node's radius must not inflate the
+		// majority a present human needs to clear the node. A bot that is genuinely working a node alone
+		// still resolves it via the lone-voter fallback in ABHObjectiveStation::SubmitAnswer (TeamSize>=1).
+		if (BHPS->IsABot())
 		{
-			ABHPlayerState* BHPS = Cast<ABHPlayerState>(RawPS);
-			if (IsRevisionParticipantState(BHPS))
-			{
-				Students.Add(BHPS);
-			}
+			continue;
 		}
-	}
-	if (Students.IsEmpty())
-	{
-		return false;
-	}
-
-	Students.Sort([&TopicMastery](const ABHPlayerState& A, const ABHPlayerState& B)
-	{
-		if (A.RevisionStats.ContributionCount != B.RevisionStats.ContributionCount)
+		const bool bIsRequester = RequestingPS && BHPS == RequestingPS;
+		const APawn* Pawn = BHPS->GetPawn();
+		const bool bPresent = bIsRequester
+			|| (Pawn && FVector::DistSquared(Pawn->GetActorLocation(), StationLocation) <= RadiusSq);
+		if (bPresent)
 		{
-			return A.RevisionStats.ContributionCount < B.RevisionStats.ContributionCount;
-		}
-		if (!FMath::IsNearlyEqual(TopicMastery(&A), TopicMastery(&B)))
-		{
-			return TopicMastery(&A) < TopicMastery(&B);
-		}
-		return A.GetPlayerId() < B.GetPlayerId();
-	});
-
-	const ABHPlayerState* RequestingPS = RequestingCharacter ? RequestingCharacter->GetPlayerState<ABHPlayerState>() : nullptr;
-	const int32 TargetTeamSize = FMath::Clamp(GetRevisionAnswerTeamTargetSize(), 1, Students.Num());
-	if (RequestingPS)
-	{
-		OutPlayerIds.Add(RequestingPS->GetPlayerId());
-	}
-	for (ABHPlayerState* Student : Students)
-	{
-		if (Student && OutPlayerIds.Num() < TargetTeamSize)
-		{
-			OutPlayerIds.Add(Student->GetPlayerId());
+			OutPlayerIds.Add(BHPS->GetPlayerId());
+			Names.Add(BHPS->GetPlayerName());
 		}
 	}
 
-	TArray<FString> Names;
-	for (ABHPlayerState* Student : Students)
-	{
-		if (Student && OutPlayerIds.Contains(Student->GetPlayerId()))
-		{
-			Names.Add(Student->GetPlayerName());
-		}
-	}
 	OutSummary = FString::Join(Names, TEXT(", "));
 	return OutPlayerIds.Num() > 0;
 }
@@ -8108,6 +8150,32 @@ void ABHGameMode::BuildTrainIntermissionLevel()
 		}
 	}
 
+	// =====================================================================================================
+	// EASTER EGG: a hidden "maintenance hatch" in the front cab corner lifts a passenger up onto the TRAIN
+	// ROOF (the ceiling slab top, ~z316, is already a walkable collidable surface). Cosmetic only -- the
+	// intermission advances on its own timer, so a roof visit never blocks boarding or touches scoring. It
+	// awards the "roof_rider" achievement (-> the Top Hat headwear). See Docs/EASTER_EGGS.md.
+	// =====================================================================================================
+	if (BHAreEasterEggsEnabled())
+	{
+		const FVector HatchLocation(-3600.0f, -282.0f, 110.0f);
+		if (ABHTrainRoofHatch* RoofHatch = GetWorld()->SpawnActor<ABHTrainRoofHatch>(HatchLocation, FRotator::ZeroRotator))
+		{
+			// Lift straight up above the hatch onto the roof slab top (z316), reusing the surface->capsule
+			// offset spawns use (floor top z2 -> survivor spawn z124, i.e. +122).
+			RoofHatch->ConfigureHatch(FVector(HatchLocation.X, 0.0f, 438.0f));
+		}
+
+		// Low safety rails around the roof walkway (the slab top spans y[-310,310], x[-3750,3750]) so a curious
+		// passenger doesn't stroll off into the tunnel trench. They sit OUTSIDE the tube, so they're never seen
+		// from the interior.
+		const FLinearColor RoofRailTint(0.10f, 0.11f, 0.12f, 1.0f);
+		SpawnBlock(FVector(0.0f, 300.0f, 346.0f), FVector(TubeLen, 0.08f, 0.60f), RoofRailTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(0.0f, -300.0f, 346.0f), FVector(TubeLen, 0.08f, 0.60f), RoofRailTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(TubeMaxX - 30.0f, 0.0f, 346.0f), FVector(0.08f, 6.0f, 0.60f), RoofRailTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+		SpawnBlock(FVector(TubeMinX + 30.0f, 0.0f, 346.0f), FVector(0.08f, 6.0f, 0.60f), RoofRailTint, FRotator::ZeroRotator, true, EBHBlockMaterial::PaintedMetal);
+	}
+
 	SpawnBlock(FVector(3300.0f, -760.0f, CenterZForBlockTop(0.0f, 0.22f)), FVector(20.0f, 6.0f, 0.22f), PlatformTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
 	SpawnBlock(FVector(3300.0f, -1120.0f, 155.0f), FVector(20.0f, 0.28f, 3.1f), WallTint, FRotator::ZeroRotator, true, EBHBlockMaterial::Concrete);
 	SpawnBlock(FVector(3300.0f, -430.0f, 26.0f), FVector(20.0f, 0.12f, 0.16f), WarningTint, FRotator::ZeroRotator, false, EBHBlockMaterial::WarningSign);
@@ -9882,9 +9950,33 @@ void ABHGameMode::SpawnAmbient(const FVector& Location, float Frequency, float V
 	}
 }
 
+// QA / replay reproduction: RoundSeed is logged into telemetry but sourced from FMath::Rand(), so a recorded
+// round can't be re-run. Set bh.RoundSeedOverride to a logged value (>= 0) to force that seed; -1 (default)
+// keeps the per-round randomness. Downstream derivation is already deterministic per-seed.
+static TAutoConsoleVariable<int32> CVarBHRoundSeedOverride(
+	TEXT("bh.RoundSeedOverride"),
+	-1,
+	TEXT("If >= 0, forces the per-round RoundSeed to this value so a recorded round can be reproduced (replay/QA). -1 = random."),
+	ECVF_Default);
+
+// Cosmetic-only easter eggs (locker graffiti, physicist-name nods, a rare calm whisper, a menu code). These
+// never affect scoring, mastery, reports, fairness, or stability. Default on; a teacher can disable them all
+// with `bh.EasterEggs 0`. See Docs/EASTER_EGGS.md.
+static TAutoConsoleVariable<int32> CVarBHEasterEggs(
+	TEXT("bh.EasterEggs"),
+	1,
+	TEXT("1 (default) = harmless cosmetic easter eggs on; 0 = off (for a strictly plain classroom session)."),
+	ECVF_Default);
+
+bool BHAreEasterEggsEnabled()
+{
+	return CVarBHEasterEggs.GetValueOnGameThread() != 0;
+}
+
 void ABHGameMode::PrepareRoundDirector()
 {
-	RoundSeed = FMath::Rand();
+	const int32 RoundSeedOverride = CVarBHRoundSeedOverride.GetValueOnGameThread();
+	RoundSeed = (RoundSeedOverride >= 0) ? RoundSeedOverride : FMath::Rand();
 	FRandomStream Stream(RoundSeed);
 	const EBHRoundModifier ChosenModifier = bPracticeMode ? PracticeRoundModifier : ChooseRoundModifier(Stream);
 	ApplyRoundCCTVVisibility(ChosenModifier);
@@ -9929,7 +10021,12 @@ void ABHGameMode::PrepareRoundDirector()
 	{
 		ActiveSideObjectiveCount = FMath::Max(1, ObjectiveIntensity - 1);
 	}
-	ActiveBreakerCount = bTestMode ? BreakerActors.Num() : (bRevisionMode ? 0 : FMath::Clamp(RequiredBreakers - FMath::Min(2, ActiveSideObjectiveCount), 2, FMath::Max(1, BreakerActors.Num())));
+	// Never require more active breakers than physically exist. The inner Clamp floors the requirement at 2,
+	// but FMath::Clamp(X, 2, Max(1, N)) has min>max when N<=1 and then returns the min (2) — so a map with a
+	// single breaker (e.g. an authored map, or a partial spawn failure) would require 2 completions from 1
+	// breaker and the exit could never unlock (unwinnable). Wrapping in Min(N, ...) is a no-op for the shipped
+	// 7-8 breaker maps (the clamp result is already <= N there) and makes the degenerate cases satisfiable.
+	ActiveBreakerCount = bTestMode ? BreakerActors.Num() : (bRevisionMode ? 0 : FMath::Min(BreakerActors.Num(), FMath::Clamp(RequiredBreakers - FMath::Min(2, ActiveSideObjectiveCount), 2, FMath::Max(1, BreakerActors.Num()))));
 	TSet<int32> ActiveBreakerIndexes;
 	for (int32 Index = 0; Index < ActiveBreakerCount && BreakerOrder.IsValidIndex(Index); ++Index)
 	{
@@ -10431,7 +10528,16 @@ void ABHGameMode::UpdatePresenceDirector()
 	}
 
 	const float CurrentPresence = BHGS->PresenceLevel;
-	const float DecayedPresence = FMath::Max(0.0f, CurrentPresence - 10.0f);
+	// Time-based decay: the director runs on a mode-dependent interval (~7s normal, ~4s in revision
+	// intensity-3), so a flat per-call drop bled presence off at different real-world rates. Use a per-second
+	// rate calibrated to the old ~10-per-tick at the 7s normal interval, scaled by the actual elapsed time
+	// (clamped so a long suppressed / non-Hunt gap can't over-decay in one step; still floored by DesiredPresence).
+	const float PresenceNow = GetWorld()->GetTimeSeconds();
+	const float PresenceElapsed = (LastPresenceDirectorTime >= 0.0f)
+		? FMath::Clamp(PresenceNow - LastPresenceDirectorTime, 0.0f, 30.0f)
+		: 7.0f;
+	LastPresenceDirectorTime = PresenceNow;
+	const float DecayedPresence = FMath::Max(0.0f, CurrentPresence - (10.0f / 7.0f) * PresenceElapsed);
 	const float NewPresence = FMath::Clamp(FMath::Max(DesiredPresence, DecayedPresence), 0.0f, 100.0f);
 
 	FString PresenceText = TEXT("The building is listening.");
@@ -10485,6 +10591,25 @@ void ABHGameMode::UpdatePresenceDirector()
 			TEXT("The sensor sees a line through the dark.")
 		};
 		PresenceText = SelectPromptLine(SuspicionLines, UE_ARRAY_COUNT(SuspicionLines), PresenceTextSalt);
+	}
+
+	// Easter egg ("a whisper in the static"): only at CALM presence (so it can never replace a real threat
+	// warning set above) and rarely, swap the idle line for a hidden one. Cosmetic; gated by bh.EasterEggs.
+	if (NewPresence < 30.0f && BHAreEasterEggsEnabled() && FMath::FRand() < 0.025f)
+	{
+		static const TCHAR* WhisperLines[] = {
+			TEXT("the building hums at 50 Hz, like the lights."),
+			TEXT("something in the walls is solving for x."),
+			TEXT("the heat trace spells a word, then forgets it."),
+			TEXT("a draft moves through a room with no doors."),
+			TEXT("the sensors blink in threes, then stop."),
+			TEXT("for a moment, the map shows a room that isn't there."),
+			TEXT("the clock ticks sixty-one seconds to the minute, just once."),
+			TEXT("a locker door breathes in, then holds it."),
+			TEXT("the chalkboard solves itself and erases the proof."),
+			TEXT("somewhere a bell rings for a period that isn't on the timetable.")
+		};
+		PresenceText = SelectPromptLine(WhisperLines, UE_ARRAY_COUNT(WhisperLines), PresenceTextSalt + 7);
 	}
 
 	const bool bPulse = NewPresence >= 72.0f || FMath::Abs(NewPresence - CurrentPresence) >= 18.0f;
@@ -12964,6 +13089,11 @@ void ABHGameMode::StartHuntPhase()
 	TelemetryCompletedObjectiveKeys.Reset();
 	TelemetrySnapshotKeys.Reset();
 	RecordPlaytestTelemetryMarker(TEXT("round_start"), HunterSpawn, TEXT("hunt"));
+	// Arm the round ticker explicitly (idempotent — SetTimer replaces the handle), like
+	// StartHuntPhaseImmediately, rather than relying on the looping timer armed back in StartPrepPhase. If any
+	// Prep-phase path cleared RoundTimerHandle, the live Hunt would otherwise have no ticker and the
+	// win/loss/time conditions in TickRoundTimer would never evaluate (round hangs).
+	GetWorldTimerManager().SetTimer(RoundTimerHandle, this, &ABHGameMode::TickRoundTimer, 1.0f, true);
 	StartDirectorTimer();
 
 	// First live Hunt of the install: remember it so the extended first-play warmup auto-enables
@@ -13339,7 +13469,27 @@ void ABHGameMode::TickRoundTimer()
 			// Evacuate-together: everyone still inside has either escaped or been caught. Survivors win only
 			// if at least one student made it out to the exit; if every survivor was captured, the hunters
 			// win. (The first survivor to escape no longer ends the round for the whole class.)
-			EndRound(CountEscapedSurvivors() > 0 ? EBHRoundPhase::SurvivorsWin : EBHRoundPhase::HunterWin);
+			if (CountEscapedSurvivors() > 0)
+			{
+				EndRound(EBHRoundPhase::SurvivorsWin);
+			}
+			else
+			{
+				// Don't hand the Teacher an instant win while dropped survivor(s) are still inside their
+				// reconnect grace window — a transient classroom Wi-Fi blip can knock out the last survivors
+				// together. Logout already defers this, but TickRoundTimer was overriding that defer ~1s later
+				// (it re-checked CountAliveSurvivors with no grace guard), defeating it. Mirror the Logout
+				// guard here; the Hunt RemainingTime timeout is the no-hang backstop, so this only ever delays
+				// a HunterWin (never prevents a legitimate one, and never overruns the round timer).
+				const UBHGameSettings* GraceSettings = GetDefault<UBHGameSettings>();
+				const float GraceSeconds = GraceSettings ? GraceSettings->ReconnectGraceSeconds : 0.0f;
+				const UBHGameInstance* BHGI = GetGameInstance<UBHGameInstance>();
+				const int32 PendingSurvivors = (BHGI && GraceSeconds > 0.0f) ? BHGI->CountReconnectableAliveSurvivors(GraceSeconds) : 0;
+				if (PendingSurvivors <= 0 || BHGS->RemainingTime <= 0)
+				{
+					EndRound(EBHRoundPhase::HunterWin);
+				}
+			}
 		}
 		else if (CountAliveHunters() <= 0)
 		{
@@ -13351,6 +13501,17 @@ void ABHGameMode::TickRoundTimer()
 		else if (BHGS->RemainingTime <= 0)
 		{
 			EndRound(EBHRoundPhase::HunterWin);
+		}
+	}
+	else if (BHGS->RoundPhase == EBHRoundPhase::FinalEscape)
+	{
+		// Backstop only. The escape-station manager's expiry timer (or the manager-less fallback timer) and the
+		// per-survivor escape/capture events drive the normal FinalEscape resolution. But if every alive survivor
+		// leaves the in-play set by a path that fires no escape/capture event (e.g. an admin role change),
+		// nothing else here resolves the round until that expiry. Mirror the Hunt tie-break so it ends promptly.
+		if (CountAliveSurvivors() <= 0)
+		{
+			EndRound(CountEscapedSurvivors() > 0 ? EBHRoundPhase::SurvivorsWin : EBHRoundPhase::HunterWin);
 		}
 	}
 }
@@ -13741,6 +13902,9 @@ FTransform ABHGameMode::GetSpawnTransformFor(AController* Controller) const
 	{
 		PlayerIndex = GameState->PlayerArray.IndexOfByKey(BHPS);
 	}
+	// IndexOfByKey returns INDEX_NONE (-1) in a brief login/travel window before the player is in the
+	// array; a negative index yields a wrong spawn offset (and a negative modulo below), so floor to 0.
+	PlayerIndex = FMath::Max(0, PlayerIndex);
 
 	if (BHPS && (BHPS->PlayerRole == EBHPlayerRole::Hunter || BHPS->PlayerRole == EBHPlayerRole::FakeHunter))
 	{

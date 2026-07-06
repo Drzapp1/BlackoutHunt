@@ -1073,6 +1073,14 @@ void ABHJumpscareMonster::ApplyConfiguredVariant()
 		return;
 	}
 
+	// Dedicated server has no local viewer: skip the synchronous skeletal-mesh / anim / material loads
+	// and the rest of the purely-cosmetic presentation setup below. (The shipped classroom host is a
+	// listen-server, NM_ListenServer, so it still renders the creature for the host player.)
+	if (GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+
 	PresentationLightColor = ActiveVariant.LightColor;
 	CameraFocusHeight = FMath::Clamp(ActiveVariant.FocusHeight, 80.0f, 320.0f);
 	PresentationVisualOffset = ActiveVariant.VisualOffset;

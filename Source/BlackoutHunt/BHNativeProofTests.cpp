@@ -39,6 +39,7 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
+#include "HAL/IConsoleManager.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/PackageName.h"
@@ -755,6 +756,59 @@ bool FBHCosmeticUnlockThresholdTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// Locks the achievement-gating path added for the prestige tints, the Top Hat headwear, and the new
+// Title / Emblem nameplate-flair categories: these ignore XP entirely and are gated on an achievement id.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHCosmeticAchievementGateTest,
+	"BlackoutHunt.Account.CosmeticAchievementGating",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBHCosmeticAchievementGateTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const TArray<FName> NoAchievements;
+	TArray<FName> WithChalk;
+	WithChalk.Add(FName(TEXT("honorary_faculty")));
+	TArray<FName> WithRoofRider;
+	WithRoofRider.Add(FName(TEXT("roof_rider")));
+
+	// Base shirt colours (0..7) need neither XP nor an achievement.
+	TestTrue(TEXT("Base shirt colour 0 is always unlocked."),
+		BHCosmeticIsUnlocked(EBHCosmeticCategory::ShirtColor, 0, 0, &NoAchievements));
+
+	// The Chalk tint (index 8) is gated on honorary_faculty: XP is irrelevant, the achievement is everything.
+	TestFalse(TEXT("Chalk tint is locked without its achievement, even at max XP."),
+		BHCosmeticIsUnlocked(EBHCosmeticCategory::ShirtColor, 8, MAX_int32, &NoAchievements));
+	TestTrue(TEXT("Chalk tint unlocks with its achievement, at zero XP."),
+		BHCosmeticIsUnlocked(EBHCosmeticCategory::ShirtColor, 8, 0, &WithChalk));
+	TestFalse(TEXT("Chalk tint is locked when no achievement set is supplied (null = locked)."),
+		BHCosmeticIsUnlocked(EBHCosmeticCategory::ShirtColor, 8, MAX_int32, nullptr));
+
+	// The Top Hat headwear (index 5) is gated on roof_rider.
+	TestFalse(TEXT("Top Hat is locked without roof_rider."),
+		BHCosmeticIsUnlocked(EBHCosmeticCategory::Headwear, 5, MAX_int32, &NoAchievements));
+	TestTrue(TEXT("Top Hat unlocks with roof_rider."),
+		BHCosmeticIsUnlocked(EBHCosmeticCategory::Headwear, 5, 0, &WithRoofRider));
+
+	// Title / Emblem flair categories: index 0 ("None") is always available; index 1+ is achievement-gated.
+	TestTrue(TEXT("'No Title' (index 0) is always available."),
+		BHCosmeticIsUnlocked(EBHCosmeticCategory::Title, 0, 0, &NoAchievements));
+	TestFalse(TEXT("An earned title is locked without its achievement."),
+		BHCosmeticIsUnlocked(EBHCosmeticCategory::Title, 1, MAX_int32, &NoAchievements));
+	TestTrue(TEXT("'No Emblem' (index 0) is always available."),
+		BHCosmeticIsUnlocked(EBHCosmeticCategory::Emblem, 0, 0, &NoAchievements));
+	TestFalse(TEXT("An earned emblem is locked without its achievement."),
+		BHCosmeticIsUnlocked(EBHCosmeticCategory::Emblem, 1, MAX_int32, &NoAchievements));
+
+	// Clamp drops a locked achievement-gated selection back to default, and keeps an unlocked one.
+	TestEqual(TEXT("Locked tint clamps to default without the achievement."),
+		BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::ShirtColor, 8, MAX_int32, &NoAchievements), 0);
+	TestEqual(TEXT("Unlocked tint stays selected with the achievement."),
+		BHCosmeticClampUnlockedIndex(EBHCosmeticCategory::ShirtColor, 8, 0, &WithChalk), 8);
+
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBHObjectiveStationPhysicsTaskIdentityTest,
 	"BlackoutHunt.Objectives.PhysicsTaskIdentity",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -1013,6 +1067,9 @@ bool FBHLateJoinerMidRoundStaysSpectatorTest::RunTest(const FString& Parameters)
 	SourcePS->SetDesiredRole(EBHPlayerRole::Survivor);
 	SourcePS->SetLifeState(EBHPlayerLifeState::Alive);
 	SourcePS->AddQuestionPoints(40);
+	// A legitimate returner carries the server-issued reconnect token (echoed in the travel login URL); restore
+	// keys on that strong identity, not the display name, so both the persisted entry and the returners set it.
+	SourcePS->ReconnectToken = TEXT("travel-token-returner");
 	GameInstance->PersistTravelPlayerState(SourcePS);
 
 	// Active-round late join: PostLogin has already placed the returning player into Spectator +
@@ -1024,6 +1081,7 @@ bool FBHLateJoinerMidRoundStaysSpectatorTest::RunTest(const FString& Parameters)
 	if (ActiveJoinPS)
 	{
 		ActiveJoinPS->SetPlayerName(TEXT("Mid Round Returner"));
+		ActiveJoinPS->ReconnectToken = TEXT("travel-token-returner");
 		ActiveJoinPS->SetRole(EBHPlayerRole::Spectator);
 		ActiveJoinPS->SetDesiredRole(EBHPlayerRole::Survivor);
 		ActiveJoinPS->SetLifeState(EBHPlayerLifeState::Captured);
@@ -1041,6 +1099,7 @@ bool FBHLateJoinerMidRoundStaysSpectatorTest::RunTest(const FString& Parameters)
 	if (LobbyJoinPS)
 	{
 		LobbyJoinPS->SetPlayerName(TEXT("Mid Round Returner"));
+		LobbyJoinPS->ReconnectToken = TEXT("travel-token-returner");
 		LobbyJoinPS->SetRole(EBHPlayerRole::Spectator);
 		LobbyJoinPS->SetLifeState(EBHPlayerLifeState::Captured);
 
@@ -1048,6 +1107,19 @@ bool FBHLateJoinerMidRoundStaysSpectatorTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Cross-travel restore returns the player to their live role."), LobbyJoinPS->PlayerRole, EBHPlayerRole::Survivor);
 		TestEqual(TEXT("Cross-travel restore returns the player to alive."), LobbyJoinPS->LifeState, EBHPlayerLifeState::Alive);
 		TestEqual(TEXT("Cross-travel restore also carries banked question points."), LobbyJoinPS->QuestionPoints, 40);
+	}
+
+	// Security (0.8.1): a brand-new student who merely reuses an earlier student's display name - with NO
+	// reconnect token and no real online id (the OSS-Null / LAN / Playit classroom path) - must NOT inherit
+	// that student's banked progress. Restore refuses the weak name-only match, so the imposter stays at zero.
+	ABHPlayerState* ImposterPS = NewObject<ABHPlayerState>();
+	TestNotNull(TEXT("Imposter player state can be created."), ImposterPS);
+	if (ImposterPS)
+	{
+		ImposterPS->SetPlayerName(TEXT("Mid Round Returner"));
+		ImposterPS->SetLifeState(EBHPlayerLifeState::Alive);
+		TestFalse(TEXT("A tokenless same-named joiner does not match the persisted entry."), GameInstance->RestoreTravelPlayerState(ImposterPS, /*bApplyRoleAndLifeState=*/true));
+		TestEqual(TEXT("A tokenless same-named joiner inherits no banked question points."), ImposterPS->QuestionPoints, 0);
 	}
 
 	return true;
@@ -1107,7 +1179,29 @@ bool FBHCharacterSpecialMovementTest::RunTest(const FString& Parameters)
 		World->AudioTimeSeconds += 0.70f;
 		Survivor->Tick(0.70f);
 		TestEqual(TEXT("Roll finishes back to normal state."), Survivor->GetMovementSpecialState(), EBHMovementSpecialState::None);
+
+		// The base special-move cooldown blocks an immediate reuse. The survivor-only "flow chain" momentum tech
+		// (bh.MomentumTech) can intentionally bypass it once within a frame-perfect window, so assert the base
+		// rule with the tech OFF, then assert the chain bypass with it ON -- and leave the cvar as we found it.
+		IConsoleVariable* MomentumTechCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("bh.MomentumTech"));
+		const int32 PrevMomentumTech = MomentumTechCVar ? MomentumTechCVar->GetInt() : 1;
+
+		if (MomentumTechCVar) { MomentumTechCVar->Set(0); }
 		TestFalse(TEXT("Roll cooldown blocks immediate reuse after finishing."), Survivor->TryStartSpecialMoveForTest(EBHMovementSpecialState::Rolling, false));
+		TestEqual(TEXT("Cooldown-refused reuse leaves the survivor in normal state."), Survivor->GetMovementSpecialState(), EBHMovementSpecialState::None);
+
+		if (MomentumTechCVar) { MomentumTechCVar->Set(1); }
+		TestTrue(TEXT("Frame-perfect flow chain bypasses the cooldown once."), Survivor->TryStartSpecialMoveForTest(EBHMovementSpecialState::Rolling, false));
+		TestEqual(TEXT("Flow chain re-enters the rolling state."), Survivor->GetMovementSpecialState(), EBHMovementSpecialState::Rolling);
+
+		// Finish the chained roll so the prone checks below start from a clean, idle state, then restore the cvar.
+		World->TimeSeconds += 0.70f;
+		World->UnpausedTimeSeconds += 0.70f;
+		World->RealTimeSeconds += 0.70f;
+		World->AudioTimeSeconds += 0.70f;
+		Survivor->Tick(0.70f);
+		TestEqual(TEXT("Chained roll finishes back to normal state."), Survivor->GetMovementSpecialState(), EBHMovementSpecialState::None);
+		if (MomentumTechCVar) { MomentumTechCVar->Set(PrevMomentumTech); }
 
 		TestTrue(TEXT("Prone state can be entered."), Survivor->TrySetProneForTest(true));
 		TestEqual(TEXT("Prone state is replicated state value."), Survivor->GetMovementSpecialState(), EBHMovementSpecialState::Prone);

@@ -181,7 +181,14 @@ int32 UBHGameSettings::GetClampedClassMaxPlayers()
 
 void UBHGameSettings::AppendMaxPlayersOption(FString& Options)
 {
-	if (!Options.Contains(TEXT("MaxPlayers=")))
+	// Boundary-aware check: a bare Contains("MaxPlayers=") would also match a colliding option key
+	// such as "?GameMaxPlayers=" and silently skip the append, re-introducing the engine's default
+	// 16-player cap this function exists to lift. Require the option to begin at a URL delimiter.
+	const bool bHasMaxPlayers =
+		Options.StartsWith(TEXT("MaxPlayers="), ESearchCase::IgnoreCase) ||
+		Options.Contains(TEXT("?MaxPlayers="), ESearchCase::IgnoreCase) ||
+		Options.Contains(TEXT("&MaxPlayers="), ESearchCase::IgnoreCase);
+	if (!bHasMaxPlayers)
 	{
 		Options += FString::Printf(TEXT("?MaxPlayers=%d"), GetClampedClassMaxPlayers());
 	}
@@ -204,7 +211,10 @@ UBHGameSettings::UBHGameSettings()
 	bAllowStudentTeacherAdminControls = false;
 	bAllowTunnelHelper = true;
 	bAllowHotspotHelper = false;
-	bClassroomLoopbackOnlyHost = true;
+	// False: the classroom host binds all interfaces so LAN students can join by IP and the Playit tunnel
+	// still works for off-LAN students. True would bind 127.0.0.1 only (tunnel-mandatory, no LAN fallback).
+	// DefaultGame.ini is the operative value for packaged builds; this is the code-side default/safety net.
+	bClassroomLoopbackOnlyHost = false;
 
 	InteractDistance = 550.0f;
 	CaptureDistance = 220.0f;

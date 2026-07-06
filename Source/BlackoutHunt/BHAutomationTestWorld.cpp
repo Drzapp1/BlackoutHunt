@@ -48,6 +48,15 @@ FBHScopedAutomationWorld::FBHScopedAutomationWorld(const TCHAR* InBaseName, bool
 		return;
 	}
 
+	// Anchor the world (and its package) against GC for the harness lifetime. Today only the world
+	// context's reference keeps it alive across an in-test CollectGarbage(); root it explicitly so a
+	// test that collects garbage can't pull the world out from under itself.
+	World->AddToRoot();
+	if (Package)
+	{
+		Package->AddToRoot();
+	}
+
 	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
 	WorldContext.SetCurrentWorld(World);
 	FURL URL;
@@ -65,6 +74,12 @@ FBHScopedAutomationWorld::~FBHScopedAutomationWorld()
 	if (!WorldToDestroy)
 	{
 		return;
+	}
+
+	WorldToDestroy->RemoveFromRoot();
+	if (PackageToDestroy)
+	{
+		PackageToDestroy->RemoveFromRoot();
 	}
 
 	WorldToDestroy->GetTimerManager().ClearAllTimersForObject(WorldToDestroy);
